@@ -2,9 +2,9 @@
 
 Cylo 是一个跨设备、可长期运行、管理真实任务与记忆，并在授权下调用 Agent 和部署普通后台服务的开放式 AI 系统。本仓库当前是**实现前研究与架构决策材料**，尚未开始产品实现。
 
-当前实施主线已由用户确定为 **OrchestratorInc/agent-orchestrator（AO，Go）+ Space3044/chatgpt-web-voice + Cylo 持久控制平面**，Cylo 新服务端优先采用 Go。AO 管 Agent 编排、代码执行与 Codex 会话；Cylo 管业务任务账本、记忆、授权、长期普通服务和语音池调度。AWS CAO 研究与实验作为历史证据保留，不再是当前实施底座。详见 [需求符合性与选型](Cylo-开源项目选型比较.md) 和 [实施架构](Cylo-实现调研与架构方案.md)。
+当前实施主线已由用户确定为 **OrchestratorInc/agent-orchestrator（AO，Go）+ 现有 CLIProxyAPI + Space3044/chatgpt-web-voice + Cylo 持久控制平面**，Cylo 新服务端优先采用 Go。AO 管 Agent 编排、代码执行与 Codex 会话；Cylo 管业务任务账本、记忆、授权、长期普通服务和语音池调度。AWS CAO 研究与实验作为历史证据保留，不再是当前实施底座。详见 [需求符合性与选型](Cylo-开源项目选型比较.md) 和 [实施架构](Cylo-实现调研与架构方案.md)。
 
-**用户已选定 AO，以及 Space 的 Go 网关、ChatGPT 网页实时上游和账号池。** 语音稳定提交、业务回执和额度调度仍待集成验收。语音 Agent 负责自然交互，复杂任务由 Super 协调，任务与权限以 Cylo 控制平面为准。AO 的 Codex 账号池能力及 CLIProxyAPI 集成另待专项报告确认，不将语音池等同于 Codex 凭据池。官方 Codex 桌面 App 已取消；人工无缝接管可选；基础 CLI 执行、恢复、停止查看，以及 macOS/Linux 部署与跨环境迁移仍在范围。
+**用户已选定 AO，以及 Space 的 Go 网关、ChatGPT 网页实时上游和账号池。** 语音稳定提交、业务回执和额度调度仍待集成验收。语音 Agent 负责自然交互，复杂任务由 Super 协调，任务与权限以 Cylo 控制平面为准。Codex 账号池与出站代理复用已有远程 CLIProxyAPI 实例（文档别名 `existing-cli-proxy`），不新增部署；每条 Codex route 由该代理选号，AO 无需重复轮换。Space 维持独立语音账号池。用户报告当前 Codex 登录和使用均可走代理；这是用户环境说明，不是本仓库实测，也不证明逐账号登录已自动隔离。AO 执行宿主使用可达的代理 API endpoint 与服务端密钥引用；`CODEX_HOME`、工作区和原生 thread 历史仍留执行宿主。官方 Codex 桌面 App 已取消；人工无缝接管可选；基础 CLI 执行、恢复、停止查看，以及 macOS/Linux 部署与跨环境迁移仍在范围。
 
 | 文档 | 作用 |
 |---|---|

@@ -2,7 +2,7 @@
 
 实际查阅日期：2026-10-21。这里回答“除了 Space3044/chatgpt-web-voice 和 awslabs/cli-agent-orchestrator，还有没有更好的项目”。候选源码版本、许可证和细节分别见 [08 语音替代研究](docs/research/08-voice-project-alternatives.md)、[09 编排替代研究](docs/research/09-agent-orchestration-alternatives.md)；本页保留2026-10-21的候选研究，并按用户最新澄清更新当前决策；历史比较不替代[产品需求](Cylo-完整产品需求说明书.md)。
 
-**当前决定：用户已明确采用 OrchestratorInc/agent-orchestrator（AO，Go），实施主线为 AO + Space + Cylo 持久控制平面，Cylo 新服务端优先 Go。** Space 的 Go 网关、ChatGPT 网页实时上游及语音账号池继续保留。语音 Agent 负责听说、追问与表达结果，Super 负责复杂规划/跨 Worker 协调；任务、授权、记忆和长期普通服务由 Cylo 管理。以下候选比较保留历史证据，不再作为底座尚待选择的表示。
+**当前决定：用户已明确采用 OrchestratorInc/agent-orchestrator（AO，Go），实施主线为 AO + 现有 CLIProxyAPI + Space + Cylo 持久控制平面，Cylo 新服务端优先 Go。** Space 的 Go 网关、ChatGPT 网页实时上游及语音账号池继续保留。语音 Agent 负责听说、追问与表达结果，Super 负责复杂规划/跨 Worker 协调；任务、授权、记忆和长期普通服务由 Cylo 管理。以下候选比较保留历史证据，不再作为底座尚待选择的表示。
 
 **先区分名称：`awslabs/cli-agent-orchestrator`（CAO）是 Python/FastAPI；`OrchestratorInc/agent-orchestrator`（AO，旧 Composio 项目）当前核心 daemon 是 Go。它们是两个项目。** Space 网关是 Go，因此前者组合为 Python+Go，后者组合为 Go+Go。
 
@@ -42,7 +42,9 @@ LiveKit/Pipecat 另一条路的优势正是更明确的实时事件和函数结�
 | 普通长期服务、记忆、权限、迁移（§7、9—11、14—17） | 两者都不替代 Cylo 控制平面、OS supervisor、证据/授权与恢复账本；AO 的开发产品功能不能抵扣这些需求 |
 | 实时网页语音与账号池（§3、12） | 已定 Space，经幂等 command/事件接入 Cylo；语音交互与后台任务生命周期分离，功能验收不重开提供者选型 |
 
-因此先实施 AO adapter 与一条目标→Worker→产物→恢复链路；不再并行开发 CAO adapter 或运行双 daemon 选型比较。AO 的 Codex 多账号池及 CLIProxyAPI 接入另待专门报告，不将语音池能力直接推定为 Codex 池能力。
+因此先实施 AO adapter 与一条目标→Worker→产物→恢复链路；不再并行开发 CAO adapter 或运行双 daemon 选型比较。Codex 账号池与出站代理复用已有远程 CLIProxyAPI（文档别名 `existing-cli-proxy`），不另部署；每条 Codex route 由代理选号与轮换，AO 无需重复调度同一池。Space 的语音池独立管理。用户报告当前 Codex 登录与使用均可走代理；这是用户环境说明，未由本文实测，也不代表每账号登录已自动隔离。
+
+AO 执行宿主通过可达的 `codex_route.api_endpoint` 和服务端 `codex_route.api_key_secret_ref` 接入该实例，真实值留部署配置。CLIProxyAPI 不承接执行工作区或原生历史；`CODEX_HOME`、thread、进程和文件仍由执行宿主保存与恢复。
 
 同一运行只由一个执行 owner 管理。AO 管代码执行与 Codex 会话，Cylo 管用户业务任务、授权、长期普通服务、记忆和语音池调度。AO 的普通恢复有“原生历史不存在则 fresh launch 保留工作区”的路径，**保住文件不等于恢复同一 thread**；Cylo 必须显示恢复模式与上下文丢失。
 
@@ -54,11 +56,11 @@ Vibe Kanban也是有真实编排能力的开发工具：`orchestrator_mode_route
 
 ## 4. 技术栈：维护偏好与历史组合
 
-当前采用 AO Go daemon + Space Go 网关，Cylo 新服务端优先 Go，以减少构建、调试和服务端维护成本。语言统一不能替代协议、存储与权限边界设计：三个服务通过 API/事件接入，不直接合库、共享账号表或随意 import 上游 `internal` 模块。下表保留其他历史组合供解释选型依据。
+当前采用 AO Go daemon + Space Go 网关，Cylo 新服务端优先 Go，以减少构建、调试和服务端维护成本。语言统一不能替代协议、存储与权限边界设计：各服务通过 API/事件接入，不直接合库、共享账号表或随意 import 上游 `internal` 模块。下表保留其他历史组合供解释选型依据。
 
 | 组合 | 核心后端 / Agent集成 | 客户端与其他运行时 | 选择与代价 |
 |---|---|---|---|
-| **A：OrchestratorInc/AO + Space，Cylo服务端优先Go（当前主线）** | OrchestratorInc/AO Go daemon/CLI/SQLite、Go Codex adapter；Space Go HTTP网关/SQLite | AO Electron/React/TS，移动端TS；Space HTML/JS/WebRTC；独立Codex二进制、Git及终端运行时仍存在 | **保留网页订阅语音且服务端同栈最整齐**；AO比CAO带来更多现成开发产品，但要核验是否能只复用daemon/API、避免双重任务权威。AO当前go.mod要求Go1.27.1；Space要求Go1.24.1且镜像含curl-impersonate/glibc，不能当纯静态二进制组合 |
+| **A：OrchestratorInc/AO + 现有 CLIProxyAPI + Space，Cylo服务端优先Go（当前主线）** | OrchestratorInc/AO Go daemon/CLI/SQLite、Go Codex adapter；Space Go HTTP网关/SQLite | AO Electron/React/TS，移动端TS；Space HTML/JS/WebRTC；独立Codex二进制、Git及终端运行时仍存在 | **保留网页订阅语音且服务端同栈最整齐**；AO比CAO带来更多现成开发产品，但要核验是否能只复用daemon/API、避免双重任务权威。AO当前go.mod要求Go1.27.1；Space要求Go1.24.1且镜像含curl-impersonate/glibc，不能当纯静态二进制组合 |
 | **B：awslabs/CAO + Space（历史方案）** | awslabs/CAO Python/FastAPI/SQLAlchemy/MCP与tmux；Space仍Go独立网关 | Cylo仍可沿用原TS建议；若新服务端选Python可与CAO同语言；Python+Go+Codex/Git/tmux | 复用既有研究最多，接受语音网关异构；隔进程API边界后不必为语言一致重写成熟网关 |
 | API语音扩展：awslabs/CAO + Pipecat，Cylo服务端Python | awslabs/CAO Python；Pipecat Python实时服务，CAO>=3.10、Pipecat>=3.11需统一环境基线 | 浏览器JS/TS/WebRTC、音频原生库与Codex等外部进程 | **需要改API/其他实时上游的费用与鉴权**；无现成网页额度池。CAO+原Python网页网关虽也同栈，但其池/安全/桥接不足，没有证据值得仅为同栈替Space |
 | **C：OpenClaw + Space（TS平台备选）** | TS/Node Gateway、工具/插件与Codex app-server；Space仍Go网关 | TS控制台/客户端；Node、Go和Codex/Git等独立运行时 | 若希望直接扩展个人助手平台、减少自建Gateway/会话/消息入口，可认真比较；保留网页账号语音因此不全TS；需明确替换Cylo哪部分职责 |
@@ -69,7 +71,7 @@ LiveKit Node Agents是独立的`livekit/agents-js`仓库。本轮又独立读取
 
 ## 5. 单主线实施与复核条件
 
-**推进 AO + Space + 优先 Go 的 Cylo 控制平面。** 先接通基础 CLI 执行/恢复、停止、显式权限和产物保全，同时按已选语音路径完成稳定提交、回执播报及额度耗尽后新媒体会话恢复。底座已定，功能未验收仍须标明缺口。
+**推进 AO + 现有 CLIProxyAPI + Space + 优先 Go 的 Cylo 控制平面。** 先接通基础 CLI 执行/恢复、停止、显式权限和产物保全，同时按已选语音路径完成稳定提交、回执播报及额度耗尽后新媒体会话恢复。底座已定，功能未验收仍须标明缺口。
 
 AO 的 native 恢复和独立 host 是可复用基础，仍需集成验收。AWS CAO、OpenClaw、LiveKit/Pipecat 和客户端项目保留历史证据，不新增并行验证路线。[10](docs/research/10-cao-ao-comparative-poc.md) 记录既有清理实验及当前 AO 实施顺序。
 

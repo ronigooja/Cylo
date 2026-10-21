@@ -2,13 +2,14 @@
 
 调研日期：2026-10-21。产品现名 **Cylo**。本文以 [Cylo 完整产品需求说明书](Cylo-完整产品需求说明书.md) 为唯一产品基线，整合专项研究与CLI接续改造方案。**目前完成的是需求、选型、设计与隔离实验，产品实现尚未开始。** 本轮按用户明确决定移除官方Codex桌面App支持，另按最新优先级将人工同 thread 无缝接管和复杂交接协议降为可选增强，基础 CLI 执行、停止查看和持久恢复仍必须；阶段、技术栈和指标为实施建议。
 
-**当前实施主线：采用 OrchestratorInc/agent-orchestrator（AO，Go）管理 Agent 编排、代码执行与 Codex 会话；建设 Cylo 自己的持久控制平面，优先使用 Go，管理业务账本、记忆、授权、长期普通服务和语音池调度。** 按需调用 Super，简单请求及普通服务可直接调用 Worker。语音继续采用 Space3044/chatgpt-web-voice 的 ChatGPT 网页实时上游、Go 网关与多账号池，补充额度调度和业务桥接。基础 CLI 执行、停止查看、持久恢复、真实工具/必要审批及语音闭环仍须验收；人工同原生会话双向交接可选。官方 Codex 桌面 App、发现/深链及官方 host handoff 不在范围；macOS/Linux CLI、浏览器、后台部署和跨环境迁移保留。
+**当前实施主线：采用 OrchestratorInc/agent-orchestrator（AO，Go）管理 Agent 编排、代码执行与 Codex 会话，复用现有 CLIProxyAPI 管理 Codex 账号池与出站代理；建设 Cylo 自己的持久控制平面，优先使用 Go，管理业务账本、记忆、授权、长期普通服务和语音池调度。** 按需调用 Super，简单请求及普通服务可直接调用 Worker。语音继续采用 Space3044/chatgpt-web-voice 的 ChatGPT 网页实时上游、Go 网关与多账号池，补充额度调度和业务桥接。基础 CLI 执行、停止查看、持久恢复、真实工具/必要审批及语音闭环仍须验收；人工同原生会话双向交接可选。官方 Codex 桌面 App、发现/深链及官方 host handoff 不在范围；macOS/Linux CLI、浏览器、后台部署和跨环境迁移保留。
 
-**决策状态：用户已明确采用 AO；Space 网关、网页实时上游与语音账号池继续保留，Cylo 新服务端优先 Go。** 这是当前实施决定，不表示 AO 的权限、恢复、清理或业务集成已经验收。不再并行开发 CAO adapter；[02](docs/research/02-orchestration-and-codex.md)、[07](docs/research/07-cao-cli-handoff-plan.md) 的 CAO 源码与改造研究保留历史语境。AO Codex 账号池与 CLIProxyAPI 接入等待专门报告，本页不预判可用性。
+**决策状态：用户已明确采用 AO；Space 网关、网页实时上游与语音账号池继续保留，Cylo 新服务端优先 Go。** 这是当前实施决定，不表示 AO 的权限、恢复、清理或业务集成已经验收。不再并行开发 CAO adapter；[02](docs/research/02-orchestration-and-codex.md)、[07](docs/research/07-cao-cli-handoff-plan.md) 的 CAO 源码与改造研究保留历史语境。Codex 路由复用已有远程 CLIProxyAPI（文档别名 `existing-cli-proxy`），无需另部署或由 AO 重建账号池；每条 route 的选号与轮换由代理负责。用户报告当前登录和使用均可走代理，本文未实测该环境，也未确认每账号登录已自动隔离。Space 的语音池保持独立。
 
 | 用户指定候选 | 决定 | 依据与可复用范围 |
 |---|---|---|
 | [OrchestratorInc/agent-orchestrator](https://github.com/OrchestratorInc/agent-orchestrator)（AO） | **已采用的 Agent / 代码执行与 Codex 会话底座** | 复用 orchestrator/worker、隔离工作区、native ID/resume、host/reconcile；通过 API/事件接入 Cylo。约束默认危险权限、fresh fallback 与强制清理；固定版本逐项验收。源码见 [09](docs/research/09-agent-orchestration-alternatives.md)，实施顺序见 [10](docs/research/10-cao-ao-comparative-poc.md)。 |
+| CLIProxyAPI（已有远程实例 `existing-cli-proxy`） | **复用 Codex 账号池与出站代理** | AO 执行宿主配置可达 API endpoint 和服务端密钥引用；代理负责该 route 内选号，AO 保留执行编排与原生会话管理。 |
 | [Space3044/chatgpt-web-voice](https://github.com/Space3044/chatgpt-web-voice) | **采纳实时语音上游、网关与多 ChatGPT 账号池，维护固定版本的 Cylo 适配分支** | 保留 ChatGPT Web 实时媒体与私有信令，复用账号管理、LRU 选择与会话粘性；增加原子并发租约、额度状态观察、错误分类/冷却、耗尽后新会话切换、稳定用户 final 提交及业务回执桥接。上游未提供现成 Super/function 桥；不能套用官方 Realtime 协议。实质复制遵守 MIT。详见 [03](docs/research/03-voice.md)。 |
 
 实施分三层，AO 的内部会话状态与 Cylo 的业务状态保持明确归属：
@@ -53,6 +54,7 @@ flowchart TB
   R --> A[AgentRuntime / AO adapter]
   A --> S[按需 Super / 专业 Worker]
   A <--> X[Codex 原生 thread / worktree]
+  X -->|模型 API 请求| PX[existing-cli-proxy / Codex 账号池与出站代理]
   R --> P[能力发布与 OS supervisor]
   P --> B[独立普通后台服务]
   B -->|规则事件 / 直接 Worker 请求| C
@@ -63,6 +65,8 @@ flowchart TB
 首版 Cylo 控制服务优先采用 Go，与 AO daemon 和 Space 网关统一服务端维护语言；原 TypeScript 控制服务方案保留为历史建议。客户端建议 React 响应式 PWA、版本化 JSON Schema、SQLite 本地磁盘和独立 runner。macOS 用 launchd、Linux 用 systemd 管理常驻进程。明确边界后可同包安装，不必先做微服务。Python Agent/普通程序通过协议接入，技术栈不决定产品范围。服务端必须是常开机器；主机睡眠/关机期间展示离线与最后观测时间，不能声称仍在执行。
 
 未来按实测需要增加 PostgreSQL、对象存储、多个 runner 与组织身份。单人版起就保留 workspace、principal、project 权限字段；未建立租户执行隔离前不能开放不可信团队共用主机。远端CLI可通过SSH进入同一backend执行环境，使用相同用户、CODEX_HOME、项目路径及认证继续；这是CLI同环境接续。跨host迁移另按备份、路径和权限映射及原生恢复材料验收，不依赖官方App SSH/host handoff。
+
+AO 执行宿主以抽象配置 `codex_route.api_endpoint`、`codex_route.api_key_secret_ref` 接入 `existing-cli-proxy`；实际值由部署配置提供，endpoint 必须从该宿主可达，密钥仅在服务端解引用，不送客户端或模型上下文。代理承接模型请求、账号选择与出站网络；`CODEX_HOME`、原生 thread 历史、进程及工作区留在 AO 执行宿主，迁移仍须搬迁对应恢复材料。
 
 ### 1. 控制平面负责真实状态
 

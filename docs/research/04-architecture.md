@@ -11,12 +11,13 @@
 | 后台运行 | macOS launchd / Linux systemd 管理守护服务，执行主机 runner 持有进程与工作目录 | 不要求 Docker 才能使用本机开发环境；多租户执行用 Linux 容器/VM 隔离 |
 | Agent 集成 | `AgentRuntime`适配已选 AO；复用 orchestrator/worker、native ID/resume 与 host/reconcile，固定版本验收基础 CLI 执行/停止查看/恢复；人工接管可选 | AO 已有 TUI/Chat 路径，按实际需求接入；app-server 路径须验证实验/生产支持边界[S1] |
 | AO / Cylo 权威 | AO 管 Agent、代码执行和 Codex 会话；Cylo 管业务账本、记忆、授权、长期普通服务与语音池调度 | 同一执行仅一个 owner；默认危险权限、fresh fallback、ForceDestroy 仍须约束与验收。AWS CAO/07 留作历史研究 |
+| Codex 账号与网络 | 复用已有远程 CLIProxyAPI（文档别名 `existing-cli-proxy`）的账号池与出站代理，每条 Codex route 由代理选号 | AO 无需重复轮换该池；Space 使用独立语音池；原生历史与工作区仍归执行宿主 |
 | 客户端 | PWA 先完成 Mac/iPhone/iPad 同一业务接续，前台语音 | 若锁屏持续语音、系统通知行为、音频路由实测不达产品目标，增加 SwiftUI 原生 iOS/iPadOS 客户端，复用服务契约 |
 | 语音 | 采纳 chatgpt-web-voice 的实时语音上游、Go 网关和多账号池；VoiceSessionAdapter 桥接 Cylo command/回执 | 补齐稳定提交、业务结果注入、账号粘性/并发租约/额度状态；私有协议能力以源码及真实 POC 为准；独立 STT/TTS 仅故障降级 |
 | 记忆 | 原始证据、已确认决策、执行事实、推断分离；Memory Agent 仅产提案/索引 | FTS 起步，嵌入检索后加；向量库不是权威事实库 |
 | 长期能力 | 不可变 release + deployment + 独立 service instance；确定性程序自行运行 | Agent 创建代码与服务部署分离授权，容器不是跨系统唯一发布格式 |
 
-完整必需范围保留长期能力、记忆、基础 CLI 执行与保存会话恢复；人工同 thread 无缝接管和双向交接按最新决定列为可选增强，不阻断首期或必需范围验收。优先自动 Super 拆分、独立 Worker、多 worktree、长任务/后台服务、持久恢复、产物与成本。用户已明确采用 AO；Space 继续保留，Cylo 新服务端优先 Go。AO Codex 账号池及 CLIProxyAPI 集成另待专项报告，不预先要求新建账号池。
+完整必需范围保留长期能力、记忆、基础 CLI 执行与保存会话恢复；人工同 thread 无缝接管和双向交接按最新决定列为可选增强，不阻断首期或必需范围验收。优先自动 Super 拆分、独立 Worker、多 worktree、长任务/后台服务、持久恢复、产物与成本。用户已明确采用 AO；Space 继续保留，Cylo 新服务端优先 Go。现有 CLIProxyAPI 已作为 Codex 账号池与出站代理的复用对象，不新建同用途服务。用户报告其当前 Codex 登录和使用均可走代理；本文未实测该环境，亦未确认逐账号登录已自动隔离。
 
 ## 2. 部署拓扑和边界
 
@@ -36,6 +37,7 @@ flowchart LR
   R --> AR[AgentRuntime 适配器]
   AR --> S[Super / Worker / Memory Agent]
   AR <--> CX[Codex 本机会话]
+  CX -->|模型 API 请求| PX[existing-cli-proxy / Codex 账号池与出站代理]
   R --> CR[CapabilityRunner]
   CR --> SV[独立普通后台服务]
   SV -->|规则 / 事件 / Worker请求| CP
@@ -44,6 +46,8 @@ flowchart LR
 ```
 
 **最小部署**：一台常开 Mac 或 Linux；一个控制服务进程（API、调度循环、outbox、记忆作业模块）、一个 runner 进程、本地 SQLite、本地产物目录、Codex 外部进程、固定版本的 Go 语音网关与其账号存储。网关负责上游信令与账号控制，现有音频媒体直连上游；不能把 HTTP 网关当成能拦截现有媒体的 relay。可共包安装，但 runner 不与 HTTP 请求同生命周期。PWA 静态资源由控制服务供应。网络默认局域网或受认证私网；远程使用 TLS。独立服务由 OS supervisor 管理，控制进程崩溃不杀死已部署服务；runner/服务重连后回报。用户工作站睡眠不等于服务器可用，UI 显示执行主机离线与最后观测时间，不称“持续执行”。
+
+**现有 Codex 代理边界**：复用 `existing-cli-proxy`，无需在最小部署中再安装代理。AO 执行宿主配置 `codex_route.api_endpoint` 和 `codex_route.api_key_secret_ref`；endpoint 必须从该宿主可达，真实地址与密钥由部署配置提供，密钥仅在服务端解引用。该别名不代表已确认 API 地址或端口。CLIProxyAPI 负责模型请求的账号选择与出站网络；同一 route 内不由 AO 再做一层账号轮换。`CODEX_HOME`、原生 thread 历史、进程及项目/worktree 留在执行宿主，代理不承接这些恢复材料。Space 的账号、租约与语音额度独立管理。
 
 **扩展部署**：Linux 常开控制平面 + PostgreSQL + 对象存储 + 多个 Mac/Linux runner；调度器按资源租约选 host；通知/索引可拆进程；团队身份可接 OIDC。每个执行 host 只能看到获授权的项目和 secret 引用。远端CLI可经SSH登录同一backend执行环境，沿用相同用户、CODEX_HOME、项目路径与认证；这不是官方App SSH或跨host会话搬迁。不同执行主机的数据迁移仍按§13验收。无需求前不引入 Kubernetes、Redis、消息中间件或专门向量服务。
 
