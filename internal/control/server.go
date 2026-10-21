@@ -25,8 +25,20 @@ type Config struct {
 	DefaultProfileID   string
 	RuntimeRouteID     string
 	ModelRouteID       string
+	Profiles           map[string]RuntimeProfile
 	PairingTTL         time.Duration
 	MaxRequestBytes    int64
+}
+
+type RuntimeProfile struct {
+	ID              string
+	RuntimeRouteID  string
+	ModelRouteID    string
+	Role            string
+	AOAgentKind     string
+	IsolationPolicy string
+	CapabilityIDs   []string
+	Scopes          []string
 }
 
 type CommandContext struct {
@@ -58,6 +70,10 @@ func apiError(status int, code, message string, details any) *APIError {
 	return &APIError{Status: status, Code: code, Message: message, Details: details}
 }
 
+func NewAPIError(status int, code, message string, details any) *APIError {
+	return apiError(status, code, message, details)
+}
+
 type Server struct {
 	store    *storage.Store
 	cfg      Config
@@ -78,6 +94,16 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 	}
 	if cfg.MaxRequestBytes <= 0 {
 		cfg.MaxRequestBytes = 1 << 20
+	}
+	for id, profile := range cfg.Profiles {
+		if id == "" || profile.ID != id || profile.RuntimeRouteID == "" || profile.ModelRouteID == "" || profile.Role == "" || profile.AOAgentKind != "worker" || profile.IsolationPolicy == "" {
+			return nil, fmt.Errorf("runtime profile %q is incomplete or does not select AO worker execution", id)
+		}
+	}
+	if cfg.DefaultProfileID != "" {
+		if _, ok := cfg.Profiles[cfg.DefaultProfileID]; !ok {
+			return nil, errors.New("default profile is not present in configured profiles")
+		}
 	}
 	s := &Server{store: store, cfg: cfg, commands: make(map[string]CommandHandler), public: http.NewServeMux(), device: http.NewServeMux(), runner: http.NewServeMux()}
 	s.registerCoreRoutes()
@@ -126,6 +152,69 @@ func (s *Server) RegisterRunnerRoutes(register func(*http.ServeMux)) error {
 	}
 	register(s.runner)
 	return nil
+}
+
+func HasScope(p contracts.Principal, scope string) bool {
+	for _, value := range p.Scopes {
+		if value == scope || value == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+func HasRunnerScope(p contracts.RunnerPrincipal, scope, workspaceID string) bool {
+	allowed := false
+	for _, value := range p.Scopes {
+		if value == scope || value == "*" {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return false
+	}
+	for _, value := range p.WorkspaceIDs {
+		if value == workspaceID || value == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+// DeviceTransaction binds a read or write transaction to the authenticated principal in ctx.
+// Mutating feature handlers should prefer CommandHandler so receipt and outbox remain atomic.
+func (s *Server) DeviceTransaction(ctx context.Context, fn func(*sql.Tx, contracts.Principal) error) error {
+	p, ok := PrincipalFromContext(ctx)
+	if !ok {
+		return apiError(http.StatusUnauthorized, "unauthenticated", "device authentication required", nil)
+	}
+	tx, err := s.store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = fn(tx, p); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// RunnerTransaction binds a transaction to the runner identity, workspace allowlist, and scopes in ctx.
+func (s *Server) RunnerTransaction(ctx context.Context, fn func(*sql.Tx, contracts.RunnerPrincipal) error) error {
+	p, ok := RunnerPrincipalFromContext(ctx)
+	if !ok {
+		return apiError(http.StatusUnauthorized, "unauthenticated", "runner authentication required", nil)
+	}
+	tx, err := s.store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = fn(tx, p); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Server) Handler() http.Handler {

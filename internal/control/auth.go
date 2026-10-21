@@ -84,8 +84,13 @@ func (s *Server) runnerAuth(next http.Handler) http.Handler {
 		}
 		var p contracts.RunnerPrincipal
 		var workspaceJSON, scopesJSON []byte
-		err = s.store.DB().QueryRowContext(r.Context(), `SELECT runner_id,workspace_ids,scopes FROM runner_credentials WHERE token_hash=? AND revoked_at IS NULL`, hash).Scan(&p.RunnerID, &workspaceJSON, &scopesJSON)
+		var revoked sql.NullString
+		err = s.store.DB().QueryRowContext(r.Context(), `SELECT runner_id,workspace_ids,scopes,revoked_at FROM runner_credentials WHERE token_hash=?`, hash).Scan(&p.RunnerID, &workspaceJSON, &scopesJSON, &revoked)
 		if err == nil {
+			if revoked.Valid {
+				writeError(w, apiError(http.StatusUnauthorized, "unauthenticated", "runner credential is revoked", nil))
+				return
+			}
 			if e := jsonUnmarshal(workspaceJSON, &p.WorkspaceIDs); e != nil {
 				writeError(w, apiError(500, "internal", "runner credential record is invalid", nil))
 				return

@@ -38,9 +38,6 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 
 func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (contracts.Snapshot, error) {
 	out := contracts.Snapshot{ServerVersion: "1", Projects: []contracts.Project{}, Tasks: []contracts.Task{}, Approvals: []contracts.Approval{}, Devices: []contracts.Device{}, Runs: []contracts.Run{}}
-	if err := tx.QueryRowContext(ctx, `SELECT current_cursor FROM event_counters WHERE workspace_id=?`, workspace).Scan(new(int64)); err != nil {
-		return out, err
-	}
 	var cursor int64
 	if err := tx.QueryRowContext(ctx, `SELECT current_cursor FROM event_counters WHERE workspace_id=?`, workspace).Scan(&cursor); err != nil {
 		return out, err
@@ -250,7 +247,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	oldest := high + 1
-	_ = s.store.DB().QueryRowContext(r.Context(), `SELECT min(cursor) FROM events WHERE workspace_id=?`, p.WorkspaceID).Scan(&oldest)
+	var earliest sql.NullInt64
+	_ = s.store.DB().QueryRowContext(r.Context(), `SELECT min(cursor) FROM events WHERE workspace_id=?`, p.WorkspaceID).Scan(&earliest)
+	if earliest.Valid {
+		oldest = earliest.Int64
+	}
 	if cursor > 0 && oldest > 1 && cursor < oldest-1 {
 		writeSnapshotRequired(w, "cursor_expired")
 		return
@@ -261,46 +262,64 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
 	flusher := w.(http.Flusher)
 	flusher.Flush()
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
-	reauth := time.NewTicker(5 * time.Second)
-	defer reauth.Stop()
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
 	credential, _ := tokenHash(bearer(r))
 	for {
-		rows, err := s.store.DB().QueryContext(r.Context(), `SELECT cursor,event_type,payload FROM events WHERE workspace_id=? AND cursor>? ORDER BY cursor LIMIT 100`, p.WorkspaceID, cursor)
+		tx, err := s.store.DB().BeginTx(r.Context(), &sql.TxOptions{ReadOnly: true})
 		if err != nil {
 			return
 		}
-		advanced := false
+		var status string
+		if err = tx.QueryRowContext(r.Context(), `SELECT status FROM devices WHERE token_hash=?`, credential).Scan(&status); err != nil || status != "approved" {
+			_ = tx.Rollback()
+			return
+		}
+		rows, err := tx.QueryContext(r.Context(), `SELECT cursor,event_type,payload FROM events WHERE workspace_id=? AND cursor>? ORDER BY cursor LIMIT 100`, p.WorkspaceID, cursor)
+		if err != nil {
+			_ = tx.Rollback()
+			return
+		}
+		type record struct {
+			cursor  int64
+			kind    string
+			payload []byte
+		}
+		records := make([]record, 0, 100)
 		for rows.Next() {
-			var c int64
-			var eventType string
-			var payload []byte
-			if err = rows.Scan(&c, &eventType, &payload); err != nil {
+			var v record
+			if err = rows.Scan(&v.cursor, &v.kind, &v.payload); err != nil {
 				rows.Close()
+				_ = tx.Rollback()
 				return
 			}
-			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", c, eventType, payload)
-			cursor = c
-			advanced = true
+			records = append(records, v)
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
+			_ = tx.Rollback()
+			return
 		}
 		rows.Close()
-		if advanced {
+		if tx.Commit() != nil {
+			return
+		}
+		for _, v := range records {
+			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", v.cursor, v.kind, v.payload)
+			cursor = v.cursor
+		}
+		if len(records) > 0 {
 			flusher.Flush()
 		}
 		select {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
-			if !advanced {
-				_, _ = fmt.Fprint(w, ": heartbeat\n\n")
-				flusher.Flush()
-			}
-		case <-reauth.C:
-			var status string
-			if err := s.store.DB().QueryRowContext(r.Context(), `SELECT status FROM devices WHERE token_hash=?`, credential).Scan(&status); err != nil || status != "approved" {
-				return
-			}
+		case <-heartbeat.C:
+			_, _ = fmt.Fprint(w, ": heartbeat\n\n")
+			flusher.Flush()
 		}
 	}
 }

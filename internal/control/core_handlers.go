@@ -106,8 +106,8 @@ func (s *Server) commandTaskCreate(ctx context.Context, tx *sql.Tx, c CommandCon
 	if profile == "" {
 		profile = s.cfg.DefaultProfileID
 	}
-	if profile == "" {
-		profile = "default"
+	if _, ok := s.cfg.Profiles[profile]; !ok {
+		return contracts.CommandResult{}, nil, apiError(409, "profile_unavailable", "requested execution profile is not configured and authorized", map[string]any{"profile_id": profile})
 	}
 	id, err := randomID()
 	if err != nil {
@@ -272,7 +272,8 @@ func (s *Server) commandDeviceApprove(ctx context.Context, tx *sql.Tx, c Command
 	}
 	var version int64
 	var status string
-	err := tx.QueryRowContext(ctx, `SELECT version,status FROM devices WHERE id=? AND workspace_id=? AND subject_id=?`, p.DeviceID, c.Principal.WorkspaceID, c.Principal.SubjectID).Scan(&version, &status)
+	var pairingExpires sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT version,status,pairing_expires_at FROM devices WHERE id=? AND workspace_id=? AND subject_id=?`, p.DeviceID, c.Principal.WorkspaceID, c.Principal.SubjectID).Scan(&version, &status, &pairingExpires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return contracts.CommandResult{}, nil, apiError(404, "not_found", "device not found", nil)
 	}
@@ -287,6 +288,12 @@ func (s *Server) commandDeviceApprove(ctx context.Context, tx *sql.Tx, c Command
 	}
 	if status == "approved" {
 		return contracts.CommandResult{}, nil, apiError(409, "state_conflict", "device is already approved", nil)
+	}
+	if pairingExpires.Valid {
+		deadline, parseErr := time.Parse(time.RFC3339Nano, pairingExpires.String)
+		if parseErr == nil && !c.AcceptedAt.Before(deadline) {
+			return contracts.CommandResult{}, nil, apiError(410, "pairing_expired", "pairing request has expired", nil)
+		}
 	}
 	at := c.AcceptedAt.Format(time.RFC3339Nano)
 	version++

@@ -1,12 +1,14 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -66,11 +68,16 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 
 func canonicalCommand(req contracts.CommandRequest) ([]byte, error) {
 	var payload any
-	if err := json.Unmarshal(req.Payload, &payload); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(req.Payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil {
 		return nil, err
 	}
 	if _, ok := payload.(map[string]any); !ok {
 		return nil, errors.New("payload must be object")
+	}
+	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+		return nil, errors.New("payload must contain one JSON value")
 	}
 	req.Payload, _ = json.Marshal(payload)
 	return json.Marshal(req)
