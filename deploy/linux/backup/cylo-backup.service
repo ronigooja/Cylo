@@ -19,4 +19,3 @@ RestrictAddressFamilies=AF_UNIX
 LockPersonality=true
 MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
-
