@@ -126,7 +126,7 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	_, err = tx.ExecContext(r.Context(), `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,control_version,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,ao_project_id,started_at,task_version,authorization_json) VALUES(?,?,?,?,'dispatching','run',1,?,?,?,?,?,?,?,?,?,?,?, ?,?)`, runID, chosen.workspace, chosen.id, attemptID, fence, p.RunnerID, chosen.device, chosen.command, chosen.goal, profile.ID, profile.RuntimeRouteID, profile.ModelRouteID, profile.Role, profile.AOProjectID, now, newVersion, authorizationJSON)
+	_, err = tx.ExecContext(r.Context(), `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,control_version,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,isolation_policy,ao_project_id,started_at,task_version,authorization_json) VALUES(?,?,?,?,'dispatching','run',1,?,?,?,?,?,?,?,?,?,?,?, ?, ?,?)`, runID, chosen.workspace, chosen.id, attemptID, fence, p.RunnerID, chosen.device, chosen.command, chosen.goal, profile.ID, profile.RuntimeRouteID, profile.ModelRouteID, profile.Role, profile.IsolationPolicy, profile.AOProjectID, now, newVersion, authorizationJSON)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -140,7 +140,7 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	claim := contracts.JobClaim{RunID: runID, TaskID: chosen.id, AttemptID: attemptID, WorkspaceID: chosen.workspace, TaskVersion: newVersion, Goal: chosen.goal, ProfileID: profile.ID, RuntimeRouteID: profile.RuntimeRouteID, ModelRouteID: profile.ModelRouteID, Role: profile.Role, AOProjectID: profile.AOProjectID, Authorization: contracts.JobAuthorization{CapabilityIDs: append([]string{}, profile.CapabilityIDs...), Scopes: append([]string{}, profile.Scopes...)}, Fence: fence}
+	claim := contracts.JobClaim{RunID: runID, TaskID: chosen.id, AttemptID: attemptID, WorkspaceID: chosen.workspace, TaskVersion: newVersion, Goal: chosen.goal, ProfileID: profile.ID, RuntimeRouteID: profile.RuntimeRouteID, ModelRouteID: profile.ModelRouteID, IsolationPolicy: profile.IsolationPolicy, Role: profile.Role, AOProjectID: profile.AOProjectID, Authorization: contracts.JobAuthorization{CapabilityIDs: append([]string{}, profile.CapabilityIDs...), Scopes: append([]string{}, profile.Scopes...)}, Fence: fence}
 	if err = tx.Commit(); err != nil {
 		writeError(w, err)
 		return
@@ -162,15 +162,13 @@ func runnerHasAnyWorkspaceScope(p contracts.RunnerPrincipal, scope string) bool 
 func loadClaim(ctx context.Context, tx *sql.Tx, runID string, cfg Config) (contracts.JobClaim, error) {
 	_ = cfg
 	var c contracts.JobClaim
-	var role string
 	var fence uint64
 	var aoProject, aoSession string
 	var authJSON []byte
-	err := tx.QueryRowContext(ctx, `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.runtime_route_id,r.model_route_id,r.role,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json FROM runs r WHERE r.id=?`, runID).Scan(&c.RunID, &c.TaskID, &c.AttemptID, &c.WorkspaceID, &c.TaskVersion, &c.Goal, &c.ProfileID, &c.RuntimeRouteID, &c.ModelRouteID, &role, &aoProject, &aoSession, &fence, &authJSON)
+	err := tx.QueryRowContext(ctx, `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json FROM runs r WHERE r.id=?`, runID).Scan(&c.RunID, &c.TaskID, &c.AttemptID, &c.WorkspaceID, &c.TaskVersion, &c.Goal, &c.ProfileID, &c.RuntimeRouteID, &c.ModelRouteID, &c.Role, &c.IsolationPolicy, &aoProject, &aoSession, &fence, &authJSON)
 	if err != nil {
 		return c, err
 	}
-	c.Role = role
 	c.AOProjectID = aoProject
 	c.AOSessionID = aoSession
 	c.Fence = fence
@@ -214,7 +212,7 @@ func (s *Server) handleCurrentClaims(w http.ResponseWriter, r *http.Request) {
 	for _, id := range ids {
 		var claim contracts.JobClaim
 		var authJSON []byte
-		err = s.store.DB().QueryRowContext(r.Context(), `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.runtime_route_id,r.model_route_id,r.role,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json FROM runs r WHERE r.id=?`, id).Scan(&claim.RunID, &claim.TaskID, &claim.AttemptID, &claim.WorkspaceID, &claim.TaskVersion, &claim.Goal, &claim.ProfileID, &claim.RuntimeRouteID, &claim.ModelRouteID, &claim.Role, &claim.AOProjectID, &claim.AOSessionID, &claim.Fence, &authJSON)
+		err = s.store.DB().QueryRowContext(r.Context(), `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json FROM runs r WHERE r.id=?`, id).Scan(&claim.RunID, &claim.TaskID, &claim.AttemptID, &claim.WorkspaceID, &claim.TaskVersion, &claim.Goal, &claim.ProfileID, &claim.RuntimeRouteID, &claim.ModelRouteID, &claim.Role, &claim.IsolationPolicy, &claim.AOProjectID, &claim.AOSessionID, &claim.Fence, &authJSON)
 		if err != nil {
 			writeError(w, err)
 			return

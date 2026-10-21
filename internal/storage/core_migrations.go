@@ -214,7 +214,7 @@ CREATE TABLE runner_credentials (
 	}}); err != nil {
 		return err
 	}
-	return s.RegisterMigration(Migration{Version: 2, Name: "run_claim_snapshots_and_notifications", Up: func(ctx context.Context, tx *sql.Tx) error {
+	if err := s.RegisterMigration(Migration{Version: 2, Name: "run_claim_snapshots_and_notifications", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 ALTER TABLE runs ADD COLUMN task_version INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE runs ADD COLUMN authorization_json BLOB NOT NULL DEFAULT '{}';
@@ -249,6 +249,12 @@ CREATE INDEX project_memberships_subject ON project_memberships(workspace_id,sub
 UPDATE projects SET owner_subject_id=coalesce((SELECT e.subject_id FROM events e WHERE e.aggregate_type='project' AND e.aggregate_id=projects.id AND e.event_type='project.created' AND e.subject_id IS NOT NULL ORDER BY e.cursor LIMIT 1),'');
 UPDATE tasks SET owner_subject_id=coalesce((SELECT d.subject_id FROM devices d WHERE d.id=tasks.created_by_device_id),'');
 `)
+		return err
+	}}); err != nil {
+		return err
+	}
+	return s.RegisterMigration(Migration{Version: 3, Name: "run_isolation_policy_snapshot", Up: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `ALTER TABLE runs ADD COLUMN isolation_policy TEXT NOT NULL DEFAULT ''`)
 		return err
 	}})
 }

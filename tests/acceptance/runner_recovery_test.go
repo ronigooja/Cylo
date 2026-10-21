@@ -45,7 +45,7 @@ func TestCurrentClaimRecoveryDoesNotDeadlockOrChangeSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	claimed.Body.Close()
-	if claim.AOProjectID != "workers" || claim.TaskVersion != 2 {
+	if claim.AOProjectID != "workers" || claim.IsolationPolicy != "native-sandbox" || claim.TaskVersion != 2 {
 		t.Fatalf("claim missing server profile or initial task snapshot: %+v", claim)
 	}
 	if _, err = store.DB().Exec(`UPDATE tasks SET title='changed',goal='changed',version=version+1 WHERE id=?`, claim.TaskID); err != nil {
@@ -64,7 +64,7 @@ func TestCurrentClaimRecoveryDoesNotDeadlockOrChangeSnapshot(t *testing.T) {
 	if err = json.NewDecoder(recovered.Body).Decode(&recovery); err != nil {
 		t.Fatal(err)
 	}
-	if len(recovery.Claims) != 1 || recovery.Claims[0].TaskVersion != claim.TaskVersion || recovery.Claims[0].AOProjectID != "workers" || recovery.Claims[0].Goal != "original goal" || len(recovery.Claims[0].Authorization.Scopes) != 1 || recovery.Claims[0].Authorization.Scopes[0] != "task:read" || recovery.Claims[0].RuntimeRouteID != "native" {
+	if len(recovery.Claims) != 1 || recovery.Claims[0].TaskVersion != claim.TaskVersion || recovery.Claims[0].AOProjectID != "workers" || recovery.Claims[0].Goal != "original goal" || len(recovery.Claims[0].Authorization.Scopes) != 1 || recovery.Claims[0].Authorization.Scopes[0] != "task:read" || recovery.Claims[0].RuntimeRouteID != "native" || recovery.Claims[0].IsolationPolicy != "native-sandbox" {
 		t.Fatalf("recovery did not return immutable claim: %+v", recovery)
 	}
 }

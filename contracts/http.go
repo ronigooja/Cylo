@@ -205,20 +205,21 @@ type JobAuthorization struct {
 }
 
 type JobClaim struct {
-	RunID          string           `json:"run_id"`
-	TaskID         string           `json:"task_id"`
-	AttemptID      string           `json:"attempt_id"`
-	WorkspaceID    string           `json:"workspace_id"`
-	TaskVersion    int64            `json:"task_version"`
-	Goal           string           `json:"goal"`
-	ProfileID      string           `json:"profile_id"`
-	RuntimeRouteID string           `json:"runtime_route_id"`
-	ModelRouteID   string           `json:"model_route_id"`
-	Role           string           `json:"role"`
-	AOProjectID    string           `json:"ao_project_id,omitempty"`
-	AOSessionID    string           `json:"ao_session_id,omitempty"`
-	Authorization  JobAuthorization `json:"authorization"`
-	Fence          uint64           `json:"fence"`
+	RunID           string           `json:"run_id"`
+	TaskID          string           `json:"task_id"`
+	AttemptID       string           `json:"attempt_id"`
+	WorkspaceID     string           `json:"workspace_id"`
+	TaskVersion     int64            `json:"task_version"`
+	Goal            string           `json:"goal"`
+	ProfileID       string           `json:"profile_id"`
+	RuntimeRouteID  string           `json:"runtime_route_id"`
+	ModelRouteID    string           `json:"model_route_id"`
+	IsolationPolicy string           `json:"isolation_policy"`
+	Role            string           `json:"role"`
+	AOProjectID     string           `json:"ao_project_id,omitempty"`
+	AOSessionID     string           `json:"ao_session_id,omitempty"`
+	Authorization   JobAuthorization `json:"authorization"`
+	Fence           uint64           `json:"fence"`
 }
 
 type ClaimRecovery struct {
