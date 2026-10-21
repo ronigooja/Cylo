@@ -166,6 +166,10 @@ func TestOutOfPolicyChildRequiresExpectedVersionApprovalAndCannotReviveParent(t 
 	if pending.Code != http.StatusOK || json.Unmarshal(pending.Body.Bytes(), &pendingReceipt) != nil || pendingReceipt.Status != "pending" || pendingReceipt.Version != 1 {
 		t.Fatalf("out-of-policy proposal was not pending: %d %s", pending.Code, pending.Body.String())
 	}
+	missingVersion := reviewRequest(h, http.MethodPost, "/v1/commands", deviceToken, "approve-child-missing-version", contracts.CommandRequest{Kind: "child.approve", Payload: json.RawMessage(`{"proposal_id":"needs-approval"}`)})
+	if missingVersion.Code != http.StatusBadRequest {
+		t.Fatalf("child approval accepted without expected_version: %d %s", missingVersion.Code, missingVersion.Body.String())
+	}
 	approval := reviewRequest(h, http.MethodPost, "/v1/commands", deviceToken, "approve-child", contracts.CommandRequest{Kind: "child.approve", ExpectedVersion: ptrInt64(1), Payload: json.RawMessage(`{"proposal_id":"needs-approval"}`)})
 	if approval.Code != http.StatusOK {
 		t.Fatalf("approve child=%d %s", approval.Code, approval.Body.String())

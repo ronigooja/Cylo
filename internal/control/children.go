@@ -363,6 +363,9 @@ type childDecisionPayload struct {
 }
 
 func (s *Server) commandChildDecision(ctx context.Context, tx *sql.Tx, c CommandContext, req contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
+	if req.ExpectedVersion == nil {
+		return contracts.CommandResult{}, nil, apiError(http.StatusBadRequest, "invalid_request", "expected_version is required", nil)
+	}
 	var p childDecisionPayload
 	if err := decodePayload(req.Payload, &p); err != nil {
 		return contracts.CommandResult{}, nil, err
