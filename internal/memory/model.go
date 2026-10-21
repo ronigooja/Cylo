@@ -69,6 +69,7 @@ func (s Scope) Validate() error {
 type Source struct {
 	ID             string    `json:"id"`
 	Version        int64     `json:"version"`
+	Scope          Scope     `json:"scope"`
 	Kind           string    `json:"kind"`
 	Reference      string    `json:"reference"`
 	ContentHash    string    `json:"content_hash,omitempty"`
@@ -80,6 +81,9 @@ type Source struct {
 func (s Source) Validate() error {
 	if strings.TrimSpace(s.ID) == "" || s.Version < 1 || strings.TrimSpace(s.Kind) == "" || strings.TrimSpace(s.Reference) == "" {
 		return errors.New("source requires ID, positive version, kind, and reference")
+	}
+	if err := s.Scope.Validate(); err != nil {
+		return fmt.Errorf("source scope: %w", err)
 	}
 	if strings.TrimSpace(s.Producer) == "" {
 		return errors.New("source requires a producer")
