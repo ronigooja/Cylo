@@ -8,7 +8,7 @@ import (
 )
 
 func RegisterMigrations(store *storage.Store) error {
-	if err := store.RegisterMigration(storage.Migration{Version: 200, Name: "voice_sessions_and_turns_v1", Up: func(ctx context.Context, tx *sql.Tx) error {
+	if err := store.RegisterMigration(storage.Migration{Namespace: "voice", Version: 200, Name: "voice_sessions_and_turns_v1", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 CREATE TABLE voice_sessions (
   id TEXT PRIMARY KEY,
@@ -93,7 +93,7 @@ CREATE TABLE voice_account_terminations (
 	}}); err != nil {
 		return err
 	}
-	return store.RegisterMigration(storage.Migration{Version: 201, Name: "voice_stable_turn_task_binding", Up: func(ctx context.Context, tx *sql.Tx) error {
+	return store.RegisterMigration(storage.Migration{Namespace: "voice", Version: 201, Name: "voice_stable_turn_task_binding", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `CREATE UNIQUE INDEX voice_task_links_stable_turn ON voice_task_links(session_id,generation,turn_id)`)
 		return err
 	}})

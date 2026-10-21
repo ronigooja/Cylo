@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -20,9 +21,10 @@ type Config struct {
 }
 
 type Migration struct {
-	Version int
-	Name    string
-	Up      func(context.Context, *sql.Tx) error
+	Namespace string
+	Version   int
+	Name      string
+	Up        func(context.Context, *sql.Tx) error
 }
 
 type Store struct {
@@ -124,8 +126,8 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) RegisterMigration(m Migration) error {
-	if m.Version < 1 || m.Name == "" || m.Up == nil {
-		return errors.New("migration requires positive version, name, and Up function")
+	if strings.TrimSpace(m.Namespace) == "" || m.Version < 1 || m.Name == "" || m.Up == nil {
+		return errors.New("migration requires namespace, positive version, name, and Up function")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -137,12 +139,37 @@ func (s *Store) RegisterMigration(m Migration) error {
 }
 
 func (s *Store) Migrate(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL, namespace TEXT NOT NULL DEFAULT '')`); err != nil {
 		return fmt.Errorf("create migration table: %w", err)
 	}
-	var dbMax int
-	if err := s.db.QueryRowContext(ctx, `SELECT coalesce(max(version),0) FROM schema_migrations`).Scan(&dbMax); err != nil {
-		return fmt.Errorf("read schema version: %w", err)
+	columns, err := s.db.QueryContext(ctx, `PRAGMA table_info(schema_migrations)`)
+	if err != nil {
+		return fmt.Errorf("inspect migration table: %w", err)
+	}
+	hasNamespace := false
+	for columns.Next() {
+		var cid, notNull, primaryKey int
+		var name, kind string
+		var defaultValue any
+		if err = columns.Scan(&cid, &name, &kind, &notNull, &defaultValue, &primaryKey); err != nil {
+			columns.Close()
+			return fmt.Errorf("inspect migration table columns: %w", err)
+		}
+		if name == "namespace" {
+			hasNamespace = true
+		}
+	}
+	if err = columns.Err(); err != nil {
+		columns.Close()
+		return fmt.Errorf("inspect migration table columns: %w", err)
+	}
+	if err = columns.Close(); err != nil {
+		return err
+	}
+	if !hasNamespace {
+		if _, err = s.db.ExecContext(ctx, `ALTER TABLE schema_migrations ADD COLUMN namespace TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add migration namespace: %w", err)
+		}
 	}
 	s.mu.Lock()
 	versions := make([]int, 0, len(s.migrations))
@@ -154,34 +181,75 @@ func (s *Store) Migrate(ctx context.Context) error {
 		migrations[v] = m
 	}
 	s.mu.Unlock()
-	if dbMax > 0 {
-		if _, ok := migrations[dbMax]; !ok {
-			return fmt.Errorf("database schema version %d is newer than this binary supports", dbMax)
+	type appliedMigration struct {
+		version   int
+		namespace string
+		name      string
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT version,name,namespace FROM schema_migrations ORDER BY version`)
+	if err != nil {
+		return fmt.Errorf("read migration history: %w", err)
+	}
+	applied := make(map[int]appliedMigration)
+	for rows.Next() {
+		var record appliedMigration
+		if err = rows.Scan(&record.version, &record.name, &record.namespace); err != nil {
+			rows.Close()
+			return fmt.Errorf("read migration history: %w", err)
+		}
+		migration, ok := migrations[record.version]
+		if !ok {
+			rows.Close()
+			return fmt.Errorf("database migration %d is newer than or unknown to this binary", record.version)
+		}
+		if record.name != migration.Name {
+			rows.Close()
+			return fmt.Errorf("migration %d name mismatch: database=%q binary=%q", record.version, record.name, migration.Name)
+		}
+		if record.namespace != "" && record.namespace != migration.Namespace {
+			rows.Close()
+			return fmt.Errorf("migration %d namespace mismatch: database=%q binary=%q", record.version, record.namespace, migration.Namespace)
+		}
+		if record.namespace == "" {
+			record.namespace = migration.Namespace
+		}
+		applied[record.version] = record
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("read migration history: %w", err)
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	for version, record := range applied {
+		var stored string
+		if err = s.db.QueryRowContext(ctx, `SELECT namespace FROM schema_migrations WHERE version=?`, version).Scan(&stored); err != nil {
+			return fmt.Errorf("read migration namespace: %w", err)
+		}
+		if stored == "" {
+			if _, err = s.db.ExecContext(ctx, `UPDATE schema_migrations SET namespace=? WHERE version=? AND namespace=''`, record.namespace, version); err != nil {
+				return fmt.Errorf("backfill migration namespace: %w", err)
+			}
 		}
 	}
-	for version := range migrations {
-		if version <= dbMax {
-			var found int
-			if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE version=?`, version).Scan(&found); err != nil {
-				return err
-			}
-			if found != 1 {
-				return fmt.Errorf("database migration history has a gap at version %d", version)
+	maxApplied := make(map[string]int)
+	for _, record := range applied {
+		if record.version > maxApplied[record.namespace] {
+			maxApplied[record.namespace] = record.version
+		}
+	}
+	for version, migration := range migrations {
+		if version <= maxApplied[migration.Namespace] {
+			if _, ok := applied[version]; !ok {
+				return fmt.Errorf("database migration history has a gap in namespace %q at version %d", migration.Namespace, version)
 			}
 		}
 	}
 	sort.Ints(versions)
 	for _, version := range versions {
-		var applied string
-		err := s.db.QueryRowContext(ctx, `SELECT name FROM schema_migrations WHERE version=?`, version).Scan(&applied)
-		if err == nil {
-			if applied != migrations[version].Name {
-				return fmt.Errorf("migration %d name mismatch: database=%q binary=%q", version, applied, migrations[version].Name)
-			}
+		if _, ok := applied[version]; ok {
 			continue
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("read migration %d: %w", version, err)
 		}
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -191,7 +259,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 			_ = tx.Rollback()
 			return fmt.Errorf("apply migration %d: %w", version, err)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version,name,applied_at) VALUES(?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))`, version, migrations[version].Name); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version,name,applied_at,namespace) VALUES(?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'),?)`, version, migrations[version].Name, migrations[version].Namespace); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("record migration %d: %w", version, err)
 		}

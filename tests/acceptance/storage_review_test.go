@@ -6,10 +6,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/ronigooja/Cylo/internal/memory"
 	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Cylo/internal/voice"
 )
 
 func openStore(t *testing.T, path string) *storage.Store {
@@ -85,7 +88,7 @@ func TestReviewMigrationAtomicity(t *testing.T) {
 	s := openStore(t, filepath.Join(t.TempDir(), "authority.db"))
 	ctx := context.Background()
 	boom := errors.New("injected failure")
-	if e := s.RegisterMigration(storage.Migration{Version: 1, Name: "broken", Up: func(ctx context.Context, tx *sql.Tx) error {
+	if e := s.RegisterMigration(storage.Migration{Namespace: "test", Version: 1, Name: "broken", Up: func(ctx context.Context, tx *sql.Tx) error {
 		if _, e := tx.ExecContext(ctx, "CREATE TABLE partial(id INTEGER)"); e != nil {
 			return e
 		}
@@ -119,10 +122,88 @@ func TestReviewRejectFutureSchema(t *testing.T) {
 	if e := s.Migrate(ctx); e != nil {
 		t.Fatal(e)
 	}
-	if _, e := s.DB().ExecContext(ctx, "INSERT INTO schema_migrations VALUES(999,'future','now')"); e != nil {
+	if _, e := s.DB().ExecContext(ctx, "INSERT INTO schema_migrations(version,name,applied_at) VALUES(999,'future','now')"); e != nil {
 		t.Fatal(e)
 	}
 	if e := s.Migrate(ctx); e == nil {
 		t.Error("old binary accepts unknown future schema")
+	}
+}
+
+func TestReviewLateCoreMigrationAfterFeatureHistory(t *testing.T) {
+	s := openStore(t, filepath.Join(t.TempDir(), "feature-history.db"))
+	ctx := context.Background()
+	for _, register := range []func(*storage.Store) error{storage.RegisterCoreMigrations, memory.RegisterMigrations, voice.RegisterMigrations} {
+		if err := register(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Recreate the valid pre-v3 database history: core 1/2 and feature 100/200/201
+	// have already run, but the newly added core isolation snapshot has not.
+	if _, err := s.DB().ExecContext(ctx, `ALTER TABLE runs DROP COLUMN isolation_policy`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=3`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `CREATE TABLE schema_migrations_legacy (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `INSERT INTO schema_migrations_legacy(version,name,applied_at) SELECT version,name,applied_at FROM schema_migrations`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `DROP TABLE schema_migrations`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `ALTER TABLE schema_migrations_legacy RENAME TO schema_migrations`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatalf("new core migration was blocked by applied feature migrations: %v", err)
+	}
+	var name, namespace string
+	if err := s.DB().QueryRowContext(ctx, `SELECT name,namespace FROM schema_migrations WHERE version=3`).Scan(&name, &namespace); err != nil {
+		t.Fatal(err)
+	}
+	if name != "run_isolation_policy_snapshot" || namespace != "core" {
+		t.Fatalf("late migration identity=%q/%q", namespace, name)
+	}
+	var featureRows int
+	if err := s.DB().QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE version IN (100,200,201)`).Scan(&featureRows); err != nil {
+		t.Fatal(err)
+	}
+	if featureRows != 3 {
+		t.Fatalf("feature migrations were lost or rerun: %d records", featureRows)
+	}
+}
+
+func TestReviewMigrationHistoryRequiresKnownNamespaceSequence(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		breakHistory string
+		want         string
+	}{
+		{name: "missing earlier migration", breakHistory: `DELETE FROM schema_migrations WHERE version=1`, want: `gap in namespace "core" at version 1`},
+		{name: "wrong namespace", breakHistory: `UPDATE schema_migrations SET namespace='memory' WHERE version=1`, want: `namespace mismatch`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openStore(t, filepath.Join(t.TempDir(), "namespace-history.db"))
+			ctx := context.Background()
+			if err := storage.RegisterCoreMigrations(s); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Migrate(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.DB().ExecContext(ctx, tc.breakHistory); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Migrate(ctx); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("migration history should fail with %q, got %v", tc.want, err)
+			}
+		})
 	}
 }

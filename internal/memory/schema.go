@@ -7,11 +7,12 @@ import (
 	"github.com/ronigooja/Cylo/internal/storage"
 )
 
-// RegisterMigrations reserves versions 100-199 for the memory module.
+// RegisterMigrations keeps a separately ordered migration stream for memory.
 func RegisterMigrations(store *storage.Store) error {
 	return store.RegisterMigration(storage.Migration{
-		Version: 100,
-		Name:    "memory_authority_v1",
+		Namespace: "memory",
+		Version:   100,
+		Name:      "memory_authority_v1",
 		Up: func(ctx context.Context, tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, `
 CREATE TABLE memory_sources (

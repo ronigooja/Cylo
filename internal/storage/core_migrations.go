@@ -6,7 +6,7 @@ import (
 )
 
 func RegisterCoreMigrations(s *Store) error {
-	if err := s.RegisterMigration(Migration{Version: 1, Name: "core_authority", Up: func(ctx context.Context, tx *sql.Tx) error {
+	if err := s.RegisterMigration(Migration{Namespace: "core", Version: 1, Name: "core_authority", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 CREATE TABLE workspaces (
   id TEXT PRIMARY KEY,
@@ -214,7 +214,7 @@ CREATE TABLE runner_credentials (
 	}}); err != nil {
 		return err
 	}
-	if err := s.RegisterMigration(Migration{Version: 2, Name: "run_claim_snapshots_and_notifications", Up: func(ctx context.Context, tx *sql.Tx) error {
+	if err := s.RegisterMigration(Migration{Namespace: "core", Version: 2, Name: "run_claim_snapshots_and_notifications", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 ALTER TABLE runs ADD COLUMN task_version INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE runs ADD COLUMN authorization_json BLOB NOT NULL DEFAULT '{}';
@@ -253,7 +253,7 @@ UPDATE tasks SET owner_subject_id=coalesce((SELECT d.subject_id FROM devices d W
 	}}); err != nil {
 		return err
 	}
-	return s.RegisterMigration(Migration{Version: 3, Name: "run_isolation_policy_snapshot", Up: func(ctx context.Context, tx *sql.Tx) error {
+	return s.RegisterMigration(Migration{Namespace: "core", Version: 3, Name: "run_isolation_policy_snapshot", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `ALTER TABLE runs ADD COLUMN isolation_policy TEXT NOT NULL DEFAULT ''`)
 		return err
 	}})
