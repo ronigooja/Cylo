@@ -52,6 +52,7 @@ func TestReviewClaimAuthorizationSurvivesServerReconfiguration(t *testing.T) {
 	p.Scopes = []string{"*"}
 	p.CapabilityIDs = []string{"admin"}
 	p.AOProjectID = "changed"
+	p.IsolationPolicy = "changed-policy"
 	cfg2.Profiles["review"] = p
 	server, err := control.NewServer(store, cfg2)
 	if err != nil {
