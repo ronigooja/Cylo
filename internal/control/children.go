@@ -59,6 +59,23 @@ func (s *Server) handleChildProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
+	// Authenticate the durable run identity before looking up an idempotent
+	// receipt. Otherwise a runner with proposal scope could replay another
+	// runner's (run, attempt, proposal) tuple and learn its private task ID.
+	var workspace, taskID, attemptID, status, desired, parentStatus, parentWorkspace, rootID string
+	var subjectID, deviceID, projectID sql.NullString
+	var fence uint64
+	var depth, rootLimit int
+	var policyJSON []byte
+	err = tx.QueryRowContext(r.Context(), `SELECT r.workspace_id,r.task_id,r.attempt_id,r.fence,r.status,r.desired_control,t.status,t.workspace_id,t.owner_subject_id,t.created_by_device_id,t.project_id,coalesce(t.lineage_root_task_id,t.id),t.lineage_depth,t.root_child_limit,r.child_policy_json FROM runs r JOIN tasks t ON t.id=r.task_id WHERE r.id=? AND r.runner_id=?`, r.PathValue("run_id"), runner.RunnerID).Scan(&workspace, &taskID, &attemptID, &fence, &status, &desired, &parentStatus, &parentWorkspace, &subjectID, &deviceID, &projectID, &rootID, &depth, &rootLimit, &policyJSON)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && (attemptID != req.Attempt || fence != req.Fence || parentWorkspace != workspace || !HasRunnerScope(runner, "runner:claim", workspace) || !HasRunnerScope(runner, "runner:propose", workspace)) {
+		writeError(w, apiError(http.StatusNotFound, "not_found", "active run not found", nil))
+		return
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	var oldHash, oldResponse []byte
 	err = tx.QueryRowContext(r.Context(), `SELECT request_hash,response_json FROM child_proposals WHERE run_id=? AND attempt_id=? AND proposal_id=?`, r.PathValue("run_id"), req.Attempt, req.ProposalID).Scan(&oldHash, &oldResponse)
 	if err == nil {
@@ -75,20 +92,6 @@ func (s *Server) handleChildProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		writeError(w, err)
-		return
-	}
-	var workspace, taskID, attemptID, status, desired, parentStatus, parentWorkspace, rootID string
-	var subjectID, deviceID, projectID sql.NullString
-	var fence uint64
-	var depth, rootLimit int
-	var policyJSON []byte
-	err = tx.QueryRowContext(r.Context(), `SELECT r.workspace_id,r.task_id,r.attempt_id,r.fence,r.status,r.desired_control,t.status,t.workspace_id,t.owner_subject_id,t.created_by_device_id,t.project_id,coalesce(t.lineage_root_task_id,t.id),t.lineage_depth,t.root_child_limit,r.child_policy_json FROM runs r JOIN tasks t ON t.id=r.task_id WHERE r.id=? AND r.runner_id=?`, r.PathValue("run_id"), runner.RunnerID).Scan(&workspace, &taskID, &attemptID, &fence, &status, &desired, &parentStatus, &parentWorkspace, &subjectID, &deviceID, &projectID, &rootID, &depth, &rootLimit, &policyJSON)
-	if errors.Is(err, sql.ErrNoRows) || err == nil && (attemptID != req.Attempt || fence != req.Fence || parentWorkspace != workspace || !HasRunnerScope(runner, "runner:claim", workspace) || !HasRunnerScope(runner, "runner:propose", workspace)) {
-		writeError(w, apiError(http.StatusNotFound, "not_found", "active run not found", nil))
-		return
-	}
-	if err != nil {
 		writeError(w, err)
 		return
 	}

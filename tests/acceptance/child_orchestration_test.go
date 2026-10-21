@@ -59,6 +59,12 @@ func TestChildProposalAdmissionIsIdempotentAndClaimedThroughOrdinaryRunnerPath(t
 	if retry.Code != http.StatusOK || json.Unmarshal(retry.Body.Bytes(), &retryReceipt) != nil || retryReceipt.TaskID != firstReceipt.TaskID {
 		t.Fatalf("exact proposal retry changed result: status=%d body=%s", retry.Code, retry.Body.String())
 	}
+	// A second runner with the same scopes must not be able to retrieve the
+	// first runner's durable receipt, even when it knows the complete tuple.
+	foreignReplay := reviewRequest(h, http.MethodPost, path, runnerTwo, "", proposal)
+	if foreignReplay.Code != http.StatusNotFound {
+		t.Fatalf("foreign runner replay disclosed proposal receipt: %d %s", foreignReplay.Code, foreignReplay.Body.String())
+	}
 	changed := proposal
 	changed.Goal = "changed content"
 	if response := reviewRequest(h, http.MethodPost, path, runnerOne, "", changed); response.Code != http.StatusConflict {
@@ -122,6 +128,13 @@ func TestChildProposalAdmissionIsIdempotentAndClaimedThroughOrdinaryRunnerPath(t
 	ancestorDependency.DependencyTaskIDs = []string{rootReceipt.ResourceID}
 	if invalid := reviewRequest(h, http.MethodPost, path, runnerOne, "", ancestorDependency); invalid.Code != http.StatusBadRequest {
 		t.Fatalf("ancestor dependency was not rejected: %d %s", invalid.Code, invalid.Body.String())
+	}
+	if _, err := store.DB().Exec(`UPDATE tasks SET status='complete' WHERE id=?`, rootReceipt.ResourceID); err != nil {
+		t.Fatal(err)
+	}
+	ownerAfterStop := reviewRequest(h, http.MethodPost, path, runnerOne, "", proposal)
+	if ownerAfterStop.Code != http.StatusOK {
+		t.Fatalf("authorized owner could not recover exact receipt after parent termination: %d %s", ownerAfterStop.Code, ownerAfterStop.Body.String())
 	}
 }
 
