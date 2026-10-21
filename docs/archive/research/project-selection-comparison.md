@@ -2,7 +2,7 @@
 
 # Cylo Open-Source Project Selection Comparison
 
-Research date: 2026-10-21. This document answers the question, “Are there better projects besides Space3044/chatgpt-web-voice and awslabs/cli-agent-orchestrator?” Candidate source versions, licenses, and details are in [08 Voice Project Alternatives](../reports/08-voice-project-alternatives.md) and [09 Agent Orchestration Alternatives](../reports/09-agent-orchestration-alternatives.md). This page preserves the candidate research from 2026-10-21 and updates the current decision based on the user's latest clarification. The historical comparison does not replace the [product requirements](product-requirements.md).
+Research date: 2026-10-21. This document answers the question, “Are there better projects besides Space3044/chatgpt-web-voice and awslabs/cli-agent-orchestrator?” Candidate source versions, licenses, and details are in [08 Voice Project Alternatives](reports/08-voice-project-alternatives.md) and [09 Agent Orchestration Alternatives](reports/09-agent-orchestration-alternatives.md). This page preserves the candidate research from 2026-10-21 and updates the current decision based on the user's latest clarification. The historical comparison does not replace the [product requirements](product-requirements.md).
 
 **Decision at the time: the user had explicitly adopted OrchestratorInc/agent-orchestrator (AO, Go), with AO + the existing CLIProxyAPI + Space + Cylo's persistent control plane as the implementation path, and Go preferred for Cylo's new server.** Space's Go gateway, ChatGPT web real-time upstream, and voice account pool remain in use. The voice Agent handles listening, speaking, follow-up questions, and communicating results; Super handles complex planning and cross-Worker coordination; Cylo manages tasks, authorization, memory, and long-running ordinary services. The comparison below retains historical evidence and is no longer a representation that the foundation remains undecided.
 
@@ -23,7 +23,7 @@ These are comparisons of capabilities and integration cost. No cross-project ben
 
 ## 2. Reuse and Integration Boundaries for the Selected Space Project
 
-**No source evidence was found for a better project that already solves both quota rotation and the Super bridge through a direct replacement.** The user had explicitly chosen to keep the Space gateway. Account pools, leases, quota state, and a stable business bridge remain integration work, as described in [03](../reports/03-voice.md).
+**No source evidence was found for a better project that already solves both quota rotation and the Super bridge through a direct replacement.** The user had explicitly chosen to keep the Space gateway. Account pools, leases, quota state, and a stable business bridge remain integration work, as described in [03](reports/03-voice.md).
 
 The closest related projects are the Python projects [dyhhhhhh/chatgpt-web-voice](https://github.com/dyhhhhhh/chatgpt-web-voice) and [victorli-cn/chatgpt-web-voice](https://github.com/victorli-cn/chatgpt-web-voice). They use real web `access_token` credentials and `realtime/wm`; they do not mistake the official API key for a web token. The client has code that triggers reconnects from usage, hangup, and network signals and clears old session identifiers, which is useful for a failure state machine.
 
@@ -75,7 +75,7 @@ LiveKit Node Agents is in the separate `livekit/agents-js` repository. This roun
 
 **Proceed with AO + the existing CLIProxyAPI + Space + a Go-preferred Cylo control plane.** First connect basic CLI execution/recovery, stopping, explicit permissions, and artifact preservation. In parallel, follow the selected voice path to complete stable submission, receipt playback, and recovery through a new media session after quota exhaustion. The foundation is selected, but unaccepted features must still be marked as gaps.
 
-AO native recovery and independent hosts are reusable foundations that still need integration acceptance. Preserve AWS CAO, OpenClaw, LiveKit/Pipecat, and client-project evidence without adding parallel validation paths. [10](../reports/10-cao-ao-comparative-poc.md) records the existing cleanup experiment and current AO implementation sequence.
+AO native recovery and independent hosts are reusable foundations that still need integration acceptance. Preserve AWS CAO, OpenClaw, LiveKit/Pipecat, and client-project evidence without adding parallel validation paths. [10](reports/10-cao-ao-comparative-poc.md) records the existing cleanup experiment and current AO implementation sequence.
 
 ## 6. Independent Review Evidence and Limits
 
