@@ -1,6 +1,6 @@
 # Cylo 总体实现架构与落地契约
 
-研究日期：2026-10-21。本文是实现决策稿，不代表已有运行代码。以完整阅读的[《Cylo-完整产品需求说明书.md》](../../Cylo-完整产品需求说明书.md)为最高产品依据，产品统一更名 Cylo；最新范围取消官方 Codex 桌面App支持，保留macOS/Linux CLI、客户端、后台部署及跨环境迁移；旧《codex-super-agent-requirements-and-architecture.md》仅保留兼容原则，旧方案中“所有请求经 Super”“Codex 是所有 Agent”不成立。本文同时补充原拟独立可靠性研究的关键设计；编排与语音具体源码证据见同目录专项报告。
+研究日期：2026-10-21。本文是实现决策稿，不代表已有运行代码。以完整阅读的[《Cylo-完整产品需求说明书.md》](../../Cylo-完整产品需求说明书.md)为最高产品依据，产品统一更名 Cylo；最新范围取消官方 Codex 桌面App支持，首期服务端与执行宿主采用Linux，保留macOS客户端/浏览器、用户自行使用CLI及跨环境备份导出迁移；macOS后台运行后续按需评估，不纳入首期验收；旧《codex-super-agent-requirements-and-architecture.md》仅保留兼容原则，旧方案中“所有请求经 Super”“Codex 是所有 Agent”不成立。本文同时补充原拟独立可靠性研究的关键设计；编排与语音具体源码证据见同目录专项报告。
 
 ## 1. 决策摘要
 
@@ -8,7 +8,7 @@
 |---|---|---|
 | 应用结构 | Cylo 控制服务与 runner 优先 Go；模块化单体控制服务、React 响应式 PWA、版本化 JSON Schema 契约 | 无吞吐证据前不拆微服务；AO 与 Space 通过 API/事件接入，独立存储与权限边界 |
 | 权威数据 | 单机 SQLite WAL、本地磁盘、控制服务唯一业务写入口；事务 outbox 与 durable jobs 同库 | 多节点控制平面/团队写并发需求出现后迁 PostgreSQL；不将 SQLite 放 NFS [S3] |
-| 后台运行 | macOS launchd / Linux systemd 管理守护服务，执行主机 runner 持有进程与工作目录 | 不要求 Docker 才能使用本机开发环境；多租户执行用 Linux 容器/VM 隔离 |
+| 后台运行 | 首期 Linux systemd 管理守护服务，执行主机 runner 持有进程与工作目录 | 不要求 Docker 才能使用本机开发环境；多租户执行用 Linux 容器/VM 隔离 |
 | Agent 集成 | `AgentRuntime`适配已选 AO；复用 orchestrator/worker、native ID/resume 与 host/reconcile，固定版本验收基础 CLI 执行/停止查看/恢复；人工接管可选 | AO 已有 TUI/Chat 路径，按实际需求接入；app-server 路径须验证实验/生产支持边界[S1] |
 | AO / Cylo 权威 | AO 管多种 Agent runtime、代码执行和原生会话；Cylo 管业务账本、记忆、授权、长期普通服务与语音池调度 | 同一执行仅一个 owner；默认危险权限、fresh fallback、ForceDestroy 仍须约束与验收。AWS CAO/07 留作历史研究 |
 | Codex 账号与网络 | 复用已有远程 CLIProxyAPI（文档别名 `existing-cli-proxy`）的账号池与出站代理，每条 Codex route 由代理选号 | AO 无需重复轮换该池；Space 使用独立语音池；原生历史与工作区仍归执行宿主 |
@@ -46,11 +46,11 @@ flowchart LR
   PN --> PWA
 ```
 
-**最小部署**：一台常开 Mac 或 Linux；一个控制服务进程（API、调度循环、outbox、记忆作业模块）、一个 runner 进程、本地 SQLite、本地产物目录、所选 Agent 外部进程、固定版本的 Go 语音网关与其账号存储。网关负责上游信令与账号控制，现有音频媒体直连上游；不能把 HTTP 网关当成能拦截现有媒体的 relay。可共包安装，但 runner 不与 HTTP 请求同生命周期。PWA 静态资源由控制服务供应。网络默认局域网或受认证私网；远程使用 TLS。独立服务由 OS supervisor 管理，控制进程崩溃不杀死已部署服务；runner/服务重连后回报。用户工作站睡眠不等于服务器可用，UI 显示执行主机离线与最后观测时间，不称“持续执行”。
+**最小部署**：一台常开 Linux 主机；一个控制服务进程（API、调度循环、outbox、记忆作业模块）、一个 runner 进程、本地 SQLite、本地产物目录、所选 Agent 外部进程、固定版本的 Go 语音网关与其账号存储。网关负责上游信令与账号控制，现有音频媒体直连上游；不能把 HTTP 网关当成能拦截现有媒体的 relay。可共包安装，但 runner 不与 HTTP 请求同生命周期。PWA 静态资源由控制服务供应。网络默认局域网或受认证私网；远程使用 TLS。独立服务由 OS supervisor 管理，控制进程崩溃不杀死已部署服务；runner/服务重连后回报。用户工作站睡眠不等于服务器可用，UI 显示执行主机离线与最后观测时间，不称“持续执行”。
 
 **现有 Codex 代理边界**：复用 `existing-cli-proxy`，无需在最小部署中再安装代理。AO 执行宿主配置 `codex_route.api_endpoint` 和 `codex_route.api_key_secret_ref`；endpoint 必须从该宿主可达，真实地址与密钥由部署配置提供，密钥仅在服务端解引用。该别名不代表已确认 API 地址或端口。CLIProxyAPI 负责模型请求的账号选择与出站网络；同一 route 内不由 AO 再做一层账号轮换。`CODEX_HOME`、原生 thread 历史、进程及项目/worktree 留在执行宿主，代理不承接这些恢复材料。Space 的账号、租约与语音额度独立管理。
 
-**扩展部署**：Linux 常开控制平面 + PostgreSQL + 对象存储 + 多个 Mac/Linux runner；调度器按资源租约选 host；通知/索引可拆进程；团队身份可接 OIDC。每个执行 host 只能看到获授权的项目和 secret 引用。远端CLI可经SSH登录同一backend执行环境，沿用相同用户、CODEX_HOME、项目路径与认证；这不是官方App SSH或跨host会话搬迁。不同执行主机的数据迁移仍按§13验收。无需求前不引入 Kubernetes、Redis、消息中间件或专门向量服务。
+**扩展部署**：Linux 常开控制平面 + PostgreSQL + 对象存储 + 多个 Linux runner（macOS runner 后续按需评估）；调度器按资源租约选 host；通知/索引可拆进程；团队身份可接 OIDC。每个执行 host 只能看到获授权的项目和 secret 引用。远端CLI可经SSH登录同一backend执行环境，沿用相同用户、CODEX_HOME、项目路径与认证；这不是官方App SSH或跨host会话搬迁。不同执行主机的数据迁移仍按§13验收。无需求前不引入 Kubernetes、Redis、消息中间件或专门向量服务。
 
 模块职责：
 
@@ -105,7 +105,7 @@ flowchart LR
 
 强制不变量：终态 task 不直接重启为原 run，而是新 attempt/显式后续 task；任务“完成”必须有验收记录。`agent turn completed` 只结束模型回合。已授权权限不能由模型扩大。人工决定只能由有权身份的 command 改版本。未经事实校验的 summary 不能产生事实级别提升。所有业务状态变更、事件和后续 job 在一个数据库事务写入。
 
-SQLite `foreign_keys=ON`、WAL、`synchronous=FULL`、本地磁盘、busy timeout、短事务；启动核验实际配置，持久ACK仅在事务提交后返回。NORMAL在WAL模式下可能因断电丢失已确认事务，不满足本方案持久接收承诺；FULL仍依赖OS/硬件兑现sync，macOS是否需要F_FULLFSYNC须平台验证，进程退出实验不证明断电耐久。一条控制写队列，runner 不直接开数据库。WAL 只支持同主机共享内存协调，只有一个写者 [S3]。产物先写临时文件并 fsync/原子rename，登记 hash 后才发布引用；数据库引用存在不代表文件可用，需校验。组织扩展采用 `(workspace_id,id)` 组合外键/唯一约束，后续 PostgreSQL 增加行级策略，不能只依赖前端筛选。
+SQLite `foreign_keys=ON`、WAL、`synchronous=FULL`、本地磁盘、busy timeout、短事务；启动核验实际配置，持久ACK仅在事务提交后返回。NORMAL在WAL模式下可能因断电丢失已确认事务，不满足本方案持久接收承诺；FULL仍依赖OS/硬件兑现sync，后续若支持macOS，是否需要F_FULLFSYNC须另作平台验证，进程退出实验不证明断电耐久。一条控制写队列，runner 不直接开数据库。WAL 只支持同主机共享内存协调，只有一个写者 [S3]。产物先写临时文件并 fsync/原子rename，登记 hash 后才发布引用；数据库引用存在不代表文件可用，需校验。组织扩展采用 `(workspace_id,id)` 组合外键/唯一约束，后续 PostgreSQL 增加行级策略，不能只依赖前端筛选。
 
 ## 5. 统一任务状态、执行事实和 ACK
 
@@ -251,7 +251,7 @@ interface CapabilityRunner {
 |---|---|
 | Cylo → Linux CLI | 已通过同机隔离CODEX_HOME、fixture provider合成文字续作；真实模型/工具/审批与代码目标仍需验收 |
 | Linux CLI → Cylo | 已通过同一thread的官方交互CLI第二turn后app-server读回并完成第三turn；CLI独立创建的发现/项目关联与真实工具仍需验收 |
-| macOS CLI ↔ Cylo | 两方向同原生会话/工作区，真实工具与审批恢复；当前未实机验证；官方桌面App不在范围 |
+| macOS 本机 CLI ↔ Cylo（后续按需） | 当前未实机验证；若以后纳入macOS执行宿主，再验收同原生会话/工作区、真实工具与审批恢复；Mac通过SSH接入Linux执行环境不受影响 |
 | 并发与中断 | 外部活跃会话只能只读；明确交接后单写，不重复执行；外部绕过锁能检测并停止派发 |
 | 升级/迁移 | 固定版本升级后原生历史可恢复；不同host路径变化不误关联 |
 
@@ -326,7 +326,7 @@ capability: important-mail-monitor
 release: sha256:immutable-artifact
 runtime: python
 entrypoint: ["python3", "-m", "mail_monitor"]
-platforms: ["linux-arm64", "linux-x64", "darwin-arm64"]
+platforms: ["linux-arm64", "linux-x64"]
 config_schema: schemas/config.json
 secrets: [mail_read_token]
 permissions:
@@ -374,7 +374,7 @@ cron以明确timezone存储，触发key包含schedule ID和逻辑时间槽；主
 
 执行分级：
 
-- 可信单用户本机：独立工作目录/OS用户、最小环境变量、受控工具proxy；macOS native sandbox能力按实际runtime验收。worktree只是并行隔离。
+- 可信单用户本机：独立工作目录/OS用户、最小环境变量、受控工具proxy；首期按Linux实际runtime验收；macOS native sandbox留待后续平台支持时验证。worktree只是并行隔离。
 - 自主生成程序/不可信内容：无secret构建容器或VM；安装后最小授权账号、网络allowlist、可写路径和资源限制。
 - 多租户：单租户独立Linux VM/容器边界与凭证，runner不能共用用户家目录；不把共享Codex配置目录当团队身份系统。
 
@@ -429,7 +429,7 @@ WebKit官方支持iOS/iPadOS 16.4起主屏Web App Web Push，需加入主屏且�
 
 建议个人起始目标为每日备份、保留最近7日与每周4份、关键确认决定/能力发布后追加备份；这是待实测的配置目标，不宣称已达到RPO/RTO。每次发布前执行隔离恢复演练，默认关闭触发与外发，验证hash、外键、项目路径映射、历史检索、权限和一个无外部副作用的任务恢复。恢复旧快照后先核对恢复点之后可能已发生的外部effect，不将旧库的待执行直接重发。产物和项目文件按自己的备份策略覆盖，Git远端不等价未提交修改/数据库备份。
 
-Mac→Linux迁移：冻结派发→让活动run安全停点/明确unknown→备份→复制数据与release→在目标重新映射checkout/secret/OS supervisor→检测平台依赖→新host_generation恢复→确认旧host撤租约并停止副作用→再启用触发。原生进程不迁移，能力按manifest重建；macOS专用应用自动化可留旧runner或标unsupported，不能伪装Linux兼容。恢复service配置不等于已经恢复执行状态。
+首期Linux主机间迁移（Mac→Linux留待后续平台支持时验收）：冻结派发→让活动run安全停点/明确unknown→备份→复制数据与release→在目标重新映射checkout/secret/OS supervisor→检测平台依赖→新host_generation恢复→确认旧host撤租约并停止副作用→再启用触发。原生进程不迁移，能力按manifest重建；后续涉及macOS专用应用自动化时需明确兼容缺口，不能伪装Linux兼容。恢复service配置不等于已经恢复执行状态。
 
 SQLite→PostgreSQL：从首版通过仓储接口与显式迁移脚本隔离SQL方言；先停写导出逻辑表和对象manifest→导入并校验row count/外键/hash→固定snapshot游标/stream epoch重新同步→灰度只读核验→切写。默认不双写两种数据库，避免无需求承担分布式一致性。事件协议和实体ID保持稳定，内部索引/FTS可以重建，运行中租约全部失效后先reconcile，不直接重新派发。
 
@@ -443,11 +443,11 @@ SQLite→PostgreSQL：从首版通过仓储接口与显式迁移脚本隔离SQL�
 |---|---|---|
 | 0 证据与协议冻结 | 完整需求ID映射；固定Codex/候选版本；JSON Schema；基础CLI执行/停止查看/持久恢复；上游真实语音/稳定提交/回执/两账号额度切换及真机POC | 基础CLI路径给实测结果；人工同thread接管不作为前置；空thread不能视作已落盘；无模型调用也能确认持久消息 |
 | 1 控制与单机可靠闭环 | SQLite schema、command/outbox/jobs、认证、任务/run状态、runner、基础PWA | 重复发送仅一command；提交后断线/重启不丢；快照与cursor无缺口；暂停/取消显示真实确认 |
-| 2 专业执行与官方互通 | AO AgentRuntime + Codex固定版本；一个Super按需和Worker直接调用；独立worktree；证据验收 | 关闭客户端继续；run结束不误标task完成；macOS/Linux基础CLI调用/停止查看/恢复、真实工具与必要审批；外部活跃写者不并发执行；人工双向接续另作可选 |
+| 2 专业执行与官方互通 | AO AgentRuntime + Codex固定版本；一个Super按需和Worker直接调用；独立worktree；证据验收 | 关闭客户端继续；run结束不误标task完成；Linux基础CLI调用/停止查看/恢复、真实工具与必要审批；外部活跃写者不并发执行；人工双向接续另作可选 |
 | 3 语音与跨设备 | 实时上游/Go网关、账号slot/额度观察、稳定turn与回执桥接、通知收件箱、设备游标；依赖阶段1业务契约 | iPhone/iPad/Mac同任务；打断不重复动作；耗尽换账号新媒体且任务不重派；锁屏后后端仍跑；重开恢复事件；记录后台采音限制 |
 | 4 能力创建与独立运行 | manifest/release/deployment、授权、secret、supervisor、健康、checkpoint；依赖阶段1/2 | 邮件监控在Super停用时仍运行；规则直接Worker；超时发送不重发；升级失败可核对/回滚；卸载撤权 |
 | 5 记忆与上下文 | evidence/decision版本、Memory提案、FTS/检索、context manifest；依赖权威事件稳定 | SQLite→PostgreSQL决定不混淆；推断不升格事实；撤权/删除/旧索引不泄露；任务恢复不靠摘要猜状态 |
-| 6 扩展与迁移 | 多runner、PostgreSQL/对象存储、组织身份/隔离、原生客户端按实测决定 | Mac→Linux重建、离线host恢复、旧epoch拒绝；跨租户拒绝；备份隔离恢复；认证准入满足部署模式 |
+| 6 扩展与迁移 | 多runner、PostgreSQL/对象存储、组织身份/隔离、原生客户端按实测决定 | Linux主机间重建、离线host恢复、旧epoch拒绝；跨租户拒绝；备份隔离恢复；认证准入满足部署模式 |
 
 阶段4和5可在事件/证据契约稳定后并行开发；不需等待团队扩展才实现workspace字段。阶段1起即实现关键授权、备份与operation账本，不能把安全可靠性推迟到最后。每阶段只做证明其契约的测试，不靠“Agent说成功”验收。
 
@@ -455,11 +455,11 @@ SQLite→PostgreSQL：从首版通过仓储接口与显式迁移脚本隔离SQL�
 
 ## 15. 尚未验证与阻断条件
 
-- Codex app-server尽管有丰富接口仍实验；macOS/Linux基础CLI执行/停止查看/恢复与真实工具/审批仍需验收；独立CLI会话发现/反向关联、人工同thread交接为可选增强，未验收不阻断必需路径。官方桌面App、深链和官方host handoff不在范围，不阻断实施。编排专项实测0.163.0仅`thread/start(ephemeral=false)`且无turn的会话在重启后`resume`报`no rollout found`，所以“返回thread ID”不是可恢复持久化提交点；需要真实有历史的会话验证落盘/重启。不得制造空turn来绕过验收。
+- Codex app-server尽管有丰富接口仍实验；Linux基础CLI执行/停止查看/恢复与真实工具/审批仍需验收；独立CLI会话发现/反向关联、人工同thread交接为可选增强，未验收不阻断必需路径。官方桌面App、深链和官方host handoff不在范围，不阻断实施。编排专项实测0.163.0仅`thread/start(ephemeral=false)`且无turn的会话在重启后`resume`报`no rollout found`，所以“返回thread ID”不是可恢复持久化提交点；需要真实有历史的会话验证落盘/重启。不得制造空turn来绕过验收。
 - 官方CLI出现`--remote`、Unix socket与WebSocket路径，不推导跨host持久化保证；stdio仍为最小集成选择，稳定字段与整体成熟度分别判断。
 - 当前官方认证文档文字需按具体鉴权表面与部署类型验证；不推出Codex全面禁止商业、也不默认ChatGPT个人登录可用于托管团队。
 - PWA音频在当前目标iPhone/iPad机型、网络和系统版本上的延迟、打断、前后台切换与通知未实测；若目标必须锁屏持续对话，原生客户端立项需先验证系统能力。
-- macOS自主程序的严格网络/文件隔离与资源限制不能照搬Linux容器语义；未提供有效隔离前只允许高信任单用户模式。
+- 后续若支持macOS执行宿主，其自主程序的严格网络/文件隔离与资源限制须单独验证，不能照搬Linux容器语义；此项不阻断首期Linux验收。
 - 无provider幂等/可查询凭证的外部写操作无法一般性做到exactly-once；unknown必须可见并人工核对或采用业务补偿。
 - 当前没有实现RPO/RTO、性能/成本承诺或支持所有团队规模；本报告提供可测试设计和迁移出口。
 

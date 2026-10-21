@@ -1,6 +1,6 @@
 # Cylo 可靠性、安全与运维专项复核
 
-研究与实际访问日期：**2026-10-21**。完整阅读[新版完整需求](../../Cylo-完整产品需求说明书.md)（取证时该工作树文件名仍为 `Rumi-完整产品需求说明书.md`，主线此前统一更名；现按用户决定取消官方Codex桌面App支持，保留macOS/Linux CLI与跨环境迁移）、旧架构稿，并只读复核 [04 总体架构](04-architecture.md)、[02 编排取证](02-orchestration-and-codex.md) 和 [01 稳定需求编号](01-requirements.md)。本文补充 CY-04-03、CY-05-05、CY-07、CY-08、CY-09、CY-14、CY-15、CY-16、CY-17 的实现约束，不重新选择总体技术栈，也不代表运行产品已实现。
+研究与实际访问日期：**2026-10-21**。完整阅读[新版完整需求](../../Cylo-完整产品需求说明书.md)（取证时该工作树文件名仍为 `Rumi-完整产品需求说明书.md`，主线此前统一更名；现按用户决定取消官方Codex桌面App支持，首期仅保证Linux服务端/执行宿主，保留macOS客户端/浏览器访问及跨环境备份导出迁移；macOS后台运行后续按需评估，不纳入首期验收）、旧架构稿，并只读复核 [04 总体架构](04-architecture.md)、[02 编排取证](02-orchestration-and-codex.md) 和 [01 稳定需求编号](01-requirements.md)。本文补充 CY-04-03、CY-05-05、CY-07、CY-08、CY-09、CY-14、CY-15、CY-16、CY-17 的实现约束，不重新选择总体技术栈，也不代表运行产品已实现。
 
 标识约定：**事实**=已获取的一手文档/固定源码；**实验**=本报告隔离脚本实际结果；**设计**=建议实施契约；**未验证**=尚无目标环境端到端证据。官方能力不能代替 Cylo 自身验收。本文未运行生产服务、部署程序或发出外部副作用。
 
@@ -37,7 +37,7 @@ checkpoint需标注schema、producer release、资源范围、外部cursor及校
 
 **回滚设计。** release可回退不代表状态可回退。采用expand/contract数据库迁移；若新checkpoint旧版读不了，回滚须使用已验证转换或前滚修复，不能把旧checkpoint覆盖在已经推进的外部资源上。数据库恢复、已发通知/邮件、已提交订单不由二进制回滚撤销。卸载先停触发/进程树、撤grant和凭证、封存结果，最后按保留策略删除安装；数据擦除与卸载分别授权，审计保留最少必要元数据。
 
-**事实。** Linux systemd `KillMode=control-group` 会在停止时处理整个unit控制组；`process`只终止主进程，`none`不提供此停止保证 [R10]。这是可用的执行基础，不证明实际unit已正确配置。macOS launchd安装、用户退出/重启行为和子进程终止需真机验收；Linux配置名不能直接移植到Mac。
+**事实。** Linux systemd `KillMode=control-group` 会在停止时处理整个unit控制组；`process`只终止主进程，`none`不提供此停止保证 [R10]。这是可用的执行基础，不证明实际unit已正确配置。后续若支持macOS后台运行，launchd安装、用户退出/重启行为和子进程终止需真机验收；Linux配置名不能直接移植到Mac。
 
 ## 3. Durable队列：SQLite、PostgreSQL jobs与Temporal的选择
 
@@ -95,7 +95,7 @@ checkpoint需标注schema、producer release、资源范围、外部cursor及校
 
 **执行边界设计。** Git worktree共享仓库元数据且进程仍有原OS身份；不能充当文件/网络/进程/secret隔离。独立OS用户也不是完整网络隔离。可信个人本机模式可使用受控工具、最小环境、单独数据目录，但应明确其高信任前提；自主生成程序先在无生产secret、默认无网络、只读依赖与有界临时目录的构建/测试环境运行。正式服务仅注入所需SecretRef、最小账号权限与有界资源，实际读写/外发经强制边界。
 
-Linux可评估systemd `NoNewPrivileges`、`ProtectSystem`、`ProtectHome`、路径allowlist及cgroup资源限制；官方对具体namespace/权限能力有运行前提 [R9]，用户服务与系统服务不能默认同效。容器用非root、只读根、去capability、seccomp、无host network/PID、无Docker socket和最小mount；`--network none`官方只创建loopback [R13]，需要外联时另设受控出口。Docker官方明确控制daemon者可挂载主机根并修改文件 [R14]，因此不能让生成代码自由构造docker参数。强对抗/多租户场景优先独立VM/主机；共享内核容器不在本文获得逃逸安全保证。macOS执行隔离/网络限额与资源封顶未真机验证，不能抄Linux配置名宣称达标。
+Linux可评估systemd `NoNewPrivileges`、`ProtectSystem`、`ProtectHome`、路径allowlist及cgroup资源限制；官方对具体namespace/权限能力有运行前提 [R9]，用户服务与系统服务不能默认同效。容器用非root、只读根、去capability、seccomp、无host network/PID、无Docker socket和最小mount；`--network none`官方只创建loopback [R13]，需要外联时另设受控出口。Docker官方明确控制daemon者可挂载主机根并修改文件 [R14]，因此不能让生成代码自由构造docker参数。强对抗/多租户场景优先独立VM/主机；共享内核容器不在本文获得逃逸安全保证。后续macOS执行隔离/网络限额与资源封顶未真机验证，不能抄Linux配置名宣称达标。
 
 **CAO专项事实与处置。** 02已固定 `4e990a9d78b154ad76c6cf94c7b51e36fce69f21`（2.5.4）；本报告独立只读核对源码：Codex命令默认含 `--yolo`，并非Cylo默认应采用的授权模式；`worktree_service.remove_worktree`明确 `git worktree remove --force` 后 `git branch -d`，所以未提交/未跟踪文件被丢弃，但未合并已提交分支不是被强删 [R15]。不夸大为“所有提交都删光”。
 
@@ -132,7 +132,7 @@ Linux可评估systemd `NoNewPrivileges`、`ProtectSystem`、`ProtectHome`、路�
 5. 重建路径映射与索引，重新安装平台匹配的release，检测checkpoint兼容；先跑无副作用任务，确认状态/历史/权限/产物，再逐项启用服务和触发。
 6. 记录真实恢复点、数据缺口、unknown清单、校验结果与耗时，才能宣布恢复；失败备份不能静默覆盖最后一份有效副本。
 
-**迁移设计。** macOS→Linux与换host复用上述流程，额外核对架构/动态库/锁文件、大小写路径、文件权限、时区/cron、凭证库、OS supervisor与Mac专用自动化。保留logical project ID，native path通过checkout映射重建；迁的是可恢复定义与数据，不是进程内存。Mac专用能力留Mac runner或明确unsupported。SQLite→PostgreSQL按停写逻辑导出/校验/切换；避免无需求双写，event/command/effect IDs保持不变，sequence/cursor重新建立明确epoch，所有租约先核对再启用。
+**迁移设计。** 首期Linux换host复用上述流程；macOS→Linux保留为后续按需研究，届时额外核对架构/动态库/锁文件、大小写路径、文件权限、时区/cron、凭证库、OS supervisor与Mac专用自动化。保留logical project ID，native path通过checkout映射重建；迁的是可恢复定义与数据，不是进程内存。涉及Mac专用能力时须明确兼容缺口，不将Mac runner列入首期部署要求。SQLite→PostgreSQL按停写逻辑导出/校验/切换；避免无需求双写，event/command/effect IDs保持不变，sequence/cursor重新建立明确epoch，所有租约先核对再启用。
 
 ## 8. 任务、事件与通知的恢复契约
 
@@ -174,7 +174,7 @@ notification以 `logical_event + recipient + policy_version/notification_kind`�
 | effect成功、本地receipt保存前崩溃 | 稳定key查单/去重；不支持则unknown，不新key重发 | CY-15-02；P4简化provider fixture已测，真实邮件未测 |
 | 双设备批准/撤销竞态、旧通知、修改目标/release | 一次消费；旧批准失效；派发前检查grant/target digest | CY-14-02/03；待验 |
 | 离线服务撤权、长期secret复制、已发HTTP取消 | TTL到期禁新effect；无法收回的凭据明确待确认；已发effect照实对账 | CY-07/14；待验 |
-| 进程主PID退出但子进程写文件；恶意symlink/redirect | unit进程树真实停止；越界路径/网络被强制拒绝并审计 | CY-14-04、15-04；Linux/Mac分别待验 |
+| 进程主PID退出但子进程写文件；恶意symlink/redirect | unit进程树真实停止；越界路径/网络被强制拒绝并审计 | CY-14-04、15-04；Linux待验；Mac后续按需 |
 | release健康失败、checkpoint不兼容、不可逆schema迁移 | 不并行消费；只在兼容时回退；不兼容degraded并保留恢复材料 | CY-07-02；待验 |
 | CAO terminal删除带dirty/untracked/未合并提交 | Cylo先归档和核验、默认拒force；已提交分支保留与dirty丢失边界分别确认 | CY-08/16；02有上游删除PoC，Cylo防护未实现 |
 | outbox投递成功但ACK前崩溃、客户端落盘前断线 | inbox去重，cursor不跳过，快照+增量无gap；逻辑通知单份，渠道可重复 | CY-03-04、12；待验 |
@@ -182,7 +182,7 @@ notification以 `logical_event + recipient + policy_version/notification_kind`�
 | SQLite磁盘满/只读、长读导致WAL增长；provider限流 | commit失败不ACK；控制/停止可用；有界队列/日志/重试，隔离失败connector | CY-15-01、17；待验 |
 | 活动WAL在线备份、对象GC与备份竞态、缺密钥 | 一致快照+对象pin/hash完整；不可解密/缺文件判备份失败 | CY-16-03；P2仅DB在线备份已测 |
 | 恢复旧备份而旧host仍在线，恢复点后已有外发 | 禁止双活和盲重发；重新核对receipt，使用新generation/epoch | CY-04-03、15-02；待验 |
-| Mac→Linux路径/架构/secret不同；已删数据恢复 | 能力按平台重建，专有能力明确缺口；tombstone重应用不复活索引 | CY-04-03、16-02/06；待验 |
+| Linux换host路径/架构/secret不同；已删数据恢复（Mac→Linux后续按需） | 能力按平台重建，专有能力明确缺口；tombstone重应用不复活索引 | CY-04-03、16-02/06；待验 |
 | 语音账号slot竞争/网关重启、429/耗尽/401、切号或插话撞final | 原子租约与owner粘性；旧媒体unknown不盲释放；429分类/冷却不无限切号；切新媒体不重派command；上游assistant/回注不派任务；实际结果播报可核对 | CY-03/13/14/17；待验 |
 | 预算并发竞争、usage缺失、递归Worker/重试风暴 | 原子预留、继承预算、有限重试；unknown不计零；停止新调用 | CY-17-03/04；待验 |
 

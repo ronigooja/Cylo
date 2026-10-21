@@ -6,7 +6,7 @@ Cylo 是一个跨设备、可长期运行、管理真实任务与记忆，并在
 
 AO 的 coding agent runtime（如 Claude Code、Codex、OpenCode）与其底层 model/provider 是两层配置；Cylo 按任务选择 runtime 和可用模型，不要求全部经 Codex。会话恢复优先复用 AO 已有 adapter，无需先开发 Codex resume 补丁；各 agent 的原生恢复、fork 和 fresh launch 能力分别验收。见 [多 Agent 与模型路由边界](docs/research/16-ao-agent-provider-boundaries.md)。
 
-**用户已选定 AO，以及 Space 的 Go 网关、ChatGPT 网页实时上游和账号池。** 语音稳定提交、业务回执和额度调度仍待集成验收。语音 Agent 负责自然交互，复杂任务由 Super 协调，任务与权限以 Cylo 控制平面为准。Codex 账号池与出站代理复用已有远程 CLIProxyAPI 实例（文档别名 `existing-cli-proxy`），不新增部署；每条 Codex route 由该代理选号，AO 无需重复轮换。Space 维持独立语音账号池。用户报告当前 Codex 登录和使用均可走代理；这是用户环境说明，不是本仓库实测，也不证明逐账号登录已自动隔离。AO 执行宿主使用可达的代理 API endpoint 与服务端密钥引用；`CODEX_HOME`、工作区和原生 thread 历史仍留执行宿主。官方 Codex 桌面 App 已取消；人工无缝接管可选；基础 CLI 执行、恢复、停止查看，以及 macOS/Linux 部署与跨环境迁移仍在范围。
+**用户已选定 AO，以及 Space 的 Go 网关、ChatGPT 网页实时上游和账号池。** 语音稳定提交、业务回执和额度调度仍待集成验收。语音 Agent 负责自然交互，复杂任务由 Super 协调，任务与权限以 Cylo 控制平面为准。Codex 账号池与出站代理复用已有远程 CLIProxyAPI 实例（文档别名 `existing-cli-proxy`），不新增部署；每条 Codex route 由该代理选号，AO 无需重复轮换。Space 维持独立语音账号池。用户报告当前 Codex 登录和使用均可走代理；这是用户环境说明，不是本仓库实测，也不证明逐账号登录已自动隔离。AO 执行宿主使用可达的代理 API endpoint 与服务端密钥引用；`CODEX_HOME`、工作区和原生 thread 历史仍留执行宿主。官方 Codex 桌面 App 已取消；人工无缝接管可选；基础 CLI 执行、恢复、停止查看及跨环境迁移仍在范围。首期仅保证 Linux 服务端与执行宿主部署；macOS 客户端和浏览器访问保留，macOS 后台运行后续按需评估，不纳入首期验收。
 
 | 文档 | 作用 |
 |---|---|

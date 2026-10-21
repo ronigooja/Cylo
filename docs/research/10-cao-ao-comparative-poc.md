@@ -1,6 +1,6 @@
 # 编排需求符合性与单主线实施路线
 
-日期：2026-10-21。**用户已明确采用 OrchestratorInc/agent-orchestrator（AO，Go）；当前实施主线为 AO + Space + Cylo 控制平面，Cylo 新服务端优先 Go。** 不再安排 CAO/AO 双 daemon 选型对跑。下文保留已完成的 CAO 模块/AO 命令清理实验，采用 AO 不改变这些实验的证明范围。人工无缝接管可选，官方 macOS Codex App 不在范围，macOS/Linux CLI 仍需验收。
+日期：2026-10-21。**用户已明确采用 OrchestratorInc/agent-orchestrator（AO，Go）；当前实施主线为 AO + Space + Cylo 控制平面，Cylo 新服务端优先 Go。** 不再安排 CAO/AO 双 daemon 选型对跑。下文保留已完成的 CAO 模块/AO 命令清理实验，采用 AO 不改变这些实验的证明范围。人工无缝接管可选，官方 macOS Codex App 不在范围，首期仅保证 Linux 服务端与执行宿主部署，其 CLI 仍需验收；macOS 客户端/浏览器及用户自行使用 CLI 保留，macOS 后台运行后续按需评估。
 
 ## 本轮交付：产物清理边界的可复现切片
 
@@ -34,7 +34,7 @@ AO 提供 orchestrator/worker、独立工作区、Codex native ID/resume 与 hos
 
 1. **落地 AO adapter。** 以 [09](09-agent-orchestration-alternatives.md) 固定源码为起点，核验 Go 工具链和 daemon/API/事件契约，建立 task→run→AO session→host/Worker→worktree→native thread 映射，接入现有 Codex resume，约束显式权限并验证清理前保存/核验。仅一套执行 owner；Cylo 持有任务、授权、预算和结果权威。先不做可选的人工无缝交接状态机。
 2. **贯通一条真实产品链路。** 先以临时工作区与离线 fixture 验证接线，再在获准环境验证复杂目标→Super 拆分→两个独立 Worker/worktree→产物与测试验收；简单请求可由 Cylo 直接路由 Worker，不额外调用 Super。消息送达、终端 idle 不算任务完成。无需为此再跑 CAO 副本。
-3. **验收恢复、停止、权限和保全。** 重启控制服务、杀 Worker、缺 native history、工具执行后丢回执，分别记录存活重附着、原 thread resume、fresh/fork、result-unknown；未知副作用不自动重放。停止须确认进程树和写入终止。按 AO Codex adapter 的实际参数去掉默认审批/sandbox 绕过路径，验证实际允许/拒绝。普通/强制清理注入保存失败时不得删除；tracked、untracked、ignored、符号链接和外部产物按清单核验。Mac/Linux、后台常驻与迁移按对应环境留证。
+3. **验收恢复、停止、权限和保全。** 重启控制服务、杀 Worker、缺 native history、工具执行后丢回执，分别记录存活重附着、原 thread resume、fresh/fork、result-unknown；未知副作用不自动重放。停止须确认进程树和写入终止。按 AO Codex adapter 的实际参数去掉默认审批/sandbox 绕过路径，验证实际允许/拒绝。普通/强制清理注入保存失败时不得删除；tracked、untracked、ignored、符号链接和外部产物按清单核验。首期在 Linux 验收后台常驻与主机迁移并留证；跨环境备份导出保留，macOS 后台验收后续按需安排。
 4. **接入已定语音与长期能力。** Space 保留网页实时媒体和账号池，完成稳定语义提交→幂等 command→实际任务回执→播报，以及额度耗尽后新媒体会话/业务上下文恢复。这是集成验收，不是重新选择 Space 的门槛；无账号/设备时标未测，继续完成可离线开发。普通后台服务另交 OS supervisor，不能绑定 Super 或媒体会话的寿命；记忆与授权也不借用编排 daemon 的会话状态。
 
 每步交付 `executed / simulated / static / not-tested`、版本、任务/进程/原生 thread 映射、故障注入、恢复模式、产物校验、权限拒绝证据与残余进程记录。离线 fixture 不证明真实模型或生产可靠性；已有实验失败与手工补救均保留，不能计为自动恢复。
