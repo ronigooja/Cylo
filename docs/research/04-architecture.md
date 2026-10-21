@@ -1,6 +1,6 @@
 # Cylo 总体实现架构与落地契约
 
-研究日期：2026-10-21。本文是实现决策稿，不代表已有运行代码。以完整阅读的《Rumi-完整产品需求说明书.md》为最高产品依据，产品统一更名 Cylo；旧《codex-super-agent-requirements-and-architecture.md》仅保留兼容原则，旧方案中“所有请求经 Super”“Codex 是所有 Agent”不成立。本文同时补充原拟独立可靠性研究的关键设计；编排与语音具体源码证据见同目录专项报告。
+研究日期：2026-10-21。本文是实现决策稿，不代表已有运行代码。以完整阅读的[《Cylo-完整产品需求说明书.md》](../../Cylo-完整产品需求说明书.md)为最高产品依据，产品统一更名 Cylo；旧《codex-super-agent-requirements-and-architecture.md》仅保留兼容原则，旧方案中“所有请求经 Super”“Codex 是所有 Agent”不成立。本文同时补充原拟独立可靠性研究的关键设计；编排与语音具体源码证据见同目录专项报告。
 
 ## 1. 决策摘要
 
@@ -94,7 +94,7 @@ flowchart LR
 
 强制不变量：终态 task 不直接重启为原 run，而是新 attempt/显式后续 task；任务“完成”必须有验收记录。`agent turn completed` 只结束模型回合。已授权权限不能由模型扩大。人工决定只能由有权身份的 command 改版本。未经事实校验的 summary 不能产生事实级别提升。所有业务状态变更、事件和后续 job 在一个数据库事务写入。
 
-SQLite `foreign_keys=ON`、WAL、本地磁盘、busy timeout、短事务；一条控制写队列，runner 不直接开数据库。WAL 只支持同主机共享内存协调，只有一个写者 [S3]。产物先写临时文件并 fsync/原子rename，登记 hash 后才发布引用；数据库引用存在不代表文件可用，需校验。组织扩展采用 `(workspace_id,id)` 组合外键/唯一约束，后续 PostgreSQL 增加行级策略，不能只依赖前端筛选。
+SQLite `foreign_keys=ON`、WAL、`synchronous=FULL`、本地磁盘、busy timeout、短事务；启动核验实际配置，持久ACK仅在事务提交后返回。NORMAL在WAL模式下可能因断电丢失已确认事务，不满足本方案持久接收承诺；FULL仍依赖OS/硬件兑现sync，macOS是否需要F_FULLFSYNC须平台验证，进程退出实验不证明断电耐久。一条控制写队列，runner 不直接开数据库。WAL 只支持同主机共享内存协调，只有一个写者 [S3]。产物先写临时文件并 fsync/原子rename，登记 hash 后才发布引用；数据库引用存在不代表文件可用，需校验。组织扩展采用 `(workspace_id,id)` 组合外键/唯一约束，后续 PostgreSQL 增加行级策略，不能只依赖前端筛选。
 
 ## 5. 统一任务状态、执行事实和 ACK
 
@@ -321,13 +321,13 @@ uninstall: {retain_user_data: true}
 
 字段只是接口示例，不能据此承诺Python进程在Mac上已有完整内核隔离。依赖需lockfile/校验和、平台条件和可复现安装指令。部署流程必须有：需求→生成/配置→构建和静态校验→隔离测试→权限diff/行为与成本说明→对具体release digest与config授权→安装→健康验证→登记触发→运行。编写代码授权不自动授予部署、发送邮件或读取全盘权限。release权限扩大、secret用途改变和外部目标改变使旧审批失效；相同授权范围内的更新是否自动执行由用户明确更新策略决定。
 
-邮件监听示例：确定性服务保存mailbox cursor、按provider message ID去重，普通通知按规则过滤，语义判断调用mail Worker；超出规则/跨项目协调才上报Super。每次调用Worker创建task/run并继承该服务的最小grant与预算。服务本身运行不需要Super在线。控制服务短时不可达时，服务可继续其既有授权内的确定性监听并缓冲有界事件；需要新审批、Worker或预算的动作等待，不能自扩权。撤权应有短时凭证与心跳有效期，不能把长期有效明文secret复制到无法回收的任意程序。
+邮件监听示例：确定性服务保存mailbox cursor、按provider message ID去重，普通通知按规则过滤，语义判断调用mail Worker；超出规则/跨项目协调才上报Super。每次调用Worker创建task/run并继承该服务的最小grant与预算。服务本身运行不需要Super在线。控制服务短时不可达时，服务仅可在既有授权及未过期的有界租约/短期凭证内确定性监听并缓冲有界事件；到期未续租则停止新的外部副作用，需要新审批、Worker或预算的动作等待，不能自扩权。撤权立即阻止控制面新动作，离线实例的强制时限由租约/凭证TTL与实际资源侧执行保证；长期secret一旦复制到任意程序，单改控制库不能保证即时撤权，须撤销上游凭证或停止/隔离实际进程。
 
-更新前保存旧release/config/checkpoint，先停触发并处理in-flight，再安装/健康检查/切换。只在无互斥外部消费风险时允许并行canary；邮件监听等按资源锁确保单活。失败可回到旧二进制，但数据库不可逆迁移、已发邮件不能“回滚”；manifest必须声明数据向前/向后兼容，不能回滚则进入degraded并给恢复方案。卸载默认停止、移除触发、撤销凭证、删安装文件，用户数据保留与删除独立确认；保留审计、release和历史结果。
+更新前保存旧release/config/checkpoint并校验checkpoint兼容性，先停触发并处理in-flight，确认旧进程树停止或资源隔离后，再安装/健康检查/切换。只在无互斥外部消费风险时允许并行canary；邮件监听等按资源锁确保单活。失败可回到旧二进制，但数据库不可逆迁移、已发邮件不能“回滚”；manifest必须声明数据向前/向后兼容，不能回滚则进入degraded并给恢复方案。卸载默认确认整个进程树停止、移除触发、撤销凭证、保存dirty产物清单后非force清理安装文件，用户数据保留与删除独立确认；保留审计、release和历史结果。
 
 ## 10. Durable job、故障恢复和副作用
 
-对应 CY-15。调度工作不依赖内存队列：`job(status,due_at,trigger_key,attempt,lease_epoch,lease_expires_at,policy)` 持久化；领取与outbox同事务。单机即使只有一个dispatcher也实现租约语义，便于重启和多host扩展。租约期满表示需要核对，不证明旧进程已死。fencing token为每资源递增epoch，runner拒绝旧epoch操作；第三方不支持fencing时仍需幂等键或查账，不能声称端到端exactly-once。
+对应 CY-15。调度工作不依赖内存队列：`job(status,due_at,trigger_key,attempt,lease_epoch,lease_expires_at,policy)` 持久化；领取与outbox同事务。单机即使只有一个dispatcher也实现租约语义，便于重启和多host扩展。租约期满表示需要核对，不证明旧进程已死。fencing token为每资源递增epoch，runner拒绝旧epoch请求；实际资源执行端也必须拒绝旧epoch，才能阻止旧执行继续写入。已经启动且能直接访问文件/网络的shell不因runner拒绝新请求而停止；交接前须确认旧进程树终止/隔离，或由资源端强制fencing，否则进入等待核对而非重新派发。第三方不支持fencing时仍需幂等键或查账，不能声称端到端exactly-once。
 
 控制服务重启步骤：
 
@@ -345,9 +345,11 @@ cron以明确timezone存储，触发key包含schedule ID和逻辑时间槽；主
 
 ## 11. 权限、审批、执行隔离和审计
 
-对应 CY-14。主体为user、agent profile、service、runner；grant至少限定workspace/project、资源、动作、环境、时间、预算和可转授范围。Super只能提议调用权限子集，不能通过给Worker写自然语言绕过grant。策略在提交时和每个实际工具动作前校验；长期授权不是永久豁免。撤销后禁止新动作、使审批与短时凭证失效、请求停止相关执行，保留“已撤销但外部动作可能已发生”的真实状态。
+对应 CY-14。主体为user、agent profile、service、runner；grant至少限定workspace/project、资源、动作、环境、时间、预算和可转授范围。Super只能提议调用权限子集，不能通过给Worker写自然语言绕过grant。策略在提交时和每个实际工具动作前校验；长期授权不是永久豁免。撤销后禁止新动作、使审批与短时凭证失效、请求停止相关执行；明确区分禁止新动作、停止在途请求和已发生不可撤回，取消RPC响应不是外部撤销证明。保留“已撤销但外部动作可能已发生”的真实状态。
 
-审批绑定`action_digest + plan_version + target_resource + release_digest/config_version + expires_at`，两个设备同时批准只生效一次。旧通知、计划改变、权限diff会让审批过期；不会把对A操作的同意移作B。读取邮件/发送邮件、写代码/部署服务、读取文件/删除文件分别授权。计划范围内可逆动作不重复询问，明确高风险边界才请求审批，兼顾自主执行与可控性。
+审批绑定`action_digest + plan_version + target_resource + release_digest/config_version + expires_at`，并保存规范化参数、解析后的实际目标/账号/环境和grant/policy版本；实际派发前重新校验。两个设备同时批准只生效一次。旧通知、计划改变、权限diff会让审批过期；不会把对A操作的同意移作B。读取邮件/发送邮件、写代码/部署服务、读取文件/删除文件分别授权。计划范围内可逆动作不重复询问，明确高风险边界才请求审批，兼顾自主执行与可控性。
+
+可靠性与安全故障矩阵及证据见 [05独立复核](05-reliability-security-operations.md)。
 
 执行分级：
 
@@ -371,9 +373,9 @@ WebKit官方支持iOS/iPadOS 16.4起主屏Web App Web Push，需加入主屏且�
 
 ## 13. 备份、恢复、主机迁移和资源成本
 
-对应 CY-16、CY-17。备份单位不是一个sqlite文件，而是一致性DB快照、内容寻址产物、项目/checkout清单、原生会话可恢复材料（限官方允许/支持）、service release/config、权限及secret引用、schema/provider版本、删除清单、校验manifest。SQLite使用官方Online Backup API或等价一致性机制 [S4]，不能运行中只拷贝主db而遗漏WAL。secret单独加密、恢复需重新授权或导入密钥，导出不含明文令牌。
+对应 CY-16、CY-17。备份单位不是一个sqlite文件，而是一致性DB快照、内容寻址产物、项目/checkout清单、原生会话可恢复材料（限官方允许/支持）、service release/config、权限及secret引用、schema/provider版本、删除清单、校验manifest。SQLite使用官方Online Backup API或等价一致性机制 [S4]，不能运行中只拷贝主db而遗漏WAL。形成快照时冻结引用清单并pin产物防GC，复制校验完成后才发布备份manifest；DB一致快照不自动保证对象与工作区一致。secret单独加密、恢复需重新授权或导入密钥，导出不含明文令牌。
 
-建议个人起始目标为每日备份、保留最近7日与每周4份、关键确认决定/能力发布后追加备份；这是待实测的配置目标，不宣称已达到RPO/RTO。每次发布前执行隔离恢复演练，验证hash、外键、项目路径映射、历史检索、权限和一个无外部副作用的任务恢复。产物和项目文件按自己的备份策略覆盖，Git远端不等价未提交修改/数据库备份。
+建议个人起始目标为每日备份、保留最近7日与每周4份、关键确认决定/能力发布后追加备份；这是待实测的配置目标，不宣称已达到RPO/RTO。每次发布前执行隔离恢复演练，默认关闭触发与外发，验证hash、外键、项目路径映射、历史检索、权限和一个无外部副作用的任务恢复。恢复旧快照后先核对恢复点之后可能已发生的外部effect，不将旧库的待执行直接重发。产物和项目文件按自己的备份策略覆盖，Git远端不等价未提交修改/数据库备份。
 
 Mac→Linux迁移：冻结派发→让活动run安全停点/明确unknown→备份→复制数据与release→在目标重新映射checkout/secret/OS supervisor→检测平台依赖→新host_generation恢复→确认旧host撤租约并停止副作用→再启用触发。原生进程不迁移，能力按manifest重建；macOS专用应用自动化可留旧runner或标unsupported，不能伪装Linux兼容。恢复service配置不等于已经恢复执行状态。
 
