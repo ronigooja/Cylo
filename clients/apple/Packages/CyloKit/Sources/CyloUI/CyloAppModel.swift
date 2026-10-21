@@ -15,6 +15,7 @@ public final class CyloAppModel: ObservableObject {
     @Published public private(set) var memoryClaims: [MemoryClaim] = []
     @Published public private(set) var memoryMissing: [String] = []
     @Published public private(set) var memoryConflicts: [String] = []
+    @Published public private(set) var notifications: [NotificationRecord] = []
     @Published public private(set) var voiceConfig: VoiceConfig?
     @Published public private(set) var voicePoolStatus: VoicePoolStatus?
     @Published public private(set) var voiceStatus: VoiceIntegrationStatus = .idle
@@ -71,6 +72,8 @@ public final class CyloAppModel: ObservableObject {
             try await refreshSnapshot()
             guard generation == connectionGeneration.value else { return }
             await refreshMemory()
+            guard generation == connectionGeneration.value else { return }
+            await refreshNotifications()
             guard generation == connectionGeneration.value else { return }
             do {
                 let recovered = try await coordinator?.recoverPending() ?? []
@@ -187,6 +190,25 @@ public final class CyloAppModel: ObservableObject {
         await refreshMemory()
     }
 
+    public func markNotificationRead(_ notification: NotificationRecord) async {
+        guard notification.readAt == nil else { return }
+        await send(kind: "notification.mark_read", payload: .object(["notification_id": .string(notification.id)]))
+        await refreshNotifications()
+    }
+
+    public func refreshNotifications(unreadOnly: Bool = false) async {
+        guard let api else { return }
+        let generation = connectionGeneration.value
+        do {
+            let result = try await api.notifications(unreadOnly: unreadOnly)
+            guard generation == connectionGeneration.value, api === self.api else { return }
+            notifications = result.notifications
+        } catch {
+            guard generation == connectionGeneration.value else { return }
+            notice = "The durable notification inbox could not be refreshed: \(userMessage(error))"
+        }
+    }
+
     public func refreshMemory(query: String = "") async {
         guard let api else { return }
         let generation = connectionGeneration.value
@@ -254,7 +276,7 @@ public final class CyloAppModel: ObservableObject {
             let iceServers = config.webRTC.iceServers.map { RTCIceServer(urlStrings: $0.urls) }
             transport = try LibWebRTCTransport(iceServers: iceServers, dataChannelLabel: config.webRTC.dataChannel.label)
             transport?.onDataMessage = { [weak self] data in
-                Task { @MainActor in self?.receiveVoiceData(data) }
+                Task { @MainActor in self?.receiveVoiceData(data, generation: generation) }
             }
 
             let offer = try await transport!.createOffer()
@@ -295,7 +317,9 @@ public final class CyloAppModel: ObservableObject {
                 let release = try? await api.hangupVoiceSession(sessionID: allocatedSession.voiceSessionId)
                 remainsQuarantined = release == nil || release?.poolBlocked == true
                 if remainsQuarantined {
-                    voicePoolStatus = try? await api.voicePoolStatus()
+                    let latestPool = try? await api.voicePoolStatus()
+                    guard generation == connectionGeneration.value, api === self.api else { return }
+                    voicePoolStatus = latestPool
                 }
             }
             if generation == connectionGeneration.value {
@@ -498,6 +522,7 @@ public final class CyloAppModel: ObservableObject {
             memoryClaims = []
             memoryMissing = []
             memoryConflicts = []
+            notifications = []
             voiceConfig = nil
             voicePoolStatus = nil
             voiceDraft = ""
@@ -582,7 +607,8 @@ public final class CyloAppModel: ObservableObject {
         }
     }
 
-    private func receiveVoiceData(_ data: Data) {
+    private func receiveVoiceData(_ data: Data, generation: UInt64) {
+        guard generation == connectionGeneration.value, voiceSession != nil else { return }
         guard let outer = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
         var event = outer
         if outer["type"] as? String == "data_message", let encoded = outer["data"] as? String,
@@ -659,10 +685,11 @@ public final class CyloAppModel: ObservableObject {
 
     private func handle(_ push: ServerPush) async {
         switch push {
-        case .event:
+        case let .event(envelope):
             setStale("A server change arrived; refreshing the authoritative snapshot.")
             do { try await refreshSnapshot() }
             catch { setStale("Snapshot refresh failed: \(userMessage(error))") }
+            if envelope.type.hasPrefix("notification.") { await refreshNotifications() }
         case .snapshotRequired:
             setStale("The saved event cursor expired; loading a fresh snapshot.")
             do { try await refreshSnapshot() }

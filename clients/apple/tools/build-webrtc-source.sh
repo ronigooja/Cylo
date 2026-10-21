@@ -76,13 +76,12 @@ xcodebuild -create-xcframework \
   -output WebRTC-source.xcframework
 
 plutil -lint WebRTC-source.xcframework/Info.plist
-for binary in \
-  WebRTC-source.xcframework/ios-arm64/WebRTC.framework/WebRTC \
-  WebRTC-source.xcframework/ios-arm64_x86_64-simulator/WebRTC.framework/WebRTC \
-  WebRTC-source.xcframework/macos-arm64_x86_64/WebRTC.framework/Versions/A/WebRTC; do
-  test -f "$binary"
-  lipo -verify_arch arm64 "$binary"
-done
+device_binary=WebRTC-source.xcframework/ios-arm64/WebRTC.framework/WebRTC
+simulator_binary=WebRTC-source.xcframework/ios-arm64_x86_64-simulator/WebRTC.framework/WebRTC
+macos_binary=WebRTC-source.xcframework/macos-arm64_x86_64/WebRTC.framework/Versions/A/WebRTC
+test -f "$device_binary" && lipo -verify_arch arm64 "$device_binary"
+test -f "$simulator_binary" && lipo -verify_arch arm64 x86_64 "$simulator_binary"
+test -f "$macos_binary" && lipo -verify_arch arm64 x86_64 "$macos_binary"
 
 echo "Source-built XCFramework: $build_root/out/WebRTC-source.xcframework"
 echo "WebRTC source: $source_revision"

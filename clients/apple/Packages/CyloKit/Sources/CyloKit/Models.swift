@@ -153,6 +153,22 @@ public struct MemorySearchResult: Codable, Equatable, Sendable {
     public var conflicts: [String]
 }
 
+public struct NotificationRecord: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var kind: String
+    public var title: String
+    public var body: String
+    public var aggregateType: String
+    public var aggregateId: String
+    public var sourceEventId: String
+    public var createdAt: String
+    public var readAt: String?
+}
+
+public struct NotificationList: Codable, Equatable, Sendable {
+    public var notifications: [NotificationRecord]
+}
+
 public struct VoiceConfig: Codable, Equatable, Sendable {
     public var version: String
     public var defaults: VoiceDefaults

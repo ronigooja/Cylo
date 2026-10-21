@@ -70,7 +70,7 @@ final class ClientContractTests: XCTestCase {
     }
 
     func testJournalRejectsSameKeyBoundToDifferentPayload() async throws {
-        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["CYLO_BUILD_ROOT"] ?? "/tmp", isDirectory: true)
+        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["CYLO_BUILD_ROOT"] ?? "/Users/zhuwei/terminal/cylo-apple-build/test-data", isDirectory: true)
         let directory = root.appendingPathComponent("swift-journal-tests", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let file = directory.appendingPathComponent("\(UUID().uuidString).json")

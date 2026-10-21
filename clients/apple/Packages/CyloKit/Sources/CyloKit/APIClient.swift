@@ -68,6 +68,19 @@ public final class APIClient: @unchecked Sendable {
         try await request(path: ["v1", "voice", "pool", "status"], method: "GET", authenticated: true)
     }
 
+    public func notifications(unreadOnly: Bool = false, limit: Int = 50) async throws -> NotificationList {
+        var components = URLComponents(url: try makeURL(path: ["v1", "notifications"]), resolvingAgainstBaseURL: false)
+        components?.queryItems = [
+            URLQueryItem(name: "unread", value: unreadOnly ? "true" : "false"),
+            URLQueryItem(name: "limit", value: String(limit))
+        ]
+        guard let url = components?.url else { throw CyloError.invalidServerURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        try authorize(&request)
+        return try await perform(request)
+    }
+
     public func createVoiceSession(requestID: String, offerSDP: String, voice: String, voiceMode: String, languageCode: String) async throws -> VoiceSessionResponse {
         let body: [String: JSONValue] = [
             "request_id": .string(requestID),

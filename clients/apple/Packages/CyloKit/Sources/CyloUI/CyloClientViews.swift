@@ -482,11 +482,76 @@ private struct MoreView: View {
     @ObservedObject var model: CyloAppModel
     var body: some View {
         List {
+            NavigationLink { NotificationInboxView(model: model) } label: { Label("Inbox", systemImage: "bell") }
             NavigationLink { MemoryView(model: model) } label: { Label("Memory", systemImage: "brain.head.profile") }
             NavigationLink { CapabilitiesView(model: model) } label: { Label("Capabilities", systemImage: "puzzlepiece.extension") }
             NavigationLink { SettingsView(model: model) } label: { Label("Settings", systemImage: "gearshape") }
         }
         .navigationTitle("More")
+    }
+}
+
+private struct NotificationInboxView: View {
+    @ObservedObject var model: CyloAppModel
+    @State private var unreadOnly = false
+
+    var body: some View {
+        List {
+            FreshnessBanner(model: model)
+            Toggle("Unread only", isOn: $unreadOnly)
+            if model.notifications.isEmpty {
+                ContentUnavailableView("Inbox is empty", systemImage: "bell")
+            }
+            ForEach(model.notifications) { item in
+                NavigationLink {
+                    NotificationDetailView(notification: item, model: model)
+                } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text(item.title).font(.headline)
+                            Spacer()
+                            if item.readAt == nil { Circle().fill(.blue).frame(width: 8, height: 8).accessibilityLabel("Unread") }
+                        }
+                        Text(item.body).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
+                        Text("\(item.kind.replacingOccurrences(of: ".", with: " · ")) · \(item.createdAt)")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }
+        .navigationTitle("Inbox")
+        .task { await model.refreshNotifications(unreadOnly: unreadOnly) }
+        .onChange(of: unreadOnly) { _, value in Task { await model.refreshNotifications(unreadOnly: value) } }
+        .refreshable { await model.refreshNotifications(unreadOnly: unreadOnly) }
+    }
+}
+
+private struct NotificationDetailView: View {
+    let notification: NotificationRecord
+    @ObservedObject var model: CyloAppModel
+
+    var body: some View {
+        Group {
+            if notification.aggregateType == "task", let task = model.task(id: notification.aggregateId) {
+                TaskDetailView(task: task, model: model)
+            } else {
+                List {
+                    Section(notification.title) {
+                        Text(notification.body).textSelection(.enabled)
+                        LabeledContent("Kind", value: notification.kind)
+                        LabeledContent("Record", value: "\(notification.aggregateType) · \(notification.aggregateId)")
+                        LabeledContent("Source event", value: notification.sourceEventId).textSelection(.enabled)
+                    }
+                    if notification.readAt == nil {
+                        Button("Mark as read") { Task { await model.markNotificationRead(notification) } }
+                    }
+                }
+            }
+        }
+        .task {
+            if notification.readAt == nil { await model.markNotificationRead(notification) }
+        }
+        .navigationTitle(notification.title)
     }
 }
 
