@@ -1,5 +1,5 @@
 # Cylo overall implementation architecture and implementation contract
-Study date: 2026-10-21. This article is an implementation decision draft and does not represent existing running code. Taking the fully read ["Cylo-Complete Product Requirements Manual.md"](../../../master-plan.md) as the highest product basis, the product will be renamed Cylo; the latest range will cancel the official Codex Desktop App support, the first phase of server and execution host uses Linux, retaining macOS client/browser, user's own use of CLI and cross-environment backup and export migration; subsequent on-demand evaluation of macOS background operation will not be included in the first phase of acceptance; the old "codex-super-agent-requirements-and-architecture.md" only retains the compatibility principle, and the "all requests go through Super" and "Codex is all Agents" in the old solution are not true. This article also supplements the key design of the original independent reliability study; the specific source code evidence of arrangement and speech can be found in the special report in the same directory.
+Study date: 2026-10-21. This article is an implementation decision draft and does not represent existing running code. Taking the fully read ["Cylo-Complete Product Requirements Manual.md"](../product-requirements.md) as the highest product basis, the product will be renamed Cylo; the latest range will cancel the official Codex Desktop App support, the first phase of server and execution host uses Linux, retaining macOS client/browser, user's own use of CLI and cross-environment backup and export migration; subsequent on-demand evaluation of macOS background operation will not be included in the first phase of acceptance; the old "codex-super-agent-requirements-and-architecture.md" only retains the compatibility principle, and the "all requests go through Super" and "Codex is all Agents" in the old solution are not true. This article also supplements the key design of the original independent reliability study; the specific source code evidence of arrangement and speech can be found in the special report in the same directory.
 ## 1. Decision Summary
 | Problem | Main Decision | Alternative Routes and Triggering Conditions |
 |---|---|---|
@@ -10,33 +10,33 @@ Study date: 2026-10-21. This article is an implementation decision draft and doe
 | AO / Cylo authority | AO manages multiple Agent runtimes, code execution and native sessions; Cylo manages business ledgers, memory, authorization, long-term common services and voice pool scheduling | There is only one owner for the same execution; default dangerous permissions, fresh fallback, and ForceDestroy still need to be restricted and accepted. AWS CAO/07 reserved for historical research |
 | Codex account and network | Reuse the account pool and outbound proxy of the existing remote CLIProxyAPI (document alias `existing-cli-proxy`), and each Codex route is selected by the proxy | AO does not need to repeatedly rotate the pool; Space uses an independent voice pool; the native history and workspace still belong to the execution host |
 | Client | PWA first completes the Mac/iPhone/iPad same business connection, front-end voice | If the lock screen continues to voice, system notification behavior, audio routing test does not meet product goals, add SwiftUI native iOS/iPadOS client, reuse service contract |
-| Voice | Adopt chatgpt-web-voice's real-time voice upstream, Go gateway and multi-account pool; VoiceSessionAdapter bridges Cylo command/receipt | Complements stable submission, business result injection, account stickiness/concurrent lease/quota status; private protocol capabilities are subject to source code and real POC; independent STT/TTS only fails to degrade |
+| Voice | Adopt chatgpt-web-voice's real-time voice upstream, Go gateway and multi-account pool; VoiceSessionAdapter bridges Cylo command/receipt | Complements stable submission, business result injection, account stickiness/concurrent lease/quota status; private protocol capabilities are subject to source code and real POC; standalone STT/TTS is only a fallback for degraded operation |
 | Memory | Separation of original evidence, confirmed decisions, execution facts, and inference; Memory Agent only produces proposals/indexes | FTS starts with embedded retrieval and then added; vector library is not an authoritative fact library |
 | Long-term capabilities | Immutable release + deployment + independent service instance; deterministic program runs on its own | Agent creation code and service deployment are authorized separately, and containers are not the only cross-system release format |
 The complete required scope retains long-term capabilities, memory, basic CLI execution and saved session recovery; manual same-thread seamless takeover and two-way handover are listed as optional enhancements according to the latest decision, and do not block the initial phase or required scope acceptance. Prioritize automatic Super splitting, independent workers, multiple worktrees, long tasks/background services, persistent recovery, products and costs. Users have clearly adopted AO; Space will continue to be retained, and Cylo’s new server will give priority to Go. The existing CLIProxyAPI has been used as a reuse object for the Codex account pool and outbound proxy, and there is no need to create a new service for the same purpose. Users report that their current Codex login and use can use a proxy; this article has not tested this environment, nor has it been confirmed that account-by-account logins have been automatically isolated.
 ## 2. Deployment topology and boundaries
 ```mermaid
 flowchart LR
-  PWA[Mac / iPhone / iPad client] <-->|HTTPS REST + SSE| CP[Cylo control service]
-  PWA <-->|WebRTC media / private data channel| UP[ChatGPT real-time voice upstream]
-  PWA <-->|create / reconnect session| GW[Go gateway / multi-account pool]
-  GW <-->|upstream signaling / account binding| UP
-  PWA <-->|stable user final / business receipt| VP[VoiceSessionAdapter]
+  PWA[Mac / iPhone / iPad 客户端] <-->|HTTPS REST + SSE| CP[Cylo 控制服务]
+  PWA <-->|WebRTC 媒体 / 私有数据通道| UP[ChatGPT 实时语音上游]
+  PWA <-->|建立 / 重连会话| GW[Go 网关 / 多账号池]
+  GW <-->|上游信令 / 账号绑定| UP
+  PWA <-->|稳定用户 final / 业务回执| VP[VoiceSessionAdapter]
   VP <--> CP
-  CP <--> DB[(authoritative database / outbox / jobs)]
-  CP <--> OBJ[(evidence and artifacts directory)]
-  CP --> CTX[context assembly / retrieval]
+  CP <--> DB[(权威数据库 / outbox / jobs)]
+  CP <--> OBJ[(证据与产物目录)]
+  CP --> CTX[上下文装配 / 检索]
   CTX --> DB
-  CP <-->|authenticated runner RPC| R[execution host runner]
-  R --> AR[AgentRuntime adapter]
+  CP <-->|认证 runner RPC| R[执行主机 Runner]
+  R --> AR[AgentRuntime 适配器]
   AR --> S[Super / Worker / Memory Agent]
-  AR <--> CX[Agent native session]
-  CX -->|optional model route with compatible protocol| PX[existing-cli-proxy / account pool and outbound proxy]
-  CX -->|model route for other runtimes| MP[corresponding model / provider]
+  AR <--> CX[Agent 原生会话]
+  CX -->|兼容协议的可选模型 route| PX[existing-cli-proxy / 账号池与出站代理]
+  CX -->|其他 runtime 的模型 route| MP[对应 model / provider]
   R --> CR[CapabilityRunner]
-  CR --> SV[independent ordinary background service]
-  SV -->|rule / event / Worker request| CP
-  CP --> PN[notification dispatcher]
+  CR --> SV[独立普通后台服务]
+  SV -->|规则 / 事件 / Worker请求| CP
+  CP --> PN[通知投递器]
   PN --> PWA
 ```
 **Minimum deployment**: One always-on Linux host; one control service process (API, scheduling loop, outbox, memory job module), one runner process, local SQLite, local product directory, selected Agent external process, fixed version of Go voice gateway and its account storage. The gateway is responsible for upstream signaling and account control, and existing audio media is directly connected to the upstream; the HTTP gateway cannot be regarded as a relay that can intercept existing media. It can be co-installed, but the runner does not have the same life cycle as the HTTP request. PWA static resources are served by the control service. The network defaults to LAN or authenticated private network; remotely uses TLS. Independent services are managed by OS supervisor, which controls process crashes without killing deployed services; the runner/service will report after reconnection. The user workstation sleeping does not mean that the server is available. The UI displays the execution host offline and the last observation time, which is not called "continuous execution".
@@ -56,7 +56,7 @@ The TypeScript interface below only expresses language-independent contracts and
 ## 3. Projects, tasks, conversations, native conversations
 `Workspace` is the data and permission boundary, and one is pre-built for single-person installation. `Project` is the long-term goal, asset and knowledge boundary. A project has multiple tasks, conversations, and host checkouts. `Task` is the acceptance target; `TaskRun` is an actual attempt; `AgentSession` is the conversation execution history saved by the provider. A task can span multiple runs; an agent session can be repaired and reused later in the same task, or can be used in subsequent tasks through explicit association. Ending the run will not destroy the native session.
 `Conversation` is a user communication portal that can span multiple projects; messages are associated with tasks/projects using independent link tables instead of putting tasks into the chat window. Voice `VoiceSession/VoiceTurn` belongs to the interaction layer and cannot be a container for task existence. The new device restores the conversation, target task, and business status; a new media connection is created, and the active microphone/WebRTC is not transferred.
-The project primary key cannot use an absolute path: `project_checkout(project_id, host_id, logical_root, native_path, repo_url, branch, revision)` to save the mapping. Different paths after migration do not change the project identity. Git worktree isolates parallel write tasks, but is not a safe sandbox. For "the project just now", press the explicitly selected object → current session link → recent related task candidate retrieval; create a disambiguation problem when there are multiple valid candidates, and write without selecting one based on the model.
+The project primary key cannot use an absolute path: `project_checkout(project_id, host_id, logical_root, native_path, repo_url, branch, revision)` saves the mapping. Different paths after migration do not change the project identity. Git worktree isolates parallel write tasks, but is not a safe sandbox. For "the project just now", resolve candidates in this order: explicitly selected object → current session link → recent related tasks. If multiple valid candidates remain, ask the user to disambiguate; the model must not choose one and write to it.
 ## 4. Data model and invariants
 The following fields are the minimum logical model and are not implemented DDL. Unless otherwise specified, the entity contains `id, workspace_id, created_at, updated_at, version`, the time is UTC, and the ID is a unique ID that does not rely on clock ordering; the external ID must be associated with the provider/host/account domain. All cross-entity references are verified to be the same as the workspace; project permissions are filtered before querying.
 | Entity | Core Fields/Constraints |
@@ -81,7 +81,8 @@ The following fields are the minimum logical model and are not implemented DDL. 
 | memory_claim / memory_revision / evidence_link | scope, subject/predicate/value, authority_kind, status, valid_from/to, recorded_at, supersedes, evidence, confidence, extractor_version |
 | context_manifest | run, project/authorized version, selected claim/decision/evidence ID and hash, search conditions, token budget, clipping and conflict description |
 | voice_session / voice_turn | conversation, owner/device, provider/native IDs, account_ref, lease/generation, media status, last_observed_at; turn saves role, original item ID, revision, completion evidence, command link and submission status |
-| voice_account / voice_account_lease / quota_observation | SecretRef, available/cooling/exhausted/authentication exception/unknown, concurrency upper limit; atomic slot lease and media termination evidence; quota source/original error/observed_at/reset_at or unknown, cannot be derived from JWT expiration || usage / notification / audit | Provider usage, reservation and estimate identification; notification logical key/channel receipt/read; actor/action/resource/result/evidence association |
+| voice_account / voice_account_lease / quota_observation | SecretRef, available/cooling/exhausted/authentication exception/unknown, concurrency upper limit; atomic slot lease and media termination evidence; quota source/original error/observed_at/reset_at or unknown, cannot be derived from JWT expiration |
+| usage / notification / audit | Provider usage, reservation and estimate identification; notification logical key/channel receipt/read; actor/action/resource/result/evidence association |
 Mandatory invariant: The final task is not directly restarted as the original run, but a new attempt/explicit follow-up task; the task "completion" must have an acceptance record. `agent turn completed` only ends the model turn. Granted permissions cannot be extended by the model. Manual decisions can only be modified by command with authority. Summary without fact checking cannot produce fact level promotion. All business state changes, events and subsequent jobs are written in one database transaction.
 SQLite `foreign_keys=ON`, WAL, `synchronous=FULL`, local disk, busy timeout, short transaction; start to verify the actual configuration, and persistent ACK will only be returned after the transaction is submitted. NORMAL may lose confirmed transactions due to power outage in WAL mode, which does not meet the durable reception commitment of this solution; FULL still relies on the OS/hardware to fulfill sync. If macOS is supported in the future, whether F_FULLFSYNC is required must be separately verified by the platform. The process exit experiment does not prove the durability of power outage. A control write queue, the runner does not directly open the database. WAL only supports shared memory coordination with the host and only one writer [S3]. The product first writes a temporary file and fsyncs/atomically renames it, and then releases the reference after registering the hash; the existence of a database reference does not mean that the file is available and needs to be verified. Organization expansion uses `(workspace_id,id)` combined foreign key/unique constraints. PostgreSQL will subsequently add row-level strategies and cannot rely solely on front-end filtering.
 ## 5. Unify task status, execution facts and ACK
@@ -89,17 +90,17 @@ The task status maintains eight product states: `queued/running/waiting/waiting_
 ```mermaid
 stateDiagram-v2
   [*] --> queued
-  queued --> running: lease acquired and execution-start observation received
-  queued --> waiting: dependency or host unavailable
-  running --> waiting: external condition or result needs reconciliation
-  running --> waiting_user: valid approval or more information required
-  running --> paused: execution side confirms it has stopped progressing
-  running --> completed: acceptance criteria met
-  running --> failed: definite failure and recovery policy exhausted
-  running --> cancelled: termination confirmed and side effects retained
-  waiting --> queued: condition satisfied
-  waiting_user --> queued: valid decision
-  paused --> queued: explicit resume creates a new attempt
+  queued --> running: 获租约并收到执行开始观测
+  queued --> waiting: 依赖或主机不可用
+  running --> waiting: 外部条件或结果待核对
+  running --> waiting_user: 有效审批或需补充信息
+  running --> paused: 执行端确认停止推进
+  running --> completed: 验收满足
+  running --> failed: 确定失败且恢复策略耗尽
+  running --> cancelled: 终止确认并保留副作用
+  waiting --> queued: 条件满足
+  waiting_user --> queued: 有效决定
+  paused --> queued: 显式恢复创建新attempt
   queued --> cancelled
   waiting --> cancelled
   waiting_user --> cancelled
@@ -111,7 +112,7 @@ There are four levels of message and command confirmation:
 2. `applied`: The target version has been updated, or the runtime confirms that additional input is accepted; return `applied_to` to indicate plan/task/runtime_turn. Not "the model already complies with the requirements".
 3. `rejected/expired/conflict`: permissions, expired approval, old version or inoperability; reasons for retention, the client does not resend indefinitely.
 4. `outcome`: The actual execution and acceptance results of the business are read through the associated task/operation. Do not treat provider RPC success as business completion.
-Retrying with the same message will return the same receipt; after the API submission times out, press the idempotent key to query, and regeneration of the key "try again" is prohibited. Two modifications to the same task are compared using `expected_version`. The second one returns 409 and the current version, and the user can review it again. Ordinary status queries, explicit stops, and health checks are performed by the program; Super is awakened only by new targets/ambiguities/cross-domain blocking.
+Retrying with the same message will return the same receipt; after the API submission times out, query using the same idempotency key, and do not blindly resend with a new key. Two modifications to the same task are compared using `expected_version`. The second one returns 409 and the current version, and the user can review it again. Ordinary status queries, explicit stops, and health checks are performed by the program; Super is awakened only by new targets/ambiguities/cross-domain blocking.
 ## 6. API and event contracts
 Transport version `/api/v1`, command/event JSON Schema independent version, server verification schema and permissions. Example interface:
 ```text
@@ -123,19 +124,19 @@ GET  /api/v1/commands/{id}
 GET  /api/v1/projects/{id}/tasks?updated_after=...
 GET  /api/v1/tasks/{id}                 # authoritative version, observed_at
 GET  /api/v1/tasks/{id}/runs/{run}/evidence
-GET  /api/v1/sync/snapshot              # cursor watermark and projection from the same DB snapshot
-GET  /api/v1/events?cursor=opaque       # SSE; cursor bound to workspace/stream epoch
-POST /api/v1/device-cursors            # ACK after successful application
-POST /api/v1/approvals/{id}/resolve    # command semantics, action_digest + version
+GET  /api/v1/sync/snapshot              # cursor水位与同一DB快照中的投影
+GET  /api/v1/events?cursor=opaque       # SSE; cursor绑定workspace/stream epoch
+POST /api/v1/device-cursors            # 应用成功后ACK
+POST /api/v1/approvals/{id}/resolve    # command语义, action_digest + version
 GET  /api/v1/agent-sessions?project_id=...&discover=true
-POST /api/v1/agent-sessions/{id}/handoff  # prepare/release/claim; still subject to capability negotiation
+POST /api/v1/agent-sessions/{id}/handoff  # prepare/release/claim；仍受能力协商
 POST /api/v1/capabilities/{id}/releases
-POST /api/v1/deployments               # digest/config/grant/host; returns command
-GET  /api/v1/services/{id}             # returns desired/observed/health together
+POST /api/v1/deployments               # digest/config/grant/host，返回command
+GET  /api/v1/services/{id}             # desired/observed/health同时返回
 POST /api/v1/memory/proposals/{id}/resolve
-POST /api/v1/voice-sessions            # check owner/grant + reserve account slot, then call gateway to establish media
-POST /api/v1/voice-sessions/{id}/turns  # role/stable completion evidence/order/revision + command idempotency
-POST /api/v1/voice-sessions/{id}/close  # close media and confirm; separate from stopping task
+POST /api/v1/voice-sessions            # owner/grant检查+账号slot预留，再调用网关建媒体
+POST /api/v1/voice-sessions/{id}/turns  # 角色/稳定完成证据/顺序/修订+command幂等
+POST /api/v1/voice-sessions/{id}/close  # 关媒体与确认；与停止task分开
 GET  /api/v1/export-manifests/{id}
 ```
 All POSTs that generate actions (including approval and deployment) enter the command processor uniformly; the above dedicated paths are only typed appearances and do not bypass idempotence and auditing. Uploading/downloading requires scope verification, and files cannot be read directly based on the local path given by the model.
@@ -166,7 +167,7 @@ Business task/run → AO session → agent native session is explicitly mapped, 
 The interface is a business adaptation abstraction and does not claim that all vendors have all capabilities. Unify `capabilities()` to clarify the supported/unsupported/experimental and version; disable the operation if it is not supported, and cannot rely on simulated text to claim support.
 ```ts
 interface AgentRuntime {
-  capabilities(): RuntimeCapabilities; // discover/read/resume/steer/interrupt/usage, etc.
+  capabilities(): RuntimeCapabilities; // discover/read/resume/steer/interrupt/usage等
   discover(filter: SessionFilter): Promise<SessionPage>;
   inspect(session: SessionLocator): Promise<ObservedSession>;
   create(spec: AgentSpec, ctx: ContextManifest, grant: GrantRef): Promise<SessionRef>;
@@ -175,17 +176,17 @@ interface AgentRuntime {
   steer(turn: TurnRef, input: Input, claim: LeaseToken): Promise<AcceptedInput>;
   interrupt(turn: TurnRef, claim: LeaseToken): Promise<ControlReceipt>;
   events(after?: ProviderCursor): AsyncIterable<RuntimeEvent>;
-  reconcile(ref: SessionLocator): Promise<ObservedSession>; // does not implicitly rerun
+  reconcile(ref: SessionLocator): Promise<ObservedSession>; // 不隐式重跑
 }
 interface VoiceSessionAdapter {
-  capabilities(): VoiceCapabilities; // record evidence for realtime, stableUserFinal, and receiptInjection individually
-  open(spec: VoiceSpec, grant: GrantRef): Promise<VoiceSessionRef>; // internal atomic account-slot lease
-  observe(ref: VoiceSessionRef): AsyncIterable<VoiceObservation>; // raw role/item/revision/completion evidence
+  capabilities(): VoiceCapabilities; // realtime、stableUserFinal、receiptInjection逐项标证据
+  open(spec: VoiceSpec, grant: GrantRef): Promise<VoiceSessionRef>; // 内部原子账号slot租约
+  observe(ref: VoiceSessionRef): AsyncIterable<VoiceObservation>; // 原始role/item/revision/完成证据
   submitTurn(ref: VoiceSessionRef, turn: StableUserTurn): Promise<CommandReceipt>;
   relayReceipt(ref: VoiceSessionRef, receipt: BusinessReceipt): Promise<InjectionObservation>;
   interruptOutput(ref: VoiceSessionRef, generation: number): Promise<OutputStopObservation>;
   close(ref: VoiceSessionRef): Promise<MediaCloseObservation>;
-  reconcile(ref: VoiceSessionRef): Promise<VoiceObservation>; // unknown does not automatically release slot
+  reconcile(ref: VoiceSessionRef): Promise<VoiceObservation>; // unknown不自动释放slot
 }
 interface CapabilityRunner {
   validate(release: Digest, host: HostRef): Promise<ValidationReport>;
@@ -210,7 +211,7 @@ Basic execution and recovery must fix the Codex CLI version, account/authenticat
 For remote connections, priority is given to entering the same backend execution environment via SSH to run the official CLI, and check the user, CODEX_HOME, workspace and native session. Cross-environment data migration still requires independent backup/path/permission/native recovery acceptance (§13); the official App deep link, App SSH and host handoff are only retained in 02 historical data and are not relied upon by this solution.
 The Linux three-turn experiment is completed directly by app-server and the official CLI. It does not prove that AO or CAO have the same end-to-end capabilities; AO native resume and interface conversion require independent acceptance. For the source code, see [09](09-agent-orchestration-alternatives.md). [07](07-cao-cli-handoff-plan.md) is only a historical CAO retrofit design.
 If you choose manual handover: `prepare` Stop new turn→Interrupt/wait for the current turn to end→Check the workspace and external side effects→Save checkpoint and handoff package→Release lease→Continue with the native tool; in reverse, first observe that the native tool has stopped, then claim and reconcile. Cylo lease only binds Cylo's runner and cannot force the independent official CLI to respect local locks; when it cannot detect external writers, explicit user handover is required and automatic takeover is prohibited. Active session "seamless migration" is not part of the verified promise. If the threshold fails, the project path, git status, native resume command (only those that are valid in actual testing) and handoff summary with evidence can still be provided, which is marked as a downgrade continuation and is not equivalent to the native history.
-Official [S1] also clarified that app-server certification has never allowed commercial or hosting services; stand-alone local/open source and team SaaS cannot share unverified certification assumptions. Independently verify Sign in with ChatGPT/API key availability, terms and account isolation before hosting expansion. The ChatGPT account pool of the voice gateway cannot be used as the Codex authentication pool; the voice upstream and Codex use independent credentials, authorization and usage accounts.
+Official [S1] states that app-server authentication has never been permitted for commercial or hosted services. This restriction applies to that authentication method, not to commercial Codex use in general; standalone local/open-source and team SaaS deployments must not share unverified authentication assumptions. Independently verify Sign in with ChatGPT/API key availability, terms and account isolation before hosting expansion. The ChatGPT account pool of the voice gateway cannot be used as the Codex authentication pool; the voice upstream and Codex use independent credentials, authorization and usage accounts.
 ## 8. Long-Term Memory: Evidence, Facts, and Versions Failed
 Corresponds to CY-10-01 ~06, CY-11-01. The four layers are not four model contexts, but different permissions and search scopes:
 1. Original history: messages, provider output, tool records, execution logs, file/document versions; save sources and hashes, and manage them according to retention policies.
@@ -233,23 +234,23 @@ Corresponds to CY-07, CY-09. `Capability` is the installable capability definiti
 ```mermaid
 stateDiagram-v2
   [*] --> draft
-  draft --> building: Worker generates code or configuration
-  building --> validated: build/tests/permission manifest/artifact hash pass
-  building --> rejected: validation fails
-  validated --> awaiting_authorization: deployment target and permissions are explicit
-  awaiting_authorization --> installed: approval and grant are valid
+  draft --> building: Worker生成代码或配置
+  building --> validated: 构建/测试/权限清单/产物hash通过
+  building --> rejected: 校验失败
+  validated --> awaiting_authorization: 明确部署对象与权限
+  awaiting_authorization --> installed: 审批与grant有效
   installed --> starting: desired running
-  starting --> running: process and probe confirm
+  starting --> running: 进程与探针确认
   running --> pausing: desired paused
-  pausing --> paused: freeze triggered and in-flight work handled by policy
+  pausing --> paused: 触发冻结且在途按策略处理
   paused --> starting: resume
-  running --> updating: new release validated and authorized
-  updating --> running: new instance healthy and switched over
-  updating --> degraded: on failure retain old version or require manual handling
-  running --> stopped: stop confirmed
+  running --> updating: 新release已验与获授权
+  updating --> running: 新实例健康并切换
+  updating --> degraded: 失败保留旧版或人工处理
+  running --> stopped: stop确认
   paused --> stopped
   stopped --> starting
-  stopped --> uninstalled: remove installation and revoke keys
+  stopped --> uninstalled: 删除安装与撤销密钥
 ```
 The above describes the life cycle view; the database saves the release build status, deployment desired and instance observed respectively to avoid using a single enum to hide "expect to stop but the process is still active". `health=healthy/degraded/unhealthy/unknown` is independent of the running state. Service suspension is triggered by default, which does not mean that the process has been stopped; stopping requires confirmation from the supervisor, and pending/unknown is displayed without confirmation.
 The minimum manifest should be machine-verifiable:
@@ -274,8 +275,8 @@ uninstall: {retain_user_data: true}
 ```
 
 The fields are just interface examples and do not guarantee that Python processes will have full kernel isolation on Mac. Dependencies require lockfile/checksum, platform conditions and reproducible installation instructions. The deployment process must include: requirements → generation/configuration → build and static verification → isolation testing → permission diff/behavior and cost description → authorization of specific release digest and config → installation → health verification → registration trigger → run. Authoring code authorization does not automatically grant deploy, send email, or read full disk permissions. Expansion of release permissions, changes in secret usage, and changes in external targets invalidate old approvals; whether updates within the same authorization scope are automatically executed is determined by the user's explicit update policy.
-Example of email monitoring: deterministic service saves mailbox cursor, removes duplicates by provider message ID, ordinary notifications are filtered by rules, semantic judgment calls mail worker; Super is reported only when rules are exceeded/cross-project coordination is exceeded. Each time Worker is called, a task/run is created and the minimum grant and budget of the service are inherited. The service itself does not require Super to be online to run. When the control service is unreachable for a short period of time, the service can only deterministically monitor and buffer bounded events within the existing authorization and unexpired bounded lease/short-term voucher; if the lease is not renewed after expiration, new external side effects will be stopped, and actions that require new approvals, workers, or budgets will wait, and rights cannot be self-expanded. Revocation of rights immediately prevents new actions on the control plane. The mandatory time limit for offline instances is guaranteed by the lease/credential TTL and the actual resource side execution. Once a long-term secret is copied to any program, a single change to the control library cannot guarantee immediate revokement, and the upstream credentials must be revoked or the actual process must be stopped/isolated.
-Before updating, save the old release/config/checkpoint and verify checkpoint compatibility. Stop triggering and process in-flight first. Confirm that the old process tree is stopped or resources are isolated, and then install/health check/switch. Parallel canaries are only allowed when there is no risk of mutually exclusive external consumption; email monitoring, etc. rely on resource locks to ensure single liveness. If it fails, you can return to the old binary, but the database is irreversibly migrated and the sent emails cannot be "rolled back"; the manifest must declare that the data is forward/backward compatible. If it cannot be rolled back, it will enter degraded and provide a recovery plan. By default, uninstallation confirms that the entire process tree is stopped, removes triggers, revokes credentials, and cleans installation files without force after saving the dirty product list. User data retention and deletion are independently confirmed; audit, release, and historical results are retained.
+Example of email monitoring: a deterministic service saves the mailbox cursor, removes duplicates by provider message ID, and filters ordinary notifications by rules; semantic judgment calls the mail Worker, and only rule exceptions or cross-project coordination are escalated to Super. Each Worker call creates a task/run and inherits the service's minimum grant and budget. The service itself does not require Super to be online. When the control service is briefly unreachable, the service can only monitor deterministically and buffer bounded events under existing authorization and an unexpired bounded lease/short-term credential. If the lease expires without renewal, new external side effects stop; actions requiring new approval, a Worker, or budget wait, and the service cannot expand its own rights. Revocation immediately prevents new actions through the control plane. The enforceable time limit for offline instances depends on lease/credential TTL and enforcement at the resource. Once a long-term secret has been copied to a program, changing the control database alone cannot guarantee immediate revocation; the upstream credential must be revoked or the actual process stopped/isolated.
+A service pause disables new triggers by default; it does not by itself mean that the service process has stopped. Before updating, save the old release/config/checkpoint and verify checkpoint compatibility. Stop triggering and process in-flight first. Confirm that the old process tree is stopped or resources are isolated, and then install/health check/switch. Parallel canaries are only allowed when there is no risk of mutually exclusive external consumption; email monitoring, etc. rely on resource locks to ensure single liveness. If it fails, you can return to the old binary, but the database is irreversibly migrated and the sent emails cannot be "rolled back"; the manifest must declare that the data is forward/backward compatible. If it cannot be rolled back, it will enter degraded and provide a recovery plan. By default, uninstallation confirms that the entire process tree is stopped, removes triggers, revokes credentials, and cleans installation files without force after saving the dirty product list. User data retention and deletion are independently confirmed; audit, release, and historical results are retained.
 ## 10. Durable job, failure recovery and side effects
 Corresponds to CY-15. Scheduling work does not rely on memory queues: `job(status,due_at,trigger_key,attempt,lease_epoch,lease_expires_at,policy)` persistence; receiving the same transaction as outbox. Even if there is only one dispatcher on a single machine, lease semantics are implemented, which facilitates restart and multi-host expansion. Lease expiration indicates a need for reconciliation and does not prove that the old process is dead. The fencing token increments the epoch for each resource, and the runner rejects the old epoch request; the actual resource execution end must also reject the old epoch to prevent the old execution from continuing to write. Shells that have been started and can directly access files/networks will not stop because the runner rejects new requests; before handover, the old process tree must be confirmed to be terminated/isolated, or fencing must be forced by the resource side, otherwise it will wait for verification instead of redispatch. When a third party does not support fencing, it still requires idempotent keys or auditing, and cannot claim to be end-to-end exactly-once.
 Control service restart steps:
@@ -288,7 +289,7 @@ External side effects use the `operation` ledger: persistent intent and unique e
 Safe retry limits specify pure read, idempotent write or query operations, exponential backoff + jitter + maximum times/total time limit, and errors are classified as transient/permanent/auth/conflict/unknown. Infinite failure enters the dead-letter to be processed; retry the same business operation instead of creating a new effect key. If the external API continues to be unavailable, turn on the circuit breaker to isolate the connector without affecting unrelated services. Event delivery is at least once, and the consumer persists inbox deduplication; consumers who perform side effects first create intents and cannot "take action after ACK".
 cron uses clear timezone storage, and the trigger key contains the schedule ID and logical time slot; after the host sleeps, it is processed by `skip / latest / bounded_catchup`. By default, the latest is used for monitoring instead of re-issuing each expiration reminder. DST and repeat webhooks tested independently. Service health relies on process heartbeat + meaningful probes. The existence of PID does not prove that the mailbox can be accessed; lost connection means unknown, not healthy. Automatic restart requires a rate limit to prevent crash loops.
 ## 11. Permissions, approvals, execution isolation and auditing
-Corresponds to CY-14. The subjects are user, agent profile, service, and runner; the grant at least limits the workspace/project, resources, actions, environment, time, budget, and scope of sub-granting. Super can only propose a subset of calling permissions and cannot bypass the grant by writing natural language to the Worker. Policies are verified upon submission and before each actual tool action; long-term authorization is not a permanent exemption. After revocation, prohibit new actions, invalidate approval and short-term credentials, and request to stop related execution; clearly distinguish between prohibiting new actions, stopping in-transit requests, and irrevocable occurrences. Canceling the RPC response is not an external revocation certificate. Preserve the true state of "undone but external action may have occurred".
+Corresponds to CY-14. The subjects are user, agent profile, service, and runner; the grant at least limits the workspace/project, resources, actions, environment, time, budget, and scope of sub-granting. Super can only propose a subset of calling permissions and cannot bypass the grant by writing natural language to the Worker. Policies are verified upon submission and before each actual tool action; long-term authorization is not a permanent exemption. After revocation, prohibit new actions, invalidate approval and short-term credentials, and request to stop related execution; clearly distinguish between prohibiting new actions, stopping in-transit requests, and irrevocable occurrences. Canceling the RPC response is not an external revocation certificate. Preserve the true state: authorization may be revoked, but an external action may already have occurred.
 Approval and binding `action_digest + plan_version + target_resource + release_digest/config_version + expires_at`, and save the standardized parameters, parsed actual target/account/environment and grant/policy version; re-verify before actual distribution. Approval of two devices at the same time will only take effect once. Old notifications, plan changes, and permission diffs will cause approvals to expire; consent for operation A will not be transferred to operation B. Reading emails/sending emails, writing code/deploying services, and reading files/deleting files are authorized separately. There will be no repeated inquiries for reversible actions within the scope of the plan, and high-risk boundaries will only be requested for approval, taking into account both independent execution and controllability.
 The reliability and safety failure matrix and evidence can be found in [05 Independent Review](05-reliability-security-operations.md).
 Execution level:
@@ -301,7 +302,7 @@ Audit records command actor, grant/policy version, approval, input/target digest
 The PWA cache only stores necessary authorization projections and local drafts, and is cleared upon logout/revocation of authority; the server is still authoritative. macOS/iPhone/iPad share device-independent conversation/task IDs, read progress can be merged by user, and event cursor is by device. When logging in to a new device, take a snapshot first and then increment it, without copying the chat cache of another device.
 WebKit officially supports the home screen Web App Web Push starting from iOS/iPadOS 16.4. It needs to be added to the home screen and request notification permission after user interaction [S5]; notification arrival is still affected by user settings and network, and push cannot be used as a reliable command transmission. Use the notification inbox as authoritative, the channel supports Web Push/APNs replaceability, deduplicate by logical events + recipients, merge ordinary progress, only key completion/blocking/abnormal active reminders.
 ### 12.1 The relationship between real-time voice, business submission and Super
-Adopt [03 Voice Research](03-voice.md) fixed version of the ChatGPT Web real-time voice upstream and gateway, retaining its WebRTC media, private `oai-events` data channel, and account management/stickiness mechanism. The upstream assistant is responsible for real-time listening, speaking and dialogue questioning; Cylo persists user intentions, tasks, approvals and memories. Complex goals are handed over to on-demand Super, professional execution is handed over to Worker, and simple queries can directly read the authoritative status. The speech model does not act as a second super or executor and does not have Cylo credentials with the business writing tool; it says "completed" without generating a completion event. Background tasks are independent of media, account switching, and voice assistant context.
+Adopt [03 Voice Research](03-voice.md) fixed version of the ChatGPT Web real-time voice upstream and gateway, retaining its WebRTC media, private `oai-events` data channel, and account management/stickiness mechanism. The upstream assistant is responsible for real-time listening, speaking and dialogue questioning; Cylo persists user intentions, tasks, approvals and memories. Complex goals are handed over to on-demand Super, professional execution is handed over to Worker, and simple queries can directly read the authoritative status. The voice Agent does not own Cylo task status, authorization, or Worker scheduling. It is not a second Super or executor and has no Cylo credentials for business-writing tools; saying "completed" does not generate a completion event. Background tasks are independent of media, account switching, and voice assistant context.
 **Off-the-shelf capability separate from retrofit. ** Upstream `client_tools=[]` has no verified instructions/function/Super bridge; empty model fields do not prove that an official Realtime model can be specified. The subtitles have role/direction/increment, and there is no final completion event for reliable transaction submission; after the microphone reaches the upstream directly, the assistant can respond independently first, and the existing `stop_speaking` does not prove that new responses are prohibited. The official API's `session.update`, tool result, sideband, or server VAD capabilities may not be ported to this private protocol fact.
 The minimum bridge POC retains the main audio line, and adds `VoiceSessionAdapter`: record the original event and source → verify or replace the stable user turn to complete the boundary → verify the role/target/authorization and sequence → normalize the `(voice_session,turn,revision)` into a stable command idempotent key → submit the business transaction → return the command receipt, actual results and evidence association messages to the client. Partial/assistant subtitles/system comments do not send tasks. When there is no proof of completion, first display the pending submission or let the user explicitly confirm. Silent timeout cannot be used to infer reliable final. The user corrects and generates a new revision after final; if the original command has been received, use the change/cancel command and real status processing, and the executed intention cannot be silently overwritten. High-risk consent in the voice must be parsed to the current approval action digest, and ambiguity/expiration means rejection or requesting confirmation.
 The minimum back-injection candidate is the existing private `relay_message` , whose message identity is `user` . The client's controlled bridge encapsulates the business receipt retrieved through the Cylo login channel into source traceable text, registers the injection ID and excludes user command extraction; it cannot be written as an upstream tool/system result. You must use a real account to prove that you can consistently report real results after injection, that numbers/negative words are not distorted, that you will not say "received" as "completed", and verify how to suppress/correct upstream first answers. When it fails, the business text results are still presented in the true state, and the backnote/private tool bridge continues to be modified; the independent TTS is only used as a clearly identified fault degradation and does not replace the real-time speech accuracy.
@@ -313,7 +314,7 @@ Upstream currently `Pick` is LRU, `PickByID` is sticky select, and has a 401 dis
 | Account identity and stickiness | `voice_session → owner/workspace/account_ref/upstream IDs`; Session creation, reconnection, and text/image assistance requests all verify the owner and use the bound account | Account ID is not an access right; account A’s conversation ID must not be submitted to account B to try to renew |
 | Concurrent slots | Reserve slots atomically by account, and create sessions again. The default upper limit is 1. Configure according to actual measurement; record lease generation, heartbeat and session creation results | LRU update time does not count as exclusive lease; failure will only be recycled if it proves that the media has not been created. Restart/timeout will not automatically recognize the old stream as stopped |
 | Quota observation | Record credential health, voice quota, rate limit, media health separately; quota available/depleted/cooling/unknown attached evidence/source/observed_at | `settings/user` success only proves that the token is alive; JWT exp is not a quota reset; when there is no real measurement API, the remaining minutes are displayed as unknown, and the local duration is an estimate |
-| Error classification | Keep the desensitization evidence of upstream status/body/trace; 401 → authentication exception; 429 distinguish current limit/concurrency/quota first; network/5xx short backoff, auth does not retry infinitely | Currently, WM non-401 errors can be packaged with 502, and must be changed to retain the diagnosable structure; 502 cannot be all cut or 429 must be exhausted |
+| Error classification | Keep the desensitization evidence of upstream status/body/trace; 401 → authentication exception; 429 distinguish current limit/concurrency/quota first; network/5xx short backoff, auth does not retry infinitely | Currently, WM non-401 errors can be wrapped as 502, so the gateway must preserve diagnostic details; a 502 must not always trigger account switching, and a 429 must not automatically be classified as quota exhaustion. |
 | Cooling and selection | First meet the owner's available range, quota/credential and slot, and then select the candidate LRU; set reset_at only if there is evidence of reset, otherwise there will be bounded backoff/low-frequency detection | Do not fabricate unified daily quotas and reset windows; display waiting/available text when all are unavailable, and do not consume accounts in a cycle |
 | Exhaustion or failover | Mark the old media status → Locally stop input/output and request shutdown → Check unsubmitted turn / received command → Keep the old slot until confirmation → Select another account to create new media → Rebuild the necessary Cylo context | Clear reconnection interval; Do not promise seamless number change with the same media stream or the same upstream conversation; Received commands will not be retransmitted, and unsubmitted drafts are pending confirmation |
 Account leases, session status, and quota observations are persistently associated with business commands; the media itself is not a recoverable DB object. If the old media cannot be queried/closed after the gateway is restarted, mark unknown, isolate the slot, require the client to reconnect for verification, or wait for a verified upstream period without any TTL claiming that the remote session is over.
@@ -343,7 +344,7 @@ Minimum fault injection set: network disconnection after command commit; control
 ## 15. Not yet verified and blocking conditions
 - Codex app-server is still experimental despite its rich interfaces; Linux basic CLI execution/stop viewing/recovery and real tools/approval still need to be accepted; independent CLI session discovery/reverse association, manual handover with threads are optional enhancements, and the necessary paths will not be blocked if not accepted. Official desktop apps, deep links, and official host handoff are not in scope and will not block implementation. The actual measurement of orchestration project 0.163.0 is only `thread/start(ephemeral=false)` and the session without turn will report `resume` after restart, so "return thread ID" is not a recoverable persistence submission point; a real historical session is required to verify the disk placement/restart. Do not create empty turns to bypass acceptance.
 - `--remote`, Unix socket and WebSocket paths appear in the official CLI, and cross-host persistence guarantees are not deduced; stdio is still the minimum integration choice, and the stability field and overall maturity are judged separately.
-- The text of the current official certification document needs to be verified according to the specific authentication surface and deployment type; no Codex will be launched to completely prohibit commerce, and ChatGPT personal login will not be used by the hosting team by default.
+- The current official authentication terms must be checked for the specific authentication surface and deployment type. The app-server authentication restriction does not establish a blanket prohibition on commercial Codex use. The hosting team will not use ChatGPT personal login by default.
 - The delay, interruption, front and back switching and notifications of PWA audio on the current target iPhone/iPad model, network and system version have not been tested; if the target must lock the screen to continue the conversation, the native client project needs to verify the system capabilities first.
 - If the macOS execution host is supported in the future, the strict network/file isolation and resource restrictions of its independent programs must be independently verified, and Linux container semantics cannot be copied; this does not block the first phase of Linux acceptance.
 - External write operations without provider idempotent/queryable credentials cannot be implemented exactly-once in general; unknown must be visible and manually checked or business compensation must be used.
