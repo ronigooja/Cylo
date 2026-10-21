@@ -81,6 +81,18 @@ public final class APIClient: @unchecked Sendable {
         return try await perform(request)
     }
 
+    public func capabilityReleases() async throws -> CapabilityReleaseList {
+        try await request(path: ["v1", "capabilities", "releases"], method: "GET", authenticated: true)
+    }
+
+    public func capabilityDeployments() async throws -> CapabilityDeploymentList {
+        try await request(path: ["v1", "capabilities", "deployments"], method: "GET", authenticated: true)
+    }
+
+    public func capabilityDeployment(id: String) async throws -> CapabilityDeployment {
+        try await request(path: ["v1", "capabilities", "deployments", id], method: "GET", authenticated: true)
+    }
+
     public func createVoiceSession(requestID: String, offerSDP: String, voice: String, voiceMode: String, languageCode: String) async throws -> VoiceSessionResponse {
         let body: [String: JSONValue] = [
             "request_id": .string(requestID),

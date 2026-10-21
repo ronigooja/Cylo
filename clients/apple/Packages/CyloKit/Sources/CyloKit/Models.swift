@@ -169,6 +169,82 @@ public struct NotificationList: Codable, Equatable, Sendable {
     public var notifications: [NotificationRecord]
 }
 
+public struct CapabilityReleaseList: Codable, Equatable, Sendable {
+    public var items: [CapabilityRelease]
+}
+
+public struct CapabilityRelease: Codable, Equatable, Identifiable, Sendable {
+    public var id: String { releaseId }
+    public var releaseId: String
+    public var digest: String
+    public var manifest: CapabilityManifest
+    public var createdAt: String
+}
+
+public struct CapabilityManifest: Codable, Equatable, Sendable {
+    public var schemaVersion: Int
+    public var artifactRef: String
+    public var artifactDigest: String
+    public var entrypoint: String
+    public var args: [String]?
+    public var secretRefs: [String: String]?
+    public var mounts: [CapabilityMount]?
+    public var capabilities: [String]
+    public var triggers: [CapabilityTrigger]?
+    public var budget: CapabilityResourceBudget
+    public var network: CapabilityNetworkPolicy
+}
+
+public struct CapabilityMount: Codable, Equatable, Sendable {
+    public var volumeId: String
+    public var target: String
+    public var readOnly: Bool
+}
+
+public struct CapabilityTrigger: Codable, Equatable, Sendable {
+    public var kind: String
+    public var source: String
+    public var filterJson: String?
+}
+
+public struct CapabilityResourceBudget: Codable, Equatable, Sendable {
+    public var cpuMillis: Int64
+    public var memoryBytes: Int64
+    public var diskBytes: Int64
+    public var timeoutSeconds: Int64
+    public var concurrency: Int
+}
+
+public struct CapabilityNetworkPolicy: Codable, Equatable, Sendable {
+    public var mode: String
+    public var allowedHosts: [String]?
+}
+
+public struct CapabilityDeploymentList: Codable, Equatable, Sendable {
+    public var items: [CapabilityDeployment]
+}
+
+public struct CapabilityDeployment: Codable, Equatable, Identifiable, Sendable {
+    public var id: String { deploymentId }
+    public var deploymentId: String
+    public var workspaceId: String
+    public var serviceId: String
+    public var releaseDigest: String
+    public var requestedOperation: String
+    public var desiredState: String
+    public var observedState: String
+    public var grantId: String
+    public var configRef: String
+    public var configSha256: String
+    public var version: Int64
+    public var createdBy: String
+    public var createdAt: String
+    public var updatedAt: String
+    public var latestAttemptId: String
+    public var latestFence: Int64
+    public var lastErrorCode: String
+}
+
 public struct VoiceConfig: Codable, Equatable, Sendable {
     public var version: String
     public var defaults: VoiceDefaults

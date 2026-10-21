@@ -655,12 +655,233 @@ private struct CreateMemorySheet: View {
 
 private struct CapabilitiesView: View {
     @ObservedObject var model: CyloAppModel
+    @State private var showingReleaseForm = false
+    @State private var showingDeploymentForm = false
+    @State private var authorizationTarget: CapabilityDeployment?
+
     var body: some View {
         List {
             FreshnessBanner(model: model)
-            ContentUnavailableView("Capabilities unavailable", systemImage: "puzzlepiece.extension", description: Text("No capability inventory has been returned by this server."))
+            Section {
+                Text("Desired state records the requested outcome. Observed state reports the latest runner observation; a request is not complete until the observed state confirms it.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            Section("Deployments") {
+                if model.capabilityDeployments.isEmpty {
+                    ContentUnavailableView("No deployments", systemImage: "shippingbox", description: Text("Request a deployment from an admitted release."))
+                }
+                ForEach(model.capabilityDeployments) { deployment in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(deployment.serviceId).font(.headline)
+                        LabeledContent("Desired", value: deployment.desiredState.capitalized)
+                        LabeledContent("Observed", value: deployment.observedState.capitalized)
+                        LabeledContent("Operation", value: deployment.requestedOperation.capitalized)
+                        LabeledContent("Version", value: String(deployment.version))
+                        if !deployment.grantId.isEmpty {
+                            LabeledContent("Grant", value: String(deployment.grantId.prefix(12)))
+                        }
+                        if !deployment.lastErrorCode.isEmpty {
+                            Text("Latest error: \(deployment.lastErrorCode)").font(.caption).foregroundStyle(.orange)
+                        }
+                        Text("Updated \(deployment.updatedAt)").font(.caption2).foregroundStyle(.tertiary)
+                        if deployment.desiredState == "awaiting_authorization",
+                           let release = model.capabilityReleases.first(where: { $0.digest == deployment.releaseDigest }) {
+                            Button("Review authorization") { authorizationTarget = deployment }
+                                .disabled(model.isBusy || release.digest.isEmpty)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            Section("Immutable releases") {
+                if model.capabilityReleases.isEmpty {
+                    ContentUnavailableView("No releases", systemImage: "archivebox", description: Text("Submit a content-addressed manifest to create the first release."))
+                }
+                ForEach(model.capabilityReleases) { release in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(release.manifest.artifactRef).font(.headline).textSelection(.enabled)
+                        Text("Digest · \(release.digest)").font(.caption).textSelection(.enabled)
+                        Text("Capabilities · \(release.manifest.capabilities.joined(separator: ", "))")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("Admitted \(release.createdAt)").font(.caption2).foregroundStyle(.tertiary)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
         }
         .navigationTitle("Capabilities")
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refreshCapabilities() } }
+                Menu {
+                    Button("Submit release…", systemImage: "plus.square") { showingReleaseForm = true }
+                    Button("Request deployment…", systemImage: "shippingbox") { showingDeploymentForm = true }
+                        .disabled(model.capabilityReleases.isEmpty)
+                } label: { Label("Actions", systemImage: "ellipsis.circle") }
+            }
+        }
+        .task { await model.refreshCapabilities() }
+        .refreshable { await model.refreshCapabilities() }
+        .sheet(isPresented: $showingReleaseForm) { CreateCapabilityReleaseSheet(model: model) }
+        .sheet(isPresented: $showingDeploymentForm) { RequestCapabilityDeploymentSheet(model: model) }
+        .sheet(item: $authorizationTarget) { deployment in
+            if let release = model.capabilityReleases.first(where: { $0.digest == deployment.releaseDigest }) {
+                AuthorizeCapabilityDeploymentSheet(model: model, deployment: deployment, release: release)
+            }
+        }
+    }
+}
+
+private struct CreateCapabilityReleaseSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var model: CyloAppModel
+    @State private var artifactRef = "oci://registry.example/service:1"
+    @State private var artifactDigest = "sha256:"
+    @State private var entrypoint = "/app/service"
+    @State private var capabilities = ""
+    @State private var cpuMillis: Int64 = 1000
+    @State private var memoryMiB: Int64 = 512
+    @State private var diskMiB: Int64 = 1024
+    @State private var timeoutSeconds: Int64 = 300
+    @State private var concurrency = 1
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Immutable artifact") {
+                    TextField("Artifact reference (OCI or HTTPS)", text: $artifactRef)
+                    TextField("Artifact digest (sha256:…)", text: $artifactDigest)
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        #endif
+                    TextField("Entrypoint", text: $entrypoint)
+                    TextField("Capability IDs, comma separated", text: $capabilities)
+                    Text("Secret values cannot be entered here. Manifests may only refer to deployment-managed secret names.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("Maximum resource budget") {
+                    LabeledContent("CPU (millicores)") {
+                        TextField("1000", value: $cpuMillis, format: .number)
+                        #if os(iOS)
+                        .keyboardType(.numberPad)
+                        #endif
+                    }
+                    LabeledContent("Memory (MiB)") {
+                        TextField("512", value: $memoryMiB, format: .number)
+                        #if os(iOS)
+                        .keyboardType(.numberPad)
+                        #endif
+                    }
+                    LabeledContent("Disk (MiB)") {
+                        TextField("1024", value: $diskMiB, format: .number)
+                        #if os(iOS)
+                        .keyboardType(.numberPad)
+                        #endif
+                    }
+                    LabeledContent("Timeout (seconds)") {
+                        TextField("300", value: $timeoutSeconds, format: .number)
+                        #if os(iOS)
+                        .keyboardType(.numberPad)
+                        #endif
+                    }
+                    LabeledContent("Concurrency") {
+                        TextField("1", value: $concurrency, format: .number)
+                        #if os(iOS)
+                        .keyboardType(.numberPad)
+                        #endif
+                    }
+                    Text("Network access defaults to none. The server validates and canonicalizes this manifest before admission.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Submit release")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Submit") {
+                        Task {
+                            await model.submitCapabilityRelease(artifactRef: artifactRef, artifactDigest: artifactDigest, entrypoint: entrypoint, capabilities: capabilities, cpuMillis: cpuMillis, memoryBytes: memoryMiB * 1_048_576, diskBytes: diskMiB * 1_048_576, timeoutSeconds: timeoutSeconds, concurrency: concurrency)
+                            dismiss()
+                        }
+                    }
+                    .disabled(model.isBusy || artifactRef.isEmpty || artifactDigest.isEmpty || entrypoint.isEmpty || capabilities.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || cpuMillis < 1 || memoryMiB < 1 || memoryMiB > Int64.max / 1_048_576 || diskMiB < 1 || diskMiB > Int64.max / 1_048_576 || timeoutSeconds < 1 || concurrency < 1)
+                }
+            }
+        }
+        .frame(minWidth: 380, minHeight: 520)
+    }
+}
+
+private struct RequestCapabilityDeploymentSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var model: CyloAppModel
+    @State private var serviceID = ""
+    @State private var releaseDigest = ""
+    @State private var operation = "install"
+    private let operations = ["install", "start", "stop", "pause", "resume", "update", "uninstall"]
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("Service ID", text: $serviceID)
+                Picker("Release", selection: $releaseDigest) {
+                    ForEach(model.capabilityReleases) { release in
+                        Text("\(release.manifest.artifactRef) · \(release.digest.prefix(12))").tag(release.digest)
+                    }
+                }
+                Picker("Requested operation", selection: $operation) {
+                    ForEach(operations, id: \.self) { Text($0.capitalized).tag($0) }
+                }
+                Text("This records desired work as awaiting authorization. The runner has not acted yet.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .navigationTitle("Request deployment")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Request") {
+                        Task { await model.requestCapabilityDeployment(serviceID: serviceID, releaseDigest: releaseDigest, operation: operation); dismiss() }
+                    }
+                    .disabled(model.isBusy || serviceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || releaseDigest.isEmpty)
+                }
+            }
+        }
+        .frame(minWidth: 360, minHeight: 300)
+        .onAppear { if releaseDigest.isEmpty { releaseDigest = model.capabilityReleases.first?.digest ?? "" } }
+    }
+}
+
+private struct AuthorizeCapabilityDeploymentSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var model: CyloAppModel
+    let deployment: CapabilityDeployment
+    let release: CapabilityRelease
+    @State private var expiresAt = Calendar.current.date(byAdding: .day, value: 7, to: .now) ?? .now
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Authorization request") {
+                    LabeledContent("Service", value: deployment.serviceId)
+                    LabeledContent("Requested action", value: deployment.requestedOperation.capitalized)
+                    LabeledContent("Release digest", value: deployment.releaseDigest).textSelection(.enabled)
+                    Text("The grant covers this action at the manifest's maximum budget. Authorizing queues the request for the runner; it does not claim that the deployment succeeded.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                DatePicker("Grant expires", selection: $expiresAt, in: Date.now.addingTimeInterval(60)..., displayedComponents: [.date, .hourAndMinute])
+            }
+            .navigationTitle("Authorize deployment")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Authorize & queue", role: .destructive) {
+                        Task { await model.authorizeCapabilityDeployment(deployment, release: release, expiresAt: expiresAt); dismiss() }
+                    }
+                    .disabled(model.isBusy || expiresAt <= .now)
+                }
+            }
+        }
+        .frame(minWidth: 380, minHeight: 340)
     }
 }
 

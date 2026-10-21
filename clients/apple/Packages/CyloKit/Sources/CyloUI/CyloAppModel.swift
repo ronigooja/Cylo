@@ -16,6 +16,8 @@ public final class CyloAppModel: ObservableObject {
     @Published public private(set) var memoryMissing: [String] = []
     @Published public private(set) var memoryConflicts: [String] = []
     @Published public private(set) var notifications: [NotificationRecord] = []
+    @Published public private(set) var capabilityReleases: [CapabilityRelease] = []
+    @Published public private(set) var capabilityDeployments: [CapabilityDeployment] = []
     @Published public private(set) var voiceConfig: VoiceConfig?
     @Published public private(set) var voicePoolStatus: VoicePoolStatus?
     @Published public private(set) var voiceStatus: VoiceIntegrationStatus = .idle
@@ -231,6 +233,71 @@ public final class CyloAppModel: ObservableObject {
             if let failure = error as? CyloError, case let .http(status, _, _, _) = failure, status == 403 { return }
             notice = "Memory could not be refreshed: \(userMessage(error))"
         }
+    }
+
+    public func refreshCapabilities() async {
+        guard let api else { return }
+        let generation = connectionGeneration.value
+        do {
+            async let releases = api.capabilityReleases()
+            async let deployments = api.capabilityDeployments()
+            let (nextReleases, nextDeployments) = try await (releases, deployments)
+            guard generation == connectionGeneration.value, api === self.api else { return }
+            capabilityReleases = nextReleases.items
+            capabilityDeployments = nextDeployments.items
+        } catch {
+            guard generation == connectionGeneration.value else { return }
+            notice = "Capability inventory could not be refreshed: \(userMessage(error))"
+        }
+    }
+
+    public func submitCapabilityRelease(artifactRef: String, artifactDigest: String, entrypoint: String, capabilities: String, cpuMillis: Int64, memoryBytes: Int64, diskBytes: Int64, timeoutSeconds: Int64, concurrency: Int) async {
+        let manifest: JSONValue = .object([
+            "schema_version": .integer(1),
+            "artifact_ref": .string(artifactRef),
+            "artifact_digest": .string(artifactDigest),
+            "entrypoint": .string(entrypoint),
+            "capabilities": .array(capabilities.split(separator: ",").map { .string($0.trimmingCharacters(in: .whitespacesAndNewlines)) }.filter { if case .string(let value) = $0 { return !value.isEmpty }; return false }),
+            "budget": .object([
+                "cpu_millis": .integer(cpuMillis),
+                "memory_bytes": .integer(memoryBytes),
+                "disk_bytes": .integer(diskBytes),
+                "timeout_seconds": .integer(timeoutSeconds),
+                "concurrency": .integer(Int64(concurrency))
+            ]),
+            "network": .object(["mode": .string("none")])
+        ])
+        await send(kind: "capability.release.submit", payload: .object(["manifest": manifest]))
+        await refreshCapabilities()
+    }
+
+    public func requestCapabilityDeployment(serviceID: String, releaseDigest: String, operation: String) async {
+        let payload: JSONValue = .object([
+            "service_id": .string(serviceID),
+            "release_digest": .string(releaseDigest),
+            "operation": .string(operation)
+        ])
+        await send(kind: "capability.deployment.request", payload: payload)
+        await refreshCapabilities()
+    }
+
+    public func authorizeCapabilityDeployment(_ deployment: CapabilityDeployment, release: CapabilityRelease, scopeKind: String = "workspace", scopeID: String? = nil, expiresAt: Date) async {
+        var payload: [String: JSONValue] = [
+            "deployment_id": .string(deployment.deploymentId),
+            "scope_kind": .string(scopeKind),
+            "actions": .array([.string(deployment.requestedOperation)]),
+            "budget": .object([
+                "cpu_millis": .integer(release.manifest.budget.cpuMillis),
+                "memory_bytes": .integer(release.manifest.budget.memoryBytes),
+                "disk_bytes": .integer(release.manifest.budget.diskBytes),
+                "timeout_seconds": .integer(release.manifest.budget.timeoutSeconds),
+                "concurrency": .integer(Int64(release.manifest.budget.concurrency))
+            ]),
+            "expires_at": .string(ISO8601DateFormatter().string(from: expiresAt))
+        ]
+        if let scopeID, !scopeID.isEmpty { payload["scope_id"] = .string(scopeID) }
+        await send(kind: "capability.deployment.authorize", expectedVersion: deployment.version, payload: .object(payload))
+        await refreshCapabilities()
     }
 
     public func refreshVoiceReadiness() async {
