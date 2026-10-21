@@ -4,6 +4,8 @@
 
 本文只交付研究、设计和离线研究脚本；未写产品 runtime、部署网关、导入真实账号或进行真实通话。文中“源码已实现”“建议新增”“待 POC”严格区分。沿用 OpenAI Docs 技能核对官方资料，但官方 Realtime 能力仅作比较与协议备选，不自动适用于 ChatGPT 网页私有协议。
 
+**最新决定：Space3044/chatgpt-web-voice 已选定，不再以业务桥接实验决定是否采纳。后续验证用于补齐该方案的集成缺口、确定能力交付范围。** 语音模型与 Super 的职责、并发及推荐拓扑见 [12 语音 Agent 与 Super 边界](12-voice-super-boundary.md)。
+
 ## 1. 采用范围与固定版本
 
 上游 origin：`https://github.com/Space3044/chatgpt-web-voice.git`；本次实际 `git ls-remote origin HEAD` 与本地 `/tmp/cylo-research-voice` 均为 **`6338ac478070aaa34bfe7a3c0469caf9e9174c02`**。MIT许可应随实质复制保留；不 vendor 上游源码。32条可见提交，无tag，最新作者时间2026-07-25；这些事实不能推导维护SLA。Go module仍用 `github.com/dyhhhhhh/chatgpt-web-voice`，fork更新须按来源/SHA管理。
@@ -76,7 +78,7 @@ Cylo HTTPS/BFF + VoiceSessionAdapter ←→ 内部Go网关 /v1/voice/sessions
 
 ## 4. 实时语音模型如何接到Super/Worker
 
-上游ChatGPT语音assistant负责实时听说、澄清、自然交谈，是**Super的会话前端/voice adapter**。它不拥有Cylo任务状态、授权或Worker调度权。复杂业务请求交Super，简单真实状态读取走确定性服务；Worker按现有控制面授权独立执行。上游语音模型说“完成了”不改变任务状态，屏幕回执与任务账本以执行证据为准。
+上游ChatGPT语音assistant本身具备理解与自主回复能力，在Cylo中定位为**交互Agent/会话入口**；VoiceSessionAdapter则是Cylo新增的确定性协议适配代码，二者不可混为一个组件。语音Agent负责实时听说、澄清、自然交谈，仅提出业务意图，复杂任务的正式规划与调度由Super负责。它不拥有Cylo任务状态、授权或Worker调度权。复杂业务请求交Super，简单真实状态读取走确定性服务；Worker按现有控制面授权独立执行。上游语音模型说“完成了”不改变任务状态，屏幕回执与任务账本以执行证据为准。
 
 ### 源码能力矩阵：不要混用协议
 
@@ -95,7 +97,7 @@ Cylo HTTPS/BFF + VoiceSessionAdapter ←→ 内部Go网关 /v1/voice/sessions
 2. 完成用户turn→持久化`voice.turn.committed`→幂等command提交→服务端返回durable ack。幂等键包含Cylo conversation/turn/revision；修订关联原command做更正策略，不能新起重复业务动作。未提交turn断线保持草稿；已提交但ACK丢失查询command状态，不重执行。
 3. adapter将控制面`accepted/running/waiting/completed/failed`真实回执构成受限文本消息，带`receipt_id/task_id/revision/generation`及可信展示原文；经现有私有`relay_message`以**user角色文本**请求上游语音assistant解释结果。它是最小可尝试的语音反馈路径，不能谎称支持system/tool角色。合成的回执消息ID需列入排除集，不能将其字幕再次识别成用户业务指令形成循环。
 4. 同一实时语音模型继续听说和接受打断。回执播报依赖当前Web语音会话，不另接独立TTS。它可能改写、提前回答、忽略提示或重复发声；POC需验证上游何时自动应答、能否停止当前发声、按回执触发语音、否定词/数字是否正确。提示词约束不是安全边界，控制面拒绝其任何无授权业务副作用；重大审批绑定具体屏幕对象/command摘要。
-5. **两次回答问题需显式验收**：上游可能先自行回应用户，稍后又播Cylo结果。最小版本可明确先说“已接收/待核对”，但源码尚无可保证自动回复抑制/自定义身份的接口。若不能约束，标为桥接POC失败，继续同一上游协议研究；此时只能标记“实时语音对话 + Cylo独立任务状态”，业务语音闭环未验收，不把原生通话可用冒充“Cylo执行闭环可用”。
+5. **两次回答问题需显式验收**：上游可能先自行回应用户，稍后又播Cylo结果。最小版本可明确先说“已接收/待核对”，但源码尚无可保证自动回复抑制/自定义身份的接口。若不能约束，记录为响应/播放控制集成缺口，继续在选定上游内修补；此时只能标记“实时语音对话 + Cylo独立任务状态”，业务语音闭环未验收，不把原生通话可用冒充“Cylo执行闭环可用”。
 
 桥接接口建议：输入`voice.turn.partial/committed/interrupted`, `voice.session.error`；输出`business.receipt.available`, `voice.context.bootstrap`, `voice.playback.stop`；公共字段`workspace_id/user_id/device_id/cylo_conversation_id/cylo_voice_session_id/media_generation/turn_id/provider_message_id/revision/event_id`。`business.receipt`含真实状态/证据引用，声音不提供授权。服务端将客户端事件视作该用户提供的输入，客户端转发不能当上游签名证明；不允许转发伪造的“task completed”改变权威数据。
 
@@ -121,7 +123,7 @@ Cylo HTTPS/BFF + VoiceSessionAdapter ←→ 内部Go网关 /v1/voice/sessions
 | 远程/前后台 | Mac/iPhone/iPad受信HTTPS、显式开麦、前台PWA先验；切后台/锁屏/来电/被杀后重新核验track/AudioContext/连接。后台任务和通知收件箱独立继续；持续锁屏通话需原生音频会话真机POC |
 | 撤权/结束 | 关闭所有track、播放器/缓冲、DataChannel、PeerConnection，释放租约。网关DELETE只解除绑定，不是上游媒体终止证明；参见第3节relay/终止接口门槛 |
 
-## 6. 最小依赖改造与验收顺序
+## 6. 已选方案的集成与能力验收顺序
 
 | 阶段 | 最小改造/依赖 | 准出证据 |
 |---|---|---|
