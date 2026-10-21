@@ -178,6 +178,41 @@ func TestMemoryWorkerRequiresExactScopeAndWorkspace(t *testing.T) {
 	}
 }
 
+func TestMemoryWorkerProposalRemainsPendingForUserReview(t *testing.T) {
+	store, handler, token := memoryWorkerHarness(t, []string{"memory:propose"}, []string{"default"})
+	seedMemoryWorkerClaim(t, store.DB(), "default", "claim-proposal")
+	response := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/proposals", map[string]any{
+		"workspace_id":      "default",
+		"source_id":         "source-claim-proposal",
+		"source_version":    1,
+		"extractor_version": "mem0-controlled-v1",
+		"scope":             map[string]any{"kind": "workspace"},
+		"subject":           "project",
+		"key":               "derived_fact",
+		"content":           "A candidate extracted from the source",
+	})
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("proposal status=%d body=%s", response.Code, response.Body.String())
+	}
+	var proposal struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &proposal); err != nil {
+		t.Fatal(err)
+	}
+	if proposal.ID == "" || proposal.Status != "pending" {
+		t.Fatalf("worker proposal was not left pending: %#v", proposal)
+	}
+	var count int
+	if err := store.DB().QueryRow(`SELECT count(*) FROM memory_claims WHERE id='claim-proposal' AND revision=1 AND status='active'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("candidate proposal changed authoritative claims: count=%d", count)
+	}
+}
+
 func TestMemoryWorkerCompletionRechecksTombstoneGeneration(t *testing.T) {
 	store, handler, token := memoryWorkerHarness(t, []string{"memory:jobs:claim", "memory:jobs:complete"}, []string{"default"})
 	seedMemoryWorkerClaim(t, store.DB(), "default", "claim-delete-race")

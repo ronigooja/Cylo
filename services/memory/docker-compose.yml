@@ -1,0 +1,26 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.19.1
+    ports:
+      - "127.0.0.1:6333:6333"
+    # This instance is intentionally disposable; rebuilds repopulate it from Go authority.
+    tmpfs:
+      - /qdrant/storage
+
+  memory-worker:
+    build:
+      context: ../..
+      dockerfile: services/memory/Dockerfile
+    environment:
+      CYLO_CONTROL_URL: ${CYLO_CONTROL_URL:?set CYLO_CONTROL_URL}
+      CYLO_RUNNER_TOKEN: ${CYLO_RUNNER_TOKEN:?set CYLO_RUNNER_TOKEN}
+      CYLO_QDRANT_URL: http://qdrant:6333
+      CYLO_QDRANT_COLLECTION: cylo_memory_v1_paraphrase_multilingual_minilm_l12_384_faf4aa42
+      CYLO_MEM0_COLLECTION: cylo_mem0_v1
+      CYLO_MEM0_LLM_PROVIDER: ${CYLO_MEM0_LLM_PROVIDER:-openai}
+      CYLO_MEM0_LLM_MODEL: ${CYLO_MEM0_LLM_MODEL:?set CYLO_MEM0_LLM_MODEL}
+      CYLO_MEM0_LLM_BASE_URL: ${CYLO_MEM0_LLM_BASE_URL:?set CYLO_MEM0_LLM_BASE_URL}
+      CYLO_MEM0_LLM_API_KEY: ${CYLO_MEM0_LLM_API_KEY:?set CYLO_MEM0_LLM_API_KEY}
+      CYLO_MEMORY_MODEL_CACHE: /var/lib/cylo/memory/models
+    depends_on:
+      - qdrant
