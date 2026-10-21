@@ -1,6 +1,6 @@
 # Cylo master plan
 
-**Status:** documentation Stage 0 is complete; product implementation has not started. This document is the current decision and delivery plan. Source requirements and research are preserved under `docs/archive/`; archived proposals are evidence, not current decisions.
+**Status:** documentation Stage 0 is complete and product implementation is underway. The repository now contains a partial Go control foundation and native Apple client source. Milestone 1 is not accepted: AO/runtime integration, complete runner delivery, production deployment, device acceptance, and full scenario evidence remain outstanding. This document is the current decision and delivery plan. Source requirements and research are preserved under `docs/archive/`; archived proposals are evidence, not current decisions.
 
 ## 1. Status and decisions
 
