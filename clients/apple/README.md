@@ -8,6 +8,8 @@ Cylo ships a native SwiftUI application for macOS and a shared SwiftUI applicati
 
 The concrete adapter creates a microphone audio track, receives remote audio, negotiates the Space3044 `oai-events` DataChannel, exchanges non-trickle SDP through Cylo's authenticated voice-session API, and waits for ICE and DataChannel readiness before displaying an active session. Voice captions are drafts until the user confirms them. The client closes local media before requesting hangup; if upstream termination cannot be verified, the server reports and keeps the account pool quarantined.
 
+`tools/build-webrtc-source.sh` is the reproducible source-build path. It pins the WebRTC M155 source branch head (`3b7ef6826ea6cb4c89c3972b1f14fcb3ed0fa469`) and `depot_tools` revision (`c84f5f5081e89eda268785a04a9e8a9a1987724f`), builds iOS device/simulator and macOS arm64/x86_64 frameworks, combines the architecture slices, and validates the resulting XCFramework. The script restricts generated files to `/Users/zhuwei/terminal/cylo-apple-build/`. Xcode/SDK compatibility may still prevent this old WebRTC source revision from building with a newer toolchain; the script has not been executed as part of current build verification.
+
 ## Build evidence and limits
 
 The package tests and native macOS app build can run on a Mac with Xcode 16.2 and the pinned Swift package. The iOS app can be compiled directly against the iOS SDK with SwiftPM when Xcode does not offer an iOS platform destination. A successful compile does not verify microphone permissions, real-device audio routing, gateway credentials, network traversal, background/locked-device behavior, or live account-pool recovery. Those require an authorized configured gateway and physical-device acceptance.

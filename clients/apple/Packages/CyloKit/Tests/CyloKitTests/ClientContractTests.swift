@@ -2,6 +2,22 @@ import XCTest
 @testable import CyloKit
 
 final class ClientContractTests: XCTestCase {
+    func testConnectionGenerationRejectsResponsesAfterOriginOrCredentialSwitch() throws {
+        let serverA = try XCTUnwrap(URL(string: "https://server-a.example"))
+        let serverB = try XCTUnwrap(URL(string: "https://server-b.example"))
+        var generation = ConnectionGeneration(origin: serverA)
+        let originalRequest = generation.value
+
+        XCTAssertTrue(generation.accepts(originalRequest, from: serverA))
+        generation.switchOrigin(to: serverB)
+        XCTAssertFalse(generation.accepts(originalRequest, from: serverA))
+        XCTAssertFalse(generation.accepts(originalRequest, from: serverB))
+
+        let reauthenticatedRequest = generation.value
+        generation.advance() // Same server, new device identity.
+        XCTAssertFalse(generation.accepts(reauthenticatedRequest, from: serverB))
+    }
+
     func testSnapshotDecodesAuthoritativeApprovalsAndRuns() throws {
         let data = Data(#"{"server_version":"srv-3","event_cursor":"19","projects":[],"tasks":[{"id":"task-1","title":"Review","goal":"Review changes","source":"user","status":"awaiting_user","version":4,"created_at":"2026-10-20T12:00:00Z","updated_at":"2026-10-20T12:01:00Z","evidence":[],"can_accept_result":true}],"approvals":[{"id":"approval-1","task_id":"task-1","status":"pending","prompt":"Approve deployment?","version":2,"created_at":"2026-10-20T12:00:00Z","requested_action_digest":"sha256:example"}],"devices":[],"runs":[{"id":"run-1","task_id":"task-1","attempt_id":"attempt-1","status":"verification_pending","desired_control":"stop","control_version":1,"started_at":"2026-10-20T12:00:00Z","evidence":[],"termination_confirmed":true}]}"#.utf8)
         let snapshot = try CyloJSON.decoder.decode(Snapshot.self, from: data)

@@ -29,7 +29,7 @@ public final class CyloAppModel: ObservableObject {
     private var eventTask: Task<Void, Never>?
     private var snapshotCache: SnapshotCache?
     private var streamBackoff: UInt64 = 1
-    private var connectionGeneration: UInt64 = 0
+    private var connectionGeneration = ConnectionGeneration()
     private var configuredServerURL: URL?
     private var voiceTransport: LibWebRTCTransport?
     private var voiceAudioSession: VoiceAudioSessionAdapter?
@@ -61,30 +61,31 @@ public final class CyloAppModel: ObservableObject {
     public var approvals: [Approval] { snapshot?.approvals ?? [] }
     public var devices: [Device] { snapshot?.devices ?? [] }
     public var runs: [Run] { snapshot?.runs ?? [] }
+    public var canEndVoiceSession: Bool { voiceSession != nil }
 
     public func start() async {
-        var generation = connectionGeneration
+        var generation = connectionGeneration.value
         do {
             _ = try configure()
-            generation = connectionGeneration
+            generation = connectionGeneration.value
             try await refreshSnapshot()
-            guard generation == connectionGeneration else { return }
+            guard generation == connectionGeneration.value else { return }
             await refreshMemory()
-            guard generation == connectionGeneration else { return }
+            guard generation == connectionGeneration.value else { return }
             do {
                 let recovered = try await coordinator?.recoverPending() ?? []
-                guard generation == connectionGeneration else { return }
+                guard generation == connectionGeneration.value else { return }
                 if !recovered.isEmpty {
                     notice = "Recovered \(recovered.count) command receipt(s) from this device's durable queue."
                     try await refreshSnapshot()
                 }
             } catch {
-                if generation == connectionGeneration { notice = "A saved command needs attention: \(userMessage(error))" }
+                if generation == connectionGeneration.value { notice = "A saved command needs attention: \(userMessage(error))" }
             }
-            guard generation == connectionGeneration else { return }
+            guard generation == connectionGeneration.value else { return }
             startEventLoop()
         } catch {
-            if generation == connectionGeneration { setOffline(error) }
+            if generation == connectionGeneration.value { setOffline(error) }
         }
     }
 
@@ -92,7 +93,8 @@ public final class CyloAppModel: ObservableObject {
 
     public func updateServerAddress() async {
         await endVoiceSession()
-        connectionGeneration &+= 1
+        if let url = URL(string: serverAddress), url.host != nil { connectionGeneration.switchOrigin(to: url) }
+        else { connectionGeneration.advance() }
         defaults.set(serverAddress.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "cylo.serverAddress")
         eventTask?.cancel()
         eventTask = nil
@@ -102,57 +104,57 @@ public final class CyloAppModel: ObservableObject {
     }
 
     public func bootstrap(code: String, deviceName: String) async {
-        var generation = connectionGeneration
+        var generation = connectionGeneration.value
         do {
             let api = try configure()
-            generation = connectionGeneration
+            generation = connectionGeneration.value
             guard let identity else { throw CyloError.missingCredential }
             _ = try identity.loadOrCreate()
             _ = try await api.bootstrap(code: code, deviceName: deviceName, identity: identity.loadOrCreate())
-            guard generation == connectionGeneration else { return }
+            guard generation == connectionGeneration.value else { return }
             notice = "This device is registered. Loading the server snapshot…"
             try await refreshSnapshot()
-            guard generation == connectionGeneration else { return }
+            guard generation == connectionGeneration.value else { return }
             startEventLoop()
         } catch {
-            if generation == connectionGeneration { notice = userMessage(error) }
+            if generation == connectionGeneration.value { notice = userMessage(error) }
         }
     }
 
     public func requestPairing(deviceName: String) async {
-        var generation = connectionGeneration
+        var generation = connectionGeneration.value
         do {
             let api = try configure()
-            generation = connectionGeneration
+            generation = connectionGeneration.value
             guard let identity else { throw CyloError.missingCredential }
             let result = try await api.requestPairing(deviceName: deviceName, identity: identity.loadOrCreate())
-            guard generation == connectionGeneration else { return }
+            guard generation == connectionGeneration.value else { return }
             pairingID = result.pairingId
             defaults.set(result.pairingId, forKey: pairingKey)
             let status = try await api.pairingStatus(id: result.pairingId, identity: identity.loadOrCreate())
-            guard generation == connectionGeneration else { return }
+            guard generation == connectionGeneration.value else { return }
             pairingStatus = status
             notice = "Pairing request sent. An approved device must approve this device before it can read Cylo data."
-        } catch { if generation == connectionGeneration { notice = userMessage(error) } }
+        } catch { if generation == connectionGeneration.value { notice = userMessage(error) } }
     }
 
     public func refreshPairing() async {
-        var generation = connectionGeneration
+        var generation = connectionGeneration.value
         do {
             let api = try configure()
-            generation = connectionGeneration
+            generation = connectionGeneration.value
             guard let id = pairingID ?? defaults.string(forKey: pairingKey), let identity else { return }
             let status = try await api.pairingStatus(id: id, identity: identity.loadOrCreate())
-            guard generation == connectionGeneration else { return }
+            guard generation == connectionGeneration.value else { return }
             pairingID = id
             pairingStatus = status
             if pairingStatus?.status == "approved" {
                 notice = "This device was approved. Loading the server snapshot…"
                 try await refreshSnapshot()
-                guard generation == connectionGeneration else { return }
+                guard generation == connectionGeneration.value else { return }
                 startEventLoop()
             }
-        } catch { if generation == connectionGeneration { notice = userMessage(error) } }
+        } catch { if generation == connectionGeneration.value { notice = userMessage(error) } }
     }
 
     public func createProject(name: String, description: String?) async {
@@ -187,15 +189,15 @@ public final class CyloAppModel: ObservableObject {
 
     public func refreshMemory(query: String = "") async {
         guard let api else { return }
-        let generation = connectionGeneration
+        let generation = connectionGeneration.value
         do {
             let result = try await api.searchMemory(query: query)
-            guard generation == connectionGeneration, api === self.api else { return }
+            guard generation == connectionGeneration.value, api === self.api else { return }
             memoryClaims = result.items
             memoryMissing = result.missing
             memoryConflicts = result.conflicts
         } catch {
-            guard generation == connectionGeneration else { return }
+            guard generation == connectionGeneration.value else { return }
             if let failure = error as? CyloError, case let .http(status, _, _, _) = failure, status == 403 { return }
             notice = "Memory could not be refreshed: \(userMessage(error))"
         }
@@ -203,17 +205,17 @@ public final class CyloAppModel: ObservableObject {
 
     public func refreshVoiceReadiness() async {
         guard let api = try? configure() else { return }
-        let generation = connectionGeneration
+        let generation = connectionGeneration.value
         do {
             async let config = api.voiceConfig()
             async let pool = api.voicePoolStatus()
             let (nextConfig, nextPool) = try await (config, pool)
-            guard generation == connectionGeneration, api === self.api else { return }
+            guard generation == connectionGeneration.value, api === self.api else { return }
             voiceConfig = nextConfig
             voicePoolStatus = nextPool
             if voiceSession == nil { voiceStatus = .idle }
         } catch {
-            guard generation == connectionGeneration else { return }
+            guard generation == connectionGeneration.value else { return }
             voiceStatus = .unavailable(reason: userMessage(error))
         }
     }
@@ -224,7 +226,7 @@ public final class CyloAppModel: ObservableObject {
         let api: APIClient
         do {
             api = try configure()
-            generation = connectionGeneration
+            generation = connectionGeneration.value
         } catch {
             voiceStatus = .unavailable(reason: userMessage(error))
             return
@@ -236,9 +238,9 @@ public final class CyloAppModel: ObservableObject {
         voiceStatus = .connecting
         do {
             let config = try await api.voiceConfig()
-            guard generation == connectionGeneration else { throw CancellationError() }
+            guard generation == connectionGeneration.value else { throw CancellationError() }
             let pool = try await api.voicePoolStatus()
-            guard generation == connectionGeneration else { throw CancellationError() }
+            guard generation == connectionGeneration.value else { throw CancellationError() }
             voiceConfig = config
             voicePoolStatus = pool
             guard !pool.blocked else { throw CyloError.http(status: 409, code: pool.reasonCode, message: "The voice account pool is quarantined until an operator confirms termination.", details: nil) }
@@ -256,7 +258,7 @@ public final class CyloAppModel: ObservableObject {
             }
 
             let offer = try await transport!.createOffer()
-            guard generation == connectionGeneration else { throw CancellationError() }
+            guard generation == connectionGeneration.value else { throw CancellationError() }
             let created = try await api.createVoiceSession(
                 requestID: UUID().uuidString.lowercased(),
                 offerSDP: offer,
@@ -265,14 +267,14 @@ public final class CyloAppModel: ObservableObject {
                 languageCode: languageCode ?? config.defaults.languageCode
             )
             allocatedSession = created
-            guard generation == connectionGeneration else { throw CancellationError() }
+            guard generation == connectionGeneration.value else { throw CancellationError() }
             guard created.state == "active", !created.answerSdp.isEmpty else { throw CyloError.invalidResponse }
             try await transport!.applyAnswer(created.answerSdp)
-            guard generation == connectionGeneration else { throw CancellationError() }
+            guard generation == connectionGeneration.value else { throw CancellationError() }
             try await transport!.waitUntilConnected()
-            guard generation == connectionGeneration else { throw CancellationError() }
+            guard generation == connectionGeneration.value else { throw CancellationError() }
             let confirmed = try await api.confirmVoiceConnected(sessionID: created.voiceSessionId, generation: created.generation)
-            guard generation == connectionGeneration else { throw CancellationError() }
+            guard generation == connectionGeneration.value else { throw CancellationError() }
             guard confirmed.ok else { throw CyloError.invalidResponse }
 
             voiceSession = created
@@ -288,12 +290,22 @@ public final class CyloAppModel: ObservableObject {
         } catch {
             await transport?.close()
             try? audio?.deactivate()
+            var remainsQuarantined = false
             if let allocatedSession {
-                _ = try? await api.hangupVoiceSession(sessionID: allocatedSession.voiceSessionId)
+                let release = try? await api.hangupVoiceSession(sessionID: allocatedSession.voiceSessionId)
+                remainsQuarantined = release == nil || release?.poolBlocked == true
+                if remainsQuarantined {
+                    voicePoolStatus = try? await api.voicePoolStatus()
+                }
             }
-            if generation == connectionGeneration {
-                voiceStatus = .unavailable(reason: userMessage(error))
-                if let allocatedSession { voiceSession = allocatedSession; voiceAPI = api }
+            if generation == connectionGeneration.value {
+                if remainsQuarantined, let allocatedSession {
+                    voiceSession = allocatedSession
+                    voiceAPI = api
+                    voiceStatus = .interrupted(reason: "Voice setup failed and upstream termination is unverified; the pool remains isolated. Retry release after local media has closed. \(userMessage(error))")
+                } else {
+                    voiceStatus = .unavailable(reason: userMessage(error))
+                }
             }
         }
     }
@@ -312,17 +324,24 @@ public final class CyloAppModel: ObservableObject {
             if case .unavailable = voiceStatus {} else { voiceStatus = .idle }
             return
         }
+        let generation = connectionGeneration.value
         do {
             let result = try await api.hangupVoiceSession(sessionID: session.voiceSessionId)
+            guard generation == connectionGeneration.value, voiceSession?.voiceSessionId == session.voiceSessionId else { return }
+            let latestPool = result.poolBlocked == true ? try? await api.voicePoolStatus() : nil
+            guard generation == connectionGeneration.value, voiceSession?.voiceSessionId == session.voiceSessionId else { return }
             if result.poolBlocked == true {
-                voicePoolStatus = try? await api.voicePoolStatus()
+                voicePoolStatus = latestPool
                 voiceStatus = .interrupted(reason: "Local media is closed. The upstream account pool remains quarantined until termination is verified.")
+                voiceSession = nil
+                voiceAPI = nil
             } else {
                 voiceStatus = .idle
+                voiceSession = nil
+                voiceAPI = nil
             }
-            voiceSession = nil
-            voiceAPI = nil
         } catch {
+            guard generation == connectionGeneration.value, voiceSession?.voiceSessionId == session.voiceSessionId else { return }
             voiceStatus = .interrupted(reason: "Local media is closed, but server release is unconfirmed: \(userMessage(error))")
         }
     }
@@ -330,28 +349,32 @@ public final class CyloAppModel: ObservableObject {
     public func confirmVoiceDraftAsTask(title: String? = nil) async {
         guard let session = voiceSession, let coordinator, !voiceDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let turnID = voiceTurnID, voiceDraftRevision > 0 else { return }
+        let generation = connectionGeneration.value
+        let revision = voiceDraftRevision
+        let workspaceID = snapshot?.devices.first?.workspaceId
         let text = voiceDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         var commitFields: [String: JSONValue] = [
-            "voice_session_id": .string(session.voiceSessionId),
+            "session_id": .string(session.voiceSessionId),
             "generation": .integer(session.generation),
             "turn_id": .string(turnID),
-            "revision": .integer(voiceDraftRevision),
-            "text": .string(text),
-            "confirmed": .bool(true)
+            "revision": .integer(revision),
+            "content": .string(text),
+            "user_confirmed": .bool(true)
         ]
         if let voiceProviderMessageID { commitFields["provider_message_id"] = .string(voiceProviderMessageID) }
         let commit = JSONValue.object(commitFields)
         isBusy = true
         defer { isBusy = false }
         do {
-            _ = try await coordinator.submit(kind: "voice.turn.commit", payload: commit, workspaceID: snapshot?.devices.first?.workspaceId)
+            _ = try await coordinator.submit(kind: "voice.turn.commit", payload: commit, workspaceID: workspaceID)
+            guard generation == connectionGeneration.value, voiceSession?.voiceSessionId == session.voiceSessionId else { return }
             let taskTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? title! : String(text.prefix(72))
             let sourceReference: JSONValue = .object([
                 "kind": .string("voice_turn"),
                 "voice_session_id": .string(session.voiceSessionId),
                 "generation": .integer(session.generation),
                 "turn_id": .string(turnID),
-                "revision": .integer(voiceDraftRevision)
+                "revision": .integer(revision)
             ])
             let createTask: JSONValue = .object([
                 "title": .string(taskTitle),
@@ -360,7 +383,8 @@ public final class CyloAppModel: ObservableObject {
                 "source_reference": sourceReference,
                 "initial_message": .string(text)
             ])
-            let taskReceipt = try await coordinator.submit(kind: "task.create", payload: createTask, workspaceID: snapshot?.devices.first?.workspaceId).receipt
+            let taskReceipt = try await coordinator.submit(kind: "task.create", payload: createTask, workspaceID: workspaceID).receipt
+            guard generation == connectionGeneration.value, voiceSession?.voiceSessionId == session.voiceSessionId else { return }
             guard let taskID = taskReceipt.resourceId, let version = taskReceipt.resourceVersion else { throw CyloError.invalidResponse }
             guard version > 0 else { throw CyloError.invalidResponse }
             notice = "Voice turn confirmed and linked to task \(taskID)."
@@ -370,7 +394,7 @@ public final class CyloAppModel: ObservableObject {
             voiceDraftRevision = 0
             try await refreshSnapshot()
         } catch {
-            notice = "The voice turn may be committed, but task creation or linking needs attention: \(userMessage(error))"
+            if generation == connectionGeneration.value { notice = "The voice turn may be committed, but task creation needs attention: \(userMessage(error))" }
         }
     }
 
@@ -465,12 +489,21 @@ public final class CyloAppModel: ObservableObject {
         defaults.set(trimmed, forKey: "cylo.serverAddress")
         if let api, api.serverURL == url, coordinator != nil { return api }
         if configuredServerURL != url {
-            connectionGeneration &+= 1
+            connectionGeneration.switchOrigin(to: url)
             configuredServerURL = url
             snapshot = nil
             freshness = .loading
             pairingID = defaults.string(forKey: "cylo.pairingID.\(serverAddress)")
             pairingStatus = nil
+            memoryClaims = []
+            memoryMissing = []
+            memoryConflicts = []
+            voiceConfig = nil
+            voicePoolStatus = nil
+            voiceDraft = ""
+            voiceDraftRevision = 0
+            voiceTurnID = nil
+            voiceProviderMessageID = nil
         }
         eventTask?.cancel()
         let identity = DeviceIdentityStore(serverURL: url)
@@ -493,12 +526,12 @@ public final class CyloAppModel: ObservableObject {
 
     private func send(kind: String, expectedVersion: Int64? = nil, payload: JSONValue) async {
         guard let coordinator else { notice = "Connect to a Cylo server first."; return }
-        let generation = connectionGeneration
+        let generation = connectionGeneration.value
         isBusy = true
         defer { isBusy = false }
         do {
             let outcome = try await coordinator.submit(kind: kind, expectedVersion: expectedVersion, payload: payload, workspaceID: snapshot?.devices.first?.workspaceId)
-            guard generation == connectionGeneration else { return }
+            guard generation == connectionGeneration.value else { return }
             if kind == "task.stop" {
                 notice = "Stop intent recorded (receipt \(outcome.receipt.commandId)). Awaiting server confirmation that the runtime terminated."
             } else {
@@ -506,15 +539,15 @@ public final class CyloAppModel: ObservableObject {
             }
             do { try await refreshSnapshot() }
             catch { setStale("The command was accepted, but the latest snapshot could not be loaded: \(userMessage(error))") }
-        } catch { if generation == connectionGeneration { notice = userMessage(error) } }
+        } catch { if generation == connectionGeneration.value { notice = userMessage(error) } }
     }
 
     private func refreshSnapshot() async throws {
         guard let api else { throw CyloError.invalidServerURL }
-        let generation = connectionGeneration
+        let generation = connectionGeneration.value
         let cache = snapshotCache
         let latest = try await api.snapshot()
-        guard generation == connectionGeneration, api === self.api else { return }
+        guard generation == connectionGeneration.value, api === self.api else { return }
         if let current = snapshot, !cursor(latest.eventCursor, isAtLeast: current.eventCursor) {
             throw CyloError.invalidResponse
         }
@@ -541,7 +574,7 @@ public final class CyloAppModel: ObservableObject {
                 do {
                     _ = try await api.heartbeatVoiceSession(sessionID: sessionID)
                 } catch {
-                    guard let self, generation == self.connectionGeneration else { return }
+                    guard let self, generation == self.connectionGeneration.value else { return }
                     self.voiceStatus = .interrupted(reason: "Voice lease renewal failed: \(self.userMessage(error))")
                     return
                 }
@@ -593,23 +626,23 @@ public final class CyloAppModel: ObservableObject {
     }
 
     private func listen(using api: APIClient) async {
-        let generation = connectionGeneration
+        let generation = connectionGeneration.value
         let stream = EventStreamClient(api: api)
-        while !Task.isCancelled && generation == connectionGeneration {
+        while !Task.isCancelled && generation == connectionGeneration.value {
             let cursor = snapshot?.eventCursor
             do {
                 let next = try await stream.run(after: cursor) { [weak self] push in
                     guard let self else { return }
                     await self.handle(push)
                 }
-                if Task.isCancelled || generation != connectionGeneration { return }
+                if Task.isCancelled || generation != connectionGeneration.value { return }
                 if let next, snapshot?.eventCursor != next {
                     try await refreshSnapshot()
                 }
                 streamBackoff = 1
                 setStale("The event stream ended; reconnecting.")
             } catch {
-                if Task.isCancelled || generation != connectionGeneration { return }
+                if Task.isCancelled || generation != connectionGeneration.value { return }
                 if let error = error as? CyloError,
                    case let .http(status, _, _, _) = error,
                    status == 401 || status == 403 {
