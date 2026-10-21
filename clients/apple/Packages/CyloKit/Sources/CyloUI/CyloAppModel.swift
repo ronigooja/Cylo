@@ -247,6 +247,8 @@ public final class CyloAppModel: ObservableObject {
         pushNotificationsEnabled = false
         defaults.set(false, forKey: "cylo.apns.optIn")
         NativeNotificationDelivery.shared.unregisterFromRemoteNotifications()
+        pendingAPNSTokenHex = nil
+        lastRegisteredAPNSTokenHex = nil
         guard registeredPushTokenID != nil else {
             notice = "Push wakeups are disabled on this device."
             return
