@@ -101,7 +101,8 @@ git clone https://github.com/Space3044/chatgpt-web-voice.git /tmp/cylo-research-
 git -C /tmp/cylo-research-voice rev-parse HEAD
 git -C /tmp/cylo-research-voice ls-remote origin HEAD
 # 均6338ac478070aaa34bfe7a3c0469caf9e9174c02
-python3 docs/archive/research/evidence/voice-pool-poc.py /tmp/cylo-research-voice
-node docs/archive/research/evidence/voice-static-check.cjs /tmp/cylo-research-voice
+python3 docs/research/evidence/voice-pool-poc.py /tmp/cylo-research-voice
+node docs/research/evidence/voice-static-check.cjs /tmp/cylo-research-voice
 ```
+The evidence scripts are now stored under `docs/archive/research/evidence/` in this repository; the commands above preserve the paths used in the original run.
 The actual results can be found in [Attachment of this round of evidence collection](../evidence/voice-realtime-audit.md). There is no Go tool chain in the current environment, and go test/compile/gateway is not running; it cannot be said that the upstream Go test failed. The old [official excerpt](../evidence/voice-official-excerpts.md) is retained as comparative evidence and has been explicitly not used as a basis for Web private protocols. There are no real credentials/devices/charging requests, all real media, real quotas and Cylo voice execution receipt capabilities are yet to be seen in the above POC.

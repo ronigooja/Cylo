@@ -44,8 +44,9 @@ When changing accounts, close the old `PeerConnection`, release the old lease, a
 The following check was run against the fixed source:
 
 ```bash
-node docs/archive/research/evidence/voice-static-check.cjs /tmp/cylo-research-voice
+node docs/research/evidence/voice-static-check.cjs /tmp/cylo-research-voice
 ```
+The evidence scripts are now stored under `docs/archive/research/evidence/` in this repository; the command above preserves the path used in the original run.
 
 Result: two inline scripts passed syntax checks; the current `stop_speaking`, duplicate suppression, microphone-mute protection, and text-interruption branches passed. This offline check does not examine the DOM, WebRTC, upstream acceptance, audio, Chinese recognition, or device behavior.
 
@@ -54,9 +55,10 @@ The review also attempted `GOPROXY=off GOSUMDB=off GOTOOLCHAIN=local go test ./i
 The final integration review was based on mainline `1d35ae3` (including voice `b3d9746` and Codex handoff `8f3e8ed`). The following Python PoC and the JavaScript check were run again and passed. The Python result consists only of fixed-source static assertions and single-process, serial in-memory mocks; it does not prove real Go scheduling, concurrent locking, or upstream quota behavior.
 
 ```bash
-python3 docs/archive/research/evidence/voice-pool-poc.py /tmp/cylo-research-voice
-node docs/archive/research/evidence/voice-static-check.cjs /tmp/cylo-research-voice
+python3 docs/research/evidence/voice-pool-poc.py /tmp/cylo-research-voice
+node docs/research/evidence/voice-static-check.cjs /tmp/cylo-research-voice
 ```
+The evidence scripts are now stored under `docs/archive/research/evidence/` in this repository; the commands above preserve the paths used in the original run.
 
 The repository-wide local Markdown-link check passed. A review of the README, overall plan, reports 01–05, and evidence attachments found no remaining recommendation to use the project only as a reference client, reject its upstream account pool, or make standalone STT/TTS the main path. Earlier official voice excerpts are marked as comparison/historical evidence. Reports 03 and 04 agree with this review on the unreliable final boundary, user-role injection, first-answer control, account creation, media switching, and revocation boundaries.
 
