@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,6 +28,7 @@ type Migration struct {
 type Store struct {
 	db         *sql.DB
 	lock       *os.File
+	path       string
 	mu         sync.Mutex
 	migrations map[int]Migration
 }
@@ -35,35 +37,67 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	if cfg.Path == "" {
 		return nil, errors.New("database path is required")
 	}
-	if cfg.Path != ":memory:" {
-		if err := os.MkdirAll(filepath.Dir(cfg.Path), 0o700); err != nil {
+	path := cfg.Path
+	var lock *os.File
+	if path != ":memory:" {
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return nil, fmt.Errorf("resolve database path: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(absolute), 0o700); err != nil {
 			return nil, fmt.Errorf("create database directory: %w", err)
 		}
+		parent, err := filepath.EvalSymlinks(filepath.Dir(absolute))
+		if err != nil {
+			return nil, fmt.Errorf("resolve database directory: %w", err)
+		}
+		path = filepath.Join(parent, filepath.Base(absolute))
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			path = resolved
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("resolve database file: %w", err)
+		}
+		lock, err = os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			return nil, fmt.Errorf("open database file: %w", err)
+		}
+		info, err := lock.Stat()
+		if err != nil {
+			_ = lock.Close()
+			return nil, fmt.Errorf("stat database file: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			_ = lock.Close()
+			return nil, errors.New("database path must be a regular file")
+		}
+		if err := lock.Chmod(0o600); err != nil {
+			_ = lock.Close()
+			return nil, fmt.Errorf("protect database file: %w", err)
+		}
+		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			_ = lock.Close()
+			return nil, fmt.Errorf("database is already in use: %w", err)
+		}
 	}
-	db, err := sql.Open("sqlite", cfg.Path)
+	db, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
+		if lock != nil {
+			_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+			_ = lock.Close()
+		}
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	store := &Store{db: db, migrations: make(map[int]Migration)}
-	if cfg.Path != ":memory:" {
-		lock, err := os.OpenFile(cfg.Path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
-		if err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("open database lock: %w", err)
-		}
-		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-			_ = lock.Close()
-			_ = db.Close()
-			return nil, fmt.Errorf("database is already in use: %w", err)
-		}
-		store.lock = lock
+	store := &Store{db: db, lock: lock, path: path, migrations: make(map[int]Migration)}
+	if _, err := db.ExecContext(ctx, `PRAGMA journal_mode=WAL`); err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("enable sqlite WAL: %w", err)
 	}
-	for _, pragma := range []string{"PRAGMA foreign_keys=ON", "PRAGMA journal_mode=WAL", "PRAGMA synchronous=FULL", "PRAGMA busy_timeout=5000"} {
-		if _, err := db.ExecContext(ctx, pragma); err != nil {
+	for _, sidecar := range []string{path + "-wal", path + "-shm"} {
+		if err := os.Chmod(sidecar, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
 			_ = store.Close()
-			return nil, fmt.Errorf("configure sqlite (%s): %w", pragma, err)
+			return nil, fmt.Errorf("protect sqlite sidecar: %w", err)
 		}
 	}
 	return store, nil
@@ -106,6 +140,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
 		return fmt.Errorf("create migration table: %w", err)
 	}
+	var dbMax int
+	if err := s.db.QueryRowContext(ctx, `SELECT coalesce(max(version),0) FROM schema_migrations`).Scan(&dbMax); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
 	s.mu.Lock()
 	versions := make([]int, 0, len(s.migrations))
 	for v := range s.migrations {
@@ -116,6 +154,22 @@ func (s *Store) Migrate(ctx context.Context) error {
 		migrations[v] = m
 	}
 	s.mu.Unlock()
+	if dbMax > 0 {
+		if _, ok := migrations[dbMax]; !ok {
+			return fmt.Errorf("database schema version %d is newer than this binary supports", dbMax)
+		}
+	}
+	for version := range migrations {
+		if version <= dbMax {
+			var found int
+			if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE version=?`, version).Scan(&found); err != nil {
+				return err
+			}
+			if found != 1 {
+				return fmt.Errorf("database migration history has a gap at version %d", version)
+			}
+		}
+	}
 	sort.Ints(versions)
 	for _, version := range versions {
 		var applied string
@@ -146,4 +200,20 @@ func (s *Store) Migrate(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func sqliteDSN(path string) string {
+	if path == ":memory:" {
+		path = "file:cylo-memory?mode=memory&cache=shared"
+	}
+	u, err := url.Parse(path)
+	if err != nil || u.Scheme == "" {
+		u = &url.URL{Scheme: "file", Path: path}
+	}
+	q := u.Query()
+	for _, pragma := range []string{"foreign_keys(ON)", "synchronous(FULL)", "busy_timeout(5000)"} {
+		q.Add("_pragma", pragma)
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }

@@ -37,6 +37,7 @@ type CommandRequest struct {
 
 type CommandReceipt struct {
 	CommandID       string    `json:"command_id"`
+	IdempotencyKey  string    `json:"idempotency_key"`
 	WorkspaceID     string    `json:"workspace_id"`
 	Kind            string    `json:"kind"`
 	Status          string    `json:"status"`
@@ -220,6 +221,7 @@ type ExternalEffect struct {
 
 type RunnerObservation struct {
 	ObservationID   string           `json:"observation_id"`
+	RunID           string           `json:"run_id"`
 	AttemptID       string           `json:"attempt_id"`
 	Fence           uint64           `json:"fence"`
 	Kind            string           `json:"kind"`

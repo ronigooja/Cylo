@@ -51,13 +51,14 @@ CREATE TABLE projects (
   status TEXT NOT NULL CHECK(status IN ('active','archived')),
   version INTEGER NOT NULL,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  UNIQUE(workspace_id,id)
 );
 CREATE INDEX projects_workspace ON projects(workspace_id,created_at,id);
 CREATE TABLE tasks (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id),
-  project_id TEXT REFERENCES projects(id),
+  project_id TEXT,
   title TEXT NOT NULL,
   goal TEXT NOT NULL,
   source TEXT NOT NULL,
@@ -70,7 +71,10 @@ CREATE TABLE tasks (
   started_at TEXT,
   finished_at TEXT,
   result TEXT NOT NULL DEFAULT '',
-  error TEXT NOT NULL DEFAULT ''
+  error TEXT NOT NULL DEFAULT '',
+  created_by_device_id TEXT NOT NULL REFERENCES devices(id),
+  command_id TEXT NOT NULL,
+  FOREIGN KEY(workspace_id,project_id) REFERENCES projects(workspace_id,id)
 );
 CREATE INDEX tasks_workspace ON tasks(workspace_id,created_at,id);
 CREATE TABLE task_entries (
@@ -107,6 +111,14 @@ CREATE TABLE command_receipts (
   accepted_at TEXT NOT NULL,
   UNIQUE(workspace_id,subject_id,idempotency_key)
 );
+CREATE TABLE command_work (
+  command_id TEXT PRIMARY KEY REFERENCES command_receipts(command_id),
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  completed_at TEXT
+);
 CREATE TABLE events (
   event_id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id),
@@ -137,6 +149,8 @@ CREATE TABLE runs (
   control_version INTEGER NOT NULL DEFAULT 1,
   fence INTEGER NOT NULL UNIQUE,
   runner_id TEXT NOT NULL DEFAULT '',
+  authorized_device_id TEXT NOT NULL REFERENCES devices(id),
+  command_id TEXT NOT NULL,
   goal TEXT NOT NULL,
   profile_id TEXT NOT NULL,
   runtime_route_id TEXT NOT NULL,
