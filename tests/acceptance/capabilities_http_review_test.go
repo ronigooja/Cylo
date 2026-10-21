@@ -17,6 +17,9 @@ func TestCapabilityHTTPCompositionRequiresConfiguredCapabilityID(t *testing.T) {
 	if err := storage.RegisterCoreMigrations(store); err != nil {
 		t.Fatal(err)
 	}
+	if err := control.RegisterInstanceMaintenanceMigration(store); err != nil {
+		t.Fatal(err)
+	}
 	code, deviceToken := reviewToken(t), reviewToken(t)
 	runnerToken := reviewToken(t)
 	server, err := control.NewServer(store, control.Config{

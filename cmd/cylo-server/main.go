@@ -62,6 +62,9 @@ func recoverBootstrap(args []string) error {
 	if err = storage.RegisterCoreMigrations(store); err != nil {
 		return err
 	}
+	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
+		return err
+	}
 	if err = memory.RegisterMigrations(store); err != nil {
 		return err
 	}
@@ -91,6 +94,12 @@ func recoverBootstrap(args []string) error {
 		return err
 	}
 	revoked, _ := result.RowsAffected()
+	if _, err = tx.ExecContext(ctx, `UPDATE device_push_tokens SET status='disabled',disabled_at=?,updated_at=? WHERE status='active'`, now, now); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE push_deliveries SET status='disabled',updated_at=? WHERE status='pending'`, now); err != nil {
+		return err
+	}
 	var stopCount int64
 	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM runs WHERE status IN ('dispatching','active','uncertain') AND desired_control!='stop'`).Scan(&stopCount); err != nil {
 		return err
@@ -160,6 +169,9 @@ func run() error {
 	}
 	defer store.Close()
 	if err = storage.RegisterCoreMigrations(store); err != nil {
+		return err
+	}
+	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
 		return err
 	}
 	pushSender, err := configuredPushSender()

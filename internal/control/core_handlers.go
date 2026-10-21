@@ -98,6 +98,13 @@ func (s *Server) AdmitTaskTx(ctx context.Context, tx *sql.Tx, in AdmissionContex
 	if tx == nil || in.IdempotencyKey == "" || in.Principal.WorkspaceID == "" || in.Principal.SubjectID == "" || in.Principal.DeviceID == "" {
 		return TaskAdmissionResult{}, apiError(400, "invalid_admission", "transaction, stable idempotency key, and trusted principal are required", nil)
 	}
+	dispatchEnabled, err := DispatchEnabledTx(ctx, tx)
+	if err != nil {
+		return TaskAdmissionResult{}, apiError(503, "instance_fence_unavailable", "task admission is disabled until the instance fence is initialized", nil)
+	}
+	if !dispatchEnabled {
+		return TaskAdmissionResult{}, apiError(503, "instance_dispatch_fenced", "task admission is disabled by the instance fence", nil)
+	}
 	in.Title = strings.TrimSpace(in.Title)
 	in.Goal = strings.TrimSpace(in.Goal)
 	if in.Title == "" || in.Goal == "" || len(in.Title) > 300 || len(in.Goal) > 20000 || len(in.InitialMessage) > 20000 {
@@ -112,6 +119,9 @@ func (s *Server) AdmitTaskTx(ctx context.Context, tx *sql.Tx, in AdmissionContex
 			return TaskAdmissionResult{}, apiError(400, "invalid_request", "user task source cannot include a source reference", nil)
 		}
 	case "voice", "service", "system":
+		if in.Source == "service" && !in.TrustedSource {
+			return TaskAdmissionResult{}, apiError(403, "source_unavailable", "service task source is available only to trusted server features", nil)
+		}
 		if len(in.SourceRef) == 0 || !json.Valid(in.SourceRef) {
 			return TaskAdmissionResult{}, apiError(400, "invalid_request", "non-user task source requires a server-validated source reference", nil)
 		}
@@ -170,7 +180,7 @@ func (s *Server) AdmitTaskTx(ctx context.Context, tx *sql.Tx, in AdmissionContex
 		if handler == nil {
 			return TaskAdmissionResult{}, apiError(403, "source_unavailable", "task source is not authorized by a registered server feature", map[string]string{"source": in.Source})
 		}
-		sourceRequest := &TaskSourceRequest{Title: in.Title, Goal: in.Goal, InitialMessage: in.InitialMessage, GrantSnapshot: append(json.RawMessage(nil), in.GrantSnapshot...)}
+		sourceRequest := &TaskSourceRequest{Title: in.Title, Goal: in.Goal, InitialMessage: in.InitialMessage, TrustedSource: in.TrustedSource, GrantSnapshot: append(json.RawMessage(nil), in.GrantSnapshot...)}
 		events, err := handler(ctx, tx, in.Principal, id, sourceRequest, in.SourceRef, at)
 		if err != nil {
 			return TaskAdmissionResult{}, err

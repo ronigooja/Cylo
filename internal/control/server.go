@@ -24,11 +24,13 @@ type Config struct {
 	RunnerScopes       []string
 	DeviceScopes       []string
 	DefaultProfileID   string
+	RoleProfiles       map[string]string
 	RuntimeRouteID     string
 	ModelRouteID       string
 	Profiles           map[string]RuntimeProfile
 	PairingTTL         time.Duration
 	MaxRequestBytes    int64
+	PushSender         PushSender
 }
 
 type RuntimeProfile struct {
@@ -59,6 +61,7 @@ type CommandContext struct {
 	Principal      contracts.Principal
 	IdempotencyKey string
 	AcceptedAt     time.Time
+	TrustedSource  bool `json:"-"`
 }
 
 type CommandHandler func(context.Context, *sql.Tx, CommandContext, contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error)
@@ -67,6 +70,7 @@ type TaskSourceRequest struct {
 	Title          string
 	Goal           string
 	InitialMessage string
+	TrustedSource  bool `json:"-"`
 	GrantSnapshot  json.RawMessage
 }
 
@@ -85,6 +89,7 @@ type AdmissionContext struct {
 	Goal           string
 	InitialMessage string
 	AcceptedAt     time.Time
+	TrustedSource  bool `json:"-"`
 }
 
 type TaskAdmissionResult struct {
@@ -197,11 +202,12 @@ type Server struct {
 	runner      *http.ServeMux
 	mu          sync.RWMutex
 	sealed      bool
+	pushSender  PushSender
 }
 
 func DefaultOwnerScopes() []string {
 	return []string{
-		"client:read", "client:command", "device:manage",
+		"client:read", "client:command", "device:manage", "device:push",
 		"memory:read:personal", "memory:write:personal", "memory:delete:personal",
 		"memory:read:workspace", "memory:write:workspace", "memory:delete:workspace",
 	}
@@ -226,6 +232,19 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 		profiles[id] = profile
 	}
 	cfg.Profiles = profiles
+	roleProfiles := make(map[string]string, len(cfg.RoleProfiles))
+	for role, profileID := range cfg.RoleProfiles {
+		role, profileID = strings.TrimSpace(role), strings.TrimSpace(profileID)
+		profile, ok := cfg.Profiles[profileID]
+		if role == "" || !ok || profile.Role != role || profile.AOAgentKind != "worker" {
+			return nil, fmt.Errorf("role profile mapping %q -> %q must reference a configured worker profile with the same role", role, profileID)
+		}
+		if _, exists := roleProfiles[role]; exists {
+			return nil, fmt.Errorf("role profile mapping for normalized role %q is defined more than once", role)
+		}
+		roleProfiles[role] = profileID
+	}
+	cfg.RoleProfiles = roleProfiles
 	if cfg.DeviceScopes == nil {
 		cfg.DeviceScopes = DefaultOwnerScopes()
 	} else {
@@ -270,9 +289,30 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 			return nil, errors.New("default profile is not present in configured profiles")
 		}
 	}
-	s := &Server{store: store, cfg: cfg, commands: make(map[string]CommandHandler), taskSources: make(map[string]TaskSourceAdmissionHandler), public: http.NewServeMux(), device: http.NewServeMux(), runner: http.NewServeMux()}
+	s := &Server{store: store, cfg: cfg, commands: make(map[string]CommandHandler), taskSources: make(map[string]TaskSourceAdmissionHandler), public: http.NewServeMux(), device: http.NewServeMux(), runner: http.NewServeMux(), pushSender: cfg.PushSender}
 	s.registerCoreRoutes()
 	return s, nil
+}
+
+func (s *Server) ProfileForRole(role string) (string, bool) {
+	role = strings.TrimSpace(role)
+	if role == "" {
+		return "", false
+	}
+	if profileID, ok := s.cfg.RoleProfiles[role]; ok {
+		return profileID, true
+	}
+	profileID := ""
+	for id, profile := range s.cfg.Profiles {
+		if profile.Role != role || profile.AOAgentKind != "worker" {
+			continue
+		}
+		if profileID != "" {
+			return "", false
+		}
+		profileID = id
+	}
+	return profileID, profileID != ""
 }
 
 // RegisterTaskSourceHandler admits non-user task sources inside the same SQL

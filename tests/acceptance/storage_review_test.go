@@ -147,10 +147,12 @@ func TestReviewLateCoreMigrationAfterFeatureHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Recreate the valid pre-v4 database history: core 1/2/3 and feature
-	// 100/200/201 have run, but the newly added child lineage migration has not.
+	// 100/200/201 have run, but child lineage and push migrations have not.
 	for _, stmt := range []string{
 		`DROP INDEX tasks_lineage_root`,
 		`DROP TABLE child_budget_reservations`, `DROP TABLE task_dependencies`, `DROP TABLE child_proposals`,
+		`DROP INDEX push_deliveries_token`, `DROP INDEX push_deliveries_due`, `DROP INDEX device_push_tokens_subject`, `DROP INDEX device_push_tokens_active_device_platform`,
+		`DROP TABLE push_deliveries`, `DROP TABLE device_push_tokens`,
 		`ALTER TABLE tasks DROP COLUMN lineage_root_task_id`, `ALTER TABLE tasks DROP COLUMN lineage_parent_task_id`,
 		`ALTER TABLE tasks DROP COLUMN lineage_depth`, `ALTER TABLE tasks DROP COLUMN child_policy_json`,
 		`ALTER TABLE tasks DROP COLUMN root_child_limit`, `ALTER TABLE tasks DROP COLUMN pregrant_capabilities_json`,
@@ -162,6 +164,9 @@ func TestReviewLateCoreMigrationAfterFeatureHistory(t *testing.T) {
 		}
 	}
 	if _, err := s.DB().ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=4`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=5`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.DB().ExecContext(ctx, `CREATE TABLE schema_migrations_legacy (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
@@ -264,7 +269,7 @@ func TestReviewLegacyNamespaceBackfillRollsBackOnHistoryGap(t *testing.T) {
 	if err := s.DB().QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE namespace<>''`).Scan(&named); err != nil {
 		t.Fatal(err)
 	}
-	if blank != 3 || named != 0 {
+	if blank != 4 || named != 0 {
 		t.Fatalf("failed validation partially backfilled legacy history: blank=%d named=%d", blank, named)
 	}
 }

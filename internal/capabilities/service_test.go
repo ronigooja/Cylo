@@ -160,6 +160,9 @@ func TestRunnerDeploymentClaimAndFencedObservation(t *testing.T) {
 	if err = storage.RegisterCoreMigrations(store); err != nil {
 		t.Fatal(err)
 	}
+	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
+		t.Fatal(err)
+	}
 	server, err := control.NewServer(store, control.Config{RunnerToken: runnerToken, RunnerID: "runner-test", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"capability:deploy"}, Profiles: map[string]control.RuntimeProfile{
 		"worker-profile": {ID: "worker-profile", AOProjectID: "ao-project", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "strict"},
 		"super-profile":  {ID: "super-profile", AOProjectID: "ao-project", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "super", AOAgentKind: "worker", IsolationPolicy: "strict"},

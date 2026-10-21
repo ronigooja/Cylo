@@ -36,6 +36,9 @@ func reviewServer(t *testing.T, cfg control.Config, register func(*control.Serve
 	if e := storage.RegisterCoreMigrations(s); e != nil {
 		t.Fatal(e)
 	}
+	if e := control.RegisterInstanceMaintenanceMigration(s); e != nil {
+		t.Fatal(e)
+	}
 	if e := s.Migrate(context.Background()); e != nil {
 		t.Fatal(e)
 	}

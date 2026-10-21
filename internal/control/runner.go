@@ -31,6 +31,15 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
+	dispatchEnabled, err := DispatchEnabledTx(r.Context(), tx)
+	if err != nil {
+		writeError(w, apiError(503, "instance_fence_unavailable", "runner claims are disabled until the instance fence is initialized", nil))
+		return
+	}
+	if !dispatchEnabled {
+		writeError(w, apiError(503, "instance_dispatch_fenced", "runner claims are disabled by the instance fence", nil))
+		return
+	}
 	// A lost claim response is recovered by returning the same dispatching assignment.
 	var runID string
 	err = tx.QueryRowContext(r.Context(), `SELECT id FROM runs WHERE runner_id=? AND status='dispatching' ORDER BY started_at LIMIT 1`, p.RunnerID).Scan(&runID)

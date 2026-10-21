@@ -28,6 +28,9 @@ func reviewFeatureServer(t *testing.T) (*storage.Store, http.Handler, string, st
 	if err = storage.RegisterCoreMigrations(store); err != nil {
 		t.Fatal(err)
 	}
+	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
+		t.Fatal(err)
+	}
 	cfg := reviewRuntimeConfig(code, reviewToken(t))
 	srv, err := control.NewServer(store, cfg)
 	if err != nil {
