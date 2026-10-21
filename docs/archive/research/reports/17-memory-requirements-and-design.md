@@ -73,7 +73,7 @@ Account pools affect request routing only: the existing CLIProxyAPI handles mode
 
 ## 4. Minimal Data Model
 
-Reuse the claim/revision/evidence/context contract in [04 Architecture §8](04-architecture.md#8-long-term-memory-evidence-facts-and-version-invalidation) to avoid building a second authoritative system. These are logical objects; they do not need to be separate services.
+Reuse the claim/revision/evidence/context contract in [04 Architecture §8](04-architecture.md#8-long-term-memory-evidence-facts-and-versions-failed) to avoid building a second authoritative system. These are logical objects; they do not need to be separate services.
 
 | Object | Minimum fields/rules |
 |---|---|
