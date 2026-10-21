@@ -21,7 +21,7 @@
 
 ## Work coordination and safety
 
-- The main agent coordinates implementation and cross-module decisions. Delegated implementation and independent verification go to GPT-6 Luna at high reasoning effort.
+- The main agent coordinates implementation and cross-module decisions. Delegate implementation to GPT-6 Luna at high reasoning effort and independent verification to GPT-6.1 at medium reasoning effort.
 - Run concurrent work in separate branches and worktrees under `$HOME/subagents`, with explicit file ownership for each assignment. Do not edit outside assigned ownership or take over another agent's archive scope.
 - Before ending a delegated task or handing work to a fresh context, leave a concise handoff with the branch/worktree, ownership, commit, completed work, remaining work, verification, and known limitations.
 - Coordinate cross-module API and data changes with the main agent and affected owners before editing. Review delegated commits before integration; report relevant tests, commands, outcomes, and limitations without claiming checks that were not run.
