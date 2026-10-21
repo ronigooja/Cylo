@@ -108,7 +108,7 @@ func (s *Server) commandTaskCreate(ctx context.Context, tx *sql.Tx, c CommandCon
 		return contracts.CommandResult{}, nil, apiError(400, "invalid_request", "source is invalid", nil)
 	}
 	if p.ProjectID != "" {
-		allowed, accessErr := PrincipalCanAccessProject(ctx, tx, c.Principal, p.ProjectID)
+		allowed, accessErr := PrincipalCanWriteProject(ctx, tx, c.Principal, p.ProjectID)
 		if accessErr != nil {
 			return contracts.CommandResult{}, nil, accessErr
 		}
@@ -132,17 +132,7 @@ func (s *Server) commandTaskCreate(ctx context.Context, tx *sql.Tx, c CommandCon
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
-	task := contracts.Task{ID: id, ProjectID: p.ProjectID, Title: p.Title, Goal: p.Goal, Source: p.Source, ProfileID: profile, Status: "queued", Version: 1, CreatedAt: c.AcceptedAt, UpdatedAt: c.AcceptedAt, AcceptedAt: &c.AcceptedAt, Evidence: []contracts.Evidence{}}
-	events := []contracts.Event{event("task.created", "task", id, 1, map[string]any{"task": task})}
-	if p.InitialMessage != "" {
-		entryID, _ := randomID()
-		_, err = tx.ExecContext(ctx, `INSERT INTO task_entries(id,task_id,workspace_id,kind,content,author_device_id,created_at) VALUES(?,?,?,'user_message',?,?,?)`, entryID, id, c.Principal.WorkspaceID, p.InitialMessage, c.Principal.DeviceID, at)
-		if err != nil {
-			return contracts.CommandResult{}, nil, err
-		}
-		entry := contracts.TaskEntry{ID: entryID, Kind: "user_message", Content: p.InitialMessage, AuthorDeviceID: c.Principal.DeviceID, CreatedAt: c.AcceptedAt}
-		events = append(events, event("task.entry_appended", "task", id, 1, map[string]any{"task_id": id, "entry": entry}))
-	}
+	var sourceEvents []contracts.Event
 	if p.Source != "user" {
 		s.mu.RLock()
 		sourceHandler := s.taskSources[p.Source]
@@ -151,7 +141,7 @@ func (s *Server) commandTaskCreate(ctx context.Context, tx *sql.Tx, c CommandCon
 			return contracts.CommandResult{}, nil, apiError(403, "source_unavailable", "task source is not authorized by a registered server feature", map[string]string{"source": p.Source})
 		}
 		sourceRequest := &TaskSourceRequest{Title: p.Title, Goal: p.Goal, InitialMessage: p.InitialMessage}
-		sourceEvents, sourceErr := sourceHandler(ctx, tx, c.Principal, id, sourceRequest, p.SourceReference, c.AcceptedAt)
+		admittedEvents, sourceErr := sourceHandler(ctx, tx, c.Principal, id, sourceRequest, p.SourceReference, c.AcceptedAt)
 		if sourceErr != nil {
 			return contracts.CommandResult{}, nil, sourceErr
 		}
@@ -163,23 +153,25 @@ func (s *Server) commandTaskCreate(ctx context.Context, tx *sql.Tx, c CommandCon
 				return contracts.CommandResult{}, nil, sourceErr
 			}
 		}
-		if sourceRequest.InitialMessage != p.InitialMessage {
-			if sourceRequest.InitialMessage == "" {
-				if _, sourceErr = tx.ExecContext(ctx, `DELETE FROM task_entries WHERE task_id=? AND workspace_id=? AND kind='user_message'`, id, c.Principal.WorkspaceID); sourceErr != nil {
-					return contracts.CommandResult{}, nil, sourceErr
-				}
-			} else {
-				entryID, idErr := randomID()
-				if idErr != nil {
-					return contracts.CommandResult{}, nil, idErr
-				}
-				if _, sourceErr = tx.ExecContext(ctx, `INSERT INTO task_entries(id,task_id,workspace_id,kind,content,author_device_id,created_at) VALUES(?,?,?,'user_message',?,?,?)`, entryID, id, c.Principal.WorkspaceID, sourceRequest.InitialMessage, c.Principal.DeviceID, at); sourceErr != nil {
-					return contracts.CommandResult{}, nil, sourceErr
-				}
-			}
-		}
-		events = append(events, sourceEvents...)
+		p.Title = sourceRequest.Title
+		p.Goal = sourceRequest.Goal
+		p.InitialMessage = sourceRequest.InitialMessage
+		sourceEvents = admittedEvents
 	}
+	task := contracts.Task{ID: id, ProjectID: p.ProjectID, Title: p.Title, Goal: p.Goal, Source: p.Source, ProfileID: profile, Status: "queued", Version: 1, CreatedAt: c.AcceptedAt, UpdatedAt: c.AcceptedAt, AcceptedAt: &c.AcceptedAt, Evidence: []contracts.Evidence{}}
+	events := []contracts.Event{event("task.created", "task", id, 1, map[string]any{"task": task})}
+	if p.InitialMessage != "" {
+		entryID, idErr := randomID()
+		if idErr != nil {
+			return contracts.CommandResult{}, nil, idErr
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO task_entries(id,task_id,workspace_id,kind,content,author_device_id,created_at) VALUES(?,?,?,'user_message',?,?,?)`, entryID, id, c.Principal.WorkspaceID, p.InitialMessage, c.Principal.DeviceID, at); err != nil {
+			return contracts.CommandResult{}, nil, err
+		}
+		entry := contracts.TaskEntry{ID: entryID, Kind: "user_message", Content: p.InitialMessage, AuthorDeviceID: c.Principal.DeviceID, CreatedAt: c.AcceptedAt}
+		events = append(events, event("task.entry_appended", "task", id, 1, map[string]any{"task_id": id, "entry": entry}))
+	}
+	events = append(events, sourceEvents...)
 	return contracts.CommandResult{ResourceType: "task", ResourceID: id, ResourceVersion: 1}, events, nil
 }
 
@@ -508,7 +500,7 @@ func taskVersionStatus(ctx context.Context, tx *sql.Tx, principal contracts.Prin
 		return 0, "", apiError(404, "not_found", "task not found", nil)
 	}
 	if err == nil {
-		allowed, accessErr := PrincipalCanAccessTask(ctx, tx, principal, id)
+		allowed, accessErr := PrincipalCanWriteTask(ctx, tx, principal, id)
 		if accessErr != nil {
 			return 0, "", accessErr
 		}

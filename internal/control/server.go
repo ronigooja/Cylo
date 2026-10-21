@@ -68,9 +68,21 @@ func PrincipalCanAccessProject(ctx context.Context, tx *sql.Tx, p contracts.Prin
 	return count == 1, err
 }
 
+func PrincipalCanWriteProject(ctx context.Context, tx *sql.Tx, p contracts.Principal, projectID string) (bool, error) {
+	var count int
+	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM projects p WHERE p.id=? AND p.workspace_id=? AND p.status='active' AND (p.owner_subject_id=? OR EXISTS (SELECT 1 FROM project_memberships m WHERE m.workspace_id=p.workspace_id AND m.project_id=p.id AND m.subject_id=? AND m.status='active' AND m.role IN ('owner','member')))`, projectID, p.WorkspaceID, p.SubjectID, p.SubjectID).Scan(&count)
+	return count == 1, err
+}
+
 func PrincipalCanAccessTask(ctx context.Context, tx *sql.Tx, p contracts.Principal, taskID string) (bool, error) {
 	var count int
 	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM tasks t WHERE t.id=? AND t.workspace_id=? AND (t.owner_subject_id=? OR (t.project_id IS NOT NULL AND EXISTS (SELECT 1 FROM project_memberships m WHERE m.workspace_id=t.workspace_id AND m.project_id=t.project_id AND m.subject_id=? AND m.status='active')))`, taskID, p.WorkspaceID, p.SubjectID, p.SubjectID).Scan(&count)
+	return count == 1, err
+}
+
+func PrincipalCanWriteTask(ctx context.Context, tx *sql.Tx, p contracts.Principal, taskID string) (bool, error) {
+	var count int
+	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM tasks t WHERE t.id=? AND t.workspace_id=? AND (t.owner_subject_id=? OR (t.project_id IS NOT NULL AND EXISTS (SELECT 1 FROM project_memberships m WHERE m.workspace_id=t.workspace_id AND m.project_id=t.project_id AND m.subject_id=? AND m.status='active' AND m.role IN ('owner','member'))))`, taskID, p.WorkspaceID, p.SubjectID, p.SubjectID).Scan(&count)
 	return count == 1, err
 }
 

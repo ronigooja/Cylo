@@ -20,6 +20,7 @@ func TestTaskSourceAdmissionSharesCommandTransaction(t *testing.T) {
 			if principal.DeviceID == "" || !json.Valid(ref) {
 				return nil, control.NewAPIError(http.StatusForbidden, "source_denied", "invalid source", nil)
 			}
+			task.Title = "authoritative voice title"
 			task.Goal = "authoritative voice transcript"
 			task.InitialMessage = "authoritative voice transcript"
 			if _, err := tx.ExecContext(ctx, `INSERT INTO source_bindings(task_id,reference) VALUES(?,?)`, taskID, ref); err != nil {
@@ -67,6 +68,42 @@ func TestTaskSourceAdmissionSharesCommandTransaction(t *testing.T) {
 	}
 	if goal != "authoritative voice transcript" || entry != goal {
 		t.Fatalf("source handler content not applied atomically: goal=%q entry=%q", goal, entry)
+	}
+	var title string
+	if err := store.DB().QueryRow(`SELECT title FROM tasks WHERE id=?`, receipt.ResourceID).Scan(&title); err != nil {
+		t.Fatal(err)
+	}
+	if title != "authoritative voice title" {
+		t.Fatalf("source handler title not applied atomically: title=%q", title)
+	}
+	var taskCreatedPayload, entryPayload []byte
+	if err := store.DB().QueryRow(`SELECT payload FROM events WHERE event_type='task.created' AND aggregate_id=?`, receipt.ResourceID).Scan(&taskCreatedPayload); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DB().QueryRow(`SELECT payload FROM events WHERE event_type='task.entry_appended' AND aggregate_id=?`, receipt.ResourceID).Scan(&entryPayload); err != nil {
+		t.Fatal(err)
+	}
+	var createdEnvelope, entryEnvelope contracts.Event
+	if err := json.Unmarshal(taskCreatedPayload, &createdEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(entryPayload, &entryEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	var createdEvent struct {
+		Task contracts.Task `json:"task"`
+	}
+	if err := json.Unmarshal(createdEnvelope.Payload, &createdEvent); err != nil {
+		t.Fatal(err)
+	}
+	var appendedEvent struct {
+		Entry contracts.TaskEntry `json:"entry"`
+	}
+	if err := json.Unmarshal(entryEnvelope.Payload, &appendedEvent); err != nil {
+		t.Fatal(err)
+	}
+	if createdEvent.Task.Title != title || createdEvent.Task.Goal != goal || appendedEvent.Entry.Content != entry {
+		t.Fatalf("source events contain client content: created=%+v entry=%q", createdEvent.Task, appendedEvent.Entry.Content)
 	}
 	duplicate := reviewRequest(h, http.MethodPost, "/v1/commands", token, "voice-source-duplicate", body("voice", `{"kind":"voice_turn","turn_id":"t1"}`))
 	if duplicate.Code != http.StatusConflict {
