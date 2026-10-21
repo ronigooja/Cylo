@@ -357,6 +357,81 @@ type linkTaskPayload struct {
 	TaskID       string `json:"task_id"`
 }
 
+type voiceTaskSourceReference struct {
+	Kind       string `json:"kind"`
+	SessionID  string `json:"voice_session_id"`
+	Generation int64  `json:"generation"`
+	TurnID     string `json:"turn_id"`
+	Revision   int64  `json:"revision"`
+}
+
+// admitVoiceTask binds a confirmed stable turn to the task inside the same
+// transaction as task.create. Revision is provenance; it is deliberately not
+// part of the uniqueness key, so a later transcript revision cannot dispatch
+// a second task.
+func (s *Service) admitVoiceTask(ctx context.Context, tx *sql.Tx, principal contracts.Principal, taskID string, request *control.TaskSourceRequest, raw json.RawMessage, acceptedAt time.Time) ([]contracts.Event, error) {
+	var ref voiceTaskSourceReference
+	if err := decodePayload(raw, &ref); err != nil {
+		return nil, apiError(http.StatusBadRequest, "invalid_source", "voice source reference is invalid", nil)
+	}
+	if ref.Kind != "voice_turn" || ref.SessionID == "" || ref.Generation < 1 || ref.TurnID == "" || ref.Revision < 1 {
+		return nil, apiError(http.StatusBadRequest, "invalid_source", "voice source reference requires a confirmed stable turn identity", nil)
+	}
+	var owner, deviceID, state string
+	var generation int64
+	err := tx.QueryRowContext(ctx, `SELECT owner_id,device_id,state,generation FROM voice_sessions WHERE workspace_id=? AND id=?`, principal.WorkspaceID, ref.SessionID).Scan(&owner, &deviceID, &state, &generation)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, apiError(http.StatusNotFound, "voice_turn_not_found", "voice session was not found", nil)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if owner != principal.SubjectID || deviceID != principal.DeviceID {
+		return nil, apiError(http.StatusForbidden, "invalid_source", "voice turn belongs to another subject or device", nil)
+	}
+	if state != "active" || generation != ref.Generation {
+		return nil, apiError(http.StatusConflict, "voice_generation_stale", "voice turn is not from the active media generation", nil)
+	}
+	var content string
+	var contentHash []byte
+	err = tx.QueryRowContext(ctx, `SELECT content,content_hash FROM voice_turns WHERE workspace_id=? AND session_id=? AND generation=? AND turn_id=? AND revision=?`, principal.WorkspaceID, ref.SessionID, ref.Generation, ref.TurnID, ref.Revision).Scan(&content, &contentHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, apiError(http.StatusNotFound, "voice_turn_not_found", "confirmed voice turn revision was not found", nil)
+	}
+	if err != nil {
+		return nil, err
+	}
+	var existingTask string
+	err = tx.QueryRowContext(ctx, `SELECT task_id FROM voice_task_links WHERE session_id=? AND generation=? AND turn_id=?`, ref.SessionID, ref.Generation, ref.TurnID).Scan(&existingTask)
+	if err == nil {
+		return nil, apiError(http.StatusConflict, "voice_turn_already_dispatched", "this stable voice turn is already bound to a task", map[string]string{"task_id": existingTask})
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	content = strings.TrimSpace(content)
+	if content == "" || len(content) > 20_000 {
+		return nil, apiError(http.StatusConflict, "invalid_source", "confirmed voice turn content is empty or exceeds task limits", nil)
+	}
+	title := strings.TrimSpace(strings.SplitN(content, "\n", 2)[0])
+	if runes := []rune(title); len(runes) > 200 {
+		title = string(runes[:200])
+	}
+	request.Title = title
+	request.Goal = content
+	request.InitialMessage = content
+	eventPayload, _ := json.Marshal(map[string]any{"task_id": taskID, "voice_session_id": ref.SessionID, "generation": ref.Generation, "turn_id": ref.TurnID, "turn_revision": ref.Revision, "content_hash": hex.EncodeToString(contentHash), "status": "task_created"})
+	event := contracts.Event{Type: "voice.task.created", AggregateType: "voice_session", AggregateID: ref.SessionID, AggregateVersion: ref.Generation, Payload: eventPayload, OccurredAt: acceptedAt}
+	_, err = tx.ExecContext(ctx, `INSERT INTO voice_task_links(workspace_id,session_id,generation,turn_id,turn_revision,task_id,linked_by_device_id,command_id,linked_at) VALUES(?,?,?,?,?,?,?,?,?)`, principal.WorkspaceID, ref.SessionID, ref.Generation, ref.TurnID, ref.Revision, taskID, principal.DeviceID, taskID, acceptedAt.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return nil, apiError(http.StatusConflict, "voice_turn_already_dispatched", "this stable voice turn is already bound to a task", nil)
+		}
+		return nil, err
+	}
+	return []contracts.Event{event}, nil
+}
+
 func (s *Service) commandLinkTask(ctx context.Context, tx *sql.Tx, cmd control.CommandContext, req contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
 	if !control.HasScope(cmd.Principal, "client:command") && !control.HasScope(cmd.Principal, "voice:turn:commit") {
 		return contracts.CommandResult{}, nil, apiError(http.StatusForbidden, "forbidden", "voice task linking requires command scope", nil)

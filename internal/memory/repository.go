@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Cylo/internal/control"
 )
 
 var (
@@ -235,11 +236,16 @@ func (r *Repository) Search(ctx context.Context, p contracts.Principal, query st
 	if filter.Limit <= 0 || filter.Limit > 100 {
 		filter.Limit = 20
 	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return SearchResult{}, err
+	}
+	defer tx.Rollback()
 	at := time.Now().UTC()
 	if filter.At != nil {
 		at = filter.At.UTC()
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT c.id,c.workspace_id,c.scope_kind,c.scope_id,c.principal_id,c.subject,c.claim_key,c.authority_kind,c.status,c.revision,c.valid_from,c.valid_to,c.supersedes_id,c.deleted_at,r.content
+	rows, err := tx.QueryContext(ctx, `SELECT c.id,c.workspace_id,c.scope_kind,c.scope_id,c.principal_id,c.subject,c.claim_key,c.authority_kind,c.status,c.revision,c.valid_from,c.valid_to,c.supersedes_id,c.deleted_at,r.content
 FROM memory_claims c JOIN memory_revisions r ON r.claim_id=c.id AND r.revision=c.revision
 WHERE c.workspace_id=? AND c.deleted_at IS NULL AND c.status IN ('active','conflicted') ORDER BY c.updated_at DESC,c.id`, p.WorkspaceID)
 	if err != nil {
@@ -276,13 +282,17 @@ WHERE c.workspace_id=? AND c.deleted_at IS NULL AND c.status IN ('active','confl
 	result := SearchResult{Items: []Claim{}, Missing: []string{}, Conflicts: []string{}}
 	for _, candidate := range candidates {
 		c, content := candidate.claim, candidate.content
-		if !mayReadScope(p, c.Scope) || !matchesFilter(c.Scope, filter) {
+		allowed, err := mayAccessScope(ctx, tx, p, c.Scope)
+		if err != nil {
+			return SearchResult{}, err
+		}
+		if !mayReadScope(p, c.Scope) || !allowed || !matchesFilter(c.Scope, filter) {
 			continue
 		}
 		if c.ValidFrom != nil && c.ValidFrom.After(at) || c.ValidTo != nil && !c.ValidTo.After(at) {
 			continue
 		}
-		sources, err := currentSources(ctx, r.db, c.ID, c.Revision, c.WorkspaceID)
+		sources, err := currentSources(ctx, tx, c.ID, c.Revision, c.WorkspaceID)
 		if err != nil {
 			return SearchResult{}, err
 		}
@@ -317,6 +327,9 @@ WHERE c.workspace_id=? AND c.deleted_at IS NULL AND c.status IN ('active','confl
 	if query != "" && len(result.Items) == 0 {
 		result.Missing = append(result.Missing, "no_matching_memory")
 	}
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		return SearchResult{}, err
+	}
 	return result, nil
 }
 
@@ -329,12 +342,38 @@ func (r *Repository) AssembleContext(ctx context.Context, principal contracts.Pr
 	if budget < 1 || budget > 32_000 {
 		return ContextManifest{}, nil, errors.New("context budget must be between 1 and 32000 tokens")
 	}
+	if recipientID != principal.SubjectID && !hasScope(principal.Scopes, "memory:context:any") {
+		return ContextManifest{}, nil, ErrForbidden
+	}
 	filter := SearchFilter{TaskID: taskID, Limit: 100}
 	if taskID != "" {
-		if err := r.db.QueryRowContext(ctx, `SELECT coalesce(project_id,'') FROM tasks WHERE workspace_id=? AND id=?`, principal.WorkspaceID, taskID).Scan(&filter.ProjectID); err != nil {
+		tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			return ContextManifest{}, nil, err
+		}
+		defer tx.Rollback()
+		var projectID string
+		if err := tx.QueryRowContext(ctx, `SELECT coalesce(project_id,'') FROM tasks WHERE workspace_id=? AND id=?`, principal.WorkspaceID, taskID).Scan(&projectID); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ContextManifest{}, nil, ErrNotFound
 			}
+			return ContextManifest{}, nil, err
+		}
+		callerCanAccess, err := control.PrincipalCanAccessTask(ctx, tx, principal, taskID)
+		if err != nil {
+			return ContextManifest{}, nil, err
+		}
+		recipient := principal
+		recipient.SubjectID = recipientID
+		recipientCanAccess, err := control.PrincipalCanAccessTask(ctx, tx, recipient, taskID)
+		if err != nil {
+			return ContextManifest{}, nil, err
+		}
+		if !callerCanAccess || !recipientCanAccess {
+			return ContextManifest{}, nil, ErrForbidden
+		}
+		filter.ProjectID = projectID
+		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
 			return ContextManifest{}, nil, err
 		}
 	}
@@ -575,6 +614,21 @@ func hasScope(scopes []string, scope string) bool {
 
 func mayReadScope(p contracts.Principal, scope Scope) bool {
 	return p.SubjectID != "" && (scope.Kind != ScopePersonal || scope.PrincipalID == p.SubjectID) && hasMemoryAction(p, "read", scope)
+}
+
+// mayAccessScope combines capability grants with authoritative ownership or
+// membership. Project/task IDs in the same workspace do not imply access.
+func mayAccessScope(ctx context.Context, tx *sql.Tx, p contracts.Principal, scope Scope) (bool, error) {
+	switch scope.Kind {
+	case ScopePersonal, ScopeWorkspace:
+		return true, nil
+	case ScopeProject:
+		return control.PrincipalCanAccessProject(ctx, tx, p, scope.ID)
+	case ScopeTask:
+		return control.PrincipalCanAccessTask(ctx, tx, p, scope.ID)
+	default:
+		return false, nil
+	}
 }
 
 func mayWriteScope(p contracts.Principal, scope Scope) bool {

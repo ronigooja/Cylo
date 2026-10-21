@@ -80,6 +80,54 @@ func TestVoiceTurnCommitRequiresConfirmationAndDeduplicatesStableRevision(t *tes
 	}
 }
 
+func TestVoiceTaskAdmissionBindsStableTurnAcrossRevisions(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newVoiceTestService(t, Config{})
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO voice_sessions(id,workspace_id,owner_id,device_id,request_id,request_hash,generation,state,created_at,updated_at) VALUES('session-atomic','default','user-1','device-1','request-atomic',X'01',1,'active',?,?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO voice_turns(id,workspace_id,session_id,generation,turn_id,revision,content,content_hash,confirmed_at,command_id) VALUES('turn-1','default','session-atomic',1,'stable-turn',1,'authoritative transcript',X'01',?,'turn-command'),('turn-2','default','session-atomic',1,'stable-turn',2,'edited transcript',X'02',?,'turn-command-2')`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO devices(id,workspace_id,subject_id,name,status,token_hash,created_at) VALUES('device-1','default','user-1','test','approved',X'01',?)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,title,goal,source,profile_id,status,version,created_at,updated_at,created_by_device_id,command_id,owner_subject_id) VALUES('task-1','default','client title','client goal','voice','default','queued',1,?,?,'device-1','create-1','user-1')`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	principal := contracts.Principal{WorkspaceID: "default", SubjectID: "user-1", DeviceID: "device-1"}
+	ref, _ := json.Marshal(voiceTaskSourceReference{Kind: "voice_turn", SessionID: "session-atomic", Generation: 1, TurnID: "stable-turn", Revision: 1})
+	request := &control.TaskSourceRequest{Title: "client title", Goal: "client goal", InitialMessage: "client message"}
+	tx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := svc.admitVoiceTask(ctx, tx, principal, "task-1", request, ref, time.Now().UTC())
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if request.Title != "authoritative transcript" || request.Goal != "authoritative transcript" || request.InitialMessage != "authoritative transcript" || len(events) != 1 || events[0].Type != "voice.task.created" {
+		t.Fatalf("task not derived from confirmed transcript: request=%#v events=%#v", request, events)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	ref, _ = json.Marshal(voiceTaskSourceReference{Kind: "voice_turn", SessionID: "session-atomic", Generation: 1, TurnID: "stable-turn", Revision: 2})
+	otherTask := &control.TaskSourceRequest{Title: "other", Goal: "other", InitialMessage: "other"}
+	secondTx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.admitVoiceTask(ctx, secondTx, principal, "task-2", otherTask, ref, time.Now().UTC())
+	_ = secondTx.Rollback()
+	var apiErr *control.APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "voice_turn_already_dispatched" {
+		t.Fatalf("later revision created another task for stable turn: err=%v", err)
+	}
+}
+
 func TestVoiceSessionRequiresConfiguredSpaceGateway(t *testing.T) {
 	store, svc := newVoiceTestService(t, Config{})
 	_, err := svc.create(context.Background(), contracts.Principal{WorkspaceID: "default", SubjectID: "user-1", DeviceID: "device-1"}, createRequest{RequestID: "request-1", OfferSDP: "v=0"})

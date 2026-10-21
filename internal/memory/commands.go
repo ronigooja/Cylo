@@ -67,7 +67,11 @@ func (s *Service) commandRemember(ctx context.Context, tx *sql.Tx, cmd control.C
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
-	if !mayWriteScope(cmd.Principal, scope) {
+	allowed, err := mayAccessScope(ctx, tx, cmd.Principal, scope)
+	if err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if !mayWriteScope(cmd.Principal, scope) || !allowed {
 		return contracts.CommandResult{}, nil, featureError(http.StatusForbidden, "forbidden", "memory write scope is required for the requested scope", nil)
 	}
 	source, err := resolveUserSource(ctx, tx, cmd, payload, scope)
@@ -103,7 +107,11 @@ func (s *Service) commandDelete(ctx context.Context, tx *sql.Tx, cmd control.Com
 	} else if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
-	if !mayDeleteScope(cmd.Principal, scope) {
+	allowed, err := mayAccessScope(ctx, tx, cmd.Principal, scope)
+	if err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if !mayDeleteScope(cmd.Principal, scope) || !allowed {
 		return contracts.CommandResult{}, nil, featureError(http.StatusForbidden, "forbidden", "memory record is outside the caller's scope", nil)
 	}
 	deleted, err := s.repo.DeleteTx(ctx, tx, DeleteInput{WorkspaceID: cmd.Principal.WorkspaceID, ActorID: cmd.Principal.SubjectID, ClaimID: payload.MemoryID, Expected: payload.ExpectedRevision, ReasonCode: payload.Reason})
@@ -179,14 +187,14 @@ func resolveWriteScope(ctx context.Context, tx *sql.Tx, p contracts.Principal, r
 	case ScopeWorkspace:
 		return Scope{Kind: ScopeWorkspace}, nil
 	case ScopeProject:
-		var exists int
-		if requested.ID == "" || tx.QueryRowContext(ctx, `SELECT count(*) FROM projects WHERE workspace_id=? AND id=? AND status='active'`, p.WorkspaceID, requested.ID).Scan(&exists) != nil || exists != 1 {
+		allowed, err := control.PrincipalCanAccessProject(ctx, tx, p, requested.ID)
+		if requested.ID == "" || err != nil || !allowed {
 			return Scope{}, featureError(http.StatusNotFound, "not_found", "project not found in the authenticated workspace", nil)
 		}
 		return Scope{Kind: ScopeProject, ID: requested.ID}, nil
 	case ScopeTask:
-		var exists int
-		if requested.ID == "" || tx.QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE workspace_id=? AND id=?`, p.WorkspaceID, requested.ID).Scan(&exists) != nil || exists != 1 {
+		allowed, err := control.PrincipalCanAccessTask(ctx, tx, p, requested.ID)
+		if requested.ID == "" || err != nil || !allowed {
 			return Scope{}, featureError(http.StatusNotFound, "not_found", "task not found in the authenticated workspace", nil)
 		}
 		return Scope{Kind: ScopeTask, ID: requested.ID}, nil
@@ -275,6 +283,13 @@ func resolveCommandSource(ctx context.Context, tx *sql.Tx, p contracts.Principal
 	source.Scope.Kind = ScopeKind(scopeKind)
 	source.RecordedAt, _ = time.Parse(time.RFC3339Nano, recorded)
 	if !mayReadScope(p, source.Scope) {
+		return Source{}, ErrInvalidSource
+	}
+	allowed, err := mayAccessScope(ctx, tx, p, source.Scope)
+	if err != nil {
+		return Source{}, err
+	}
+	if !allowed {
 		return Source{}, ErrInvalidSource
 	}
 	valid, err := sourceStillAvailable(ctx, tx, p.WorkspaceID, source)

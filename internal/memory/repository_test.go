@@ -171,7 +171,7 @@ func TestNormalizeTextPreservesOrderAndRepetition(t *testing.T) {
 func TestTaskContextExcludesMemoriesFromOtherProjects(t *testing.T) {
 	ctx := context.Background()
 	store, repo := newMemoryTestRepo(t)
-	_, err := store.DB().ExecContext(ctx, `INSERT INTO projects(id,workspace_id,name,status,version,created_at,updated_at) VALUES('project-a','default','A','active',1,'now','now'),('project-b','default','B','active',1,'now','now')`)
+	_, err := store.DB().ExecContext(ctx, `INSERT INTO projects(id,workspace_id,name,status,version,created_at,updated_at,owner_subject_id) VALUES('project-a','default','A','active',1,'now','now','owner'),('project-b','default','B','active',1,'now','now','other')`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,19 +179,28 @@ func TestTaskContextExcludesMemoriesFromOtherProjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = store.DB().ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,project_id,title,goal,source,profile_id,status,version,created_at,updated_at,created_by_device_id,command_id) VALUES('task-a','default','project-a','Task','Goal','user','default','queued',1,'now','now','device-a','cmd')`)
+	_, err = store.DB().ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,project_id,title,goal,source,profile_id,status,version,created_at,updated_at,created_by_device_id,command_id,owner_subject_id) VALUES('task-a','default','project-a','Task','Goal','user','default','queued',1,'now','now','device-a','cmd','owner')`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	writeMemory(t, ctx, store.DB(), repo, Scope{Kind: ScopeProject, ID: "project-a"}, "sharedword belongs to project A", "project-source-a", 0)
 	writeMemory(t, ctx, store.DB(), repo, Scope{Kind: ScopeProject, ID: "project-b"}, "sharedword belongs to project B", "project-source-b", 0)
 	owner := contracts.Principal{WorkspaceID: "default", SubjectID: "owner", Scopes: []string{"memory:read:workspace"}}
+	projectSearch, err := repo.Search(ctx, owner, "sharedword", SearchFilter{ScopeKind: ScopeProject, ScopeID: "project-b"})
+	if err != nil || len(projectSearch.Items) != 0 {
+		t.Fatalf("same-workspace project crossed ownership boundary: result=%#v err=%v", projectSearch, err)
+	}
 	_, claims, err := repo.AssembleContext(ctx, owner, "task-a", owner.SubjectID, "sharedword", 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(claims) != 1 || claims[0].Scope.ID != "project-a" {
 		t.Fatalf("task context crossed project boundary: %#v", claims)
+	}
+	other := contracts.Principal{WorkspaceID: "default", SubjectID: "other", Scopes: []string{"memory:read:workspace"}}
+	_, _, err = repo.AssembleContext(ctx, other, "task-a", other.SubjectID, "sharedword", 1000)
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("different subject accessed another subject's task: err=%v", err)
 	}
 }
 

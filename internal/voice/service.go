@@ -79,6 +79,9 @@ func Register(server *control.Server, store *storage.Store, cfg Config) error {
 	if err := server.RegisterCommand("voice.task.link", svc.commandLinkTask); err != nil {
 		return err
 	}
+	if err := server.RegisterTaskSourceHandler("voice", svc.admitVoiceTask); err != nil {
+		return err
+	}
 	if err := server.RegisterCommand("voice.pool.reconcile", svc.commandReconcilePool); err != nil {
 		return err
 	}

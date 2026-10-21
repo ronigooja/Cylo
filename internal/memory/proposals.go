@@ -105,7 +105,11 @@ func (r *Repository) ApproveProposalTx(ctx context.Context, tx *sql.Tx, principa
 	if proposal.Status != "pending" || proposal.Version != expected {
 		return Claim{}, ErrVersionConflict
 	}
-	if !mayWriteScope(principal, proposal.Scope) {
+	allowed, err := mayAccessScope(ctx, tx, principal, proposal.Scope)
+	if err != nil {
+		return Claim{}, err
+	}
+	if !mayWriteScope(principal, proposal.Scope) || !allowed {
 		return Claim{}, ErrForbidden
 	}
 	if baselineID.Valid {
