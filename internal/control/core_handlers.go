@@ -265,7 +265,7 @@ func (s *Server) AdmitTaskTx(ctx context.Context, tx *sql.Tx, in AdmissionContex
 	if profileID == "" {
 		profileID = s.cfg.DefaultProfileID
 	}
-	profile, ok := s.cfg.Profiles[profileID]
+	_, ok := s.cfg.Profiles[profileID]
 	if !ok {
 		return TaskAdmissionResult{}, apiError(409, "profile_unavailable", "requested execution profile is not configured and authorized", map[string]any{"profile_id": profileID})
 	}
