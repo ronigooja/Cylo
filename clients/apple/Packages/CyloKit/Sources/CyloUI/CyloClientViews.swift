@@ -97,6 +97,7 @@ private struct ConversationView: View {
             composer
         }
         .navigationTitle("Conversation")
+        .task { await model.refreshVoiceReadiness() }
     }
 
     private var composer: some View {
@@ -126,12 +127,58 @@ private struct ConversationView: View {
                 } label: { Label("Send", systemImage: "arrow.up.circle.fill") }
                     .disabled(model.isBusy || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            Label("Live voice is unavailable until the pinned WebRTC transport is built and configured.", systemImage: "mic.slash")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            voiceControls
         }
         .padding()
         .background(.regularMaterial)
+    }
+
+    @ViewBuilder
+    private var voiceControls: some View {
+        switch model.voiceStatus {
+        case let .active(sessionID, generation):
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Voice connected · generation \(generation)", systemImage: "waveform")
+                    .font(.caption).foregroundStyle(.green)
+                TextEditor(text: Binding(get: { model.voiceDraft }, set: model.updateVoiceDraft))
+                    .frame(minHeight: 54, maxHeight: 100)
+                    .overlay(alignment: .topLeading) {
+                        if model.voiceDraft.isEmpty {
+                            Text("Your speech transcript will appear here for review.").foregroundStyle(.secondary).padding(.top, 8).padding(.leading, 5)
+                        }
+                    }
+                    .accessibilityLabel("Voice transcript draft")
+                HStack {
+                    Button("Use as task") { Task { await model.confirmVoiceDraftAsTask() } }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.isBusy || model.voiceDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Spacer()
+                    Button("End voice", role: .destructive) { Task { await model.endVoiceSession() } }
+                }
+                Text("Transcript captions are drafts. Review them before Cylo saves a voice turn or creates a task.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                Text(sessionID).font(.caption2).foregroundStyle(.tertiary).textSelection(.enabled)
+            }
+        case .connecting:
+            Label("Connecting live voice…", systemImage: "waveform")
+                .font(.caption).foregroundStyle(.orange)
+        case let .unavailable(reason), let .interrupted(reason):
+            VStack(alignment: .leading, spacing: 6) {
+                Button { Task { await model.startVoice() } } label: { Label("Start live voice", systemImage: "mic") }
+                    .disabled(model.isBusy)
+                Text(reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+        case .idle:
+            VStack(alignment: .leading, spacing: 6) {
+                Button { Task { await model.startVoice() } } label: { Label("Start live voice", systemImage: "mic") }
+                    .disabled(model.isBusy || model.voicePoolStatus?.blocked == true)
+                if model.voicePoolStatus?.blocked == true {
+                    Text("Voice account pool is quarantined pending verified upstream termination.")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+            }
+        }
     }
 }
 
@@ -445,12 +492,86 @@ private struct MoreView: View {
 
 private struct MemoryView: View {
     @ObservedObject var model: CyloAppModel
+    @State private var showingCreate = false
+    @State private var query = ""
+
     var body: some View {
         List {
             FreshnessBanner(model: model)
-            ContentUnavailableView("Memory service unavailable", systemImage: "brain.head.profile", description: Text("This server has not reported a connected memory authority. Memory will appear here only from an authoritative server response."))
+            if !model.memoryMissing.isEmpty {
+                Section("Source unavailable") { ForEach(model.memoryMissing, id: \.self) { Text($0).font(.caption).textSelection(.enabled) } }
+            }
+            if !model.memoryConflicts.isEmpty {
+                Section("Conflicting records") { ForEach(model.memoryConflicts, id: \.self) { Text($0).foregroundStyle(.orange) } }
+            }
+            Section("Authoritative records") {
+                if model.memoryClaims.isEmpty { ContentUnavailableView("No matching memories", systemImage: "brain.head.profile") }
+                ForEach(model.memoryClaims) { claim in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(claim.subject).font(.headline)
+                        Text(claim.content).textSelection(.enabled)
+                        Text("\(claim.scope.kind.capitalized) · \(claim.authorityKind.replacingOccurrences(of: "_", with: " ")) · revision \(claim.revision)")
+                            .font(.caption).foregroundStyle(.secondary)
+                        ForEach(claim.sources) { source in
+                            Text("Source: \(source.kind) · \(source.reference)").font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                        }
+                        Button("Delete memory", role: .destructive) { Task { await model.deleteMemory(claim) } }
+                            .disabled(model.isBusy)
+                    }.padding(.vertical, 4)
+                }
+            }
         }
+        .searchable(text: $query, prompt: "Search memory")
+        .onSubmit(of: .search) { Task { await model.refreshMemory(query: query) } }
+        .task { await model.refreshMemory(query: query) }
+        .toolbar { ToolbarItem(placement: .primaryAction) { Button("Remember", systemImage: "plus") { showingCreate = true } } }
+        .sheet(isPresented: $showingCreate) { CreateMemorySheet(model: model) }
         .navigationTitle("Memory")
+    }
+}
+
+private struct CreateMemorySheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var model: CyloAppModel
+    @State private var scope = "personal"
+    @State private var scopeID = ""
+    @State private var subject = ""
+    @State private var key = ""
+    @State private var content = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Picker("Scope", selection: $scope) {
+                    Text("Personal").tag("personal")
+                    Text("Workspace").tag("workspace")
+                    Text("Project").tag("project")
+                    Text("Task").tag("task")
+                }
+                if scope == "project" || scope == "task" {
+                    TextField(scope == "project" ? "Project ID" : "Task ID", text: $scopeID)
+                }
+                TextField("Subject", text: $subject)
+                TextField("Memory key", text: $key)
+                TextField("Remember", text: $content, axis: .vertical).lineLimit(4...10)
+                Text("This creates a user-confirmed, source-linked record in the server authority.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .navigationTitle("Remember")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        Task {
+                            await model.remember(scope: scope, scopeID: scopeID.isEmpty ? nil : scopeID, subject: subject, key: key, content: content)
+                            dismiss()
+                        }
+                    }
+                    .disabled(model.isBusy || subject.isEmpty || key.isEmpty || content.isEmpty || ((scope == "project" || scope == "task") && scopeID.isEmpty))
+                }
+            }
+        }
+        .frame(minWidth: 360, minHeight: 420)
     }
 }
 

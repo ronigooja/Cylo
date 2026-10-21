@@ -50,6 +50,49 @@ public final class APIClient: @unchecked Sendable {
         try await request(path: ["v1", "snapshot"], method: "GET", authenticated: true)
     }
 
+    public func searchMemory(query: String = "", limit: Int = 50) async throws -> MemorySearchResult {
+        var components = URLComponents(url: try makeURL(path: ["v1", "memory"]), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "q", value: query), URLQueryItem(name: "limit", value: String(limit))]
+        guard let url = components?.url else { throw CyloError.invalidServerURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        try authorize(&request)
+        return try await perform(request)
+    }
+
+    public func voiceConfig() async throws -> VoiceConfig {
+        try await request(path: ["v1", "voice", "config"], method: "GET", authenticated: true)
+    }
+
+    public func voicePoolStatus() async throws -> VoicePoolStatus {
+        try await request(path: ["v1", "voice", "pool", "status"], method: "GET", authenticated: true)
+    }
+
+    public func createVoiceSession(requestID: String, offerSDP: String, voice: String, voiceMode: String, languageCode: String) async throws -> VoiceSessionResponse {
+        let body: [String: JSONValue] = [
+            "request_id": .string(requestID),
+            "offer_sdp": .string(offerSDP),
+            "voice": .string(voice),
+            "voice_mode": .string(voiceMode),
+            "language_code": .string(languageCode)
+        ]
+        return try await request(path: ["v1", "voice", "sessions"], method: "POST", body: body, authenticated: true)
+    }
+
+    public func confirmVoiceConnected(sessionID: String, generation: Int64) async throws -> VoiceOperationResponse {
+        let body = VoiceGenerationRequest(generation: generation)
+        return try await request(path: ["v1", "voice", "sessions", sessionID, "connected"], method: "POST", body: body, authenticated: true)
+    }
+
+    public func heartbeatVoiceSession(sessionID: String) async throws -> VoiceOperationResponse {
+        try await request(path: ["v1", "voice", "sessions", sessionID, "heartbeat"], method: "POST", body: EmptyObject(), authenticated: true)
+    }
+
+    public func hangupVoiceSession(sessionID: String) async throws -> VoiceOperationResponse {
+        let body = VoiceHangupRequest(mediaClosed: true)
+        return try await request(path: ["v1", "voice", "sessions", sessionID, "hangup"], method: "POST", body: body, authenticated: true)
+    }
+
     public func receipt(id: String) async throws -> CommandReceipt {
         try await request(path: ["v1", "commands", id], method: "GET", authenticated: true)
     }
@@ -154,3 +197,13 @@ private struct CommandEnvelope<Payload: Encodable & Sendable>: Encodable {
 }
 
 private struct NoBody: Encodable {}
+
+private struct EmptyObject: Encodable {}
+
+private struct VoiceGenerationRequest: Encodable {
+    var generation: Int64
+}
+
+private struct VoiceHangupRequest: Encodable {
+    var mediaClosed: Bool
+}

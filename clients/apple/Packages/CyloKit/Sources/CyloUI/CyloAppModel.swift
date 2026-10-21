@@ -1,6 +1,7 @@
 import Combine
 import CyloKit
 import Foundation
+import WebRTC
 
 @MainActor
 public final class CyloAppModel: ObservableObject {
@@ -11,6 +12,14 @@ public final class CyloAppModel: ObservableObject {
     @Published public private(set) var isBusy = false
     @Published public private(set) var pairingID: String?
     @Published public private(set) var pairingStatus: PairingStatus?
+    @Published public private(set) var memoryClaims: [MemoryClaim] = []
+    @Published public private(set) var memoryMissing: [String] = []
+    @Published public private(set) var memoryConflicts: [String] = []
+    @Published public private(set) var voiceConfig: VoiceConfig?
+    @Published public private(set) var voicePoolStatus: VoicePoolStatus?
+    @Published public private(set) var voiceStatus: VoiceIntegrationStatus = .idle
+    @Published public var voiceDraft = ""
+    @Published public private(set) var voiceDraftRevision: Int64 = 0
 
     private let defaults: UserDefaults
     private var api: APIClient?
@@ -20,6 +29,15 @@ public final class CyloAppModel: ObservableObject {
     private var eventTask: Task<Void, Never>?
     private var snapshotCache: SnapshotCache?
     private var streamBackoff: UInt64 = 1
+    private var connectionGeneration: UInt64 = 0
+    private var configuredServerURL: URL?
+    private var voiceTransport: LibWebRTCTransport?
+    private var voiceAudioSession: VoiceAudioSessionAdapter?
+    private var voiceSession: VoiceSessionResponse?
+    private var voiceAPI: APIClient?
+    private var voiceTurnID: String?
+    private var voiceProviderMessageID: String?
+    private var voiceHeartbeatTask: Task<Void, Never>?
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -27,6 +45,7 @@ public final class CyloAppModel: ObservableObject {
         if let url = URL(string: serverAddress), url.host != nil,
            let device = try? DeviceIdentityStore(serverURL: url).loadOrCreate(),
            let cache = try? SnapshotCache(serverURL: url, deviceToken: device.deviceToken), let cached = try? cache.load() {
+            configuredServerURL = url
             snapshotCache = cache
             snapshot = cached
             freshness = .stale(reason: "Showing the last saved server snapshot.", cursor: cached.eventCursor)
@@ -44,27 +63,36 @@ public final class CyloAppModel: ObservableObject {
     public var runs: [Run] { snapshot?.runs ?? [] }
 
     public func start() async {
+        var generation = connectionGeneration
         do {
             _ = try configure()
+            generation = connectionGeneration
             try await refreshSnapshot()
+            guard generation == connectionGeneration else { return }
+            await refreshMemory()
+            guard generation == connectionGeneration else { return }
             do {
                 let recovered = try await coordinator?.recoverPending() ?? []
+                guard generation == connectionGeneration else { return }
                 if !recovered.isEmpty {
                     notice = "Recovered \(recovered.count) command receipt(s) from this device's durable queue."
                     try await refreshSnapshot()
                 }
             } catch {
-                notice = "A saved command needs attention: \(userMessage(error))"
+                if generation == connectionGeneration { notice = "A saved command needs attention: \(userMessage(error))" }
             }
+            guard generation == connectionGeneration else { return }
             startEventLoop()
         } catch {
-            setOffline(error)
+            if generation == connectionGeneration { setOffline(error) }
         }
     }
 
     public func reconnect() async { await start() }
 
     public func updateServerAddress() async {
+        await endVoiceSession()
+        connectionGeneration &+= 1
         defaults.set(serverAddress.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "cylo.serverAddress")
         eventTask?.cancel()
         eventTask = nil
@@ -74,51 +102,282 @@ public final class CyloAppModel: ObservableObject {
     }
 
     public func bootstrap(code: String, deviceName: String) async {
+        var generation = connectionGeneration
         do {
             let api = try configure()
+            generation = connectionGeneration
             guard let identity else { throw CyloError.missingCredential }
             _ = try identity.loadOrCreate()
             _ = try await api.bootstrap(code: code, deviceName: deviceName, identity: identity.loadOrCreate())
+            guard generation == connectionGeneration else { return }
             notice = "This device is registered. Loading the server snapshot…"
             try await refreshSnapshot()
+            guard generation == connectionGeneration else { return }
             startEventLoop()
         } catch {
-            notice = userMessage(error)
+            if generation == connectionGeneration { notice = userMessage(error) }
         }
     }
 
     public func requestPairing(deviceName: String) async {
+        var generation = connectionGeneration
         do {
             let api = try configure()
+            generation = connectionGeneration
             guard let identity else { throw CyloError.missingCredential }
             let result = try await api.requestPairing(deviceName: deviceName, identity: identity.loadOrCreate())
+            guard generation == connectionGeneration else { return }
             pairingID = result.pairingId
             defaults.set(result.pairingId, forKey: pairingKey)
-            pairingStatus = try await api.pairingStatus(id: result.pairingId, identity: identity.loadOrCreate())
+            let status = try await api.pairingStatus(id: result.pairingId, identity: identity.loadOrCreate())
+            guard generation == connectionGeneration else { return }
+            pairingStatus = status
             notice = "Pairing request sent. An approved device must approve this device before it can read Cylo data."
-        } catch {
-            notice = userMessage(error)
-        }
+        } catch { if generation == connectionGeneration { notice = userMessage(error) } }
     }
 
     public func refreshPairing() async {
+        var generation = connectionGeneration
         do {
             let api = try configure()
+            generation = connectionGeneration
             guard let id = pairingID ?? defaults.string(forKey: pairingKey), let identity else { return }
+            let status = try await api.pairingStatus(id: id, identity: identity.loadOrCreate())
+            guard generation == connectionGeneration else { return }
             pairingID = id
-            pairingStatus = try await api.pairingStatus(id: id, identity: identity.loadOrCreate())
+            pairingStatus = status
             if pairingStatus?.status == "approved" {
                 notice = "This device was approved. Loading the server snapshot…"
                 try await refreshSnapshot()
+                guard generation == connectionGeneration else { return }
                 startEventLoop()
             }
-        } catch { notice = userMessage(error) }
+        } catch { if generation == connectionGeneration { notice = userMessage(error) } }
     }
 
     public func createProject(name: String, description: String?) async {
         var payload: [String: JSONValue] = ["name": .string(name)]
         if let description, !description.isEmpty { payload["description"] = .string(description) }
         await send(kind: "project.create", payload: .object(payload))
+    }
+
+    public func remember(scope: String, scopeID: String?, subject: String, key: String, content: String) async {
+        var scopePayload: [String: JSONValue] = ["kind": .string(scope)]
+        if let scopeID { scopePayload["id"] = .string(scopeID) }
+        let payload: JSONValue = .object([
+            "scope": .object(scopePayload),
+            "subject": .string(subject),
+            "key": .string(key),
+            "content": .string(content),
+            "source_kind": .string("user_note")
+        ])
+        await send(kind: "memory.remember", payload: payload)
+        await refreshMemory()
+    }
+
+    public func deleteMemory(_ memory: MemoryClaim) async {
+        let payload: JSONValue = .object([
+            "memory_id": .string(memory.id),
+            "expected_revision": .integer(memory.revision),
+            "reason": .string("user_requested")
+        ])
+        await send(kind: "memory.delete", expectedVersion: memory.revision, payload: payload)
+        await refreshMemory()
+    }
+
+    public func refreshMemory(query: String = "") async {
+        guard let api else { return }
+        let generation = connectionGeneration
+        do {
+            let result = try await api.searchMemory(query: query)
+            guard generation == connectionGeneration, api === self.api else { return }
+            memoryClaims = result.items
+            memoryMissing = result.missing
+            memoryConflicts = result.conflicts
+        } catch {
+            guard generation == connectionGeneration else { return }
+            if let failure = error as? CyloError, case let .http(status, _, _, _) = failure, status == 403 { return }
+            notice = "Memory could not be refreshed: \(userMessage(error))"
+        }
+    }
+
+    public func refreshVoiceReadiness() async {
+        guard let api = try? configure() else { return }
+        let generation = connectionGeneration
+        do {
+            async let config = api.voiceConfig()
+            async let pool = api.voicePoolStatus()
+            let (nextConfig, nextPool) = try await (config, pool)
+            guard generation == connectionGeneration, api === self.api else { return }
+            voiceConfig = nextConfig
+            voicePoolStatus = nextPool
+            if voiceSession == nil { voiceStatus = .idle }
+        } catch {
+            guard generation == connectionGeneration else { return }
+            voiceStatus = .unavailable(reason: userMessage(error))
+        }
+    }
+
+    public func startVoice(voice: String? = nil, voiceMode: String? = nil, languageCode: String? = nil) async {
+        guard voiceSession == nil else { return }
+        let generation: UInt64
+        let api: APIClient
+        do {
+            api = try configure()
+            generation = connectionGeneration
+        } catch {
+            voiceStatus = .unavailable(reason: userMessage(error))
+            return
+        }
+
+        var audio: VoiceAudioSessionAdapter?
+        var transport: LibWebRTCTransport?
+        var allocatedSession: VoiceSessionResponse?
+        voiceStatus = .connecting
+        do {
+            let config = try await api.voiceConfig()
+            guard generation == connectionGeneration else { throw CancellationError() }
+            let pool = try await api.voicePoolStatus()
+            guard generation == connectionGeneration else { throw CancellationError() }
+            voiceConfig = config
+            voicePoolStatus = pool
+            guard !pool.blocked else { throw CyloError.http(status: 409, code: pool.reasonCode, message: "The voice account pool is quarantined until an operator confirms termination.", details: nil) }
+
+            #if os(iOS)
+            audio = AppleMobileAudioSessionAdapter()
+            #elseif os(macOS)
+            audio = AppleDesktopAudioSessionAdapter()
+            #endif
+            try audio?.activate()
+            let iceServers = config.webRTC.iceServers.map { RTCIceServer(urlStrings: $0.urls) }
+            transport = try LibWebRTCTransport(iceServers: iceServers, dataChannelLabel: config.webRTC.dataChannel.label)
+            transport?.onDataMessage = { [weak self] data in
+                Task { @MainActor in self?.receiveVoiceData(data) }
+            }
+
+            let offer = try await transport!.createOffer()
+            guard generation == connectionGeneration else { throw CancellationError() }
+            let created = try await api.createVoiceSession(
+                requestID: UUID().uuidString.lowercased(),
+                offerSDP: offer,
+                voice: voice ?? config.defaults.voice,
+                voiceMode: voiceMode ?? config.defaults.voiceMode,
+                languageCode: languageCode ?? config.defaults.languageCode
+            )
+            allocatedSession = created
+            guard generation == connectionGeneration else { throw CancellationError() }
+            guard created.state == "active", !created.answerSdp.isEmpty else { throw CyloError.invalidResponse }
+            try await transport!.applyAnswer(created.answerSdp)
+            guard generation == connectionGeneration else { throw CancellationError() }
+            try await transport!.waitUntilConnected()
+            guard generation == connectionGeneration else { throw CancellationError() }
+            let confirmed = try await api.confirmVoiceConnected(sessionID: created.voiceSessionId, generation: created.generation)
+            guard generation == connectionGeneration else { throw CancellationError() }
+            guard confirmed.ok else { throw CyloError.invalidResponse }
+
+            voiceSession = created
+            voiceAPI = api
+            voiceTransport = transport
+            voiceAudioSession = audio
+            voiceTurnID = nil
+            voiceProviderMessageID = nil
+            voiceDraft = ""
+            voiceDraftRevision = 0
+            voiceStatus = .active(sessionID: created.voiceSessionId, mediaGeneration: created.generation)
+            startVoiceHeartbeat(sessionID: created.voiceSessionId, api: api, generation: generation)
+        } catch {
+            await transport?.close()
+            try? audio?.deactivate()
+            if let allocatedSession {
+                _ = try? await api.hangupVoiceSession(sessionID: allocatedSession.voiceSessionId)
+            }
+            if generation == connectionGeneration {
+                voiceStatus = .unavailable(reason: userMessage(error))
+                if let allocatedSession { voiceSession = allocatedSession; voiceAPI = api }
+            }
+        }
+    }
+
+    public func endVoiceSession() async {
+        voiceHeartbeatTask?.cancel()
+        voiceHeartbeatTask = nil
+        let session = voiceSession
+        let api = voiceAPI
+        await voiceTransport?.close()
+        voiceTransport = nil
+        try? voiceAudioSession?.deactivate()
+        voiceAudioSession = nil
+        guard let session, let api else {
+            voiceSession = nil
+            if case .unavailable = voiceStatus {} else { voiceStatus = .idle }
+            return
+        }
+        do {
+            let result = try await api.hangupVoiceSession(sessionID: session.voiceSessionId)
+            if result.poolBlocked == true {
+                voicePoolStatus = try? await api.voicePoolStatus()
+                voiceStatus = .interrupted(reason: "Local media is closed. The upstream account pool remains quarantined until termination is verified.")
+            } else {
+                voiceStatus = .idle
+            }
+            voiceSession = nil
+            voiceAPI = nil
+        } catch {
+            voiceStatus = .interrupted(reason: "Local media is closed, but server release is unconfirmed: \(userMessage(error))")
+        }
+    }
+
+    public func confirmVoiceDraftAsTask(title: String? = nil) async {
+        guard let session = voiceSession, let coordinator, !voiceDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let turnID = voiceTurnID, voiceDraftRevision > 0 else { return }
+        let text = voiceDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        var commitFields: [String: JSONValue] = [
+            "voice_session_id": .string(session.voiceSessionId),
+            "generation": .integer(session.generation),
+            "turn_id": .string(turnID),
+            "revision": .integer(voiceDraftRevision),
+            "text": .string(text),
+            "confirmed": .bool(true)
+        ]
+        if let voiceProviderMessageID { commitFields["provider_message_id"] = .string(voiceProviderMessageID) }
+        let commit = JSONValue.object(commitFields)
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            _ = try await coordinator.submit(kind: "voice.turn.commit", payload: commit, workspaceID: snapshot?.devices.first?.workspaceId)
+            let taskTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? title! : String(text.prefix(72))
+            let sourceReference: JSONValue = .object([
+                "kind": .string("voice_turn"),
+                "voice_session_id": .string(session.voiceSessionId),
+                "generation": .integer(session.generation),
+                "turn_id": .string(turnID),
+                "revision": .integer(voiceDraftRevision)
+            ])
+            let createTask: JSONValue = .object([
+                "title": .string(taskTitle),
+                "goal": .string(text),
+                "source": .string("voice"),
+                "source_reference": sourceReference,
+                "initial_message": .string(text)
+            ])
+            let taskReceipt = try await coordinator.submit(kind: "task.create", payload: createTask, workspaceID: snapshot?.devices.first?.workspaceId).receipt
+            guard let taskID = taskReceipt.resourceId, let version = taskReceipt.resourceVersion else { throw CyloError.invalidResponse }
+            guard version > 0 else { throw CyloError.invalidResponse }
+            notice = "Voice turn confirmed and linked to task \(taskID)."
+            voiceDraft = ""
+            voiceTurnID = nil
+            voiceProviderMessageID = nil
+            voiceDraftRevision = 0
+            try await refreshSnapshot()
+        } catch {
+            notice = "The voice turn may be committed, but task creation or linking needs attention: \(userMessage(error))"
+        }
+    }
+
+    public func updateVoiceDraft(_ text: String) {
+        guard text != voiceDraft else { return }
+        voiceDraft = text
+        voiceDraftRevision += 1
     }
 
     public func createTask(goal: String, title: String, projectID: String?) async {
@@ -205,12 +464,25 @@ public final class CyloAppModel: ObservableObject {
         }
         defaults.set(trimmed, forKey: "cylo.serverAddress")
         if let api, api.serverURL == url, coordinator != nil { return api }
+        if configuredServerURL != url {
+            connectionGeneration &+= 1
+            configuredServerURL = url
+            snapshot = nil
+            freshness = .loading
+            pairingID = defaults.string(forKey: "cylo.pairingID.\(serverAddress)")
+            pairingStatus = nil
+        }
         eventTask?.cancel()
         let identity = DeviceIdentityStore(serverURL: url)
         let api = try APIClient(serverURL: url, credentials: identity)
         let deviceIdentity = try identity.loadOrCreate()
         let journal = try CommandJournal(serverURL: url, deviceToken: deviceIdentity.deviceToken)
-        snapshotCache = try SnapshotCache(serverURL: url, deviceToken: deviceIdentity.deviceToken)
+        let cache = try SnapshotCache(serverURL: url, deviceToken: deviceIdentity.deviceToken)
+        snapshotCache = cache
+        if configuredServerURL == url, snapshot == nil, let cached = try cache.load() {
+            snapshot = cached
+            freshness = .stale(reason: "Showing the last saved server snapshot.", cursor: cached.eventCursor)
+        }
         self.identity = identity
         self.api = api
         self.journal = journal
@@ -221,10 +493,12 @@ public final class CyloAppModel: ObservableObject {
 
     private func send(kind: String, expectedVersion: Int64? = nil, payload: JSONValue) async {
         guard let coordinator else { notice = "Connect to a Cylo server first."; return }
+        let generation = connectionGeneration
         isBusy = true
         defer { isBusy = false }
         do {
             let outcome = try await coordinator.submit(kind: kind, expectedVersion: expectedVersion, payload: payload, workspaceID: snapshot?.devices.first?.workspaceId)
+            guard generation == connectionGeneration else { return }
             if kind == "task.stop" {
                 notice = "Stop intent recorded (receipt \(outcome.receipt.commandId)). Awaiting server confirmation that the runtime terminated."
             } else {
@@ -232,17 +506,20 @@ public final class CyloAppModel: ObservableObject {
             }
             do { try await refreshSnapshot() }
             catch { setStale("The command was accepted, but the latest snapshot could not be loaded: \(userMessage(error))") }
-        } catch { notice = userMessage(error) }
+        } catch { if generation == connectionGeneration { notice = userMessage(error) } }
     }
 
     private func refreshSnapshot() async throws {
         guard let api else { throw CyloError.invalidServerURL }
+        let generation = connectionGeneration
+        let cache = snapshotCache
         let latest = try await api.snapshot()
+        guard generation == connectionGeneration, api === self.api else { return }
         if let current = snapshot, !cursor(latest.eventCursor, isAtLeast: current.eventCursor) {
             throw CyloError.invalidResponse
         }
         snapshot = latest
-        try snapshotCache?.save(latest)
+        try cache?.save(latest)
         freshness = .current(serverVersion: latest.serverVersion, cursor: latest.eventCursor)
     }
 
@@ -255,23 +532,84 @@ public final class CyloAppModel: ObservableObject {
         }
     }
 
+    private func startVoiceHeartbeat(sessionID: String, api: APIClient, generation: UInt64) {
+        voiceHeartbeatTask?.cancel()
+        voiceHeartbeatTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                if Task.isCancelled { return }
+                do {
+                    _ = try await api.heartbeatVoiceSession(sessionID: sessionID)
+                } catch {
+                    guard let self, generation == self.connectionGeneration else { return }
+                    self.voiceStatus = .interrupted(reason: "Voice lease renewal failed: \(self.userMessage(error))")
+                    return
+                }
+            }
+        }
+    }
+
+    private func receiveVoiceData(_ data: Data) {
+        guard let outer = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+        var event = outer
+        if outer["type"] as? String == "data_message", let encoded = outer["data"] as? String,
+           let innerData = encoded.data(using: .utf8), let inner = (try? JSONSerialization.jsonObject(with: innerData)) as? [String: Any] {
+            event = inner
+        }
+        let type = (event["type"] as? String) ?? ""
+        var messageID: String?
+        var transcript: String?
+        if type == "chat_message_delta" {
+            let payload = (event["payload"] as? [String: Any]) ?? event
+            let delta = (payload["delta"] as? [String: Any]) ?? [:]
+            let version = delta["v"] as? [String: Any]
+            let message = version?["message"] as? [String: Any]
+            let author = message?["author"] as? [String: Any]
+            guard author?["role"] as? String == "user" else { return }
+            messageID = message?["id"] as? String
+            if let content = message?["content"] as? [String: Any], let parts = content["parts"] as? [[String: Any]] {
+                transcript = parts.compactMap { part -> String? in
+                    if part["content_type"] as? String == "audio_transcription", part["direction"] as? String == "out" { return nil }
+                    return (part["transcript"] as? String) ?? (part["text"] as? String) ?? (part["content"] as? String)
+                }.joined(separator: " ")
+            }
+        } else if type.contains("input_audio") && type.contains("transcription") {
+            let payload = (event["payload"] as? [String: Any]) ?? event
+            transcript = (event["transcript"] as? String) ?? (event["text"] as? String) ?? (payload["transcript"] as? String) ?? (payload["text"] as? String)
+            messageID = (event["item_id"] as? String) ?? (payload["item_id"] as? String)
+        }
+        guard let transcript, !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let clean = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let messageID, messageID != voiceProviderMessageID {
+            voiceProviderMessageID = messageID
+            voiceTurnID = UUID().uuidString.lowercased()
+            voiceDraftRevision = 0
+        } else if voiceTurnID == nil {
+            voiceTurnID = UUID().uuidString.lowercased()
+        }
+        guard voiceDraft != clean else { return }
+        voiceDraft = clean
+        voiceDraftRevision += 1
+    }
+
     private func listen(using api: APIClient) async {
+        let generation = connectionGeneration
         let stream = EventStreamClient(api: api)
-        while !Task.isCancelled {
+        while !Task.isCancelled && generation == connectionGeneration {
             let cursor = snapshot?.eventCursor
             do {
                 let next = try await stream.run(after: cursor) { [weak self] push in
                     guard let self else { return }
                     await self.handle(push)
                 }
-                if Task.isCancelled { return }
+                if Task.isCancelled || generation != connectionGeneration { return }
                 if let next, snapshot?.eventCursor != next {
                     try await refreshSnapshot()
                 }
                 streamBackoff = 1
                 setStale("The event stream ended; reconnecting.")
             } catch {
-                if Task.isCancelled { return }
+                if Task.isCancelled || generation != connectionGeneration { return }
                 if let error = error as? CyloError,
                    case let .http(status, _, _, _) = error,
                    status == 401 || status == 403 {

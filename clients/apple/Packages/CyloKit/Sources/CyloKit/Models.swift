@@ -112,6 +112,114 @@ public struct Run: Codable, Equatable, Identifiable, Sendable {
     public var terminationConfirmed: Bool
 }
 
+public struct MemoryClaim: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var workspaceId: String
+    public var scope: MemoryScope
+    public var subject: String
+    public var key: String
+    public var content: String
+    public var authorityKind: String
+    public var status: String
+    public var revision: Int64
+    public var validFrom: String?
+    public var validTo: String?
+    public var supersedes: String?
+    public var sources: [MemorySource]
+    public var deletedAt: String?
+}
+
+public struct MemoryScope: Codable, Equatable, Sendable {
+    public var kind: String
+    public var id: String?
+    public var principalId: String?
+}
+
+public struct MemorySource: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var version: Int64
+    public var scope: MemoryScope
+    public var kind: String
+    public var reference: String
+    public var contentHash: String?
+    public var recordedAt: String
+    public var producer: String
+    public var retentionClass: String?
+}
+
+public struct MemorySearchResult: Codable, Equatable, Sendable {
+    public var items: [MemoryClaim]
+    public var missing: [String]
+    public var conflicts: [String]
+}
+
+public struct VoiceConfig: Codable, Equatable, Sendable {
+    public var version: String
+    public var defaults: VoiceDefaults
+    public var voices: [VoiceChoice]
+    public var voiceModes: [VoiceChoice]
+    public var languages: [VoiceLanguage]
+    public var webRTC: VoiceWebRTCConfig
+}
+
+public struct VoiceDefaults: Codable, Equatable, Sendable {
+    public var voice: String
+    public var voiceMode: String
+    public var languageCode: String
+}
+
+public struct VoiceChoice: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var name: String
+    public var description: String?
+}
+
+public struct VoiceLanguage: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var nameZh: String
+    public var nameEn: String
+}
+
+public struct VoiceWebRTCConfig: Codable, Equatable, Sendable {
+    public var dataChannel: VoiceDataChannelConfig
+    public var iceServers: [VoiceICEServer]
+    public var receiveAudio: Bool
+    public var receiveVideo: Bool
+}
+
+public struct VoiceDataChannelConfig: Codable, Equatable, Sendable {
+    public var label: String
+    public var negotiated: Bool
+    public var id: Int
+}
+
+public struct VoiceICEServer: Codable, Equatable, Sendable {
+    public var urls: [String]
+}
+
+public struct VoiceSessionResponse: Codable, Equatable, Sendable {
+    public var voiceSessionId: String
+    public var generation: Int64
+    public var state: String
+    public var answerSdp: String
+}
+
+public struct VoicePoolStatus: Codable, Equatable, Sendable {
+    public var blocked: Bool
+    public var reasonCode: String
+    public var updatedAt: String
+    public var accountLeaseIdentity: Bool
+    public var accountScopedTermination: Bool
+    public var trustedTerminationEvidence: Bool
+}
+
+public struct VoiceOperationResponse: Codable, Equatable, Sendable {
+    public var ok: Bool
+    public var state: String?
+    public var upstreamTermination: String?
+    public var poolBlocked: Bool?
+}
+
 public struct TaskEntry: Codable, Equatable, Identifiable, Sendable {
     public var id: String
     public var kind: String
