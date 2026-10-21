@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -217,5 +218,41 @@ func TestMemoryWorkerCompletionRechecksTombstoneGeneration(t *testing.T) {
 	}
 	if result.Status != "done" || result.Disposition != "stale_generation" {
 		t.Fatalf("stale index job was acknowledged without a generation result: %#v", result)
+	}
+}
+
+func TestMemoryWorkerReconciliationAdvancesBeyondFirstPage(t *testing.T) {
+	store, handler, token := memoryWorkerHarness(t, []string{"memory:jobs:claim", "memory:jobs:complete"}, []string{"default"})
+	for i := 0; i < 501; i++ {
+		seedMemoryWorkerClaim(t, store.DB(), "default", fmt.Sprintf("claim-page-%03d", i))
+	}
+	completed := 0
+	for poll := 0; poll < 80 && completed < 501; poll++ {
+		claimed := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/jobs/claim", map[string]any{"limit": 10})
+		if claimed.Code != http.StatusOK {
+			t.Fatalf("poll %d claim status=%d body=%s", poll, claimed.Code, claimed.Body.String())
+		}
+		var batch struct {
+			Items []struct {
+				ID      string `json:"id"`
+				Attempt int    `json:"attempt"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(claimed.Body.Bytes(), &batch); err != nil {
+			t.Fatal(err)
+		}
+		if len(batch.Items) == 0 {
+			t.Fatalf("poll %d returned no jobs after completing %d of 501", poll, completed)
+		}
+		for _, job := range batch.Items {
+			result := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/jobs/"+job.ID+"/complete", map[string]any{"attempt": job.Attempt})
+			if result.Code != http.StatusOK {
+				t.Fatalf("complete %s status=%d body=%s", job.ID, result.Code, result.Body.String())
+			}
+			completed++
+		}
+	}
+	if completed != 501 {
+		t.Fatalf("completed %d of 501 jobs", completed)
 	}
 }
