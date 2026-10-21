@@ -387,3 +387,37 @@ func TestReviewProtectedRoutesAndReceiptIsolation(t *testing.T) {
 		t.Errorf("independent principal key rejected=%d", w.Code)
 	}
 }
+
+func TestReviewApprovalCannotResurrectStoppedTask(t *testing.T) {
+	code, token := reviewToken(t), reviewToken(t)
+	cfg := control.Config{BootstrapCode: code, DefaultProfileID: "review", Profiles: map[string]control.RuntimeProfile{"review": {ID: "review", AOProjectID: "review-project", RuntimeRouteID: "review", ModelRouteID: "review", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "review-policy"}}}
+	s, h := reviewServer(t, cfg, nil)
+	reviewBootstrap(t, h, code, token)
+	w := reviewRequest(h, "POST", "/v1/commands", token, "create-task", contracts.CommandRequest{Kind: "task.create", Payload: json.RawMessage(`{"title":"review","goal":"review","source":"user"}`)})
+	if w.Code != 200 {
+		t.Fatalf("create=%d", w.Code)
+	}
+	var receipt contracts.CommandReceipt
+	if e := json.Unmarshal(w.Body.Bytes(), &receipt); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := s.DB().Exec("INSERT INTO approvals(id,workspace_id,task_id,status,prompt,created_at,task_version) VALUES('pending','default',?,'pending','Review','2026-10-21T00:00:00Z',1)", receipt.ResourceID); e != nil {
+		t.Fatal(e)
+	}
+	stop, _ := json.Marshal(map[string]string{"task_id": receipt.ResourceID})
+	if w := reviewRequest(h, "POST", "/v1/commands", token, "stop-task", contracts.CommandRequest{Kind: "task.stop", Payload: stop}); w.Code != 200 {
+		t.Fatalf("stop=%d", w.Code)
+	}
+	approve, _ := json.Marshal(map[string]string{"task_id": receipt.ResourceID, "approval_id": "pending", "decision": "approve"})
+	w = reviewRequest(h, "POST", "/v1/commands", token, "approve-stopped", contracts.CommandRequest{Kind: "task.approve", Payload: approve})
+	if w.Code < 400 {
+		t.Errorf("pending approval revived canceled task: status=%d", w.Code)
+	}
+	var status string
+	if e := s.DB().QueryRow("SELECT status FROM tasks WHERE id=?", receipt.ResourceID).Scan(&status); e != nil {
+		t.Fatal(e)
+	}
+	if status != "canceled" {
+		t.Errorf("stopped task became %s", status)
+	}
+}
