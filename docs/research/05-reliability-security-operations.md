@@ -90,6 +90,7 @@ checkpoint需标注schema、producer release、资源范围、外部cursor及校
 | 尚未派发 | 同一事务撤grant、失效待审批、取消待发command/job；后续实际工具调用拒绝 |
 | 在途但经过受控网关 | 网关拒新请求/流量并请求终止；已经被provider接受的动作仍可能完成，需receipt核对 |
 | 离线独立服务 | 短时lease/凭证到期停止新effect；示例初始TTL为60秒，实际保障取决于资源端凭证失效、时钟与隔离，并非已达SLO |
+| 现有语音直连媒体 | 网关拒新建/控制并请求客户端停track、关RTCPeerConnection/DataChannel，记录确认；删除binding/撤token不证明现有WebRTC已断，强制服务端终止需上游能力实测或受控媒体relay |
 | 长期secret已复制给任意程序 | 单改数据库无强制回收能力；撤第三方token/轮换、断网络、停进程/隔离主机。未完成这些动作只能显示撤销待确认 |
 
 **执行边界设计。** Git worktree共享仓库元数据且进程仍有原OS身份；不能充当文件/网络/进程/secret隔离。独立OS用户也不是完整网络隔离。可信个人本机模式可使用受控工具、最小环境、单独数据目录，但应明确其高信任前提；自主生成程序先在无生产secret、默认无网络、只读依赖与有界临时目录的构建/测试环境运行。正式服务仅注入所需SecretRef、最小账号权限与有界资源，实际读写/外发经强制边界。
@@ -106,7 +107,9 @@ Linux可评估systemd `NoNewPrivileges`、`ProtectSystem`、`ProtectHome`、路�
 
 应用审计账号只允许追加不等于管理员无法篡改；hash链只能辅助发现变化，没有独立锚点仍可被整体重写。高保障部署可用独立追加存储/对象锁与独立访问控制；个人单机明确其保证范围。保留按数据类型配置（示例：原始调试日志7天、运行证据30天、授权/决策元数据更长，均待用户政策确定），不是无期限全存。删除传播到索引/缓存/派生记忆；备份采用有期限保留及恢复后再应用tombstone，避免已删数据复活。
 
-**成本与资源设计。** 按workspace/user/project/task/service/provider设调用数、并发、token/费用估算、重试深度、运行时长、CPU/内存/PID/磁盘/日志/网络/事件积压上限；派发前原子预留，并将幂等重试计入同operation。跨Worker派生不能新建task绕预算，服务调用Worker继承更严格预算；LLM调用上限与外部API、构建下载、存储成本分别计数。
+**实时语音凭据与数据。** 采纳chatgpt-web-voice实时上游/网关/多账号池；账号管理与开麦分权，owner/workspace/project范围在建会话和辅助控制再次校验。永久凭据加密存网关后端、日志脱敏、备份独立保护，不交语音模型或浏览器。池中账号不是Cylo身份或Codex认证来源。向上游仅发送授权所需上下文；当前源码`history_and_training_disabled:false`，不能宣称上游默认无历史，跨账号新会话需核对数据范围与上游副本删除边界。
+
+**成本与资源设计。** ChatGPT语音账号订阅费用/可观察额度、Codex用量与其他模型/API费用分账；订阅不等于API余额，真实分钟数/重置点未知时标unknown，不由JWT exp或settings/user成功推导。多账号仅增加候选资源，不构成无限额度；本地通话时长是估算。 按workspace/user/project/task/service/provider设调用数、并发、token/费用估算、重试深度、运行时长、CPU/内存/PID/磁盘/日志/网络/事件积压上限；派发前原子预留，并将幂等重试计入同operation。跨Worker派生不能新建task绕预算，服务调用Worker继承更严格预算；LLM调用上限与外部API、构建下载、存储成本分别计数。
 
 预算触顶停止**新派发**、保留停止/撤权/告警的控制资源；usage缺失标unknown并保守预留，不能当0。估计最大成本无provider硬边界时，无法保证精确美元封顶；在途调用和取消后计费可能形成可测超额。需要硬封顶应组合provider侧限额、每调用可强制上限和最大并发，不宣称一个本地counter能撤销已发生费用。避免到达预算后再无限调用Super解释预算问题。
 
@@ -180,6 +183,7 @@ notification以 `logical_event + recipient + policy_version/notification_kind`�
 | 活动WAL在线备份、对象GC与备份竞态、缺密钥 | 一致快照+对象pin/hash完整；不可解密/缺文件判备份失败 | CY-16-03；P2仅DB在线备份已测 |
 | 恢复旧备份而旧host仍在线，恢复点后已有外发 | 禁止双活和盲重发；重新核对receipt，使用新generation/epoch | CY-04-03、15-02；待验 |
 | Mac→Linux路径/架构/secret不同；已删数据恢复 | 能力按平台重建，专有能力明确缺口；tombstone重应用不复活索引 | CY-04-03、16-02/06；待验 |
+| 语音账号slot竞争/网关重启、429/耗尽/401、切号或插话撞final | 原子租约与owner粘性；旧媒体unknown不盲释放；429分类/冷却不无限切号；切新媒体不重派command；上游assistant/回注不派任务；实际结果播报可核对 | CY-03/13/14/17；待验 |
 | 预算并发竞争、usage缺失、递归Worker/重试风暴 | 原子预留、继承预算、有限重试；unknown不计零；停止新调用 | CY-17-03/04；待验 |
 
 ## 11. 本次隔离实验与可复现范围

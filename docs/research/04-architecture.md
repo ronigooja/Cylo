@@ -12,7 +12,7 @@
 | Agent 集成 | `AgentRuntime` 适配器；Codex app-server stdio 为首选深度集成实验路径，固定版本 | app-server 命令仍官方标为实验、不受生产支持 [S1]，未过门槛时 CLI 批处理只交付其实际能力，不冒充原生接续 |
 | CAO | 不作为 Cylo 权威控制平面；仅保留可选隔离 CLI fleet adapter | 专项核查发现 TUI 状态解析、默认权限与清理风险，不直接采用其默认配置 |
 | 客户端 | PWA 先完成 Mac/iPhone/iPad 同一业务接续，前台语音 | 若锁屏持续语音、系统通知行为、音频路由实测不达产品目标，增加 SwiftUI 原生 iOS/iPadOS 客户端，复用服务契约 |
-| 语音 | STT → 已确认 transcript → 业务 command → TTS；VoiceProvider 不拥有任务状态 | 官方实时音频可作可替换提供者；候选 chatgpt-web-voice 不整合其非公开账号池协议 |
+| 语音 | 采纳 chatgpt-web-voice 的实时语音上游、Go 网关和多账号池；VoiceSessionAdapter 桥接 Cylo command/回执 | 补齐稳定提交、业务结果注入、账号粘性/并发租约/额度状态；私有协议能力以源码及真实 POC 为准；独立 STT/TTS 仅故障降级 |
 | 记忆 | 原始证据、已确认决策、执行事实、推断分离；Memory Agent 仅产提案/索引 | FTS 起步，嵌入检索后加；向量库不是权威事实库 |
 | 长期能力 | 不可变 release + deployment + 独立 service instance；确定性程序自行运行 | Agent 创建代码与服务部署分离授权，容器不是跨系统唯一发布格式 |
 
@@ -23,8 +23,11 @@
 ```mermaid
 flowchart LR
   PWA[Mac / iPhone / iPad 客户端] <-->|HTTPS REST + SSE| CP[Cylo 控制服务]
-  PWA <-->|音频媒体| VP[VoiceProvider]
-  VP -->|final transcript / speech events| CP
+  PWA <-->|WebRTC 媒体 / 私有数据通道| UP[ChatGPT 实时语音上游]
+  PWA <-->|建立 / 重连会话| GW[Go 网关 / 多账号池]
+  GW <-->|上游信令 / 账号绑定| UP
+  PWA <-->|稳定用户 final / 业务回执| VP[VoiceSessionAdapter]
+  VP <--> CP
   CP <--> DB[(权威数据库 / outbox / jobs)]
   CP <--> OBJ[(证据与产物目录)]
   CP --> CTX[上下文装配 / 检索]
@@ -40,13 +43,14 @@ flowchart LR
   PN --> PWA
 ```
 
-**最小部署**：一台常开 Mac 或 Linux；一个控制服务进程（API、调度循环、outbox、记忆作业模块）、一个 runner 进程、本地 SQLite、本地产物目录、Codex 外部进程、按需语音服务。可共包安装，但 runner 不与 HTTP 请求同生命周期。PWA 静态资源由控制服务供应。网络默认局域网或受认证私网；远程使用 TLS。独立服务由 OS supervisor 管理，控制进程崩溃不杀死已部署服务；runner/服务重连后回报。用户工作站睡眠不等于服务器可用，UI 显示执行主机离线与最后观测时间，不称“持续执行”。
+**最小部署**：一台常开 Mac 或 Linux；一个控制服务进程（API、调度循环、outbox、记忆作业模块）、一个 runner 进程、本地 SQLite、本地产物目录、Codex 外部进程、固定版本的 Go 语音网关与其账号存储。网关负责上游信令与账号控制，现有音频媒体直连上游；不能把 HTTP 网关当成能拦截现有媒体的 relay。可共包安装，但 runner 不与 HTTP 请求同生命周期。PWA 静态资源由控制服务供应。网络默认局域网或受认证私网；远程使用 TLS。独立服务由 OS supervisor 管理，控制进程崩溃不杀死已部署服务；runner/服务重连后回报。用户工作站睡眠不等于服务器可用，UI 显示执行主机离线与最后观测时间，不称“持续执行”。
 
-**扩展部署**：Linux 常开控制平面 + PostgreSQL + 对象存储 + 多个 Mac/Linux runner；调度器按资源租约选 host；通知/索引可拆进程；团队身份可接 OIDC。每个执行 host 只能看到获授权的项目和 secret 引用。Mac 本地官方 Codex 接续仍要求项目与原生会话在该 Mac 或官方支持的远端环境；把控制服务搬云上不会自动迁移官方 App 会话。无需求前不引入 Kubernetes、Redis、消息中间件或专门向量服务。
+**扩展部署**：Linux 常开控制平面 + PostgreSQL + 对象存储 + 多个 Mac/Linux runner；调度器按资源租约选 host；通知/索引可拆进程；团队身份可接 OIDC。每个执行 host 只能看到获授权的项目和 secret 引用。官方 App 已支持通过 SSH 启动远端 Codex app-server 与远端项目，也有本地/远端 chat+Git state handoff。按官方步骤配置 SSH、远端安装认证和保存项目后，仍须验证 Cylo 第三方 thread 的 App 发现/daemon 协同；控制服务搬云上本身不证明这些集成已通过。无需求前不引入 Kubernetes、Redis、消息中间件或专门向量服务。
 
 模块职责：
 
 - `interaction`：会话、消息、语音 turn 关联和可靠 ACK，不调度真实进程。
+- `voice adapter/gateway`：实时会话与账号 owner/租约、额度观察、私有协议事件归一及 Cylo 回执回注；无任务/审批/记忆权威写权。
 - `control`：项目/任务/依赖/计划、命令校验、审批、策略、状态转换、预算、租约、事件事务；唯一业务权威。
 - `dispatcher`：读取 durable jobs、调用 runtime/runner、持久观测，普通规则先于模型；Super 只提交计划提案。
 - `runner`：进程与主机资源观测、工作目录映射、执行隔离、取消、心跳、证据上传；不能自己改任务为完成。
@@ -90,6 +94,8 @@ flowchart LR
 | evidence / artifact | 类型、content_hash、storage_uri、producer_run、source_event、采集时间、敏感级别、保留规则；大日志不塞event payload |
 | memory_claim / memory_revision / evidence_link | scope、subject/predicate/value、authority_kind、status、valid_from/to、recorded_at、supersedes、evidence、confidence、extractor_version |
 | context_manifest | run、项目/授权版本、选中claim/decision/evidence ID与hash、检索条件、token预算、裁剪与冲突说明 |
+| voice_session / voice_turn | conversation、owner/device、provider/native IDs、account_ref、lease/generation、media状态、last_observed_at；turn保存role、原始item ID、修订、完成证据、command link与提交状态 |
+| voice_account / voice_account_lease / quota_observation | SecretRef、可用/冷却/耗尽/认证异常/unknown、并发上限；原子slot租约与media终止证据；额度来源/原始错误/observed_at/reset_at或unknown，不能由JWT到期推导 |
 | usage / notification / audit | 提供者用量、预留和估算标识；通知逻辑键/渠道receipt/已读；actor/action/resource/result/证据关联 |
 
 强制不变量：终态 task 不直接重启为原 run，而是新 attempt/显式后续 task；任务“完成”必须有验收记录。`agent turn completed` 只结束模型回合。已授权权限不能由模型扩大。人工决定只能由有权身份的 command 改版本。未经事实校验的 summary 不能产生事实级别提升。所有业务状态变更、事件和后续 job 在一个数据库事务写入。
@@ -154,6 +160,9 @@ POST /api/v1/capabilities/{id}/releases
 POST /api/v1/deployments               # digest/config/grant/host，返回command
 GET  /api/v1/services/{id}             # desired/observed/health同时返回
 POST /api/v1/memory/proposals/{id}/resolve
+POST /api/v1/voice-sessions            # owner/grant检查+账号slot预留，再调用网关建媒体
+POST /api/v1/voice-sessions/{id}/turns  # 角色/稳定完成证据/顺序/修订+command幂等
+POST /api/v1/voice-sessions/{id}/close  # 关媒体与确认；与停止task分开
 GET  /api/v1/export-manifests/{id}
 ```
 
@@ -203,13 +212,15 @@ interface AgentRuntime {
   events(after?: ProviderCursor): AsyncIterable<RuntimeEvent>;
   reconcile(ref: SessionLocator): Promise<ObservedSession>; // 不隐式重跑
 }
-interface VoiceProvider {
-  capabilities(): VoiceCapabilities; // STT/TTS/realtime/barge-in
-  open(spec: VoiceSpec, shortLivedCredential: string): Promise<MediaRef>;
-  events(ref: MediaRef): AsyncIterable<VoiceEvent>; // partial/final/ended/error
-  synthesize(text: string, generation: number): Promise<AudioRef>;
-  stopOutput(ref: MediaRef, generation: number): Promise<void>;
-  close(ref: MediaRef): Promise<void>;
+interface VoiceSessionAdapter {
+  capabilities(): VoiceCapabilities; // realtime、stableUserFinal、receiptInjection逐项标证据
+  open(spec: VoiceSpec, grant: GrantRef): Promise<VoiceSessionRef>; // 内部原子账号slot租约
+  observe(ref: VoiceSessionRef): AsyncIterable<VoiceObservation>; // 原始role/item/revision/完成证据
+  submitTurn(ref: VoiceSessionRef, turn: StableUserTurn): Promise<CommandReceipt>;
+  relayReceipt(ref: VoiceSessionRef, receipt: BusinessReceipt): Promise<InjectionObservation>;
+  interruptOutput(ref: VoiceSessionRef, generation: number): Promise<OutputStopObservation>;
+  close(ref: VoiceSessionRef): Promise<MediaCloseObservation>;
+  reconcile(ref: VoiceSessionRef): Promise<VoiceObservation>; // unknown不自动释放slot
 }
 interface CapabilityRunner {
   validate(release: Digest, host: HostRef): Promise<ValidationReport>;
@@ -221,7 +232,7 @@ interface CapabilityRunner {
 }
 ```
 
-凭证只以 SecretRef/短时凭证进入适配器，不进上下文。原始 provider event 留证，映射后的 RuntimeEvent 必带 native IDs、原始来源、observed_at、provider版本。提供者没有可重放事件游标时，不能编造；控制服务断线后 inspect + 拉历史补账，不能证明连续性则标 gap/unknown，保留需要人工核实事项。
+凭证只以 SecretRef/短时凭证进入适配器，不进上下文。语音账号凭据由网关后端解引用，不能把永久 token 通过上述接口送浏览器；上游所需会话临时材料与 Cylo 登录分开。`relayReceipt` 是 Cylo 适配抽象，当前上游仅有 `author:user` 的私有文本回注候选，不表示 tool_result/system 通道已存在。原始 provider event 留证，映射后的 RuntimeEvent 必带 native IDs、原始来源、observed_at、provider版本。提供者没有可重放事件游标时，不能编造；控制服务断线后 inspect + 拉历史补账，不能证明连续性则标 gap/unknown，保留需要人工核实事项。
 
 ### 7.1 Codex 原生接续的门槛
 
@@ -231,16 +242,18 @@ interface CapabilityRunner {
 
 | 场景 | 验收证据 |
 |---|---|
-| Cylo → Linux CLI | Cylo保存的非临时thread可用官方resume继续，历史/工具记录/代码目标完整 |
-| Linux CLI → Cylo | 官方创建thread经支持接口发现、只读核对并显式关联project，随后恢复 |
+| Cylo → Linux CLI | 已通过同机隔离CODEX_HOME、fixture provider合成文字续作；真实模型/工具/审批与代码目标仍需验收 |
+| Linux CLI → Cylo | 已通过同一thread的官方交互CLI第二turn后app-server读回并完成第三turn；CLI独立创建的发现/项目关联与真实工具仍需验收 |
 | Cylo → macOS App | 真实安装App找到对应thread/workspace并追加，回Cylo可看到新turn；当前未验证 |
 | macOS App → Cylo | 能通过支持的发现/读取方式关联原生thread；当前未验证 |
 | 并发与中断 | 外部活跃会话只能只读；明确交接后单写，不重复执行；外部绕过锁能检测并停止派发 |
 | 升级/迁移 | 固定版本升级后原生历史可恢复；不同host路径变化不误关联 |
 
+官方 [App 远端连接说明](https://learn.chatgpt.com/docs/remote-connections.md) 明确：App 通过 SSH 在远端用户 login shell 启动 app-server，远端须安装并认证 Codex；跨 host handoff 移动 chat 与 Git state，目标先保存相同 Git repo/subdir 的 project，运行中先 interrupt，Codex cloud 不是交接目的地。官方 [commands](https://developers.openai.com/codex/reference/commands.md) 还给本地 `codex://threads/<thread-id>` 深链；不能发明远端host参数。上述是官方功能路径，不替代 Cylo 第三方会话发现、同daemon使用及工具历史的 Mac 实测。
+
 交接：`prepare` 停止新turn→中断/等当前turn结束→核对工作区与外部副作用→存checkpoint和handoff包→释放lease→原生工具继续；反向先观察原生工具已停止，再claim并reconcile。Cylo lease只约束Cylo的runner，不能强制官方App尊重本地锁；无法检测外部写者时要求显式用户交接并禁止自动接管。活跃会话“无缝迁移”不在已验证承诺内。门槛失败仍可提供项目路径、git状态、原生resume指令（仅实测有效者）和带证据的handoff摘要，标识为降级接续，不等价原生历史。
 
-官方 [S1] 另明确 app-server认证从未允许商业或托管服务；单机本地/开源与团队SaaS不能共用未经核实的认证假设。托管扩展前独立验证 Sign in with ChatGPT/API key可用性、条款和账号隔离，不能复用用户ChatGPT token池。
+官方 [S1] 另明确 app-server认证从未允许商业或托管服务；单机本地/开源与团队SaaS不能共用未经核实的认证假设。托管扩展前独立验证 Sign in with ChatGPT/API key可用性、条款和账号隔离，不能把语音网关的 ChatGPT 账号池当作 Codex 认证池；语音上游和 Codex 使用独立凭据、授权与用量账本。
 
 ## 8. 长期记忆：证据、事实和版本失效
 
@@ -367,9 +380,40 @@ PWA缓存只存必要的授权投影和本地草稿，登出/撤权清理；服�
 
 WebKit官方支持iOS/iPadOS 16.4起主屏Web App Web Push，需加入主屏且在用户交互后请求通知权限 [S5]；通知到达仍受用户设置和网络影响，不能拿推送当可靠command传输。使用通知收件箱作权威，渠道支持Web Push/APNs可替换，按逻辑事件+接收人去重，合并普通进度，仅关键完成/阻塞/异常主动提醒。
 
-语音策略与专项报告一致：独立STT（含可换流式转写）→final transcript→可靠提交业务command→Super/Worker业务结果→可换TTS。partial transcript仅显示，不自动触发不可逆动作。流式转写若无需额外用户确认，也必须在final状态后只提交一次；改写的final用revision更新，不能重复执行。barge-in停止当前播放generation并丢弃迟到音频，不默认取消后台任务；明确说“停止任务”走独立command。跨设备争用语音输出可设conversation语音拥有者lease，业务输入仍用command版本冲突规则。
+### 12.1 实时语音、业务提交与 Super 的关系
 
-候选chatgpt-web-voice基于非公开ChatGPT realtime协议与账号池，不作为语音基础；不用其Web token绕过官方接入。具体STT/TTS模型、VAD和API弃用周期以语音专项的当前官方证据为准，不固定旧Speech API路径。实时语音模型若参与播报，必须通过“忠实朗读业务最终文本、不派业务工具”门槛；否则使用可控TTS。PWA只承诺用户显式开启时前台采音，后台锁屏与持续麦克风不作保证。原生客户端是否需要由真机音频/通知验收决定，而非由“网页能发通知”推断完整语音体验。
+采纳 [03 语音研究](03-voice.md) 固定版本的 ChatGPT Web 实时语音上游与网关，保留其 WebRTC 媒体、私有 `oai-events` 数据通道、账号管理/粘性机制。上游 assistant 负责实时听说和对话追问；Cylo 持久化用户意图、任务、审批和记忆，复杂目标交按需 Super，专业执行交 Worker，简单查询直接读权威状态。语音模型不作为第二个 Super 或执行器，没有 Cylo 凭据与业务写工具；其说“已完成”不产生完成事件。后台任务独立于媒体、账号切换和语音 assistant 上下文。
+
+**现成能力与改造分开。** 上游 `client_tools=[]`，没有已验证的 instructions/function/Super 桥；模型字段为空不证明可指定某官方 Realtime 型号。字幕有 role/方向/增量，尚无可用于可靠事务提交的 final 完成事件；麦克风直达上游后 assistant 可先自主回应，现有 `stop_speaking` 不证明禁止新响应。不得把官方 API 的 `session.update`、tool result、sideband 或 server VAD 能力移植成此私有协议事实。
+
+最小桥接 POC 保留音频主线，新增 `VoiceSessionAdapter`：记录原始事件与来源→验证或补出稳定用户 turn 完成边界→校验角色/目标/授权与顺序→以 `(voice_session,turn,revision)` 归一成稳定 command 幂等键→提交业务事务→把 command receipt、实际结果和证据关联消息返回客户端。partial/assistant字幕/系统回注不派任务。没有完成证据时先显示待提交或让用户明确确认，不能用静默超时推断可靠 final。用户 final 后纠正生成新修订；若原 command 已接收，用变更/取消 command 和真实状态处理，不能静默覆盖已执行意图。语音中的高风险同意须解析到当前审批 action digest，歧义/过期即拒绝或请求确认。
+
+最小回注候选是现有私有 `relay_message`，其消息身份是 `user`。由客户端的受控桥把经 Cylo 登录通道取回的业务回执封装为来源可追踪的文本，登记 injection ID 并排除用户指令提取；不能把它写成上游 tool/system 结果。必须用真实账号证明注入后能连贯汇报真实结果、数字/否定词不失真、不会把“已接收”说成“已完成”，并验证如何抑制/纠正上游先答。未通过时业务文字结果仍按真实状态呈现，并继续改造回注/私有工具桥；独立 TTS 只作为明确标识的故障降级，不代替实时语音准出。
+
+向上游仅注入经项目权限过滤的必要任务快照、用户可见结果和摘要，记录 context manifest；不把 secret、完整项目或所有长期记忆发送给池中账号。更换账号意味着新的上游身份与潜在数据存储域；默认不跨无授权用户/项目复用上游 conversation，账号记录可用范围与数据保留策略，`history_and_training_disabled` 在当前源码为 false，不能宣称网关默认不留上游历史。删除 Cylo 本地记录不等于删除上游副本。
+
+### 12.2 账号池、额度状态与切换
+
+上游当前 `Pick` 是 LRU、`PickByID` 是粘性选择，并有 401 禁用路径；不是完整额度调度器。Cylo 适配分支最小新增如下契约，所有状态均有观测时间和原因：
+
+| 机制 | 实施规则 | 验收边界 |
+|---|---|---|
+| 账号身份与粘性 | `voice_session → owner/workspace/account_ref/upstream IDs`；建会话、重连、文字/图片辅助请求均校验 owner 并沿用绑定账号 | 账号 ID 不是访问权；不得将A账号conversation ID提交给B账号尝试续接 |
+| 并发slot | 按账号原子预留slot，再建会话，默认上限1、按实测配置；记录lease generation、心跳与建会话结果 | LRU更新时间不算排他租约；失败只有证明未建媒体才回收，重启/超时不自动认旧流已停 |
+| 额度观察 | 分开记录 credential health、voice quota、rate limit、media health；额度 available/depleted/cooling/unknown 附 evidence/source/observed_at | `settings/user`成功仅证token活；JWT exp不是额度reset；无真实计量API时剩余分钟显示unknown，本地时长为估计 |
+| 错误分类 | 保留上游status/body/trace的脱敏证据；401→认证异常；429先区分限流/并发/额度；网络/5xx短退避，auth不无限重试 | 当前 WM 非401错误可被包装502，必须改为保留可诊断结构；不能502一律切号或429一律耗尽 |
+| 冷却与选择 | 先满足owner可用范围、quota/credential与slot，再对候选LRU；有reset证据才设reset_at，否则有界退避/低频探测 | 不虚构统一每日额度与重置窗口；全部不可用显示等待/可用文字，不循环消耗账号 |
+| 耗尽或失效切换 | 标记旧媒体状态→本地停止输入/输出并请求关闭→核对未提交turn/已接收command→保留旧slot至确认→另选账号新建媒体→重建必要Cylo上下文 | 明确重连间隔；不承诺同媒体流无缝换号或同一上游conversation；已接收command不重发，未提交草稿标待确认 |
+
+账号租约、会话状态、额度观测与业务command持久关联；媒体本身不是可恢复DB对象。网关重启后如无法查询/关闭旧媒体，标 unknown、隔离slot、要求客户端重连核对或等待已验证的上游期限，不用任意TTL声称远端会话结束。
+
+### 12.3 打断、跨设备与撤销
+
+插话先本地停播/静音、清排队输出，递增generation，再发私有 `action_request:stop_speaking`，只接纳当前generation的可归属输出。上游媒体并非现成TTS片段，远端音轨清理/恢复以及迟到音频隔离需实测；本地停播不能冒充远端取消生成成功。“停播报”与“停止任务”是独立操作；业务command一旦接收，打断或挂断不撤销它，明确停止任务必须走控制面的授权与停止确认。
+
+同conversation可设设备语音owner lease，新设备恢复权威业务历史后新建媒体；默认先关闭旧设备流再接续，无法确认时显示旧连接unknown。PWA只承诺前台显式开麦；锁屏/系统打断/网络切换后检测track/AudioContext/连接并展示真实状态，后台任务继续。原生客户端由目标设备测试结果决定。
+
+网关放在Cylo认证之后，账号导入/修改/删除与日常开麦分权；凭据加密、脱敏、备份分离，关闭不必要的公网管理入口。撤销会话时拒新建/控制、通知客户端停所有麦克风track/音轨并关闭RTCPeerConnection/DataChannel，记录确认。现有媒体直连上游，网关删binding/撤token不能保证切断已建媒体；需要强制服务端撤权时，先验证上游终止能力或增加受控媒体relay，再声明其效果。
 
 ## 13. 备份、恢复、主机迁移和资源成本
 
@@ -381,16 +425,18 @@ Mac→Linux迁移：冻结派发→让活动run安全停点/明确unknown→备�
 
 SQLite→PostgreSQL：从首版通过仓储接口与显式迁移脚本隔离SQL方言；先停写导出逻辑表和对象manifest→导入并校验row count/外键/hash→固定snapshot游标/stream epoch重新同步→灰度只读核验→切写。默认不双写两种数据库，避免无需求承担分布式一致性。事件协议和实体ID保持稳定，内部索引/FTS可以重建，运行中租约全部失效后先reconcile，不直接重新派发。
 
+语音订阅费用/账号数、可观测语音时长/额度状态、Codex调用用量和其他API费用分别入账；不能把语音订阅额度当Codex/API余额，或把本地通话分钟当上游实际扣额。多账号只增加候选资源，订阅涨价/未知额度/冷却均可改变可用性。
+
 预算分user/workspace、project、task/run、service、provider；派发前预留estimated最大成本/并发slot，事件回报后结算，标清estimated/actual/unknown。提供者用量延迟时不能保证精确硬美元上限；可强制的是调用数、并发、超时和追加派发停止，已启动调用的费用仍可能产生。超过预算进入waiting/budget，不继续派发Super来解释无限循环。普通状态查询、计时、健康检查、通知模板和事件合并不使用LLM；Memory作业按增量门槛触发。指标至少含LLM输入/缓存/输出、管理调用占比、重试、context token、每任务预算误差、queue lag、provider event gap、恢复耗时、通知重复率与服务健康。日志/对象保留也有容量与清理水位，不能无限积累。
 
 ## 14. 分阶段实施依赖与门槛
 
 | 阶段 | 交付与前置依赖 | 必须通过的验收 |
 |---|---|---|
-| 0 证据与协议冻结 | 完整需求ID映射；固定Codex/候选版本；JSON Schema；原生互通与语音真机POC | 每条原生接续路径分开给实测结果；空thread不能视作已落盘；无模型调用也能确认持久消息 |
+| 0 证据与协议冻结 | 完整需求ID映射；固定Codex/候选版本；JSON Schema；原生互通；上游真实语音/稳定提交/回执/两账号额度切换及真机POC | 每条原生接续路径分开给实测结果；空thread不能视作已落盘；无模型调用也能确认持久消息 |
 | 1 控制与单机可靠闭环 | SQLite schema、command/outbox/jobs、认证、任务/run状态、runner、基础PWA | 重复发送仅一command；提交后断线/重启不丢；快照与cursor无缺口；暂停/取消显示真实确认 |
 | 2 专业执行与官方互通 | AgentRuntime + Codex固定版本；一个Super按需和Worker直接调用；独立worktree；证据验收 | 关闭客户端继续；run结束不误标task完成；CLI双向恢复；Mac App按实测标能力；外部活跃写者不并发接管 |
-| 3 语音与跨设备 | STT/TTS适配、final transcript幂等、通知收件箱、设备游标；依赖阶段1业务契约 | iPhone/iPad/Mac同任务；打断不重复动作；锁屏后后端仍跑；重开恢复事件；记录后台采音限制 |
+| 3 语音与跨设备 | 实时上游/Go网关、账号slot/额度观察、稳定turn与回执桥接、通知收件箱、设备游标；依赖阶段1业务契约 | iPhone/iPad/Mac同任务；打断不重复动作；耗尽换账号新媒体且任务不重派；锁屏后后端仍跑；重开恢复事件；记录后台采音限制 |
 | 4 能力创建与独立运行 | manifest/release/deployment、授权、secret、supervisor、健康、checkpoint；依赖阶段1/2 | 邮件监控在Super停用时仍运行；规则直接Worker；超时发送不重发；升级失败可核对/回滚；卸载撤权 |
 | 5 记忆与上下文 | evidence/decision版本、Memory提案、FTS/检索、context manifest；依赖权威事件稳定 | SQLite→PostgreSQL决定不混淆；推断不升格事实；撤权/删除/旧索引不泄露；任务恢复不靠摘要猜状态 |
 | 6 扩展与迁移 | 多runner、PostgreSQL/对象存储、组织身份/隔离、原生客户端按实测决定 | Mac→Linux重建、离线host恢复、旧epoch拒绝；跨租户拒绝；备份隔离恢复；认证准入满足部署模式 |
@@ -401,7 +447,7 @@ SQLite→PostgreSQL：从首版通过仓储接口与显式迁移脚本隔离SQL�
 
 ## 15. 尚未验证与阻断条件
 
-- Codex app-server尽管有丰富接口仍实验；官方App第三方会话发现/写入/反向同步未在本报告实机证实。编排专项实测0.163.0仅`thread/start(ephemeral=false)`且无turn的会话在重启后`resume`报`no rollout found`，所以“返回thread ID”不是可恢复持久化提交点；需要真实有历史的会话验证落盘/重启。不得制造空turn来绕过验收。
+- Codex app-server尽管有丰富接口仍实验；官方App已有本地会话和SSH远端项目/跨host交接路径，但Cylo第三方会话发现/写入/反向同步未在本报告实机证实。编排专项实测0.163.0仅`thread/start(ephemeral=false)`且无turn的会话在重启后`resume`报`no rollout found`，所以“返回thread ID”不是可恢复持久化提交点；需要真实有历史的会话验证落盘/重启。不得制造空turn来绕过验收。
 - 官方CLI出现`--remote`、Unix socket与WebSocket路径，不推导App接管或跨host持久化保证；stdio仍为最小集成选择，稳定字段与整体成熟度分别判断。
 - 当前官方认证文档文字需按具体鉴权表面与部署类型验证；不推出Codex全面禁止商业、也不默认ChatGPT个人登录可用于托管团队。
 - PWA音频在当前目标iPhone/iPad机型、网络和系统版本上的延迟、打断、前后台切换与通知未实测；若目标必须锁屏持续对话，原生客户端立项需先验证系统能力。
@@ -420,7 +466,7 @@ SQLite→PostgreSQL：从首版通过仓储接口与显式迁移脚本隔离SQL�
 - **[S5] WebKit Web Push for Web Apps on iOS and iPadOS**（2023-02-16）：[官方文章](https://webkit.org/blog/13878/web-push-for-web-apps-on-ios-and-ipados/)。16.4主屏Web App和用户交互授权，不证明后台持续采音。
 - **[S6] Apple Creating Launch Daemons and Agents**：[官方归档](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)。launchd作业/KeepAlive；归档文档只支持设计方向，具体OS版本安装需实测。
 - **[S7] systemd.service**：[官方手册](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html)。service类型、Restart等基础supervisor语义；durable业务任务仍由Cylo负责。
-- 候选源码及版本证据：CAO `4e990a9`（v2.5.4）由编排专岗核查；chatgpt-web-voice `6338ac478070aaa34bfe7a3c0469caf9e9174c02`由语音专岗核查，详见对应专项报告。候选不构成Cylo已采用的运行依赖。
+- 候选源码及版本证据：CAO `4e990a9`（v2.5.4）由编排专岗核查；chatgpt-web-voice `6338ac478070aaa34bfe7a3c0469caf9e9174c02`由语音专岗核查，详见对应专项报告。CAO保留可选局部适配；语音候选已选为待实施主线依赖，尚未完成产品集成。
 
 [S1]当前原文（`Auth endpoints`，范围限定为该页的app-server authentication）：
 
