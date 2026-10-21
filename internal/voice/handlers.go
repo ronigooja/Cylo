@@ -1,0 +1,566 @@
+package voice
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Cylo/internal/control"
+)
+
+func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
+	p, ok := control.PrincipalFromContext(r.Context())
+	if !ok {
+		control.WriteError(w, apiError(http.StatusUnauthorized, "unauthenticated", "device authentication required", nil))
+		return
+	}
+	if !control.HasScope(p, "client:command") && !control.HasScope(p, "voice:open") {
+		control.WriteError(w, apiError(http.StatusForbidden, "forbidden", "voice:open scope is required", nil))
+		return
+	}
+	var req createRequest
+	if err := decodeRequest(w, r, s.maxSDP+16_384, &req); err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	result, err := s.create(r.Context(), p, req)
+	if err != nil {
+		control.WriteError(w, safeSessionError(err))
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
+func (s *Service) handleReadSession(w http.ResponseWriter, r *http.Request) {
+	p, ok := control.PrincipalFromContext(r.Context())
+	if !ok {
+		control.WriteError(w, apiError(http.StatusUnauthorized, "unauthenticated", "device authentication required", nil))
+		return
+	}
+	var result sessionResponse
+	err := s.db.QueryRowContext(r.Context(), `SELECT id,generation,state FROM voice_sessions WHERE workspace_id=? AND owner_id=? AND id=?`, p.WorkspaceID, p.SubjectID, r.PathValue("session_id")).Scan(&result.SessionID, &result.Generation, &result.State)
+	if errors.Is(err, sql.ErrNoRows) {
+		control.WriteError(w, apiError(http.StatusNotFound, "not_found", "voice session not found", nil))
+		return
+	}
+	if err != nil {
+		control.WriteError(w, safeSessionError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Service) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
+	p, ok := control.PrincipalFromContext(r.Context())
+	if !ok {
+		control.WriteError(w, apiError(http.StatusUnauthorized, "unauthenticated", "device authentication required", nil))
+		return
+	}
+	result, err := s.db.ExecContext(r.Context(), `UPDATE voice_sessions SET heartbeat_at=?,updated_at=? WHERE workspace_id=? AND owner_id=? AND id=? AND state='active'`, time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano), p.WorkspaceID, p.SubjectID, r.PathValue("session_id"))
+	if err != nil {
+		control.WriteError(w, safeSessionError(err))
+		return
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 1 {
+		control.WriteError(w, apiError(http.StatusConflict, "voice_lease_unavailable", "voice session is not active; uncertain media remains isolated", nil))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Service) handleConnected(w http.ResponseWriter, r *http.Request) {
+	p, ok := control.PrincipalFromContext(r.Context())
+	if !ok {
+		control.WriteError(w, apiError(http.StatusUnauthorized, "unauthenticated", "device authentication required", nil))
+		return
+	}
+	var req struct {
+		Generation int64 `json:"generation"`
+	}
+	if err := decodeRequest(w, r, 1024, &req); err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	if req.Generation < 1 {
+		control.WriteError(w, apiError(http.StatusBadRequest, "invalid_request", "generation is required", nil))
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := s.db.ExecContext(r.Context(), `UPDATE voice_sessions SET offer_answer='',heartbeat_at=?,updated_at=? WHERE workspace_id=? AND owner_id=? AND id=? AND generation=? AND state='active'`, now, now, p.WorkspaceID, p.SubjectID, r.PathValue("session_id"), req.Generation)
+	if err != nil {
+		control.WriteError(w, safeSessionError(err))
+		return
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 1 {
+		control.WriteError(w, apiError(http.StatusConflict, "voice_generation_stale", "active voice generation was not found", nil))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": "active"})
+}
+
+func (s *Service) handleHangup(w http.ResponseWriter, r *http.Request) {
+	p, ok := control.PrincipalFromContext(r.Context())
+	if !ok {
+		control.WriteError(w, apiError(http.StatusUnauthorized, "unauthenticated", "device authentication required", nil))
+		return
+	}
+	var req struct {
+		MediaClosed bool `json:"media_closed"`
+	}
+	if err := decodeRequest(w, r, 1024, &req); err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	if !req.MediaClosed {
+		control.WriteError(w, apiError(http.StatusBadRequest, "media_close_required", "close local tracks, DataChannel, and PeerConnection before releasing this lease", nil))
+		return
+	}
+	var state, gatewayID string
+	var generation int64
+	if err := s.db.QueryRowContext(r.Context(), `SELECT state,gateway_session_id,generation FROM voice_sessions WHERE workspace_id=? AND owner_id=? AND id=?`, p.WorkspaceID, p.SubjectID, r.PathValue("session_id")).Scan(&state, &gatewayID, &generation); errors.Is(err, sql.ErrNoRows) {
+		control.WriteError(w, apiError(http.StatusNotFound, "not_found", "voice session not found", nil))
+		return
+	} else if err != nil {
+		control.WriteError(w, safeSessionError(err))
+		return
+	}
+	if state == "ended" {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": "ended"})
+		return
+	}
+	if gatewayID == "" {
+		_ = s.markSession(r.Context(), r.PathValue("session_id"), "quarantined", "gateway_session_unbound", nil, "")
+		control.WriteError(w, apiError(http.StatusConflict, "voice_outcome_unknown", "gateway session binding is unknown; lease quarantined", nil))
+		return
+	}
+	_, _ = s.db.ExecContext(r.Context(), `UPDATE voice_sessions SET state='ending',updated_at=? WHERE workspace_id=? AND owner_id=? AND id=?`, time.Now().UTC().Format(time.RFC3339Nano), p.WorkspaceID, p.SubjectID, r.PathValue("session_id"))
+	response, err := s.callGateway(r.Context(), http.MethodDelete, "/v1/voice/sessions/"+url.PathEscape(gatewayID), nil)
+	if err != nil {
+		_ = s.markSession(r.Context(), r.PathValue("session_id"), "quarantined", "gateway_release_unknown", nil, "")
+		control.WriteError(w, apiError(http.StatusServiceUnavailable, "voice_outcome_unknown", "gateway release result is unknown; media lease quarantined", nil))
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		_ = s.markSession(r.Context(), r.PathValue("session_id"), "quarantined", "gateway_release_failed", nil, "")
+		control.WriteError(w, apiError(http.StatusServiceUnavailable, "voice_outcome_unknown", "gateway did not confirm session unbinding; media lease quarantined", nil))
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = s.db.ExecContext(r.Context(), `UPDATE voice_sessions SET state='ended',offer_answer='',ended_at=?,updated_at=? WHERE workspace_id=? AND owner_id=? AND id=?`, now, now, p.WorkspaceID, p.SubjectID, r.PathValue("session_id"))
+	if err != nil {
+		control.WriteError(w, safeSessionError(err))
+		return
+	}
+	terminationVerified := false
+	if s.accountMedia != nil {
+		capabilities := s.accountMedia.Capabilities()
+		if capabilities.AccountLeaseIdentity && capabilities.AccountScopedTermination && capabilities.TrustedTerminationEvidence {
+			observation, observeErr := s.accountMedia.ObserveTermination(r.Context(), gatewayID)
+			observedAt := observation.ObservedAt.UTC()
+			if observeErr == nil && observation.SessionID == gatewayID && observation.Terminated && observation.AccountID != "" && observation.LeaseID != "" && observation.EvidenceID != "" && !observedAt.IsZero() && !observedAt.After(time.Now().UTC()) {
+				accountHash := sha256.Sum256([]byte(observation.AccountID))
+				leaseHash := sha256.Sum256([]byte(observation.LeaseID))
+				_, err = s.db.ExecContext(r.Context(), `INSERT INTO voice_account_terminations(id,session_id,generation,account_id_hash,lease_id_hash,evidence_id,observed_at,adapter_kind) VALUES(?,?,?,?,?,?,?,'trusted_account_media')`, uuid.NewString(), r.PathValue("session_id"), generation, accountHash[:], leaseHash[:], observation.EvidenceID, observedAt.Format(time.RFC3339Nano))
+				terminationVerified = err == nil
+			}
+		}
+	}
+	if terminationVerified {
+		_, err = s.db.ExecContext(r.Context(), `UPDATE voice_pool_state SET blocked=0,reason_code='',source_session_id='',updated_at=?,updated_by='trusted_account_media' WHERE id=1 AND source_session_id=?`, now, r.PathValue("session_id"))
+	} else {
+		_, err = s.db.ExecContext(r.Context(), `UPDATE voice_pool_state SET blocked=1,reason_code='upstream_termination_unverified',source_session_id=?,updated_at=?,updated_by='system' WHERE id=1`, r.PathValue("session_id"), now)
+	}
+	if err != nil {
+		control.WriteError(w, safeSessionError(err))
+		return
+	}
+	if terminationVerified {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": "ended", "upstream_termination": "verified", "pool_blocked": false})
+		return
+	}
+	// Current Space DELETE unbinds signaling metadata but does not prove the
+	// remote WebRTC peer stopped. Keep the entire hidden-account pool blocked.
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "state": "ended", "upstream_termination": "unverified", "pool_blocked": true})
+}
+
+type commitTurnPayload struct {
+	SessionID       string `json:"session_id"`
+	Generation      int64  `json:"generation"`
+	TurnID          string `json:"turn_id"`
+	Revision        int64  `json:"revision"`
+	ProviderMessage string `json:"provider_message_id,omitempty"`
+	Content         string `json:"content"`
+	UserConfirmed   bool   `json:"user_confirmed"`
+}
+
+func (s *Service) commandCommitTurn(ctx context.Context, tx *sql.Tx, cmd control.CommandContext, req contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
+	if !control.HasScope(cmd.Principal, "client:command") && !control.HasScope(cmd.Principal, "voice:turn:commit") {
+		return contracts.CommandResult{}, nil, apiError(http.StatusForbidden, "forbidden", "voice turn commit scope is required", nil)
+	}
+	var payload commitTurnPayload
+	if err := decodePayload(req.Payload, &payload); err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if !payload.UserConfirmed || payload.SessionID == "" || payload.Generation < 1 || strings.TrimSpace(payload.TurnID) == "" || payload.Revision < 1 || strings.TrimSpace(payload.Content) == "" || len(payload.Content) > 20_000 {
+		return contracts.CommandResult{}, nil, apiError(http.StatusBadRequest, "invalid_request", "an explicitly user-confirmed bounded turn with stable identity and revision is required", nil)
+	}
+	var state string
+	var generation int64
+	if err := tx.QueryRowContext(ctx, `SELECT state,generation FROM voice_sessions WHERE id=? AND workspace_id=? AND owner_id=?`, payload.SessionID, cmd.Principal.WorkspaceID, cmd.Principal.SubjectID).Scan(&state, &generation); errors.Is(err, sql.ErrNoRows) {
+		return contracts.CommandResult{}, nil, apiError(http.StatusNotFound, "not_found", "voice session not found", nil)
+	} else if err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if state != "active" || generation != payload.Generation {
+		return contracts.CommandResult{}, nil, apiError(http.StatusConflict, "voice_generation_stale", "turn belongs to an inactive media generation", nil)
+	}
+	content := strings.TrimSpace(payload.Content)
+	hash := sha256.Sum256([]byte(content))
+	var existingID string
+	var existingHash []byte
+	err := tx.QueryRowContext(ctx, `SELECT id,content_hash FROM voice_turns WHERE session_id=? AND generation=? AND turn_id=? AND revision=?`, payload.SessionID, payload.Generation, payload.TurnID, payload.Revision).Scan(&existingID, &existingHash)
+	if err == nil {
+		if !bytes.Equal(hash[:], existingHash) {
+			return contracts.CommandResult{}, nil, apiError(http.StatusConflict, "turn_revision_conflict", "turn revision was already committed with different text", nil)
+		}
+		return contracts.CommandResult{ResourceType: "voice_turn", ResourceID: existingID, ResourceVersion: payload.Revision}, nil, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return contracts.CommandResult{}, nil, err
+	}
+	id := uuid.NewString()
+	_, err = tx.ExecContext(ctx, `INSERT INTO voice_turns(id,workspace_id,session_id,generation,turn_id,revision,provider_message_id,content,content_hash,confirmed_at,command_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, id, cmd.Principal.WorkspaceID, payload.SessionID, payload.Generation, payload.TurnID, payload.Revision, payload.ProviderMessage, content, hash[:], cmd.AcceptedAt.UTC().Format(time.RFC3339Nano), cmd.CommandID)
+	if err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	turnEvent, _ := json.Marshal(map[string]any{"turn_id": payload.TurnID, "revision": payload.Revision, "voice_session_id": payload.SessionID, "generation": payload.Generation, "content_hash": hex.EncodeToString(hash[:]), "status": "confirmed_candidate"})
+	event := contracts.Event{Type: "voice.turn.committed", AggregateType: "voice_turn", AggregateID: id, AggregateVersion: payload.Revision, Payload: turnEvent}
+	return contracts.CommandResult{ResourceType: "voice_turn", ResourceID: id, ResourceVersion: payload.Revision}, []contracts.Event{event}, nil
+}
+
+func (s *Service) handleTurns(w http.ResponseWriter, r *http.Request) {
+	p, ok := control.PrincipalFromContext(r.Context())
+	if !ok {
+		control.WriteError(w, apiError(http.StatusUnauthorized, "unauthenticated", "device authentication required", nil))
+		return
+	}
+	var owner string
+	if err := s.db.QueryRowContext(r.Context(), `SELECT owner_id FROM voice_sessions WHERE workspace_id=? AND id=?`, p.WorkspaceID, r.PathValue("session_id")).Scan(&owner); errors.Is(err, sql.ErrNoRows) {
+		control.WriteError(w, apiError(http.StatusNotFound, "not_found", "voice session not found", nil))
+		return
+	} else if err != nil {
+		control.WriteError(w, safeSessionError(err))
+		return
+	}
+	if owner != p.SubjectID {
+		control.WriteError(w, apiError(http.StatusForbidden, "forbidden", "voice session belongs to another subject", nil))
+		return
+	}
+	rows, err := s.db.QueryContext(r.Context(), `SELECT turn_id,generation,revision,provider_message_id,content,confirmed_at FROM voice_turns WHERE session_id=? ORDER BY confirmed_at,turn_id,revision`, r.PathValue("session_id"))
+	if err != nil {
+		control.WriteError(w, safeSessionError(err))
+		return
+	}
+	defer rows.Close()
+	type turnView struct {
+		TurnID            string `json:"turn_id"`
+		Generation        int64  `json:"generation"`
+		Revision          int64  `json:"revision"`
+		ProviderMessageID string `json:"provider_message_id,omitempty"`
+		Content           string `json:"content"`
+		ConfirmedAt       string `json:"confirmed_at"`
+	}
+	items := []turnView{}
+	for rows.Next() {
+		var item turnView
+		if err := rows.Scan(&item.TurnID, &item.Generation, &item.Revision, &item.ProviderMessageID, &item.Content, &item.ConfirmedAt); err != nil {
+			control.WriteError(w, safeSessionError(err))
+			return
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		control.WriteError(w, safeSessionError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"turns": items})
+}
+
+func (s *Service) handleReceipts(w http.ResponseWriter, r *http.Request) {
+	p, ok := control.PrincipalFromContext(r.Context())
+	if !ok {
+		control.WriteError(w, apiError(http.StatusUnauthorized, "unauthenticated", "device authentication required", nil))
+		return
+	}
+	var owner string
+	if err := s.db.QueryRowContext(r.Context(), `SELECT owner_id FROM voice_sessions WHERE workspace_id=? AND id=?`, p.WorkspaceID, r.PathValue("session_id")).Scan(&owner); errors.Is(err, sql.ErrNoRows) {
+		control.WriteError(w, apiError(http.StatusNotFound, "not_found", "voice session not found", nil))
+		return
+	} else if err != nil {
+		control.WriteError(w, safeSessionError(err))
+		return
+	}
+	if owner != p.SubjectID {
+		control.WriteError(w, apiError(http.StatusForbidden, "forbidden", "voice session belongs to another subject", nil))
+		return
+	}
+	type receiptView struct {
+		EventID     string          `json:"event_id"`
+		Cursor      string          `json:"cursor"`
+		Type        string          `json:"type"`
+		TaskID      string          `json:"task_id"`
+		TaskVersion int64           `json:"task_version"`
+		OccurredAt  string          `json:"occurred_at"`
+		Payload     json.RawMessage `json:"payload"`
+	}
+	rows, err := s.db.QueryContext(r.Context(), `SELECT e.event_id,e.cursor,e.event_type,e.aggregate_id,e.aggregate_version,e.occurred_at,e.payload FROM voice_task_links l JOIN events e ON e.workspace_id=l.workspace_id AND e.aggregate_type='task' AND e.aggregate_id=l.task_id WHERE l.workspace_id=? AND l.session_id=? AND l.generation=(SELECT generation FROM voice_sessions WHERE id=l.session_id) ORDER BY e.cursor`, p.WorkspaceID, r.PathValue("session_id"))
+	if err != nil {
+		control.WriteError(w, safeSessionError(err))
+		return
+	}
+	defer rows.Close()
+	items := []receiptView{}
+	for rows.Next() {
+		var item receiptView
+		if err := rows.Scan(&item.EventID, &item.Cursor, &item.Type, &item.TaskID, &item.TaskVersion, &item.OccurredAt, &item.Payload); err != nil {
+			control.WriteError(w, safeSessionError(err))
+			return
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		control.WriteError(w, safeSessionError(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"receipts": items})
+}
+
+type linkTaskPayload struct {
+	SessionID    string `json:"session_id"`
+	Generation   int64  `json:"generation"`
+	TurnID       string `json:"turn_id"`
+	TurnRevision int64  `json:"turn_revision"`
+	TaskID       string `json:"task_id"`
+}
+
+func (s *Service) commandLinkTask(ctx context.Context, tx *sql.Tx, cmd control.CommandContext, req contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
+	if !control.HasScope(cmd.Principal, "client:command") && !control.HasScope(cmd.Principal, "voice:turn:commit") {
+		return contracts.CommandResult{}, nil, apiError(http.StatusForbidden, "forbidden", "voice task linking requires command scope", nil)
+	}
+	var payload linkTaskPayload
+	if err := decodePayload(req.Payload, &payload); err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if payload.SessionID == "" || payload.Generation < 1 || payload.TurnID == "" || payload.TurnRevision < 1 || payload.TaskID == "" {
+		return contracts.CommandResult{}, nil, apiError(http.StatusBadRequest, "invalid_request", "session, generation, turn revision, and task are required", nil)
+	}
+	var owner, sessionState string
+	var currentGeneration int64
+	if err := tx.QueryRowContext(ctx, `SELECT owner_id,state,generation FROM voice_sessions WHERE workspace_id=? AND id=?`, cmd.Principal.WorkspaceID, payload.SessionID).Scan(&owner, &sessionState, &currentGeneration); errors.Is(err, sql.ErrNoRows) {
+		return contracts.CommandResult{}, nil, apiError(http.StatusNotFound, "not_found", "voice session not found", nil)
+	} else if err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if owner != cmd.Principal.SubjectID || currentGeneration != payload.Generation {
+		return contracts.CommandResult{}, nil, apiError(http.StatusForbidden, "forbidden", "voice turn belongs to another owner or media generation", nil)
+	}
+	if sessionState == "quarantined" || sessionState == "allocating" || sessionState == "ending" {
+		return contracts.CommandResult{}, nil, apiError(http.StatusConflict, "voice_generation_unresolved", "task cannot be linked while media generation is unresolved", nil)
+	}
+	var turnCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM voice_turns WHERE workspace_id=? AND session_id=? AND generation=? AND turn_id=? AND revision=?`, cmd.Principal.WorkspaceID, payload.SessionID, payload.Generation, payload.TurnID, payload.TurnRevision).Scan(&turnCount); err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if turnCount != 1 {
+		return contracts.CommandResult{}, nil, apiError(http.StatusNotFound, "voice_turn_not_found", "confirmed voice turn revision not found", nil)
+	}
+	var taskSource, createdBy string
+	var taskVersion int64
+	if err := tx.QueryRowContext(ctx, `SELECT source,created_by_device_id,version FROM tasks WHERE workspace_id=? AND id=?`, cmd.Principal.WorkspaceID, payload.TaskID).Scan(&taskSource, &createdBy, &taskVersion); errors.Is(err, sql.ErrNoRows) {
+		return contracts.CommandResult{}, nil, apiError(http.StatusNotFound, "not_found", "task not found", nil)
+	} else if err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if taskSource != "voice" || createdBy != cmd.Principal.DeviceID {
+		return contracts.CommandResult{}, nil, apiError(http.StatusForbidden, "forbidden", "only a voice-sourced task created by this device can be linked", nil)
+	}
+	if req.ExpectedVersion == nil || *req.ExpectedVersion != taskVersion {
+		return contracts.CommandResult{}, nil, apiError(http.StatusConflict, "version_conflict", "task version changed before voice linkage", map[string]any{"current_version": taskVersion})
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO voice_task_links(workspace_id,session_id,generation,turn_id,turn_revision,task_id,linked_by_device_id,command_id,linked_at) VALUES(?,?,?,?,?,?,?,?,?)`, cmd.Principal.WorkspaceID, payload.SessionID, payload.Generation, payload.TurnID, payload.TurnRevision, payload.TaskID, cmd.Principal.DeviceID, cmd.CommandID, cmd.AcceptedAt.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return contracts.CommandResult{}, nil, apiError(http.StatusConflict, "voice_task_link_conflict", "task or turn is already linked to a different voice record", nil)
+		}
+		return contracts.CommandResult{}, nil, err
+	}
+	payloadJSON, _ := json.Marshal(map[string]any{"task_id": payload.TaskID, "voice_session_id": payload.SessionID, "generation": payload.Generation, "turn_id": payload.TurnID, "turn_revision": payload.TurnRevision})
+	event := contracts.Event{Type: "voice.task.linked", AggregateType: "voice_session", AggregateID: payload.SessionID, AggregateVersion: payload.Generation, Payload: payloadJSON}
+	return contracts.CommandResult{ResourceType: "voice_task_link", ResourceID: payload.TaskID, ResourceVersion: taskVersion}, []contracts.Event{event}, nil
+}
+
+func (s *Service) handlePoolStatus(w http.ResponseWriter, r *http.Request) {
+	p, ok := control.PrincipalFromContext(r.Context())
+	if !ok {
+		control.WriteError(w, apiError(http.StatusUnauthorized, "unauthenticated", "device authentication required", nil))
+		return
+	}
+	if !control.HasScope(p, "voice:read") && !control.HasScope(p, "voice:pool:reconcile") && !control.HasScope(p, "client:admin") {
+		control.WriteError(w, apiError(http.StatusForbidden, "forbidden", "voice:read scope is required", nil))
+		return
+	}
+	var blocked int
+	var reason, updatedAt string
+	if err := s.db.QueryRowContext(r.Context(), `SELECT blocked,reason_code,updated_at FROM voice_pool_state WHERE id=1`).Scan(&blocked, &reason, &updatedAt); err != nil {
+		control.WriteError(w, safeSessionError(err))
+		return
+	}
+	capabilities := AccountMediaCapabilities{}
+	if s.accountMedia != nil {
+		capabilities = s.accountMedia.Capabilities()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"blocked": blocked != 0, "reason_code": reason, "updated_at": updatedAt,
+		"account_lease_identity":       capabilities.AccountLeaseIdentity,
+		"account_scoped_termination":   capabilities.AccountScopedTermination,
+		"trusted_termination_evidence": capabilities.TrustedTerminationEvidence,
+	})
+}
+
+// handleVoiceConfig proxies only Space's documented non-secret voice choices,
+// WebRTC DataChannel settings, and ICE server configuration. Gateway auth and
+// account data are never returned to the client.
+func (s *Service) handleVoiceConfig(w http.ResponseWriter, r *http.Request) {
+	if _, ok := control.PrincipalFromContext(r.Context()); !ok {
+		control.WriteError(w, apiError(http.StatusUnauthorized, "unauthenticated", "device authentication required", nil))
+		return
+	}
+	response, err := s.callGateway(r.Context(), http.MethodGet, "/v1/voice/config", nil)
+	if err != nil {
+		control.WriteError(w, apiError(http.StatusServiceUnavailable, "voice_unavailable", "Space voice configuration is unavailable", nil))
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		control.WriteError(w, apiError(http.StatusServiceUnavailable, "voice_unavailable", "Space voice configuration is unavailable", nil))
+		return
+	}
+	var config spacePublicConfig
+	dec := json.NewDecoder(io.LimitReader(response.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&config); err != nil || config.Version == "" || len(config.WebRTC) == 0 {
+		control.WriteError(w, apiError(http.StatusBadGateway, "voice_config_invalid", "Space voice configuration response is invalid", nil))
+		return
+	}
+	writeJSON(w, http.StatusOK, config)
+}
+
+type spacePublicConfig struct {
+	Version    string          `json:"version"`
+	Defaults   json.RawMessage `json:"defaults"`
+	Voices     json.RawMessage `json:"voices"`
+	VoiceModes json.RawMessage `json:"voice_modes"`
+	Languages  json.RawMessage `json:"languages"`
+	WebRTC     json.RawMessage `json:"webrtc"`
+}
+
+type reconcilePoolPayload struct {
+	SessionID                     string `json:"session_id"`
+	Generation                    int64  `json:"generation"`
+	Reason                        string `json:"reason"`
+	ConfirmedOutOfBandTermination bool   `json:"confirmed_out_of_band_termination"`
+}
+
+func (s *Service) commandReconcilePool(ctx context.Context, tx *sql.Tx, cmd control.CommandContext, req contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
+	if !control.HasScope(cmd.Principal, "voice:pool:reconcile") && !control.HasScope(cmd.Principal, "client:admin") {
+		return contracts.CommandResult{}, nil, apiError(http.StatusForbidden, "forbidden", "voice pool reconciliation requires an operator scope", nil)
+	}
+	var payload reconcilePoolPayload
+	if err := decodePayload(req.Payload, &payload); err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	payload.Reason = strings.TrimSpace(payload.Reason)
+	if payload.SessionID == "" || payload.Generation < 1 || !payload.ConfirmedOutOfBandTermination || len(payload.Reason) < 12 || len(payload.Reason) > 500 {
+		return contracts.CommandResult{}, nil, apiError(http.StatusBadRequest, "invalid_request", "source session, generation, explicit out-of-band termination confirmation, and a 12-500 character reason are required", nil)
+	}
+	var active int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM voice_sessions WHERE state IN ('allocating','active','ending')`).Scan(&active); err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if active != 0 {
+		return contracts.CommandResult{}, nil, apiError(http.StatusConflict, "voice_sessions_active", "all known media sessions must be locally closed before pool reconciliation", map[string]any{"active_sessions": active})
+	}
+	var blocked int
+	var sourceSessionID string
+	if err := tx.QueryRowContext(ctx, `SELECT blocked,source_session_id FROM voice_pool_state WHERE id=1`).Scan(&blocked, &sourceSessionID); err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if blocked == 0 {
+		return contracts.CommandResult{}, nil, apiError(http.StatusConflict, "voice_pool_not_blocked", "voice account pool is not awaiting reconciliation", nil)
+	}
+	if sourceSessionID != payload.SessionID {
+		return contracts.CommandResult{}, nil, apiError(http.StatusConflict, "voice_reconciliation_stale", "reconciliation source does not match the quarantined media session", nil)
+	}
+	var generation int64
+	var state string
+	if err := tx.QueryRowContext(ctx, `SELECT generation,state FROM voice_sessions WHERE id=?`, payload.SessionID).Scan(&generation, &state); err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if generation != payload.Generation || state != "quarantined" && state != "ended" {
+		return contracts.CommandResult{}, nil, apiError(http.StatusConflict, "voice_reconciliation_stale", "session generation is not eligible for out-of-band reconciliation", nil)
+	}
+	at := cmd.AcceptedAt.UTC().Format(time.RFC3339Nano)
+	id := uuid.NewString()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO voice_pool_reconciliations(id,actor_id,source_session_id,generation,reason,method,created_at) VALUES(?,?,?, ?,?,'operator_attestation',?)`, id, cmd.Principal.SubjectID, payload.SessionID, payload.Generation, payload.Reason, at); err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE voice_pool_state SET blocked=0,reason_code='',source_session_id='',updated_at=?,updated_by=? WHERE id=1`, at, cmd.Principal.SubjectID); err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	eventPayload, _ := json.Marshal(map[string]any{"reconciliation_id": id, "source_session_id": payload.SessionID, "generation": payload.Generation, "method": "operator_attestation", "out_of_band_termination_attested": true, "reason": payload.Reason, "account_identity_available": false})
+	event := contracts.Event{Type: "voice.pool.reconciled", AggregateType: "voice_pool", AggregateID: "default", AggregateVersion: 1, Payload: eventPayload}
+	return contracts.CommandResult{ResourceType: "voice_pool_reconciliation", ResourceID: id, ResourceVersion: 1}, []contracts.Event{event}, nil
+}
+
+func decodeRequest(w http.ResponseWriter, r *http.Request, maxBytes int64, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return apiError(http.StatusBadRequest, "invalid_request", "invalid JSON request", nil)
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return apiError(http.StatusBadRequest, "invalid_request", "request must contain one JSON value", nil)
+	}
+	return nil
+}
+
+func decodePayload(raw json.RawMessage, dst any) error {
+	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return apiError(http.StatusBadRequest, "invalid_request", "voice command payload is invalid", nil)
+	}
+	return nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
