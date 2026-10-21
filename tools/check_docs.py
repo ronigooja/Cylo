@@ -2,9 +2,10 @@
 """Check the documentation archive and its English planning layer.
 
 The archive mapping intentionally follows the original repository layout:
-top-level source documents go to docs/archive/research/product/, numbered
+the PRD and three historical plans go to docs/archive/research/, numbered
 reports go to docs/archive/research/reports/, and evidence keeps its relative
-path below docs/archive/research/evidence/.
+path below docs/archive/research/evidence/. The old README is accounted for by
+the archive inventory because the current root README replaces it.
 
 This script uses only the Python standard library and git. It is intended to
 run from any directory inside the checkout.
@@ -100,6 +101,23 @@ def check_archive(root: Path, commit: str, archive_root: str) -> tuple[list[str]
     inventory = inventory_path.read_text(encoding="utf-8") if inventory_path.is_file() else ""
     if not inventory:
         errors.append("missing archive inventory: docs/archive/README.md")
+    inventory_paths = set(re.findall(r"^\| `([^`]+)` \|", inventory, re.M))
+    if inventory_paths != set(files):
+        errors.append(
+            "archive inventory path set differs: missing "
+            + ", ".join(sorted(set(files) - inventory_paths))
+            + "; unexpected "
+            + ", ".join(sorted(inventory_paths - set(files)))
+        )
+    non_markdown_evidence = [
+        path for path in files
+        if path.startswith("docs/research/evidence/")
+        and PurePosixPath(path).suffix.lower() != ".md"
+    ]
+    if len(non_markdown_evidence) != 11:
+        errors.append(
+            f"source inventory has {len(non_markdown_evidence)} non-Markdown evidence files; expected 11"
+        )
     for source in files:
         if f"`{source}`" not in inventory:
             errors.append(f"archive inventory omits original source path: {source}")
@@ -170,7 +188,7 @@ def markdown_files(root: Path) -> list[Path]:
     )
 
 
-def cjk_check(root: Path, prd_translation: Path | None) -> list[str]:
+def cjk_check(root: Path) -> list[str]:
     errors = []
     for path in markdown_files(root):
         cleaned = strip_markdown_for_scan(path.read_text(encoding="utf-8"), quoted=True)
@@ -406,7 +424,7 @@ def main() -> int:
         else:
             failures.extend(prd_structure_check(root, args.source_commit, translation))
     failures.extend(link_check(root))
-    failures.extend(cjk_check(root, translation if translation.exists() else None))
+    failures.extend(cjk_check(root))
 
     print(f"source inventory: {len(files)} files from {args.source_commit}")
     if failures:
