@@ -16,7 +16,7 @@ CAO与需求在执行编排层匹配，取消官方App支持后CLI路线更直�
 | 层次 | 工作范围 |
 |---|---|
 | 已有复用 | CAO的Super/Worker、多CLI provider、tmux进程、消息/收件箱、数据库与工作流恢复机制；按实际语义接入，不重做这些能力 |
-| CAO内部改造 | Codex thread/session映射与resume；manual/orchestrated输入互斥及交回；真实PTY附着入口；退出/删除时保留工作成果；默认权限和可观测状态修正 |
+| CAO内部改造 | Codex thread/session映射与resume；manual/orchestrated输入互斥及交回（可选人工接管）；真实PTY附着入口（可选人工接管）；退出/删除时保留工作成果；默认权限和可观测状态修正 |
 | Cylo外部新增 | 统一任务/证据/授权权威、跨设备客户端、长期服务生命周期、可靠记忆、实时语音网关/账号调度和迁移恢复；这些平台职责不能只靠CAO终端状态替代 |
 
 TUI解析、真实工具审批、输入竞态、force清理和生产可靠性仍需验证或改造；取消App验收不代表这些风险消失。07给出逐文件patch边界。
