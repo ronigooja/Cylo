@@ -128,6 +128,30 @@ Available integration machines/tools: macOS host `zhuwei@macair`, Xcode 16.2, Sw
 | 4. Long-running services | Authorized service creation, lifecycle, deterministic events, worker escalation, notifications and service history | Service outlives client and Super session; all lifecycle operations reflect actual process state; scenario B and E evidence; bounded retries and notification dedupe |
 | 5. Production reliability and Apple delivery | Backup/restore, migration fencing, data control, hardening, complete native client flows and delivery, performance and operations | Restore rehearsal with measured RPO/RTO; fault injection and security negatives; real-device voice and notification checks; complete scenarios A–E; every in-scope ID has evidence or an explicitly unresolved acceptance gap |
 
+
+### System-wide quality acceptance (CY-20-01)
+
+The product requirement defines these fifteen dimensions; each requires evidence during final acceptance. Numeric thresholds not stated in the PRD remain open targets.
+
+| Dimension | Acceptance intent |
+|---|---|
+| Accuracy | Do not guess execution results or turn unconfirmed inferences into facts. |
+| Continuity | Projects, tasks, and long-running services survive conversation end. |
+| Persistence | Important data and memory survive process termination. |
+| Reliability | Detect execution exceptions and recover under safe conditions. |
+| Extensibility | Add models, agents, services, and system capabilities. |
+| Independence | Keep core capabilities replaceable across models and services. |
+| Interoperability | Support two-way continuation with native tools as far as their interfaces allow. |
+| Cross-device consistency | Clients share authoritative task and memory state. |
+| Cross-platform support | macOS, iPhone, and iPad clients share a unified backend; first-release server and execution hosts use Linux. |
+| Controllability | Users can understand, authorize, pause, and stop related work. |
+| Security | Use appropriate permissions and protect data and external services. |
+| Observability | Trace runtime state, exceptions, results, and their sources. |
+| Cost efficiency | Reduce unnecessary model calls and repeated context. |
+| Ease of use | Keep natural interaction primary without requiring knowledge of internal technology. |
+| Long-term evolution | Add capabilities without repeatedly rebuilding the system from scratch. |
+
+Source: archived product requirements, §20. The matrix row for CY-20-01 requires evidence against every dimension above; no dimension is accepted solely from a design claim.
 Milestones are sequencing, not product scope reduction. The global four-run cap applies at every milestone that dispatches runtimes.
 
 ## 13. Dependencies and limits
@@ -218,6 +242,6 @@ The requirement descriptions and detailed acceptance scenarios live in [archived
 | `CY-19-C` | Scenario C: recover dated project decisions and reasons across devices without inventing missing evidence. | All components named by each scenario | 3, 4, and 5 | Source-linked old/new decision versions and dates, restart/device query, adversarial stale and unsupported claims. |
 | `CY-19-D` | Scenario D: parallel specialist work, conflict coordination, and truthful aggregate outcomes. | All components named by each scenario | 3, 4, and 5 | Two runtime timelines, independent evidence, injected shared-write conflict, failed/canceled branch and truthful final status. |
 | `CY-19-E` | Scenario E: unattended network/API/process failure detection, safe recovery, unknown-effect handling, and records. | All components named by each scenario | 3, 4, and 5 | Network loss, lost external receipt, process crash, recovery timeline, zero blind duplicate effects, user escalation when unqueryable. |
-| `CY-20-01` | Meet and measure all fifteen system-quality dimensions; unspecified thresholds remain open targets. | All components | 5 | Measured acceptance evidence across all 15 quality dimensions; thresholds remain to be set |
+| `CY-20-01` | Meet and measure all fifteen system-quality dimensions; unspecified thresholds remain open targets. | All components | 5 | Evidence for each dimension in “System-wide quality acceptance” above; thresholds remain to be set |
 | `CY-21-01` | Keep Cylo outside the boundaries of chat-only, Super-only, orchestration-only, editor, OS, memory-only, and personal-only products. | Control plane and architecture | 1 and 5 | Scope review and A–E evidence demonstrate the product remains within the stated boundaries |
 | `CY-22-01` | Deliver the complete product behavior across interaction, decisions, execution, interoperability, services, memory, state, security, modularity, and evolution. | All components | 5 | A–E complete and every in-scope stable ID has evidence or a recorded open gap |
