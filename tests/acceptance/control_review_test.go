@@ -1,0 +1,297 @@
+package acceptance
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Cylo/internal/control"
+	"github.com/ronigooja/Cylo/internal/storage"
+)
+
+func reviewToken(t *testing.T) string {
+	t.Helper()
+	b := make([]byte, 32)
+	if _, e := rand.Read(b); e != nil {
+		t.Fatal(e)
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+func reviewServer(t *testing.T, cfg control.Config, register func(*control.Server)) (*storage.Store, http.Handler) {
+	t.Helper()
+	s := openStore(t, filepath.Join(t.TempDir(), "control.db"))
+	if e := storage.RegisterCoreMigrations(s); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.Migrate(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	srv, e := control.NewServer(s, cfg)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if register != nil {
+		register(srv)
+	}
+	return s, srv.Handler()
+}
+func reviewRequest(h http.Handler, method, path, token, key string, body any) *httptest.ResponseRecorder {
+	var b []byte
+	if body != nil {
+		b, _ = json.Marshal(body)
+	}
+	r := httptest.NewRequest(method, path, bytes.NewReader(b))
+	if token != "" {
+		r.Header.Set("Authorization", "Bearer "+token)
+	}
+	if key != "" {
+		r.Header.Set("Idempotency-Key", key)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w
+}
+func reviewBootstrap(t *testing.T, h http.Handler, code, token string) contracts.DeviceRegistration {
+	t.Helper()
+	w := reviewRequest(h, "POST", "/v1/bootstrap", "", "", contracts.BootstrapRequest{RequestID: "bootstrap", Code: code, DeviceName: "review", DeviceToken: token})
+	if w.Code != 201 {
+		t.Fatalf("bootstrap status=%d", w.Code)
+	}
+	var d contracts.DeviceRegistration
+	if e := json.Unmarshal(w.Body.Bytes(), &d); e != nil {
+		t.Fatal(e)
+	}
+	return d
+}
+func TestReviewHTTPIdentityAndReceipts(t *testing.T) {
+	code := reviewToken(t)
+	token := reviewToken(t)
+	s, h := reviewServer(t, control.Config{BootstrapCode: code}, nil)
+	d := reviewBootstrap(t, h, code, token)
+	retry := reviewRequest(h, "POST", "/v1/bootstrap", "", "", contracts.BootstrapRequest{RequestID: "bootstrap", Code: code, DeviceName: "review", DeviceToken: token})
+	if retry.Code != 200 {
+		t.Fatalf("lost ACK retry=%d", retry.Code)
+	}
+	var again contracts.DeviceRegistration
+	json.Unmarshal(retry.Body.Bytes(), &again)
+	if again.Device.ID != d.Device.ID {
+		t.Error("bootstrap retry changed identity")
+	}
+	mismatch := reviewRequest(h, "POST", "/v1/bootstrap", "", "", contracts.BootstrapRequest{RequestID: "bootstrap", Code: code, DeviceName: "changed", DeviceToken: token})
+	if mismatch.Code != 409 {
+		t.Errorf("bootstrap mismatch=%d", mismatch.Code)
+	}
+	pendingToken := reviewToken(t)
+	pair := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{RequestID: "pairing", DeviceName: "pending", DeviceToken: pendingToken})
+	if pair.Code != 201 {
+		t.Fatalf("pair=%d", pair.Code)
+	}
+	var p contracts.PairingStatus
+	json.Unmarshal(pair.Body.Bytes(), &p)
+	for _, path := range []string{"/v1/snapshot", "/v1/commands?key=k", "/v1/pairings/other"} {
+		w := reviewRequest(h, "GET", path, pendingToken, "", nil)
+		if w.Code < 400 {
+			t.Errorf("pending permitted %s", path)
+		}
+	}
+	if w := reviewRequest(h, "GET", "/v1/pairings/"+p.PairingID, pendingToken, "", nil); w.Code != 200 {
+		t.Errorf("own pairing status=%d", w.Code)
+	}
+	req := contracts.CommandRequest{Kind: "project.create", Payload: json.RawMessage(`{"name":"review"}`)}
+	first := reviewRequest(h, "POST", "/v1/commands", token, "project", req)
+	if first.Code != 200 {
+		t.Fatalf("command=%d %s", first.Code, first.Body.String())
+	}
+	var receipt contracts.CommandReceipt
+	json.Unmarshal(first.Body.Bytes(), &receipt)
+	second := reviewRequest(h, "POST", "/v1/commands", token, "project", req)
+	if !bytes.Equal(first.Body.Bytes(), second.Body.Bytes()) {
+		t.Error("duplicate changed receipt")
+	}
+	req.Payload = json.RawMessage(`{"name":"different"}`)
+	if w := reviewRequest(h, "POST", "/v1/commands", token, "project", req); w.Code != 409 {
+		t.Errorf("mismatch=%d", w.Code)
+	}
+	got := reviewRequest(h, "GET", "/v1/commands?key=project", token, "", nil)
+	if !bytes.Equal(got.Body.Bytes(), first.Body.Bytes()) {
+		t.Error("lost ACK lookup changed receipt")
+	}
+	for _, table := range []string{"projects", "command_receipts", "command_work", "events"} {
+		var n int
+		if e := s.DB().QueryRow("SELECT count(*) FROM " + table).Scan(&n); e != nil {
+			t.Fatal(e)
+		}
+		if n != 1 {
+			t.Errorf("%s rows=%d", table, n)
+		}
+	}
+	var hashes int
+	if e := s.DB().QueryRow("SELECT count(*) FROM devices WHERE length(token_hash)=32").Scan(&hashes); e != nil {
+		t.Fatal(e)
+	}
+	if hashes != 2 {
+		t.Error("hashed credential storage missing")
+	}
+}
+func TestReviewExtensionRollback(t *testing.T) {
+	code, token := reviewToken(t), reviewToken(t)
+	s, h := reviewServer(t, control.Config{BootstrapCode: code}, func(srv *control.Server) {
+		if e := srv.RegisterCommand("review.fail", func(ctx context.Context, tx *sql.Tx, c control.CommandContext, r contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
+			_, e := tx.ExecContext(ctx, "INSERT INTO projects VALUES('partial',?,'partial','','active',1,'now','now')", c.Principal.WorkspaceID)
+			if e != nil {
+				return contracts.CommandResult{}, nil, e
+			}
+			return contracts.CommandResult{}, nil, errors.New("injected extension failure")
+		}); e != nil {
+			t.Fatal(e)
+		}
+	})
+	reviewBootstrap(t, h, code, token)
+	w := reviewRequest(h, "POST", "/v1/commands", token, "rollback", contracts.CommandRequest{Kind: "review.fail", Payload: json.RawMessage(`{}`)})
+	if w.Code != 500 {
+		t.Fatalf("failure status=%d", w.Code)
+	}
+	for _, table := range []string{"projects", "command_receipts", "command_work", "events"} {
+		var n int
+		if e := s.DB().QueryRow("SELECT count(*) FROM " + table).Scan(&n); e != nil {
+			t.Fatal(e)
+		}
+		if n != 0 {
+			t.Errorf("partial %s persisted", table)
+		}
+	}
+}
+func TestReviewCanonicalHashPreservesLargeIntegers(t *testing.T) {
+	code, token := reviewToken(t), reviewToken(t)
+	_, h := reviewServer(t, control.Config{BootstrapCode: code}, func(s *control.Server) {
+		s.RegisterCommand("review.integer", func(ctx context.Context, tx *sql.Tx, c control.CommandContext, r contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
+			return contracts.CommandResult{}, nil, nil
+		})
+	})
+	reviewBootstrap(t, h, code, token)
+	for i, payload := range []string{`{"revision":9007199254740992}`, `{"revision":9007199254740993}`} {
+		w := reviewRequest(h, "POST", "/v1/commands", token, "large", contracts.CommandRequest{Kind: "review.integer", Payload: json.RawMessage(payload)})
+		want := 200
+		if i == 1 {
+			want = 409
+		}
+		if w.Code != want {
+			t.Errorf("request %d status=%d want=%d: distinct integers collide", i, w.Code, want)
+		}
+	}
+}
+func TestReviewConfiguredRunnerRevocation(t *testing.T) {
+	token := reviewToken(t)
+	s, h := reviewServer(t, control.Config{RunnerToken: token, RunnerID: "review", RunnerWorkspaceIDs: []string{"default"}}, func(srv *control.Server) {
+		if e := srv.RegisterRunnerCredential(context.Background(), token, "review", []string{"default"}, []string{"runner:claim"}); e != nil {
+			t.Fatal(e)
+		}
+		srv.RegisterRunnerRoutes(func(mux *http.ServeMux) {
+			mux.HandleFunc("GET /runner/v1/review", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
+		})
+	})
+	if _, e := s.DB().Exec("UPDATE runner_credentials SET revoked_at='now'"); e != nil {
+		t.Fatal(e)
+	}
+	if w := reviewRequest(h, "GET", "/runner/v1/review", token, "", nil); w.Code < 400 {
+		t.Errorf("configured bearer remains authorized after persistent revocation: status=%d", w.Code)
+	}
+}
+
+func TestReviewExpiredPairingCannotBeApproved(t *testing.T) {
+	code, token := reviewToken(t), reviewToken(t)
+	_, h := reviewServer(t, control.Config{BootstrapCode: code, PairingTTL: time.Nanosecond}, nil)
+	reviewBootstrap(t, h, code, token)
+	w := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{RequestID: "expire", DeviceName: "expired", DeviceToken: reviewToken(t)})
+	if w.Code != 201 {
+		t.Fatalf("pair status=%d", w.Code)
+	}
+	var pair contracts.PairingStatus
+	if e := json.Unmarshal(w.Body.Bytes(), &pair); e != nil {
+		t.Fatal(e)
+	}
+	time.Sleep(time.Millisecond)
+	payload, _ := json.Marshal(map[string]string{"device_id": pair.PairingID})
+	w = reviewRequest(h, "POST", "/v1/commands", token, "approve-expired", contracts.CommandRequest{Kind: "device.approve", Payload: payload})
+	if w.Code < 400 {
+		t.Errorf("expired pairing approved: status=%d", w.Code)
+	}
+}
+func TestReviewSSERevocationBlocksNewEvents(t *testing.T) {
+	code, token := reviewToken(t), reviewToken(t)
+	s, h := reviewServer(t, control.Config{BootstrapCode: code}, nil)
+	d := reviewBootstrap(t, h, code, token)
+	live := httptest.NewServer(h)
+	defer live.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+	defer cancel()
+	r, e := http.NewRequestWithContext(ctx, "GET", live.URL+"/v1/events", nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	r.Header.Set("Authorization", "Bearer "+token)
+	response, e := live.Client().Do(r)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != 200 {
+		t.Fatalf("SSE=%d", response.StatusCode)
+	}
+	// Simulate the authoritative revoke transaction before a later workspace event.
+	if _, e = s.DB().Exec("UPDATE devices SET status='revoked',revoked_at='now' WHERE id=?", d.Device.ID); e != nil {
+		t.Fatal(e)
+	}
+	payload := `{"schema_version":1,"event_id":"after-revoke","cursor":"1","type":"review.after_revoke","occurred_at":"2026-10-21T00:00:00Z","workspace_id":"default","aggregate_type":"review","aggregate_id":"review","aggregate_version":1,"payload":{}}`
+	if _, e = s.DB().Exec("INSERT INTO events(event_id,workspace_id,cursor,schema_version,event_type,occurred_at,aggregate_type,aggregate_id,aggregate_version,payload) VALUES('after-revoke','default',1,1,'review.after_revoke','now','review','review',1,?)", payload); e != nil {
+		t.Fatal(e)
+	}
+	scanner := bufio.NewScanner(response.Body)
+	for scanner.Scan() {
+		if strings.Contains(scanner.Text(), "review.after_revoke") {
+			t.Error("revoked SSE credential received an event committed after revocation")
+			break
+		}
+	}
+}
+
+func TestReviewLateCommitFailureRollsBackReceiptWorkAndOutbox(t *testing.T) {
+	code, token := reviewToken(t), reviewToken(t)
+	s, h := reviewServer(t, control.Config{BootstrapCode: code}, nil)
+	reviewBootstrap(t, h, code, token)
+	if _, e := s.DB().Exec(`CREATE TRIGGER review_abort_work BEFORE INSERT ON command_work BEGIN SELECT RAISE(ABORT,'injected final work failure'); END`); e != nil {
+		t.Fatal(e)
+	}
+	w := reviewRequest(h, "POST", "/v1/commands", token, "late-failure", contracts.CommandRequest{Kind: "project.create", Payload: json.RawMessage(`{"name":"late"}`)})
+	if w.Code != 500 {
+		t.Fatalf("status=%d", w.Code)
+	}
+	for _, table := range []string{"projects", "command_receipts", "command_work", "events"} {
+		var n int
+		if e := s.DB().QueryRow("SELECT count(*) FROM " + table).Scan(&n); e != nil {
+			t.Fatal(e)
+		}
+		if n != 0 {
+			t.Errorf("%s survived failed work insertion", table)
+		}
+	}
+	var cursor int
+	if e := s.DB().QueryRow("SELECT current_cursor FROM event_counters WHERE workspace_id='default'").Scan(&cursor); e != nil {
+		t.Fatal(e)
+	}
+	if cursor != 0 {
+		t.Error("event cursor increment survived rollback")
+	}
+}
