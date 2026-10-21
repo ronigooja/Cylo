@@ -2,9 +2,11 @@
 
 ## Language and documentation
 
-- Write repository documentation in English.
-- Use Chinese for routine progress updates, decisions, findings, questions, and final reports to the user.
-- Treat archived documents as historical evidence. Preserve archived source documents verbatim; do not describe them as the current plan.
+- Write repository documentation in English and use English for routine progress updates.
+- Use Chinese for final reports and important findings, decisions, or questions.
+- Use English filenames for new repository files.
+- Translate archived Markdown into English while preserving raw evidence and source quotations verbatim. Do not preserve all narrative prose verbatim when translating.
+- Treat archived documents as historical evidence. Do not describe them as the current plan.
 - Keep implementation status honest. A design, static check, fixture, or proof of concept is not production implementation or end-to-end acceptance.
 - Keep decisions and acceptance boundaries in `docs/master-plan.md`; keep the README concise.
 
@@ -19,8 +21,10 @@
 
 ## Work coordination and safety
 
-- The main agent coordinates implementation and delegates implementation and independent verification to GPT-6 Luna at high reasoning effort.
-- Use separate worktrees under `$HOME/subagents` for delegated work; keep each worktree's ownership narrow and report its branch and commit.
+- The main agent coordinates implementation and cross-module decisions. Delegated implementation and independent verification go to GPT-6 Luna at high reasoning effort.
+- Run concurrent work in separate branches and worktrees under `$HOME/subagents`, with explicit file ownership for each assignment. Do not edit outside assigned ownership or take over another agent's archive scope.
+- Before ending a delegated task or handing work to a fresh context, leave a concise handoff with the branch/worktree, ownership, commit, completed work, remaining work, verification, and known limitations.
+- Coordinate cross-module API and data changes with the main agent and affected owners before editing. Review delegated commits before integration; report relevant tests, commands, outcomes, and limitations without claiming checks that were not run.
 - Never put credentials, tokens, private account data, or secret values in source, documentation, logs, or test fixtures. Refer to secret names or deployment-provided references only.
 - Do not change external services or the existing CLIProxyAPI deployment as part of repository work unless explicitly authorized.
 - Prefer evidence that can be repeated. Report commands and outcomes accurately; do not claim checks that were not run.
