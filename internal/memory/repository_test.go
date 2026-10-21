@@ -34,7 +34,7 @@ func newMemoryTestRepo(t *testing.T) (*storage.Store, *Repository) {
 func TestMemoryChineseVersionConflictAndDeletion(t *testing.T) {
 	ctx := context.Background()
 	store, repo := newMemoryTestRepo(t)
-	principal := contracts.Principal{WorkspaceID: "default", SubjectID: "user-1", Scopes: []string{"memory:read"}}
+	principal := contracts.Principal{WorkspaceID: "default", SubjectID: "user-1", Scopes: []string{"memory:read:personal", "memory:write:personal", "memory:delete:personal"}}
 	scope := Scope{Kind: ScopePersonal, PrincipalID: principal.SubjectID}
 
 	first := writeMemory(t, ctx, store.DB(), repo, scope, "数据库改为 SQLite，因为本地事务需要稳定恢复", "source-1", 0)
@@ -63,6 +63,9 @@ func TestMemoryChineseVersionConflictAndDeletion(t *testing.T) {
 	conflict := writeMemory(t, ctx, store.DB(), repo, scope, "数据库是 MySQL", "source-conflict", 0)
 	if conflict.Status != ClaimConflicted {
 		t.Fatalf("unversioned conflicting write status=%q", conflict.Status)
+	}
+	if _, err := writeMemoryErr(ctx, store.DB(), repo, scope, "数据库是 MariaDB", "source-third", 0); !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("third unversioned value bypassed unresolved conflict: err=%v", err)
 	}
 	got, err = repo.Search(ctx, principal, "数据库", SearchFilter{})
 	if err != nil || len(got.Conflicts) != 1 || len(got.Items) < 2 {
@@ -128,7 +131,7 @@ func TestInferredClaimCannotBePromotedAndChineseTokenizerKeepsShortTerms(t *test
 func TestContextManifestCapturesVerifiedRecipientVisibleVersions(t *testing.T) {
 	ctx := context.Background()
 	store, repo := newMemoryTestRepo(t)
-	owner := contracts.Principal{WorkspaceID: "default", SubjectID: "user-1", Scopes: []string{"memory:read"}}
+	owner := contracts.Principal{WorkspaceID: "default", SubjectID: "user-1", Scopes: []string{"memory:read:personal"}}
 	claim := writeMemory(t, ctx, store.DB(), repo, Scope{Kind: ScopePersonal, PrincipalID: owner.SubjectID}, "保留 SQLite 作为本地事务数据库", "context-source", 0)
 
 	manifest, claims, err := repo.AssembleContext(ctx, owner, "", owner.SubjectID, "SQLite", 100)
@@ -153,6 +156,100 @@ func TestContextManifestCapturesVerifiedRecipientVisibleVersions(t *testing.T) {
 	}
 }
 
+func TestNormalizeTextPreservesOrderAndRepetition(t *testing.T) {
+	if normalizeText("Alice trusts Bob") == normalizeText("Bob trusts Alice") {
+		t.Fatal("reordered claim was treated as equal")
+	}
+	if normalizeText("Alice trusts Bob") == normalizeText("Alice trusts Bob Bob") {
+		t.Fatal("repeated token was treated as equal")
+	}
+	if normalizeText("Alice trusts Bob") != normalizeText("ALICE trusts, Bob!") {
+		t.Fatal("punctuation/case normalization changed")
+	}
+}
+
+func TestTaskContextExcludesMemoriesFromOtherProjects(t *testing.T) {
+	ctx := context.Background()
+	store, repo := newMemoryTestRepo(t)
+	_, err := store.DB().ExecContext(ctx, `INSERT INTO projects(id,workspace_id,name,status,version,created_at,updated_at) VALUES('project-a','default','A','active',1,'now','now'),('project-b','default','B','active',1,'now','now')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.DB().ExecContext(ctx, `INSERT INTO devices(id,workspace_id,subject_id,name,status,token_hash,created_at) VALUES('device-a','default','owner','test','approved',X'01','now')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.DB().ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,project_id,title,goal,source,profile_id,status,version,created_at,updated_at,created_by_device_id,command_id) VALUES('task-a','default','project-a','Task','Goal','user','default','queued',1,'now','now','device-a','cmd')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeMemory(t, ctx, store.DB(), repo, Scope{Kind: ScopeProject, ID: "project-a"}, "sharedword belongs to project A", "project-source-a", 0)
+	writeMemory(t, ctx, store.DB(), repo, Scope{Kind: ScopeProject, ID: "project-b"}, "sharedword belongs to project B", "project-source-b", 0)
+	owner := contracts.Principal{WorkspaceID: "default", SubjectID: "owner", Scopes: []string{"memory:read:workspace"}}
+	_, claims, err := repo.AssembleContext(ctx, owner, "task-a", owner.SubjectID, "sharedword", 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claims) != 1 || claims[0].Scope.ID != "project-a" {
+		t.Fatalf("task context crossed project boundary: %#v", claims)
+	}
+}
+
+func TestMemoryActionGrantsAreExplicitAndScopeBound(t *testing.T) {
+	personal := Scope{Kind: ScopePersonal, PrincipalID: "owner"}
+	projectA := Scope{Kind: ScopeProject, ID: "project-a"}
+	projectB := Scope{Kind: ScopeProject, ID: "project-b"}
+	legacy := contracts.Principal{WorkspaceID: "default", SubjectID: "owner", Scopes: []string{"client:command"}}
+	if mayWriteScope(legacy, personal) || mayWriteScope(legacy, projectA) || mayDeleteScope(legacy, personal) {
+		t.Fatal("generic command scope granted memory mutation")
+	}
+	narrow := contracts.Principal{WorkspaceID: "default", SubjectID: "owner", Scopes: []string{"memory:write:project:project-a", "memory:read:project:project-a"}}
+	if !mayWriteScope(narrow, projectA) || mayWriteScope(narrow, projectB) || !mayReadScope(narrow, projectA) || mayReadScope(narrow, projectB) {
+		t.Fatal("project grant escaped its explicit project ID")
+	}
+	owner := contracts.Principal{WorkspaceID: "default", SubjectID: "owner", Scopes: []string{"memory:read:personal", "memory:write:personal", "memory:delete:personal", "memory:read:workspace", "memory:write:workspace", "memory:delete:workspace"}}
+	if !mayWriteScope(owner, personal) || !mayWriteScope(owner, projectA) || !mayDeleteScope(owner, projectA) || !mayReadScope(owner, projectB) {
+		t.Fatal("configured owner scopes did not include personal and workspace contexts")
+	}
+}
+
+func TestProposalApprovalRejectsDeletedEventSource(t *testing.T) {
+	ctx := context.Background()
+	store, repo := newMemoryTestRepo(t)
+	payload := []byte(`{"result":"verified"}`)
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO events(event_id,workspace_id,cursor,schema_version,event_type,occurred_at,subject_id,aggregate_type,aggregate_id,aggregate_version,payload) VALUES('source-event','default',1,1,'task.completed','now','owner','task','task-a',1,?)`, payload); err != nil {
+		t.Fatal(err)
+	}
+	scope := Scope{Kind: ScopeWorkspace}
+	source := Source{ID: "proposal-source", Version: 1, Scope: scope, Kind: "event", Reference: "event:source-event", ContentHash: hashBytes(payload), RecordedAt: time.Now().UTC(), Producer: "runner"}
+	tx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := insertSourceTx(ctx, tx, "default", source); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := repo.CreateProposal(ctx, contracts.RunnerPrincipal{RunnerID: "runner", WorkspaceIDs: []string{"default"}, Scopes: []string{"memory:propose:workspace"}}, runnerProposalRequest{WorkspaceID: "default", SourceID: source.ID, SourceVersion: 1, ExtractorVersion: "extractor-v1", Scope: scope, Subject: "project", Key: "setting", Content: "verified setting"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `DELETE FROM events WHERE event_id='source-event' AND workspace_id='default'`); err != nil {
+		t.Fatal(err)
+	}
+	approveTx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = repo.ApproveProposalTx(ctx, approveTx, contracts.Principal{WorkspaceID: "default", SubjectID: "owner", Scopes: []string{"memory:read:workspace", "memory:write:workspace"}}, "approve-command", proposal.ID, proposal.Version, time.Now().UTC())
+	_ = approveTx.Rollback()
+	if !errors.Is(err, ErrInvalidSource) {
+		t.Fatalf("approval accepted a deleted event source: err=%v", err)
+	}
+}
+
 func writeMemory(t *testing.T, ctx context.Context, db *sql.DB, repo *Repository, scope Scope, content, sourceID string, expected int64) Claim {
 	t.Helper()
 	claim, err := writeMemoryErr(ctx, db, repo, scope, content, sourceID, expected)
@@ -168,8 +265,12 @@ func writeMemoryErr(ctx context.Context, db *sql.DB, repo *Repository, scope Sco
 		return Claim{}, err
 	}
 	now := time.Now().UTC()
+	actor := scope.PrincipalID
+	if actor == "" {
+		actor = "user-1"
+	}
 	source := Source{ID: sourceID, Version: 1, Scope: scope, Kind: "user_note", Reference: "command:" + sourceID, RecordedAt: now, Producer: "user"}
-	claim, err := repo.PutTx(ctx, tx, WriteInput{WorkspaceID: "default", ActorID: scope.PrincipalID, Expected: expected, Source: source, Claim: Claim{WorkspaceID: "default", Scope: scope, Subject: "project", Key: "database", Content: content, Authority: AuthorityUserConfirmed, Status: ClaimActive, Revision: 1, Sources: []Source{source}}})
+	claim, err := repo.PutTx(ctx, tx, WriteInput{WorkspaceID: "default", ActorID: actor, Expected: expected, Source: source, Claim: Claim{WorkspaceID: "default", Scope: scope, Subject: "project", Key: "database", Content: content, Authority: AuthorityUserConfirmed, Status: ClaimActive, Revision: 1, Sources: []Source{source}}})
 	if err != nil {
 		_ = tx.Rollback()
 		return Claim{}, err

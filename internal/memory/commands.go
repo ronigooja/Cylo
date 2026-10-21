@@ -56,9 +56,6 @@ type memoryEvent struct {
 }
 
 func (s *Service) commandRemember(ctx context.Context, tx *sql.Tx, cmd control.CommandContext, req contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
-	if !control.HasScope(cmd.Principal, "client:command") && !control.HasScope(cmd.Principal, "memory:write") {
-		return contracts.CommandResult{}, nil, featureError(http.StatusForbidden, "forbidden", "memory write scope is required", nil)
-	}
 	var payload rememberPayload
 	if err := decodePayload(req.Payload, &payload); err != nil {
 		return contracts.CommandResult{}, nil, err
@@ -69,6 +66,9 @@ func (s *Service) commandRemember(ctx context.Context, tx *sql.Tx, cmd control.C
 	scope, err := resolveWriteScope(ctx, tx, cmd.Principal, payload.Scope)
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
+	}
+	if !mayWriteScope(cmd.Principal, scope) {
+		return contracts.CommandResult{}, nil, featureError(http.StatusForbidden, "forbidden", "memory write scope is required for the requested scope", nil)
 	}
 	source, err := resolveUserSource(ctx, tx, cmd, payload, scope)
 	if err != nil {
@@ -87,9 +87,6 @@ func (s *Service) commandRemember(ctx context.Context, tx *sql.Tx, cmd control.C
 }
 
 func (s *Service) commandDelete(ctx context.Context, tx *sql.Tx, cmd control.CommandContext, req contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
-	if !control.HasScope(cmd.Principal, "client:command") && !control.HasScope(cmd.Principal, "memory:delete") {
-		return contracts.CommandResult{}, nil, featureError(http.StatusForbidden, "forbidden", "memory delete scope is required", nil)
-	}
 	var payload deletePayload
 	if err := decodePayload(req.Payload, &payload); err != nil {
 		return contracts.CommandResult{}, nil, err
@@ -106,7 +103,7 @@ func (s *Service) commandDelete(ctx context.Context, tx *sql.Tx, cmd control.Com
 	} else if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
-	if !mayWriteScope(cmd.Principal, scope) {
+	if !mayDeleteScope(cmd.Principal, scope) {
 		return contracts.CommandResult{}, nil, featureError(http.StatusForbidden, "forbidden", "memory record is outside the caller's scope", nil)
 	}
 	deleted, err := s.repo.DeleteTx(ctx, tx, DeleteInput{WorkspaceID: cmd.Principal.WorkspaceID, ActorID: cmd.Principal.SubjectID, ClaimID: payload.MemoryID, Expected: payload.ExpectedRevision, ReasonCode: payload.Reason})
@@ -118,9 +115,6 @@ func (s *Service) commandDelete(ctx context.Context, tx *sql.Tx, cmd control.Com
 }
 
 func (s *Service) commandApproveProposal(ctx context.Context, tx *sql.Tx, cmd control.CommandContext, req contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
-	if !control.HasScope(cmd.Principal, "client:command") && !control.HasScope(cmd.Principal, "memory:write") {
-		return contracts.CommandResult{}, nil, featureError(http.StatusForbidden, "forbidden", "memory write scope is required", nil)
-	}
 	var payload proposalPayload
 	if err := decodePayload(req.Payload, &payload); err != nil {
 		return contracts.CommandResult{}, nil, err
@@ -283,6 +277,13 @@ func resolveCommandSource(ctx context.Context, tx *sql.Tx, p contracts.Principal
 	if !mayReadScope(p, source.Scope) {
 		return Source{}, ErrInvalidSource
 	}
+	valid, err := sourceStillAvailable(ctx, tx, p.WorkspaceID, source)
+	if err != nil {
+		return Source{}, err
+	}
+	if !valid {
+		return Source{}, ErrInvalidSource
+	}
 	return source, nil
 }
 
@@ -347,7 +348,7 @@ func hashBytes(value []byte) string {
 
 func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 	p, ok := control.PrincipalFromContext(r.Context())
-	if !ok || (!control.HasScope(p, "client:read") && !control.HasScope(p, "memory:read")) {
+	if !ok || !hasAnyMemoryAction(p, "read") {
 		control.WriteError(w, featureError(http.StatusForbidden, "forbidden", "memory read scope is required", nil))
 		return
 	}
@@ -368,7 +369,7 @@ func (s *Service) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 func (s *Service) handleContext(w http.ResponseWriter, r *http.Request) {
 	p, ok := control.PrincipalFromContext(r.Context())
-	if !ok || (!control.HasScope(p, "client:read") && !control.HasScope(p, "memory:context")) {
+	if !ok || !hasAnyMemoryAction(p, "read") {
 		control.WriteError(w, featureError(http.StatusForbidden, "forbidden", "memory context scope is required", nil))
 		return
 	}

@@ -47,6 +47,7 @@ type SearchFilter struct {
 	ScopeKind ScopeKind
 	ScopeID   string
 	TaskID    string
+	ProjectID string
 	Limit     int
 	At        *time.Time
 }
@@ -87,8 +88,8 @@ func (r *Repository) PutTx(ctx context.Context, tx *sql.Tx, in WriteInput) (Clai
 
 	// A different value for the same key is preserved as a conflict. It is
 	// never resolved by last-writer-wins or by retrieval similarity.
-	rows, err := tx.QueryContext(ctx, `SELECT c.id,c.revision,r.content FROM memory_claims c JOIN memory_revisions r ON r.claim_id=c.id AND r.revision=c.revision
-WHERE c.workspace_id=? AND c.scope_kind=? AND c.scope_id=? AND c.principal_id=? AND c.subject=? AND c.claim_key=? AND c.status='active' AND c.deleted_at IS NULL`,
+	rows, err := tx.QueryContext(ctx, `SELECT c.id,c.revision,r.content,c.status FROM memory_claims c JOIN memory_revisions r ON r.claim_id=c.id AND r.revision=c.revision
+WHERE c.workspace_id=? AND c.scope_kind=? AND c.scope_id=? AND c.principal_id=? AND c.subject=? AND c.claim_key=? AND c.status IN ('active','conflicted') AND c.deleted_at IS NULL`,
 		in.WorkspaceID, c.Scope.Kind, c.Scope.ID, c.Scope.PrincipalID, c.Subject, c.Key)
 	if err != nil {
 		return Claim{}, err
@@ -97,11 +98,12 @@ WHERE c.workspace_id=? AND c.scope_kind=? AND c.scope_id=? AND c.principal_id=? 
 		id      string
 		rev     int64
 		content string
+		status  ClaimStatus
 	}
 	var existing []existingClaim
 	for rows.Next() {
 		var v existingClaim
-		if err := rows.Scan(&v.id, &v.rev, &v.content); err != nil {
+		if err := rows.Scan(&v.id, &v.rev, &v.content, &v.status); err != nil {
 			_ = rows.Close()
 			return Claim{}, err
 		}
@@ -125,6 +127,13 @@ WHERE c.workspace_id=? AND c.scope_kind=? AND c.scope_id=? AND c.principal_id=? 
 			return Claim{}, err
 		}
 		return c, nil
+	}
+	// An unresolved conflict is a barrier. A later unversioned observation
+	// must not silently become active merely because it is the third value.
+	for _, old := range existing {
+		if old.status == ClaimConflicted {
+			return Claim{}, ErrVersionConflict
+		}
 	}
 	conflicting := false
 	for _, old := range existing {
@@ -220,7 +229,7 @@ func (r *Repository) DeleteTx(ctx context.Context, tx *sql.Tx, in DeleteInput) (
 }
 
 func (r *Repository) Search(ctx context.Context, p contracts.Principal, query string, filter SearchFilter) (SearchResult, error) {
-	if (!hasScope(p.Scopes, "memory:read") && !hasScope(p.Scopes, "client:read")) || p.WorkspaceID == "" || p.SubjectID == "" {
+	if !hasAnyMemoryAction(p, "read") || p.WorkspaceID == "" || p.SubjectID == "" {
 		return SearchResult{}, ErrForbidden
 	}
 	if filter.Limit <= 0 || filter.Limit > 100 {
@@ -320,18 +329,18 @@ func (r *Repository) AssembleContext(ctx context.Context, principal contracts.Pr
 	if budget < 1 || budget > 32_000 {
 		return ContextManifest{}, nil, errors.New("context budget must be between 1 and 32000 tokens")
 	}
+	filter := SearchFilter{TaskID: taskID, Limit: 100}
 	if taskID != "" {
-		var found int
-		if err := r.db.QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE workspace_id=? AND id=?`, principal.WorkspaceID, taskID).Scan(&found); err != nil {
+		if err := r.db.QueryRowContext(ctx, `SELECT coalesce(project_id,'') FROM tasks WHERE workspace_id=? AND id=?`, principal.WorkspaceID, taskID).Scan(&filter.ProjectID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ContextManifest{}, nil, ErrNotFound
+			}
 			return ContextManifest{}, nil, err
-		}
-		if found != 1 {
-			return ContextManifest{}, nil, ErrNotFound
 		}
 	}
 	reader := principal
 	reader.SubjectID = recipientID
-	result, err := r.Search(ctx, reader, query, SearchFilter{TaskID: taskID, Limit: 100})
+	result, err := r.Search(ctx, reader, query, filter)
 	if err != nil {
 		return ContextManifest{}, nil, err
 	}
@@ -483,8 +492,7 @@ func currentSources(ctx context.Context, q querySource, claimID string, revision
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []Source
+	var candidates []Source
 	for rows.Next() {
 		var s Source
 		var recorded string
@@ -494,15 +502,26 @@ func currentSources(ctx context.Context, q querySource, claimID string, revision
 		}
 		s.Scope.Kind = ScopeKind(scopeKind)
 		s.RecordedAt, _ = time.Parse(time.RFC3339Nano, recorded)
-		valid, err := sourceStillAvailable(ctx, q, workspace, s)
+		candidates = append(candidates, s)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	var out []Source
+	for _, source := range candidates {
+		valid, err := sourceStillAvailable(ctx, q, workspace, source)
 		if err != nil {
 			return nil, err
 		}
 		if valid {
-			out = append(out, s)
+			out = append(out, source)
 		}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func sourceStillAvailable(ctx context.Context, q querySource, workspace string, source Source) (bool, error) {
@@ -547,7 +566,7 @@ func sourceStillAvailable(ctx context.Context, q querySource, workspace string, 
 
 func hasScope(scopes []string, scope string) bool {
 	for _, candidate := range scopes {
-		if candidate == scope || candidate == "*" || candidate == "memory:*" {
+		if candidate == scope {
 			return true
 		}
 	}
@@ -555,26 +574,53 @@ func hasScope(scopes []string, scope string) bool {
 }
 
 func mayReadScope(p contracts.Principal, scope Scope) bool {
-	if scope.Kind == ScopePersonal {
-		return p.SubjectID == scope.PrincipalID
-	}
-	if scope.Kind == ScopeProject && hasScope(p.Scopes, "memory:read:project:"+scope.ID) {
-		return true
-	}
-	if scope.Kind == ScopeTask && hasScope(p.Scopes, "memory:read:task:"+scope.ID) {
-		return true
-	}
-	return hasScope(p.Scopes, "memory:read")
+	return p.SubjectID != "" && (scope.Kind != ScopePersonal || scope.PrincipalID == p.SubjectID) && hasMemoryAction(p, "read", scope)
 }
 
 func mayWriteScope(p contracts.Principal, scope Scope) bool {
-	if p.WorkspaceID == "" || p.SubjectID == "" || (!hasScope(p.Scopes, "client:command") && !hasScope(p.Scopes, "memory:write") && !hasScope(p.Scopes, "memory:delete")) {
+	if p.WorkspaceID == "" || p.SubjectID == "" || !hasMemoryAction(p, "write", scope) {
 		return false
 	}
 	if scope.Kind == ScopePersonal {
 		return scope.PrincipalID == p.SubjectID
 	}
-	return true
+	return scope.Kind == ScopeWorkspace || scope.Kind == ScopeProject || scope.Kind == ScopeTask
+}
+
+func mayDeleteScope(p contracts.Principal, scope Scope) bool {
+	if p.WorkspaceID == "" || p.SubjectID == "" || !hasMemoryAction(p, "delete", scope) {
+		return false
+	}
+	if scope.Kind == ScopePersonal {
+		return scope.PrincipalID == p.SubjectID
+	}
+	return scope.Kind == ScopeWorkspace || scope.Kind == ScopeProject || scope.Kind == ScopeTask
+}
+
+// A workspace grant includes records attached to that principal's workspace
+// projects and tasks. Narrower project/task grants remain available for
+// devices and workers that should see only selected scopes.
+func hasMemoryAction(p contracts.Principal, action string, scope Scope) bool {
+	if scope.Kind == ScopePersonal && scope.PrincipalID != p.SubjectID {
+		return false
+	}
+	if hasScope(p.Scopes, "memory:"+action+":"+string(scope.Kind)) {
+		return true
+	}
+	if scope.Kind == ScopeProject || scope.Kind == ScopeTask {
+		return hasScope(p.Scopes, "memory:"+action+":"+string(scope.Kind)+":"+scope.ID) || hasScope(p.Scopes, "memory:"+action+":workspace")
+	}
+	return false
+}
+
+func hasAnyMemoryAction(p contracts.Principal, action string) bool {
+	prefix := "memory:" + action + ":"
+	for _, scope := range p.Scopes {
+		if strings.HasPrefix(scope, prefix) && len(scope) > len(prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func sourceContains(source, claim Scope) bool {
@@ -591,8 +637,20 @@ func matchesFilter(scope Scope, f SearchFilter) bool {
 	if f.ScopeID != "" && scope.ID != f.ScopeID {
 		return false
 	}
-	if f.TaskID != "" && scope.Kind == ScopeTask && scope.ID != f.TaskID {
-		return false
+	if f.TaskID != "" {
+		switch scope.Kind {
+		case ScopePersonal, ScopeWorkspace:
+		case ScopeProject:
+			if f.ProjectID == "" || scope.ID != f.ProjectID {
+				return false
+			}
+		case ScopeTask:
+			if scope.ID != f.TaskID {
+				return false
+			}
+		default:
+			return false
+		}
 	}
 	return true
 }
@@ -652,7 +710,36 @@ func tokenScore(query, document []string) int {
 	return score
 }
 
-func normalizeText(s string) string { return strings.Join(tokenize(s), " ") }
+func normalizeText(s string) string {
+	// Keep the search tokenizer's semantics but preserve token order and
+	// repetition for equality/conflict checks.
+	runes := []rune(strings.ToLower(s))
+	var out []string
+	var latin strings.Builder
+	flush := func() {
+		if latin.Len() > 0 {
+			out = append(out, latin.String())
+			latin.Reset()
+		}
+	}
+	for i, r := range runes {
+		if isCJK(r) {
+			flush()
+			out = append(out, string(r))
+			if i+1 < len(runes) && isCJK(runes[i+1]) {
+				out = append(out, string([]rune{r, runes[i+1]}))
+			}
+			continue
+		}
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			latin.WriteRune(r)
+		} else {
+			flush()
+		}
+	}
+	flush()
+	return strings.Join(out, " ")
+}
 func timeValue(t *time.Time) any {
 	if t == nil {
 		return nil
