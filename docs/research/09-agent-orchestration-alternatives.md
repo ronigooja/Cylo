@@ -159,3 +159,7 @@ LangGraph/AutoGen等API控制框架若用来做Super可以补持久业务流程�
 6. **同栈实际成本**：选定一条后台主线先做一条端到端语义命令→任务→Worker事件→语音回应；统计需要fork的adapter/状态/API面。AO的Go、CAO的Python、OpenClaw的TS不能只因界面都是TS就当同栈。
 
 本报告完成的是候选源码核验与可评审决策边界；没有宣称上述产品验收已通过，也没有把近期提交、测试文件存在或README演示算作端到端运行结果。
+
+## 后续执行验证
+
+下一步及已执行的产物清理对照切片见 [10 CAO / AO 对照 PoC](10-cao-ao-comparative-poc.md)。其中 CAO 执行真实 Python worktree 模块，AO 仅执行固定源码提取的 Git 命令；未运行 AO Go daemon，不改变当前选型基线。

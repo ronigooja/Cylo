@@ -18,6 +18,8 @@ Cylo 是一个跨设备、可长期运行、管理真实任务与记忆，并在
 | [07 CAO CLI接续改造](docs/research/07-cao-cli-handoff-plan.md) | 基础CLI恢复与可选人工接管增强，app-server深入路线 |
 | [08 语音候选比较](docs/research/08-voice-project-alternatives.md) | 同源网页网关、LiveKit/Pipecat、协议/账号池/技术栈边界 |
 | [09 编排候选比较](docs/research/09-agent-orchestration-alternatives.md) | AO、CAO、OpenClaw等实际源码、恢复与技术栈比较 |
+| [10 CAO / AO 对照 PoC](docs/research/10-cao-ao-comparative-poc.md) | 下一步执行顺序、离线产物清理对照与真实运行验收门槛 |
+| [11 语音真实 PoC 准备](docs/research/11-voice-real-poc-readiness.md) | 真实语音闭环的环境、账号及验收准备 |
 
 研究日期为2026-10-21。Linux同机同隔离CODEX_HOME的合成文本已通过app-server→官方交互CLI→app-server三轮接续；这是两个官方入口的fixture实验，并非CAO已支持。基础CLI真实工具/审批恢复、iPhone/iPad音频、跨环境迁移、生产可靠性及性能成本仍须验收；同会话人工双向接续为可选增强。官方桌面App、深链及官方host handoff不再作为Go/No-Go门槛。
 
