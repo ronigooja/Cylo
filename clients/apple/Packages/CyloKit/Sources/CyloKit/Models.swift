@@ -120,12 +120,13 @@ public struct TaskEntry: Codable, Equatable, Identifiable, Sendable {
 
 public struct CommandReceipt: Codable, Equatable, Sendable {
     public var commandId: String
+    public var idempotencyKey: String
     public var workspaceId: String
     public var kind: String
     public var status: String
-    public var resourceType: String
-    public var resourceId: String
-    public var resourceVersion: Int64
+    public var resourceType: String?
+    public var resourceId: String?
+    public var resourceVersion: Int64?
     public var acceptedAt: String
     public var eventCursor: String
 }

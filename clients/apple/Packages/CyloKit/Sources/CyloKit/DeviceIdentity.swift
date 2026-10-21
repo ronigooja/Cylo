@@ -7,7 +7,7 @@ public struct DeviceIdentity: Equatable, Sendable {
     public let deviceToken: String
 }
 
-public final class DeviceIdentityStore: @unchecked Sendable {
+public final class DeviceIdentityStore: BearerTokenProviding, @unchecked Sendable {
     private let service: String
 
     public init(serverURL: URL, bundleIdentifier: String = Bundle.main.bundleIdentifier ?? "com.cylo.client") {
@@ -58,6 +58,10 @@ public final class DeviceIdentityStore: @unchecked Sendable {
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw CyloError.persistence("Could not remove the saved device identity (\(status)).")
         }
+    }
+
+    public func bearerToken() throws -> String {
+        try loadOrCreate().deviceToken
     }
 
     private func read() throws -> Data? {

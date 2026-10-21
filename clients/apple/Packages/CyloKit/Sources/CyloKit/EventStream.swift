@@ -31,7 +31,11 @@ public struct SSEParser {
     }
 
     public mutating func finish(decoder: JSONDecoder = CyloJSON.decoder) throws -> ServerPush? {
-        try dispatch(decoder: decoder)
+        // An incomplete SSE record at EOF has not been dispatched by the server.
+        id = nil
+        name = nil
+        dataLines.removeAll(keepingCapacity: true)
+        return nil
     }
 
     private mutating func dispatch(decoder: JSONDecoder) throws -> ServerPush? {

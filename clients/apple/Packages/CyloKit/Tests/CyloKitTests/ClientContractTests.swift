@@ -33,4 +33,41 @@ final class ClientContractTests: XCTestCase {
         }
         XCTAssertEqual(reason, "cursor_expired")
     }
+
+    func testSSEParserDropsUnterminatedRecordAtEOF() throws {
+        let payload = #"{"schema_version":1,"event_id":"ev-8","cursor":"20","type":"task.updated","occurred_at":"2026-10-20T12:00:00Z","workspace_id":"workspace","aggregate_type":"task","aggregate_id":"task-1","aggregate_version":6,"payload":{}}"#
+        var parser = SSEParser()
+        _ = try parser.consume(line: "id: 20")
+        _ = try parser.consume(line: "event: task.updated")
+        _ = try parser.consume(line: "data: \(payload)")
+        XCTAssertNil(try parser.finish(), "An SSE frame without its record boundary must not advance the event cursor.")
+    }
+
+    func testCommandReceiptDecodesOmittedResourceMetadata() throws {
+        let data = Data(#"{"command_id":"cmd-1","idempotency_key":"key-1","workspace_id":"ws-1","kind":"task.append","status":"accepted","accepted_at":"2026-10-20T12:00:00Z","event_cursor":"21"}"#.utf8)
+        let receipt = try CyloJSON.decoder.decode(CommandReceipt.self, from: data)
+        XCTAssertEqual(receipt.idempotencyKey, "key-1")
+        XCTAssertNil(receipt.resourceType)
+        XCTAssertNil(receipt.resourceId)
+    }
+
+    func testJournalRejectsSameKeyBoundToDifferentPayload() async throws {
+        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["CYLO_BUILD_ROOT"] ?? "/tmp", isDirectory: true)
+        let directory = root.appendingPathComponent("swift-journal-tests", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("\(UUID().uuidString).json")
+        let journal = try CommandJournal(fileURL: file)
+        let first = PendingCommand(idempotencyKey: "stable-key", kind: "task.append", expectedVersion: 2, payload: .object(["content": .string("first")]), createdAt: "now", workspaceID: "ws", expectedResourceType: "task", expectedResourceID: "t1")
+        let changed = PendingCommand(idempotencyKey: "stable-key", kind: "task.append", expectedVersion: 2, payload: .object(["content": .string("second")]), createdAt: "later", workspaceID: "ws", expectedResourceType: "task", expectedResourceID: "t1")
+        try await journal.append(first)
+        do {
+            try await journal.append(changed)
+            XCTFail("Expected a local idempotency conflict")
+        } catch let error as CyloError {
+            guard case let .http(status, code, _, _) = error else { return XCTFail("Unexpected error: \(error)") }
+            XCTAssertEqual(status, 409)
+            XCTAssertEqual(code, "local_idempotency_conflict")
+        }
+        try? FileManager.default.removeItem(at: file)
+    }
 }
