@@ -2,9 +2,9 @@
 
 Cylo 是一个跨设备、可长期运行、管理真实任务与记忆，并在授权下调用 Agent 和部署普通后台服务的开放式 AI 系统。本仓库当前是**实现前研究与架构决策材料**，尚未开始产品实现。
 
-当前实施建议是 **CAO 最小增强 + Cylo 持久控制平面**，按产品需求推进一条编排主线，不再安排 CAO/AO 双 daemon 选型对跑。CAO 已有 Super/Worker 委派、独立执行和工作流基础，首期补 Codex 身份/恢复、停止、权限与产物保全；AO 的原生恢复与独立 host 有参考价值，但尚无证据证明整体改选更省适配。详见 [需求符合性与选型](Cylo-开源项目选型比较.md) 和 [实施架构](Cylo-实现调研与架构方案.md)。
+当前实施主线已由用户确定为 **OrchestratorInc/agent-orchestrator（AO，Go）+ Space3044/chatgpt-web-voice + Cylo 持久控制平面**，Cylo 新服务端优先采用 Go。AO 管 Agent 编排、代码执行与 Codex 会话；Cylo 管业务任务账本、记忆、授权、长期普通服务和语音池调度。AWS CAO 研究与实验作为历史证据保留，不再是当前实施底座。详见 [需求符合性与选型](Cylo-开源项目选型比较.md) 和 [实施架构](Cylo-实现调研与架构方案.md)。
 
-**用户已选定 Space3044/chatgpt-web-voice 的 Go 网关、ChatGPT 网页实时上游和账号池；用户尚未指定改用 AO。** 语音稳定提交、业务回执和额度调度是选定方案的集成工作。语音 Agent 负责自然交互，复杂任务由 Super 协调，任务与权限以 Cylo 控制平面为准。Go 同栈是维护偏好，Cylo 服务端语言仍是待定实施选择。官方 Codex 桌面 App 已取消；基础 CLI 执行、恢复、停止查看，以及 macOS/Linux 部署与跨环境迁移仍在范围。
+**用户已选定 AO，以及 Space 的 Go 网关、ChatGPT 网页实时上游和账号池。** 语音稳定提交、业务回执和额度调度仍待集成验收。语音 Agent 负责自然交互，复杂任务由 Super 协调，任务与权限以 Cylo 控制平面为准。AO 的 Codex 账号池能力及 CLIProxyAPI 集成另待专项报告确认，不将语音池等同于 Codex 凭据池。官方 Codex 桌面 App 已取消；人工无缝接管可选；基础 CLI 执行、恢复、停止查看，以及 macOS/Linux 部署与跨环境迁移仍在范围。
 
 | 文档 | 作用 |
 |---|---|
@@ -17,10 +17,10 @@ Cylo 是一个跨设备、可长期运行、管理真实任务与记忆，并在
 | [04 架构契约](docs/research/04-architecture.md) | 数据、任务、事件、权限、长期能力、记忆与迁移设计 |
 | [05 可靠性与安全复核](docs/research/05-reliability-security-operations.md) | 故障恢复、隔离、撤权与生产验收矩阵 |
 | [06 实时语音接入独立复核](docs/research/06-realtime-integration-review.md) | 源码边界、业务桥接门槛与最终一致性检查 |
-| [07 CAO CLI接续改造](docs/research/07-cao-cli-handoff-plan.md) | 基础CLI恢复与可选人工接管增强，app-server深入路线 |
+| [07 CAO CLI接续改造](docs/research/07-cao-cli-handoff-plan.md) | 历史 CAO 基础CLI恢复与可选接管设计，供缺口参考 |
 | [08 语音候选比较](docs/research/08-voice-project-alternatives.md) | 同源网页网关、LiveKit/Pipecat、协议/账号池/技术栈边界 |
 | [09 编排候选比较](docs/research/09-agent-orchestration-alternatives.md) | AO、CAO、OpenClaw等实际源码、恢复与技术栈比较 |
-| [10 编排需求符合性与实施路线](docs/research/10-cao-ao-comparative-poc.md) | 既有清理实验、需求适配与 CAO 单主线验收 |
+| [10 编排需求符合性与实施路线](docs/research/10-cao-ao-comparative-poc.md) | 既有清理实验、AO 适配边界与单主线验收 |
 | [11 语音真实 PoC 准备](docs/research/11-voice-real-poc-readiness.md) | 真实语音闭环的环境、账号及验收准备 |
 
 研究日期为2026-10-21。Linux同机同隔离CODEX_HOME的合成文本已通过app-server→官方交互CLI→app-server三轮接续；这是两个官方入口的fixture实验，并非CAO已支持。基础CLI真实工具/审批恢复、iPhone/iPad音频、跨环境迁移、生产可靠性及性能成本仍须验收；同会话人工双向接续为可选增强。官方桌面App、深链及官方host handoff不再作为Go/No-Go门槛。

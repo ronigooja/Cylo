@@ -1,6 +1,6 @@
 # 编排需求符合性与单主线实施路线
 
-日期：2026-10-21。**当前建议保持 CAO + Cylo 控制平面，不再安排 CAO/AO 双 daemon 对跑。** 用户已选定 Space Go 网关、ChatGPT 网页实时上游和账号池，尚未指定改用 AO。下文保留已完成的清理实验事实；原双项目运行计划已按需求收敛为单主线适配。人工无缝接管可选，官方 macOS Codex App 不在范围，macOS/Linux CLI 仍需验收。
+日期：2026-10-21。**用户已明确采用 OrchestratorInc/agent-orchestrator（AO，Go）；当前实施主线为 AO + Space + Cylo 控制平面，Cylo 新服务端优先 Go。** 不再安排 CAO/AO 双 daemon 选型对跑。下文保留已完成的 CAO 模块/AO 命令清理实验，采用 AO 不改变这些实验的证明范围。人工无缝接管可选，官方 macOS Codex App 不在范围，macOS/Linux CLI 仍需验收。
 
 ## 本轮交付：产物清理边界的可复现切片
 
@@ -30,13 +30,13 @@ python3 docs/research/evidence/cao-ao-worktree-poc.py \
 
 ## 按需求推进的下一批实施与验收
 
-CAO 已有 Super/Worker 委派、独立执行/worktree、收件箱和 workflow 基础，匹配产品 §6、8；继续使用的条件是补齐明确的基础恢复、停止、权限和清理缺口，而非认定其已经可靠。AO 的 native ID/resume 与独立 host/reconcile 更现成，但仍需 Cylo 业务账本、普通服务监管、记忆和授权，且 fresh fallback 不能算同 thread 恢复。现有证据不足以支持为这些优势更换整套 daemon/领域模型；Go 同栈仅是维护加分项。完整映射见[选型文档](../../Cylo-开源项目选型比较.md)。
+AO 提供 orchestrator/worker、独立工作区、Codex native ID/resume 与 host/reconcile，作为已选执行底座接入；Cylo 管业务账本、授权、记忆、长期普通服务与语音池调度。AO 的 fresh fallback 不能算同 thread 恢复，采用决定也不证明完整业务恢复或清理安全。AWS CAO 的研究与 [07](07-cao-cli-handoff-plan.md) 改造方案保留历史用途，不再作为当前实施计划。完整映射见[选型文档](../../Cylo-开源项目选型比较.md)。
 
-1. **落地 CAO 最小 adapter。** 按 [07](07-cao-cli-handoff-plan.md) 固定版本、建立 task→run→Worker→worktree→native thread 映射，补 Codex resume、显式受限权限和清理前产物保存/核验。仅一套执行 owner；Cylo 持有任务、授权、预算和结果权威。先不做可选的人工无缝交接状态机。
-2. **贯通一条真实产品链路。** 先以临时工作区与离线 fixture 验证接线，再在获准环境验证复杂目标→Super 拆分→两个独立 Worker/worktree→产物与测试验收；简单请求可由 Cylo 直接路由 Worker，不额外调用 Super。消息送达、终端 idle 不算任务完成。无需为此再跑 AO 副本。
-3. **验收恢复、停止、权限和保全。** 重启控制服务、杀 Worker、缺 native history、工具执行后丢回执，分别记录存活重附着、原 thread resume、fresh/fork、result-unknown；未知副作用不自动重放。停止须确认进程树和写入终止。去掉默认 `--yolo`，验证实际允许/拒绝。普通/强制清理注入保存失败时不得删除；tracked、untracked、ignored、符号链接和外部产物按清单核验。Mac/Linux、后台常驻与迁移按对应环境留证。
+1. **落地 AO adapter。** 以 [09](09-agent-orchestration-alternatives.md) 固定源码为起点，核验 Go 工具链和 daemon/API/事件契约，建立 task→run→AO session→host/Worker→worktree→native thread 映射，接入现有 Codex resume，约束显式权限并验证清理前保存/核验。仅一套执行 owner；Cylo 持有任务、授权、预算和结果权威。先不做可选的人工无缝交接状态机。
+2. **贯通一条真实产品链路。** 先以临时工作区与离线 fixture 验证接线，再在获准环境验证复杂目标→Super 拆分→两个独立 Worker/worktree→产物与测试验收；简单请求可由 Cylo 直接路由 Worker，不额外调用 Super。消息送达、终端 idle 不算任务完成。无需为此再跑 CAO 副本。
+3. **验收恢复、停止、权限和保全。** 重启控制服务、杀 Worker、缺 native history、工具执行后丢回执，分别记录存活重附着、原 thread resume、fresh/fork、result-unknown；未知副作用不自动重放。停止须确认进程树和写入终止。按 AO Codex adapter 的实际参数去掉默认审批/sandbox 绕过路径，验证实际允许/拒绝。普通/强制清理注入保存失败时不得删除；tracked、untracked、ignored、符号链接和外部产物按清单核验。Mac/Linux、后台常驻与迁移按对应环境留证。
 4. **接入已定语音与长期能力。** Space 保留网页实时媒体和账号池，完成稳定语义提交→幂等 command→实际任务回执→播报，以及额度耗尽后新媒体会话/业务上下文恢复。这是集成验收，不是重新选择 Space 的门槛；无账号/设备时标未测，继续完成可离线开发。普通后台服务另交 OS supervisor，不能绑定 Super 或媒体会话的寿命；记忆与授权也不借用编排 daemon 的会话状态。
 
 每步交付 `executed / simulated / static / not-tested`、版本、任务/进程/原生 thread 映射、故障注入、恢复模式、产物校验、权限拒绝证据与残余进程记录。离线 fixture 不证明真实模型或生产可靠性；已有实验失败与手工补救均保留，不能计为自动恢复。
 
-若实施证据表明 CAO 的必需接口无法满足，或具体适配工作量明显高于 AO 集成，再只针对该缺口作替换决策；不把继续横向调研当作所有开发的前置条件。语音真实通话、移动音频和费用实验仍按已授权环境单独验收，本次文档修订不运行 daemon 或连接账号。
+当前不重开底座选型；实际缺口按 AO adapter/必要上游改造逐项落实。AO 的 Codex 账号池与 CLIProxyAPI 接入等待专门报告确认，不预先列为必需新增组件。语音真实通话、移动音频和费用实验仍按已授权环境单独验收，本次文档修订不运行 daemon 或连接账号。

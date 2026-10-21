@@ -6,17 +6,17 @@
 
 | 问题 | 主决策 | 替代路线与触发条件 |
 |---|---|---|
-| 应用结构 | TypeScript 模块化单体控制服务 + 独立执行 runner；React 响应式 PWA；明确版本化 JSON Schema 契约 | 核心控制服务无吞吐证据前不拆微服务；CAO可通过Python适配器接入，provider与session改造路线见[07](07-cao-cli-handoff-plan.md) |
+| 应用结构 | Cylo 控制服务与 runner 优先 Go；模块化单体控制服务、React 响应式 PWA、版本化 JSON Schema 契约 | 无吞吐证据前不拆微服务；AO 与 Space 通过 API/事件接入，独立存储与权限边界 |
 | 权威数据 | 单机 SQLite WAL、本地磁盘、控制服务唯一业务写入口；事务 outbox 与 durable jobs 同库 | 多节点控制平面/团队写并发需求出现后迁 PostgreSQL；不将 SQLite 放 NFS [S3] |
 | 后台运行 | macOS launchd / Linux systemd 管理守护服务，执行主机 runner 持有进程与工作目录 | 不要求 Docker 才能使用本机开发环境；多租户执行用 Linux 容器/VM 隔离 |
-| Agent 集成 | `AgentRuntime`适配CAO；先验证自动编排并补基础Codex CLI执行/停止查看/恢复，固定版本；人工接管后续可选 | 需要结构化事件/审批时可深入app-server adapter；该路线仍须验证实验/生产支持边界[S1] |
-| CAO | 保留为拟采用的CLI编排底座，可修改Codex provider与session管理；Cylo持有业务权威 | tmux/CLI增强与app-server adapter两路线见[07](07-cao-cli-handoff-plan.md)；默认权限与清理须改造 |
+| Agent 集成 | `AgentRuntime`适配已选 AO；复用 orchestrator/worker、native ID/resume 与 host/reconcile，固定版本验收基础 CLI 执行/停止查看/恢复；人工接管可选 | AO 已有 TUI/Chat 路径，按实际需求接入；app-server 路径须验证实验/生产支持边界[S1] |
+| AO / Cylo 权威 | AO 管 Agent、代码执行和 Codex 会话；Cylo 管业务账本、记忆、授权、长期普通服务与语音池调度 | 同一执行仅一个 owner；默认危险权限、fresh fallback、ForceDestroy 仍须约束与验收。AWS CAO/07 留作历史研究 |
 | 客户端 | PWA 先完成 Mac/iPhone/iPad 同一业务接续，前台语音 | 若锁屏持续语音、系统通知行为、音频路由实测不达产品目标，增加 SwiftUI 原生 iOS/iPadOS 客户端，复用服务契约 |
 | 语音 | 采纳 chatgpt-web-voice 的实时语音上游、Go 网关和多账号池；VoiceSessionAdapter 桥接 Cylo command/回执 | 补齐稳定提交、业务结果注入、账号粘性/并发租约/额度状态；私有协议能力以源码及真实 POC 为准；独立 STT/TTS 仅故障降级 |
 | 记忆 | 原始证据、已确认决策、执行事实、推断分离；Memory Agent 仅产提案/索引 | FTS 起步，嵌入检索后加；向量库不是权威事实库 |
 | 长期能力 | 不可变 release + deployment + 独立 service instance；确定性程序自行运行 | Agent 创建代码与服务部署分离授权，容器不是跨系统唯一发布格式 |
 
-完整必需范围保留长期能力、记忆、基础 CLI 执行与保存会话恢复；人工同 thread 无缝接管和双向交接按最新决定列为可选增强，不阻断首期或必需范围验收。优先自动 Super 拆分、独立 Worker、多 worktree、长任务/后台服务、持久恢复、产物与成本。CAO 仍是拟采用候选，进一步比较尚未定案。
+完整必需范围保留长期能力、记忆、基础 CLI 执行与保存会话恢复；人工同 thread 无缝接管和双向交接按最新决定列为可选增强，不阻断首期或必需范围验收。优先自动 Super 拆分、独立 Worker、多 worktree、长任务/后台服务、持久恢复、产物与成本。用户已明确采用 AO；Space 继续保留，Cylo 新服务端优先 Go。AO Codex 账号池及 CLIProxyAPI 集成另待专项报告，不预先要求新建账号池。
 
 ## 2. 部署拓扑和边界
 
@@ -59,7 +59,7 @@ flowchart LR
 - `memory/context`：整理提案、检索和上下文清单，不覆盖控制状态。
 - `notification/audit`：事件驱动投递、去重、审计和数据保留。
 
-包建议 `apps/web`、`apps/control`、`apps/runner`、`packages/contracts`、`packages/domain`、`packages/adapters-*`。Node.js LTS 的具体版本在实施冻结，使用 Fastify、React/Vite、SQL migration + 参数化查询；这些是维护成本决策，不是产品约束。Python 服务通过同一 JSON 协议接入，避免为了候选仓库改变全栈。
+下文 TypeScript interface 仅表达语言无关契约，不是要求控制服务使用 Node。实现目录可采用 `cmd/control`、`cmd/runner`、`internal/domain`、`internal/adapters`、`web` 与版本化契约目录；具体 Go 工具链、HTTP/数据库依赖在实施冻结。客户端保留 React/Vite，数据库用 SQL migration + 参数化查询。原 Node/Fastify 控制服务建议已由优先 Go 路线取代；异构 Agent/普通服务仍经 JSON 协议接入。
 
 ## 3. 项目、任务、对话、原生会话
 
@@ -250,7 +250,7 @@ interface CapabilityRunner {
 
 远端接续优先经SSH进入同一backend执行环境运行官方CLI，核对用户、CODEX_HOME、工作区和原生session。跨环境数据迁移仍需独立的备份/路径/权限/原生恢复验收（§13）；官方App深链、App SSH及host handoff只保留在02历史资料，不是本方案依赖。
 
-Linux三turn实验由app-server与官方CLI直接完成，尚未证明CAO已有同样能力；CAO provider/session增强与app-server adapter的改造边界见[07](07-cao-cli-handoff-plan.md)。
+Linux三turn实验由 app-server 与官方 CLI 直接完成，未证明 AO 或 CAO 已有相同端到端能力；AO native resume 与界面转换需独立验收，源码见 [09](09-agent-orchestration-alternatives.md)。[07](07-cao-cli-handoff-plan.md) 仅是历史 CAO 改造设计。
 
 若选做人工交接：`prepare` 停止新turn→中断/等当前turn结束→核对工作区与外部副作用→存checkpoint和handoff包→释放lease→原生工具继续；反向先观察原生工具已停止，再claim并reconcile。Cylo lease只约束Cylo的runner，不能强制独立官方CLI尊重本地锁；无法检测外部写者时要求显式用户交接并禁止自动接管。活跃会话“无缝迁移”不在已验证承诺内。门槛失败仍可提供项目路径、git状态、原生resume指令（仅实测有效者）和带证据的handoff摘要，标识为降级接续，不等价原生历史。
 
@@ -371,7 +371,7 @@ cron以明确timezone存储，触发key包含schedule ID和逻辑时间槽；主
 - 自主生成程序/不可信内容：无secret构建容器或VM；安装后最小授权账号、网络allowlist、可写路径和资源限制。
 - 多租户：单租户独立Linux VM/容器边界与凭证，runner不能共用用户家目录；不把共享Codex配置目录当团队身份系统。
 
-若某runtime可任意shell并继承主机权限，服务层policy不能凭空约束它。必须限制启动环境/工具入口与系统边界；无法强制时明确该runner是高信任本机模式，不启用不可信多租户。候选CAO默认`--yolo`不进入主线；不安全worktree强制清理不得复用。
+若某runtime可任意shell并继承主机权限，服务层policy不能凭空约束它。必须限制启动环境/工具入口与系统边界；无法强制时明确该runner是高信任本机模式，不启用不可信多租户。已选 AO 的 Codex adapter 默认审批/sandbox 绕过路径不得进入主线；不安全 worktree 强制清理不得复用。
 
 审计记录command actor、grant/policy版本、审批、输入/目标digest、runner lease、provider IDs、外部receipt、结果证据和错误。密钥与音频默认不进入日志；数据正文与审计元数据分离保留。导出、删除、恢复、权限变更本身也是可审计操作。上下文外来网页/邮件当不可信数据，不允许其中指令修改控制策略。
 
@@ -436,7 +436,7 @@ SQLite→PostgreSQL：从首版通过仓储接口与显式迁移脚本隔离SQL�
 |---|---|---|
 | 0 证据与协议冻结 | 完整需求ID映射；固定Codex/候选版本；JSON Schema；基础CLI执行/停止查看/持久恢复；上游真实语音/稳定提交/回执/两账号额度切换及真机POC | 基础CLI路径给实测结果；人工同thread接管不作为前置；空thread不能视作已落盘；无模型调用也能确认持久消息 |
 | 1 控制与单机可靠闭环 | SQLite schema、command/outbox/jobs、认证、任务/run状态、runner、基础PWA | 重复发送仅一command；提交后断线/重启不丢；快照与cursor无缺口；暂停/取消显示真实确认 |
-| 2 专业执行与官方互通 | AgentRuntime + Codex固定版本；一个Super按需和Worker直接调用；独立worktree；证据验收 | 关闭客户端继续；run结束不误标task完成；macOS/Linux基础CLI调用/停止查看/恢复、真实工具与必要审批；外部活跃写者不并发执行；人工双向接续另作可选 |
+| 2 专业执行与官方互通 | AO AgentRuntime + Codex固定版本；一个Super按需和Worker直接调用；独立worktree；证据验收 | 关闭客户端继续；run结束不误标task完成；macOS/Linux基础CLI调用/停止查看/恢复、真实工具与必要审批；外部活跃写者不并发执行；人工双向接续另作可选 |
 | 3 语音与跨设备 | 实时上游/Go网关、账号slot/额度观察、稳定turn与回执桥接、通知收件箱、设备游标；依赖阶段1业务契约 | iPhone/iPad/Mac同任务；打断不重复动作；耗尽换账号新媒体且任务不重派；锁屏后后端仍跑；重开恢复事件；记录后台采音限制 |
 | 4 能力创建与独立运行 | manifest/release/deployment、授权、secret、supervisor、健康、checkpoint；依赖阶段1/2 | 邮件监控在Super停用时仍运行；规则直接Worker；超时发送不重发；升级失败可核对/回滚；卸载撤权 |
 | 5 记忆与上下文 | evidence/decision版本、Memory提案、FTS/检索、context manifest；依赖权威事件稳定 | SQLite→PostgreSQL决定不混淆；推断不升格事实；撤权/删除/旧索引不泄露；任务恢复不靠摘要猜状态 |
@@ -467,7 +467,7 @@ SQLite→PostgreSQL：从首版通过仓储接口与显式迁移脚本隔离SQL�
 - **[S5] WebKit Web Push for Web Apps on iOS and iPadOS**（2023-02-16）：[官方文章](https://webkit.org/blog/13878/web-push-for-web-apps-on-ios-and-ipados/)。16.4主屏Web App和用户交互授权，不证明后台持续采音。
 - **[S6] Apple Creating Launch Daemons and Agents**：[官方归档](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)。launchd作业/KeepAlive；归档文档只支持设计方向，具体OS版本安装需实测。
 - **[S7] systemd.service**：[官方手册](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html)。service类型、Restart等基础supervisor语义；durable业务任务仍由Cylo负责。
-- 候选源码及版本证据：CAO `4e990a9`（v2.5.4）由编排专岗核查；chatgpt-web-voice `6338ac478070aaa34bfe7a3c0469caf9e9174c02`由语音专岗核查，详见对应专项报告。CAO保留拟采用与改造路线（见07）；语音候选已选为待实施主线依赖，尚未完成产品集成。
+- 候选源码及版本证据：CAO `4e990a9`（v2.5.4）由编排专岗核查；chatgpt-web-voice `6338ac478070aaa34bfe7a3c0469caf9e9174c02`由语音专岗核查，详见对应专项报告。CAO/07 保留历史研究；当前已采用 AO `7c83bd68c1e60c85b6a90e3ffa1340c859e4a3ff`（源码证据见09），Space 继续作为主线依赖，两者尚未完成产品集成。
 
 [S1]当前原文（`Auth endpoints`，范围限定为该页的app-server authentication）：
 
