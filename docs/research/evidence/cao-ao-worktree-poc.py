@@ -13,6 +13,7 @@ from pathlib import Path
 import platform
 import re
 import subprocess
+import sys
 import tempfile
 
 PINS = {"cao": "4e990a9d78b154ad76c6cf94c7b51e36fce69f21",
@@ -38,7 +39,14 @@ def main():
             raise SystemExit(f"{name}: source file differs from pinned commit")
     spec = importlib.util.spec_from_file_location("cao_worktree", cao_file)
     cao = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(cao)
+    # Keep the pinned source checkout read-only: importlib otherwise caches
+    # bytecode beside the upstream file, outside our disposable directory.
+    previous_bytecode_setting = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(cao)
+    finally:
+        sys.dont_write_bytecode = previous_bytecode_setting
     ao_source = ao_file.read_text()
 
     # Fail closed if upstream changes these literal-return helpers. This is an
