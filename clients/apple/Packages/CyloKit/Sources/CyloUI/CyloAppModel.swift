@@ -16,6 +16,7 @@ public final class CyloAppModel: ObservableObject {
     @Published public private(set) var memoryMissing: [String] = []
     @Published public private(set) var memoryConflicts: [String] = []
     @Published public private(set) var notifications: [NotificationRecord] = []
+    @Published public private(set) var pushNotificationsEnabled: Bool
     @Published public private(set) var capabilityReleases: [CapabilityRelease] = []
     @Published public private(set) var capabilityDeployments: [CapabilityDeployment] = []
     @Published public private(set) var connectionEpoch: UInt64 = 0
@@ -43,19 +44,35 @@ public final class CyloAppModel: ObservableObject {
     private var voiceProviderMessageID: String?
     private var voiceHeartbeatTask: Task<Void, Never>?
     private var hasLoadedNotificationInbox = false
+    private var pendingAPNSTokenHex: String?
+    private var lastRegisteredAPNSTokenHex: String?
+    private var tokenRegistrationInFlight: String?
+    private var registeredPushTokenID: String?
+    private var canRegisterPushToken = false
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         serverAddress = defaults.string(forKey: "cylo.serverAddress") ?? ""
+        pushNotificationsEnabled = defaults.bool(forKey: "cylo.apns.optIn")
         if let url = URL(string: serverAddress), url.host != nil,
            let device = try? DeviceIdentityStore(serverURL: url).loadOrCreate(),
            let cache = try? SnapshotCache(serverURL: url, deviceToken: device.deviceToken), let cached = try? cache.load() {
             configuredServerURL = url
+            registeredPushTokenID = defaults.string(forKey: pushRegistrationKey(for: url))
             snapshotCache = cache
             snapshot = cached
             freshness = .stale(reason: "Showing the last saved server snapshot.", cursor: cached.eventCursor)
         } else {
             snapshotCache = nil
+        }
+        RemotePushBridge.shared.onToken = { [weak self] token in
+            Task { @MainActor [weak self] in self?.receiveAPNSToken(token) }
+        }
+        RemotePushBridge.shared.onWake = { [weak self] in
+            await self?.refreshAfterRemoteWake()
+        }
+        RemotePushBridge.shared.onFailure = { [weak self] in
+            Task { @MainActor [weak self] in self?.notice = "Remote notifications are unavailable on this installation. The Cylo inbox remains available." }
         }
     }
 
@@ -73,6 +90,7 @@ public final class CyloAppModel: ObservableObject {
         do {
             _ = try configure()
             generation = connectionGeneration.value
+            if pushNotificationsEnabled { NativeNotificationDelivery.shared.registerForRemoteNotifications() }
             try await refreshSnapshot()
             guard generation == connectionGeneration.value else { return }
             await refreshMemory()
@@ -203,6 +221,49 @@ public final class CyloAppModel: ObservableObject {
         guard notification.readAt == nil else { return }
         await send(kind: "notification.mark_read", payload: .object(["notification_id": .string(notification.id)]))
         await refreshNotifications()
+    }
+
+    public func enablePushNotifications() async {
+        do {
+            guard try await NativeNotificationDelivery.shared.requestPermission() else {
+                notice = "System notification permission is disabled. The Cylo inbox remains available."
+                return
+            }
+            pushNotificationsEnabled = true
+            defaults.set(true, forKey: "cylo.apns.optIn")
+            NativeNotificationDelivery.shared.registerForRemoteNotifications()
+            await registerPendingAPNSToken()
+            if pendingAPNSTokenHex == nil {
+                notice = "Push wakeups are enabled. Waiting for APNs registration."
+            } else if lastRegisteredAPNSTokenHex == pendingAPNSTokenHex {
+                notice = "Push wakeups are enabled. Notification content remains in the Cylo inbox."
+            }
+        } catch {
+            notice = "System notification permission could not be requested: \(error.localizedDescription)"
+        }
+    }
+
+    public func disablePushNotifications() async {
+        pushNotificationsEnabled = false
+        defaults.set(false, forKey: "cylo.apns.optIn")
+        NativeNotificationDelivery.shared.unregisterFromRemoteNotifications()
+        guard registeredPushTokenID != nil else {
+            notice = "Push wakeups are disabled on this device."
+            return
+        }
+        defaults.set(true, forKey: pushRevocationPendingKey)
+        await revokePendingPushToken()
+    }
+
+    public func refreshAfterRemoteWake() async {
+        guard canRegisterPushToken, api != nil else { return }
+        do {
+            try await refreshSnapshot()
+            await refreshNotifications()
+        } catch {
+            if snapshot == nil { setOffline(error) }
+            else { setStale("A push wakeup arrived, but the latest server state could not be loaded: \(userMessage(error))") }
+        }
     }
 
     public func refreshNotifications(unreadOnly: Bool = false) async {
@@ -630,6 +691,9 @@ public final class CyloAppModel: ObservableObject {
             capabilityReleases = []
             capabilityDeployments = []
             hasLoadedNotificationInbox = false
+            canRegisterPushToken = false
+            registeredPushTokenID = defaults.string(forKey: pushRegistrationKey(for: url))
+            lastRegisteredAPNSTokenHex = nil
             voiceConfig = nil
             voicePoolStatus = nil
             voiceDraft = ""
@@ -692,6 +756,72 @@ public final class CyloAppModel: ObservableObject {
         snapshot = latest
         try cache?.save(latest)
         freshness = .current(serverVersion: latest.serverVersion, cursor: latest.eventCursor)
+        canRegisterPushToken = true
+        if pushNotificationsEnabled { await registerPendingAPNSToken() }
+        else { await revokePendingPushToken() }
+    }
+
+    private var pushRegistrationKey: String { pushRegistrationKey(for: configuredServerURL ?? URL(string: serverAddress) ?? URL(fileURLWithPath: "/")) }
+
+    private func pushRegistrationKey(for url: URL) -> String { "cylo.apns.tokenRegistrationID.\(url.absoluteString)" }
+
+    private var pushRevocationPendingKey: String { "cylo.apns.tokenRevocationPending.\(configuredServerURL?.absoluteString ?? serverAddress)" }
+
+    private func receiveAPNSToken(_ data: Data) {
+        guard pushNotificationsEnabled else { return }
+        pendingAPNSTokenHex = data.map { String(format: "%02x", $0) }.joined()
+        Task { await registerPendingAPNSToken() }
+    }
+
+    private func registerPendingAPNSToken() async {
+        guard pushNotificationsEnabled, canRegisterPushToken,
+              let tokenHex = pendingAPNSTokenHex, tokenHex.count == 64,
+              tokenHex != lastRegisteredAPNSTokenHex,
+              tokenHex != tokenRegistrationInFlight, let api else { return }
+        let generation = connectionGeneration.value
+        tokenRegistrationInFlight = tokenHex
+        defer { if tokenRegistrationInFlight == tokenHex { tokenRegistrationInFlight = nil } }
+        do {
+            let receipt = try await api.registerPushToken(platform: "\(pushPlatform)", tokenHex: tokenHex)
+            guard generation == connectionGeneration.value, api === self.api else { return }
+            if let resourceID = receipt.resourceId {
+                registeredPushTokenID = resourceID
+                defaults.set(resourceID, forKey: pushRegistrationKey)
+            }
+            if receipt.resourceId != nil { lastRegisteredAPNSTokenHex = tokenHex }
+        } catch {
+            if generation == connectionGeneration.value { notice = "The device could not register for push wakeups: \(userMessage(error))" }
+        }
+    }
+
+    private func revokePendingPushToken() async {
+        guard !pushNotificationsEnabled, canRegisterPushToken,
+              defaults.bool(forKey: pushRevocationPendingKey),
+              let tokenID = registeredPushTokenID, let api else { return }
+        let generation = connectionGeneration.value
+        do {
+            _ = try await api.revokePushToken(tokenID: tokenID)
+            guard generation == connectionGeneration.value, api === self.api else { return }
+            defaults.removeObject(forKey: pushRegistrationKey)
+            defaults.removeObject(forKey: pushRevocationPendingKey)
+            registeredPushTokenID = nil
+            lastRegisteredAPNSTokenHex = nil
+            notice = "Push wakeups are disabled on this device."
+        } catch {
+            if generation == connectionGeneration.value {
+                notice = "Push wakeups are disabled locally, but the server could not confirm token revocation: \(userMessage(error))"
+            }
+        }
+    }
+
+    private var pushPlatform: String {
+        #if os(iOS)
+        "ios"
+        #elseif os(macOS)
+        "macos"
+        #else
+        "ios"
+        #endif
     }
 
     private func startEventLoop() {

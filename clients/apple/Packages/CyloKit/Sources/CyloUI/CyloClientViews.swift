@@ -522,12 +522,13 @@ private struct NotificationInboxView: View {
         .navigationTitle("Inbox")
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                Button("Enable alerts", systemImage: "bell.badge") {
-                    Task {
-                        do {
-                            let enabled = try await NativeNotificationDelivery.shared.requestPermission()
-                            if !enabled { model.setNotice("System notification permission is disabled. The Cylo inbox remains available.") }
-                        } catch { model.setNotice("System notification permission could not be requested: \(error.localizedDescription)") }
+                if model.pushNotificationsEnabled {
+                    Button("Disable push wakeups", systemImage: "bell.slash") {
+                        Task { await model.disablePushNotifications() }
+                    }
+                } else {
+                    Button("Enable push wakeups", systemImage: "bell.badge") {
+                        Task { await model.enablePushNotifications() }
                     }
                 }
                 Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refreshNotifications(unreadOnly: unreadOnly) } }

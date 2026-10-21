@@ -143,6 +143,14 @@ public final class APIClient: @unchecked Sendable {
         return try await perform(request)
     }
 
+    public func registerPushToken(platform: String, tokenHex: String) async throws -> CommandReceipt {
+        try await submit(kind: "device.push_token.register", payload: PushTokenRegistration(platform: platform, token: tokenHex), idempotencyKey: UUID().uuidString)
+    }
+
+    public func revokePushToken(tokenID: String) async throws -> CommandReceipt {
+        try await submit(kind: "device.push_token.revoke", payload: PushTokenRevocation(tokenId: tokenID), idempotencyKey: UUID().uuidString)
+    }
+
     public func events(after cursor: String?) async throws -> URLSession.AsyncBytes {
         var request = URLRequest(url: try makeURL(path: ["v1", "events"]))
         request.httpMethod = "GET"
@@ -224,6 +232,15 @@ private struct CommandEnvelope<Payload: Encodable & Sendable>: Encodable {
 private struct NoBody: Encodable {}
 
 private struct EmptyObject: Encodable {}
+
+private struct PushTokenRegistration: Encodable, Sendable {
+    let platform: String
+    let token: String
+}
+
+private struct PushTokenRevocation: Encodable, Sendable {
+    let tokenId: String
+}
 
 private struct VoiceGenerationRequest: Encodable {
     var generation: Int64
