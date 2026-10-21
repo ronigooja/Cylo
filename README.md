@@ -13,6 +13,7 @@ Cylo 是一个跨设备、可长期运行、管理真实任务与记忆，并在
 | [03 语音](docs/research/03-voice.md) | 实时语音网关/账号池源码、Cylo桥接、额度调度与真机POC |
 | [04 架构契约](docs/research/04-architecture.md) | 数据、任务、事件、权限、长期能力、记忆与迁移设计 |
 | [05 可靠性与安全复核](docs/research/05-reliability-security-operations.md) | 故障恢复、隔离、撤权与生产验收矩阵 |
+| [06 实时语音接入独立复核](docs/research/06-realtime-integration-review.md) | 源码边界、业务桥接门槛与最终一致性检查 |
 
 研究日期为2026-10-21。源码事实使用固定SHA，官方事实来自实际获取的页面；建议、源码能力、离线实验和未验证项在各报告分别标识。Linux同机同隔离CODEX_HOME的合成文本已通过app-server→官方交互CLI→app-server三轮接续；官方另有App SSH远端项目与chat/Git state交接路径，但Cylo第三方会话的Mac官方App双向发现/接续、真实工具/审批完整恢复、iPhone/iPad音频、生产可靠性及性能成本均不能由当前材料宣称通过。
 
