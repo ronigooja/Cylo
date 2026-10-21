@@ -199,6 +199,8 @@ The product requirement defines these fifteen dimensions; each requires evidence
 Source: archived product requirements, §20. The matrix row for CY-20-01 requires evidence against every dimension above; no dimension is accepted solely from a design claim.
 Milestones are sequencing, not product scope reduction. The global four-run cap applies at every milestone that dispatches runtimes.
 
+Apple push uses APNs as a silent wake-up channel only. The control server owns the environment (`sandbox` or `production`), team/key IDs, and one static bundle topic; device requests can register or revoke only a token bound to their authenticated device. Payloads may carry the inbox cursor and must not carry notification titles, bodies, or task content. Durable notification and delivery rows remain authoritative, with capped exponential backoff and token disablement on APNs `410`. Backend fixtures and HTTP mocks do not establish real APNs delivery; that remains open until native token registration, signed client builds, and real-device delivery checks pass.
+
 ## 13. Dependencies and limits
 
 The implementation depends on AO and its supported runtime adapters, the existing remote CLIProxyAPI deployment, Space3044 voice gateway behavior, Apple platform delivery and Keychain, and Linux process/service facilities. External services can change independently. Their availability, supported interfaces, account eligibility, quota behavior, and release compatibility must be checked at integration time.

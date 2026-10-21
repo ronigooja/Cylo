@@ -162,6 +162,10 @@ func run() error {
 	if err = storage.RegisterCoreMigrations(store); err != nil {
 		return err
 	}
+	pushSender, err := configuredPushSender()
+	if err != nil {
+		return err
+	}
 	cfg := control.Config{
 		BootstrapCode:      bootstrapCode,
 		RunnerToken:        runnerToken,
@@ -171,6 +175,7 @@ func run() error {
 		DeviceScopes:       optionalSplitEnv("CYLO_OWNER_SCOPES"),
 		DefaultProfileID:   strings.TrimSpace(os.Getenv("CYLO_DEFAULT_PROFILE_ID")),
 		Profiles:           profiles,
+		PushSender:         pushSender,
 	}
 	server, err := composeControlServer(store, cfg, voice.Config{GatewayURL: os.Getenv("CYLO_VOICE_GATEWAY_URL"), GatewayAPIKey: os.Getenv("CYLO_VOICE_GATEWAY_API_KEY")}, capabilities.Config{
 		AvailableCapabilityIDs: splitEnv("CYLO_AVAILABLE_CAPABILITY_IDS", ""),
@@ -210,16 +215,22 @@ func run() error {
 	go func() {
 		serveErr <- httpServer.Serve(listener)
 	}()
+	pushStop := make(chan struct{})
+	if pushSender != nil {
+		go runPushWorker(pushStop, server)
+	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
 	select {
 	case err = <-serveErr:
+		close(pushStop)
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 		return err
 	case <-signals:
+		close(pushStop)
 	}
 	shutdown, stop := context.WithTimeout(context.Background(), 20*time.Second)
 	defer stop()
@@ -231,6 +242,52 @@ func run() error {
 		return err
 	}
 	return nil
+}
+
+func configuredPushSender() (control.PushSender, error) {
+	envName := strings.TrimSpace(os.Getenv("CYLO_APNS_ENVIRONMENT"))
+	teamID := strings.TrimSpace(os.Getenv("CYLO_APNS_TEAM_ID"))
+	keyID := strings.TrimSpace(os.Getenv("CYLO_APNS_KEY_ID"))
+	topic := strings.TrimSpace(os.Getenv("CYLO_APNS_TOPIC"))
+	keyPath := strings.TrimSpace(os.Getenv("CYLO_APNS_PRIVATE_KEY_PATH"))
+	configured := 0
+	for _, value := range []string{envName, teamID, keyID, topic, keyPath} {
+		if value != "" {
+			configured++
+		}
+	}
+	if configured == 0 {
+		return nil, nil
+	}
+	if configured != 5 {
+		return nil, errors.New("APNs configuration requires environment, team ID, key ID, topic, and private key path")
+	}
+	key, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, errors.New("could not read deployment-provided APNs private key")
+	}
+	sender, err := control.NewAPNSSender(control.APNSConfig{Environment: envName, TeamID: teamID, KeyID: keyID, Topic: topic, PrivateKey: key})
+	if err != nil {
+		return nil, err
+	}
+	return sender, nil
+}
+
+func runPushWorker(stop <-chan struct{}, controlServer *control.Server) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			workCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			if err := controlServer.DispatchPushDeliveries(workCtx, 50); err != nil {
+				log.Printf("push delivery worker failed: %v", err)
+			}
+			cancel()
+		}
+	}
 }
 
 func loadProfiles(raw string) (map[string]control.RuntimeProfile, error) {

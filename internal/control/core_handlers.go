@@ -481,6 +481,12 @@ func (s *Server) commandDeviceRevoke(ctx context.Context, tx *sql.Tx, c CommandC
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
+	if _, err = tx.ExecContext(ctx, `UPDATE device_push_tokens SET status='disabled',disabled_at=?,updated_at=? WHERE device_id=? AND status='active'`, at, at, p.DeviceID); err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE push_deliveries SET status='disabled',updated_at=? WHERE push_token_id IN (SELECT id FROM device_push_tokens WHERE device_id=?) AND status='pending'`, at, p.DeviceID); err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
 	_, err = tx.ExecContext(ctx, `UPDATE tasks SET status=CASE WHEN status='queued' THEN 'canceled' ELSE status END,version=version+1,updated_at=?,finished_at=CASE WHEN status='queued' THEN ? ELSE finished_at END WHERE created_by_device_id=? AND workspace_id=? AND status IN ('queued','active','waiting','awaiting_user','paused')`, at, at, p.DeviceID, c.Principal.WorkspaceID)
 	if err != nil {
 		return contracts.CommandResult{}, nil, err

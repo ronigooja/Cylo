@@ -102,7 +102,13 @@ func enqueueEventNotification(ctx context.Context, tx *sql.Tx, e contracts.Event
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO notifications(id,workspace_id,subject_id,source_event_id,aggregate_type,aggregate_id,kind,title,body,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, id, e.WorkspaceID, subjectID, e.EventID, "task", payload.TaskID, kind, title, body, e.OccurredAt.UTC().Format(time.RFC3339Nano))
-	return err
+	if err != nil {
+		return err
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM notifications WHERE workspace_id=? AND subject_id=? AND source_event_id=?`, e.WorkspaceID, subjectID, e.EventID).Scan(&id); err != nil {
+		return err
+	}
+	return enqueuePushDeliveries(ctx, tx, id, e.WorkspaceID, subjectID, e.EventID)
 }
 
 type markNotificationReadPayload struct {

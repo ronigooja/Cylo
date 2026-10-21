@@ -25,6 +25,8 @@ func (s *Server) registerCoreRoutes() {
 	_ = s.RegisterCommand("task.accept_result", s.commandTaskAcceptResult)
 	_ = s.RegisterCommand("device.approve", s.commandDeviceApprove)
 	_ = s.RegisterCommand("device.revoke", s.commandDeviceRevoke)
+	_ = s.RegisterCommand("device.push_token.register", s.commandPushTokenRegister)
+	_ = s.RegisterCommand("device.push_token.revoke", s.commandPushTokenRevoke)
 	_ = s.RegisterCommand("notification.mark_read", s.commandNotificationMarkRead)
 	s.device.HandleFunc("POST /v1/commands", s.handleCommand)
 	s.device.HandleFunc("GET /v1/commands/{command_id}", s.handleGetCommand)

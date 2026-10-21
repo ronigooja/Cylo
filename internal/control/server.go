@@ -29,6 +29,7 @@ type Config struct {
 	Profiles           map[string]RuntimeProfile
 	PairingTTL         time.Duration
 	MaxRequestBytes    int64
+	PushSender         PushSender
 }
 
 type RuntimeProfile struct {
@@ -120,11 +121,13 @@ type Server struct {
 	runner      *http.ServeMux
 	mu          sync.RWMutex
 	sealed      bool
+	pushSender  PushSender
 }
 
 func DefaultOwnerScopes() []string {
 	return []string{
 		"client:read", "client:command", "device:manage",
+		"device:push",
 		"memory:read:personal", "memory:write:personal", "memory:delete:personal",
 		"memory:read:workspace", "memory:write:workspace", "memory:delete:workspace",
 		"capability:read", "capability:release:submit",
@@ -162,7 +165,7 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 			return nil, errors.New("default profile is not present in configured profiles")
 		}
 	}
-	s := &Server{store: store, cfg: cfg, commands: make(map[string]CommandHandler), taskSources: make(map[string]TaskSourceAdmissionHandler), public: http.NewServeMux(), device: http.NewServeMux(), runner: http.NewServeMux()}
+	s := &Server{store: store, cfg: cfg, commands: make(map[string]CommandHandler), taskSources: make(map[string]TaskSourceAdmissionHandler), public: http.NewServeMux(), device: http.NewServeMux(), runner: http.NewServeMux(), pushSender: cfg.PushSender}
 	s.registerCoreRoutes()
 	return s, nil
 }

@@ -146,7 +146,15 @@ func TestReviewLateCoreMigrationAfterFeatureHistory(t *testing.T) {
 	if _, err := s.DB().ExecContext(ctx, `ALTER TABLE runs DROP COLUMN isolation_policy`); err != nil {
 		t.Fatal(err)
 	}
+	for _, stmt := range []string{`DROP INDEX push_deliveries_token`, `DROP INDEX push_deliveries_due`, `DROP INDEX device_push_tokens_subject`, `DROP INDEX device_push_tokens_active_device_platform`, `DROP TABLE push_deliveries`, `DROP TABLE device_push_tokens`} {
+		if _, err := s.DB().ExecContext(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := s.DB().ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=3`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=4`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.DB().ExecContext(ctx, `CREATE TABLE schema_migrations_legacy (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
