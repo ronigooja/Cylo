@@ -10,7 +10,7 @@
 | 权威数据 | 单机 SQLite WAL、本地磁盘、控制服务唯一业务写入口；事务 outbox 与 durable jobs 同库 | 多节点控制平面/团队写并发需求出现后迁 PostgreSQL；不将 SQLite 放 NFS [S3] |
 | 后台运行 | macOS launchd / Linux systemd 管理守护服务，执行主机 runner 持有进程与工作目录 | 不要求 Docker 才能使用本机开发环境；多租户执行用 Linux 容器/VM 隔离 |
 | Agent 集成 | `AgentRuntime`适配已选 AO；复用 orchestrator/worker、native ID/resume 与 host/reconcile，固定版本验收基础 CLI 执行/停止查看/恢复；人工接管可选 | AO 已有 TUI/Chat 路径，按实际需求接入；app-server 路径须验证实验/生产支持边界[S1] |
-| AO / Cylo 权威 | AO 管 Agent、代码执行和 Codex 会话；Cylo 管业务账本、记忆、授权、长期普通服务与语音池调度 | 同一执行仅一个 owner；默认危险权限、fresh fallback、ForceDestroy 仍须约束与验收。AWS CAO/07 留作历史研究 |
+| AO / Cylo 权威 | AO 管多种 Agent runtime、代码执行和原生会话；Cylo 管业务账本、记忆、授权、长期普通服务与语音池调度 | 同一执行仅一个 owner；默认危险权限、fresh fallback、ForceDestroy 仍须约束与验收。AWS CAO/07 留作历史研究 |
 | Codex 账号与网络 | 复用已有远程 CLIProxyAPI（文档别名 `existing-cli-proxy`）的账号池与出站代理，每条 Codex route 由代理选号 | AO 无需重复轮换该池；Space 使用独立语音池；原生历史与工作区仍归执行宿主 |
 | 客户端 | PWA 先完成 Mac/iPhone/iPad 同一业务接续，前台语音 | 若锁屏持续语音、系统通知行为、音频路由实测不达产品目标，增加 SwiftUI 原生 iOS/iPadOS 客户端，复用服务契约 |
 | 语音 | 采纳 chatgpt-web-voice 的实时语音上游、Go 网关和多账号池；VoiceSessionAdapter 桥接 Cylo command/回执 | 补齐稳定提交、业务结果注入、账号粘性/并发租约/额度状态；私有协议能力以源码及真实 POC 为准；独立 STT/TTS 仅故障降级 |
@@ -36,8 +36,9 @@ flowchart LR
   CP <-->|认证 runner RPC| R[执行主机 Runner]
   R --> AR[AgentRuntime 适配器]
   AR --> S[Super / Worker / Memory Agent]
-  AR <--> CX[Codex 本机会话]
-  CX -->|模型 API 请求| PX[existing-cli-proxy / Codex 账号池与出站代理]
+  AR <--> CX[Agent 原生会话]
+  CX -->|兼容协议的可选模型 route| PX[existing-cli-proxy / 账号池与出站代理]
+  CX -->|其他 runtime 的模型 route| MP[对应 model / provider]
   R --> CR[CapabilityRunner]
   CR --> SV[独立普通后台服务]
   SV -->|规则 / 事件 / Worker请求| CP
@@ -45,7 +46,7 @@ flowchart LR
   PN --> PWA
 ```
 
-**最小部署**：一台常开 Mac 或 Linux；一个控制服务进程（API、调度循环、outbox、记忆作业模块）、一个 runner 进程、本地 SQLite、本地产物目录、Codex 外部进程、固定版本的 Go 语音网关与其账号存储。网关负责上游信令与账号控制，现有音频媒体直连上游；不能把 HTTP 网关当成能拦截现有媒体的 relay。可共包安装，但 runner 不与 HTTP 请求同生命周期。PWA 静态资源由控制服务供应。网络默认局域网或受认证私网；远程使用 TLS。独立服务由 OS supervisor 管理，控制进程崩溃不杀死已部署服务；runner/服务重连后回报。用户工作站睡眠不等于服务器可用，UI 显示执行主机离线与最后观测时间，不称“持续执行”。
+**最小部署**：一台常开 Mac 或 Linux；一个控制服务进程（API、调度循环、outbox、记忆作业模块）、一个 runner 进程、本地 SQLite、本地产物目录、所选 Agent 外部进程、固定版本的 Go 语音网关与其账号存储。网关负责上游信令与账号控制，现有音频媒体直连上游；不能把 HTTP 网关当成能拦截现有媒体的 relay。可共包安装，但 runner 不与 HTTP 请求同生命周期。PWA 静态资源由控制服务供应。网络默认局域网或受认证私网；远程使用 TLS。独立服务由 OS supervisor 管理，控制进程崩溃不杀死已部署服务；runner/服务重连后回报。用户工作站睡眠不等于服务器可用，UI 显示执行主机离线与最后观测时间，不称“持续执行”。
 
 **现有 Codex 代理边界**：复用 `existing-cli-proxy`，无需在最小部署中再安装代理。AO 执行宿主配置 `codex_route.api_endpoint` 和 `codex_route.api_key_secret_ref`；endpoint 必须从该宿主可达，真实地址与密钥由部署配置提供，密钥仅在服务端解引用。该别名不代表已确认 API 地址或端口。CLIProxyAPI 负责模型请求的账号选择与出站网络；同一 route 内不由 AO 再做一层账号轮换。`CODEX_HOME`、原生 thread 历史、进程及项目/worktree 留在执行宿主，代理不承接这些恢复材料。Space 的账号、租约与语音额度独立管理。
 
@@ -201,6 +202,8 @@ GET  /api/v1/export-manifests/{id}
 
 ## 7. 可替换执行接口
 
+业务 task/run → AO session → agent native session 显式映射，并记录 runtime、model/provider/route、host/worktree 与恢复模式；业务任务不等于执行会话。AO 已有多种 runtime 的恢复 adapter，优先复用，不先单独开发 Codex resume 补丁。CLIProxyAPI 只承接所选兼容协议 route，不要求所有 Agent 经 Codex。具体源码与差异见 [多 Agent 与模型路由边界](16-ao-agent-provider-boundaries.md)。
+
 接口是业务适配抽象，不声称所有供应商有全部能力。统一 `capabilities()` 明确 supported/unsupported/experimental 与版本；不支持就禁用操作，不能靠模拟文本宣称支持。
 
 ```ts
@@ -238,7 +241,7 @@ interface CapabilityRunner {
 
 凭证只以 SecretRef/短时凭证进入适配器，不进上下文。语音账号凭据由网关后端解引用，不能把永久 token 通过上述接口送浏览器；上游所需会话临时材料与 Cylo 登录分开。`relayReceipt` 是 Cylo 适配抽象，当前上游仅有 `author:user` 的私有文本回注候选，不表示 tool_result/system 通道已存在。原始 provider event 留证，映射后的 RuntimeEvent 必带 native IDs、原始来源、observed_at、provider版本。提供者没有可重放事件游标时，不能编造；控制服务断线后 inspect + 拉历史补账，不能证明连续性则标 gap/unknown，保留需要人工核实事项。
 
-### 7.1 基础 CLI 恢复与可选原生交接
+### 7.1 Codex 实例：基础 CLI 恢复与可选原生交接
 
 官方当前文档提供 `thread/list/read/resume`、历史分页、`turn/start/steer/interrupt`；`thread/list` 默认 `sourceKinds` 只有 cli/vscode，发现 Cylo发起会话必须显式包含appServer/exec等 [S1]。`thread/resume` 是保存会话恢复，不证明可抢占活跃会话；官方桌面App发现不在当前验收范围。当前文档仍写 app-server命令和WebSocket传输实验且不支持生产；优先stdio不意味着已经消除实验风险。
 

@@ -26,7 +26,9 @@
 
 ## Cylo 接入路径
 
-沿用 `AO → native Codex CLI/app-server → existing-proxy Responses → Codex OAuth pool`。现有本机 Codex provider 是可复用的接入基线；AO 使用的二进制、运行用户、`CODEX_HOME` 及启动环境需要单独对齐。AO 的 app-server stdio RPC 保持作为控制协议，模型请求才指向代理的 `/v1/responses`。
+本节描述已核查的 Codex route 实例，不限定 Cylo 的 Agent 范围。AO 可调度多种 coding agent runtime；各自的 model/provider、协议、凭据及恢复能力分别适配，CLIProxyAPI 是兼容协议的可选执行 route，不能据此承诺所有 Agent 都能直接接入。见 [多 Agent 与模型路由边界](16-ao-agent-provider-boundaries.md)。
+
+Codex route 沿用 `AO → native Codex CLI/app-server → existing-proxy Responses → Codex OAuth pool`。现有本机 Codex provider 是可复用的接入基线；AO 使用的二进制、运行用户、`CODEX_HOME` 及启动环境需要单独对齐。AO 的 app-server stdio RPC 保持作为控制协议，模型请求才指向代理的 `/v1/responses`。
 
 先为 Cylo/AO 建立隔离的 provider 配置和下游访问凭据注入方案，确认 AO 每账号共享 config 链接的影响，再做配置变更。不要复制 OAuth 凭据到 Cylo，也不要让 AO 与代理同时维护同一路由的自动换号权威。现有代理继续拥有账号池和 refresh writer；Cylo 只持有访问该路由所需的下游凭据，真实值不进入仓库或命令参数。
 
