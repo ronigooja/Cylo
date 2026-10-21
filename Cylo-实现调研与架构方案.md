@@ -2,9 +2,9 @@
 
 调研日期：2026-10-21。产品现名 **Cylo**。本文以 [Cylo 完整产品需求说明书](Cylo-完整产品需求说明书.md) 为唯一产品基线，整合专项研究与CLI接续改造方案。**目前完成的是需求、选型、设计与隔离实验，产品实现尚未开始。** 本轮按用户明确决定移除官方Codex桌面App支持，另按最新优先级将人工同 thread 无缝接管和复杂交接协议降为可选增强，基础 CLI 执行、停止查看和持久恢复仍必须；阶段、技术栈和指标为实施建议。
 
-**总体推荐：建设 Cylo 自己的持久控制平面，按需调用 Super、允许服务直接调用 Worker，并独立管理普通后台程序、记忆与权限。CAO 暂保留为拟采用的 Super/Worker CLI 编排候选，进一步候选比较仍在进行，后续以专项比较结论复核，替代比较同时考虑核心后端、扩展、前端及部署栈一致性；先验证自动拆分、独立 Worker、多 worktree、长任务、恢复、产物和成本，再改造其 Codex provider 与 session 管理；app-server adapter 是结构化事件/审批需求下的可选深入路线。语音继续采纳 chatgpt-web-voice 的 ChatGPT 实时语音上游、Go 网关与多账号池，补充额度调度和 Cylo 业务桥接。** 可以开展隔离开发，必需范围仍须通过 CLI 执行/停止查看/持久恢复、真实工具/必要审批、稳定语音提交与业务回执验收；人工同原生会话双向交接另作可选验收。官方 Codex 桌面 App、发现/深链及官方 host handoff 已移出范围，不再阻断实施；macOS CLI、浏览器、后台部署和跨环境迁移仍保留。
+**总体推荐：建设 Cylo 自己的持久控制平面，按需调用 Super、允许服务直接调用 Worker，并独立管理普通后台程序、记忆与权限。CAO 保持为建议实施的 Super/Worker CLI 编排主线；围绕自动拆分、独立 Worker、多 worktree、长任务、恢复、产物和成本，补齐其 Codex provider 与 session 管理；app-server adapter 是结构化事件/审批需求下的可选深入路线。语音继续采纳 chatgpt-web-voice 的 ChatGPT 实时语音上游、Go 网关与多账号池，补充额度调度和 Cylo 业务桥接。** 可以开展隔离开发，必需范围仍须通过 CLI 执行/停止查看/持久恢复、真实工具/必要审批、稳定语音提交与业务回执验收；人工同原生会话双向交接另作可选验收。官方 Codex 桌面 App、发现/深链及官方 host handoff 已移出范围，不再阻断实施；macOS CLI、浏览器、后台部署和跨环境迁移仍保留。
 
-2026-10-21 的[本轮开源选型比较](Cylo-开源项目选型比较.md)建议对 Go 组合开展对照验证，尚未取代本文已研究的 CAO 基线；POC 通过后再明确是否改选。
+**决策状态：用户已选定 Space Go 网关、网页实时上游和账号池，未指定改用 AO；CAO 单主线是本次按需求给出的实施建议。** [需求符合性评估](Cylo-开源项目选型比较.md)认为 CAO 的委派/执行基础可继续复用；AO 的原生身份、resume 与独立 host 能减少部分补课，但引入另一套 daemon/领域模型的净收益尚无证据。同 Go 仅是维护加分项，不据此更换底座，也不新开双项目运行比较。选定语音方案的可靠性检查属于集成验收，不重开语音选型。
 
 | 用户指定候选 | 决定 | 依据与可复用范围 |
 |---|---|---|
@@ -60,7 +60,7 @@ flowchart TB
   N --> UI
 ```
 
-首版建议 TypeScript 模块化控制服务、React 响应式 PWA、版本化 JSON Schema、SQLite 本地磁盘和独立 runner。macOS 用 launchd、Linux 用 systemd 管理常驻进程。明确边界后可同包安装，不必先做微服务。Python Agent/普通程序通过协议接入，技术栈不决定产品范围。服务端必须是常开机器；主机睡眠/关机期间展示离线与最后观测时间，不能声称仍在执行。
+首版控制服务语言待实施决定，原 TypeScript 建议与 Go 维护偏好均非用户已定选型；客户端建议 React 响应式 PWA、版本化 JSON Schema、SQLite 本地磁盘和独立 runner。macOS 用 launchd、Linux 用 systemd 管理常驻进程。明确边界后可同包安装，不必先做微服务。Python Agent/普通程序通过协议接入，技术栈不决定产品范围。服务端必须是常开机器；主机睡眠/关机期间展示离线与最后观测时间，不能声称仍在执行。
 
 未来按实测需要增加 PostgreSQL、对象存储、多个 runner 与组织身份。单人版起就保留 workspace、principal、project 权限字段；未建立租户执行隔离前不能开放不可信团队共用主机。远端CLI可通过SSH进入同一backend执行环境，使用相同用户、CODEX_HOME、项目路径及认证继续；这是CLI同环境接续。跨host迁移另按备份、路径和权限映射及原生恢复材料验收，不依赖官方App SSH/host handoff。
 
@@ -122,7 +122,7 @@ app-server adapter用于需要更可靠结构化事件和逐工具审批的深�
 
 详见 [04](docs/research/04-architecture.md) 的实现契约及 [05](docs/research/05-reliability-security-operations.md) 的故障矩阵；这些是待实现和验收的保证条件。
 
-## 核心阻断与必须先做的 POC
+## 实施集成与功能验收
 
 | 优先级 / 门槛 | 最小实验与需要保留的证据 | 不通过时的处置 |
 |---|---|---|
@@ -140,7 +140,7 @@ app-server adapter用于需要更可靠结构化事件和逐工具审批的深�
 
 ## 可验收的实施路线与依赖
 
-为避免与专项阶段混淆，下表统一沿用 [01](docs/research/01-requirements.md) 的 P0—P3。04 中更细的阶段0—6是组件顺序：0→P0，1—3→P1，4—5→P2，6→P3；基础安全、备份和 operation 账本贯穿 P1 起。
+沿 CAO 单一主线实施并逐项留证，范围与验收顺序见 [10](docs/research/10-cao-ao-comparative-poc.md)，不先做 CAO/AO 对跑。为避免与专项阶段混淆，下表统一沿用 [01](docs/research/01-requirements.md) 的 P0—P3。04 中更细的阶段0—6是组件顺序：0→P0，1—3→P1，4—5→P2，6→P3；基础安全、备份和 operation 账本贯穿 P1 起。
 
 | 阶段 | 具体交付与依赖 | 准出证据 |
 |---|---|---|

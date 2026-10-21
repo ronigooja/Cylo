@@ -1,14 +1,14 @@
 # Cylo 开源项目选型比较
 
-实际查阅日期：2026-10-21。这里回答“除了 Space3044/chatgpt-web-voice 和 awslabs/cli-agent-orchestrator，还有没有更好的项目”。候选源码版本、许可证和细节分别见 [08 语音替代研究](docs/research/08-voice-project-alternatives.md)、[09 编排替代研究](docs/research/09-agent-orchestration-alternatives.md)；本页是2026-10-21的选型更新：推荐先做候选POC，尚未替换既有实施基线，也不替代[产品需求](Cylo-完整产品需求说明书.md)。
+实际查阅日期：2026-10-21。这里回答“除了 Space3044/chatgpt-web-voice 和 awslabs/cli-agent-orchestrator，还有没有更好的项目”。候选源码版本、许可证和细节分别见 [08 语音替代研究](docs/research/08-voice-project-alternatives.md)、[09 编排替代研究](docs/research/09-agent-orchestration-alternatives.md)；本页保留2026-10-21的候选研究，并按用户最新澄清更新当前决策；历史比较不替代[产品需求](Cylo-完整产品需求说明书.md)。
 
-**有更值得比较的项目，但没有已核验能同时满足 Cylo 全部需求的现成替代。** 语音重点看 **LiveKit Agents、Pipecat**；编排重点看 **Agent Orchestrator（AO）、OpenClaw**。两组的“更好”含义不同：前者是实时媒体与结构化工具桥更完整，后者分别是代码开发编排和完整个人助手平台能力更完整，都不能仅凭名字判定能直接替换当前底座。
+**当前建议：保持 CAO 最小增强这一条编排实施主线，按需求补缺；不再以双项目对跑作为推进条件。用户已选定 Space3044/chatgpt-web-voice 的 Go 网关、ChatGPT 网页实时上游及账号池，尚未选择 AO。** 语音 Agent 负责听说、追问与表达结果，Super 负责复杂规划/跨 Worker 协调；两者都不替代 Cylo 的任务、授权和执行事实。
 
 **先区分名称：`awslabs/cli-agent-orchestrator`（CAO）是 Python/FastAPI；`OrchestratorInc/agent-orchestrator`（AO，旧 Composio 项目）当前核心 daemon 是 Go。它们是两个项目。** Space 网关是 Go，因此前者组合为 Python+Go，后者组合为 Go+Go。
 
 本轮按用户最新意见调整权重：**人工无缝接管可选**，首期更看重自动 Super/Worker、恢复、后台任务、产物和成本。保留 Codex CLI 执行、停止、查看及可恢复身份；不再要求候选首先证明任意 CLI 与 Cylo 无缝交回。实时双向声音、ChatGPT 网页上游与多账号额度问题仍必须正面评估，独立 STT/TTS 或另付费 API 不能算等价满足。
 
-## 1. 先看这四个
+## 1. 历史候选研究（不构成当前实施计划）
 
 | 项目与定位 | 相对基线强在哪里 | 对 Cylo 仍缺什么、换路成本 | 本轮判断 |
 |---|---|---|---|
@@ -19,9 +19,9 @@
 
 这些是能力与适配成本的比较，没有做实时语音质量、吞吐、费用或完整 fleet 的横向基准，不能宣称某个已证明更快、更便宜、更稳定。
 
-## 2. 保留 ChatGPT 网页语音时，谁能直接替 Space
+## 2. 已选 Space 的复用与集成边界
 
-**当前没有找到源码证据足以支持“直接替换后，额度轮换与 Super 桥都已解决”的更优项目。** 因此保留 Space 网关主线仍合理，账号池、租约、额度状态与稳定业务桥仍按 [03](docs/research/03-voice.md) 补。
+**当前没有找到源码证据足以支持“直接替换后，额度轮换与 Super 桥都已解决”的更优项目。** 用户已明确保留 Space 网关；账号池、租约、额度状态与稳定业务桥作为集成工作按 [03](docs/research/03-voice.md) 补。
 
 最相关的是同源 Python 项目 [dyhhhhhh/chatgpt-web-voice](https://github.com/dyhhhhhh/chatgpt-web-voice) 和 [victorli-cn/chatgpt-web-voice](https://github.com/victorli-cn/chatgpt-web-voice)：它们使用真实网页 `access_token` 和 `realtime/wm`，不是把官方 API key 误写成网页 token。客户端确有 usage/挂断/网络信号触发重连、清旧会话标识的代码，值得借鉴故障状态机。
 
@@ -29,11 +29,20 @@
 
 [sivaneh/chatgpt-web-voice](https://github.com/sivaneh/chatgpt-web-voice) 的较新提交主要是界面/语言调整，不能按更新时间认定额度调度更好。上游与 fork 的具体 SHA、差异和实验见08。
 
-LiveKit/Pipecat 另一条路的优势正是更明确的实时事件和函数结果接口，值得认真比较；但需要接受不同上游或自行维护网页 adapter。后者仍承担私有协议、账号调度和桥接研究，不能把换框架算作这些难题已经完成。
+LiveKit/Pipecat 另一条路的优势正是更明确的实时事件和函数结果接口，属于历史替代研究；当前无需继续比较，因为用户已选定网页上游。若以后重新授权换路，则需要接受不同上游或自行维护网页 adapter。后者仍承担私有协议、账号调度和桥接研究，不能把换框架算作这些难题已经完成。
 
 ## 3. CAO、AO 与客户端工具怎么选
 
-**已接受的研究基线仍是 CAO 最小增强 + Cylo 产品层；若新建并优先同栈，本轮建议先验证 OrchestratorInc/AO + Space 的 Go 服务组合。** 取消人工无缝接管硬门槛后，CAO 的 CLI 接续缺口权重降低；先补任务身份、明确权限配置、可靠停止与结果核对、工作区保全、失败恢复，不必为首期做完整人工交接系统。已有 CAO 协作工具与执行层仍可复用。
+**继续 CAO 的依据是需求匹配，而非已有文档数量。** §6 要求按需 Super、专业 Worker 可直接调用、独立并行执行；CAO 的 handoff/assign/send、tmux、独立 worktree、inbox/workflow 可作为这一执行层。§4/5/8 要求的持久恢复、真实停止与结果核对仍有明确缺口：按 [07](docs/research/07-cao-cli-handoff-plan.md) 补 native thread 映射/resume、去除默认危险权限、停止进程核验、清理前保全产物。人工无缝接管可后置，不能让可选增强驱动底座迁移。
+
+| 产品需求 | 当前适配判断与实施责任 |
+|---|---|
+| 按需 Super / 直接 Worker / 独立 worktree（§6、8） | CAO 已有委派与执行基础；Cylo 决定何时调用 Super，简单动作直接路由，不强制所有请求经过 Super |
+| 基础 CLI 身份/恢复、停止与成果（§4、5、8） | CAO 必须补上述缺口；AO 已有 native ID/resume、host/reconcile，确实更现成，但 fresh fallback、危险权限与清理仍需约束，未证明整体业务恢复 |
+| 普通长期服务、记忆、权限、迁移（§7、9—11、14—17） | 两者都不替代 Cylo 控制平面、OS supervisor、证据/授权与恢复账本；AO 的开发产品功能不能抵扣这些需求 |
+| 实时网页语音与账号池（§3、12） | 已定 Space，经幂等 command/事件接入 Cylo；语音交互与后台任务生命周期分离，功能验收不重开提供者选型 |
+
+因此先实施 CAO adapter 与一条目标→Worker→产物→恢复链路。**若实际适配发现必需接口无法满足，或有具体工作量证据表明 AO 能显著减少必需实现，再针对该缺口复核替换；不预设必须同时运行两套 daemon。**
 
 AO 是最有意义的更换评估对象，因为它同时有真实监督/Worker 逻辑和开发产品层，而不仅是终端 UI。若要沿用它，应先选清边界：让 AO 管代码执行与开发工作流，Cylo 管用户业务任务、授权、长期服务与记忆；同一运行不能由两套系统独立调度。其 Codex 普通恢复有“原生历史不存在则 fresh launch 保留工作区”的路径，**保住文件不等于恢复同一 thread**，Cylo 必须显示恢复模式与上下文丢失，不能统一叫续接。
 
@@ -43,13 +52,13 @@ OpenClaw 不能再按旧印象视为 API 聊天壳：本轮版本已有真实子
 
 Vibe Kanban也是有真实编排能力的开发工具：`orchestrator_mode_router`限制工作区范围，session工具可创建/运行Coding Agent且拒绝在orchestrator自身执行；因此不能仅归为UI。但其Rust/Axum/sqlx后端增加维护栈，Codex后续启动走`thread_fork`而非同thread resume，优先级低于本轮AO/完整平台OpenClaw路线。
 
-## 4. 技术栈：优先统一服务端，不按前端语言归类
+## 4. 技术栈：维护偏好与历史组合
 
-同栈是实际加分项，不能掩盖能力缺口。**当前最自然的统一方案是 OrchestratorInc/AO Go daemon + Space Go 网关，Cylo 新服务端也可优先 Go（仅选型建议，现阶段没有已实现服务端；先前架构曾建议TS）；浏览器/移动客户端仍用 TS。** 两个现有 Go 服务仍通过 API/事件接入，不应直接合库、共享账号表或随意 import `internal` 模块。统一语言主要减少构建、调试和服务端维护成本，不能省掉协议、存储与权限边界设计。
+同栈是实际加分项，不能掩盖能力缺口。AO Go daemon + Space Go 网关在服务端语言上较统一；这是维护偏好，不能单独推出采用 AO。Cylo 新服务端语言尚未决定，现阶段没有 runtime；下表保留历史组合分析，当前执行路线为 CAO + Space。 两个现有 Go 服务仍通过 API/事件接入，不应直接合库、共享账号表或随意 import `internal` 模块。统一语言主要减少构建、调试和服务端维护成本，不能省掉协议、存储与权限边界设计。
 
 | 组合 | 核心后端 / Agent集成 | 客户端与其他运行时 | 选择与代价 |
 |---|---|---|---|
-| **A：OrchestratorInc/AO + Space，Cylo服务端Go（新建首推POC）** | OrchestratorInc/AO Go daemon/CLI/SQLite、Go Codex adapter；Space Go HTTP网关/SQLite | AO Electron/React/TS，移动端TS；Space HTML/JS/WebRTC；独立Codex二进制、Git及终端运行时仍存在 | **保留网页订阅语音且服务端同栈最整齐**；AO比CAO带来更多现成开发产品，但要核验是否能只复用daemon/API、避免双重任务权威。AO当前go.mod要求Go1.27.1；Space要求Go1.24.1且镜像含curl-impersonate/glibc，不能当纯静态二进制组合 |
+| **A：OrchestratorInc/AO + Space，Cylo服务端Go（历史候选）** | OrchestratorInc/AO Go daemon/CLI/SQLite、Go Codex adapter；Space Go HTTP网关/SQLite | AO Electron/React/TS，移动端TS；Space HTML/JS/WebRTC；独立Codex二进制、Git及终端运行时仍存在 | **保留网页订阅语音且服务端同栈最整齐**；AO比CAO带来更多现成开发产品，但要核验是否能只复用daemon/API、避免双重任务权威。AO当前go.mod要求Go1.27.1；Space要求Go1.24.1且镜像含curl-impersonate/glibc，不能当纯静态二进制组合 |
 | **B：awslabs/CAO + Space（最低底座迁移成本）** | awslabs/CAO Python/FastAPI/SQLAlchemy/MCP与tmux；Space仍Go独立网关 | Cylo仍可沿用原TS建议；若新服务端选Python可与CAO同语言；Python+Go+Codex/Git/tmux | 复用既有研究最多，接受语音网关异构；隔进程API边界后不必为语言一致重写成熟网关 |
 | API语音扩展：awslabs/CAO + Pipecat，Cylo服务端Python | awslabs/CAO Python；Pipecat Python实时服务，CAO>=3.10、Pipecat>=3.11需统一环境基线 | 浏览器JS/TS/WebRTC、音频原生库与Codex等外部进程 | **需要改API/其他实时上游的费用与鉴权**；无现成网页额度池。CAO+原Python网页网关虽也同栈，但其池/安全/桥接不足，没有证据值得仅为同栈替Space |
 | **C：OpenClaw + Space（TS平台备选）** | TS/Node Gateway、工具/插件与Codex app-server；Space仍Go网关 | TS控制台/客户端；Node、Go和Codex/Git等独立运行时 | 若希望直接扩展个人助手平台、减少自建Gateway/会话/消息入口，可认真比较；保留网页账号语音因此不全TS；需明确替换Cylo哪部分职责 |
@@ -58,19 +67,11 @@ Vibe Kanban也是有真实编排能力的开发工具：`orchestrator_mode_route
 
 LiveKit Node Agents是独立的`livekit/agents-js`仓库。本轮又独立读取其`391489c73ac564e4e43f888e9ffe6f63cc73fea8`的Realtime实现：确有API key鉴权、completed和function-call处理；依然不是网页订阅账号池，Node/插件能力需按固定版本分别验收。Pipecat与LiveKit均能走实时音频模型，Python同栈不代表必须退回STT/TTS。
 
-## 5. 推荐组合与换路条件
+## 5. 单主线实施与复核条件
 
-**若现在从零选栈，首推先验证 OrchestratorInc/AO + Space 的 Go 服务组合，再决定替换 CAO；已有 CAO 投入则保留 awslabs/CAO + Space 是低迁移成本选择。** 两条都需 Cylo 持久控制面、账号额度/租约与 VoiceSessionAdapter。先验证真实实时语音→业务提交→执行→回执播报、耗尽后新会话恢复；编排优先验证无人值守执行、可停止/恢复、产物保留和成本。人工无缝接管留作可选增强。
+**推进 CAO + Space + Cylo 控制平面。** 先补基础 CLI 执行/恢复、停止、显式权限和产物保全，同时按已选语音路径完成稳定提交、回执播报及额度耗尽后新媒体会话恢复。用户没有选择 AO，也没有要求重新比较语音框架。功能未验收须标明缺口，不能因此宣称底座选择尚未成立。
 
-| 观察到的条件 | 应采取的选择 |
-|---|---|
-| 继续使用 ChatGPT 网页订阅账号，且愿维护私有协议 | 保留 Space，借鉴 Python fork 的有界重连触发器；不把换号和恢复当已实现 |
-| 网页路径无法证明可靠提交/回执，或私有协议维护持续阻断；可接受重新选择语音提供者与费用 | 对照 LiveKit/Pipecat 的实时 speech-to-speech 路径，以真实业务桥、中断、移动体验和实际成本决策；不是默认改成独立STT/TTS |
-| 近期主要目标是并行代码开发、审查、PR/CI，AO 已有功能能显著减少 Cylo 重做 | 做 AO 对照 POC；通过任务/恢复/停止/权限/成本及数据归属验证后，明确决定是否替 CAO |
-| 主要缺开发看板、diff/review 或移动入口，CAO 自动执行足够 | 分别评估 Vibe Kanban 或 Happy/Hapi 的客户端价值；优先借鉴/适配，避免再引入冲突的任务调度权威 |
-| 新建项目优先同Go服务端，或CAO改造成本已接近AO集成成本 | 直接做AO+Space对照，不必等CAO彻底失败；按同一组自动执行/恢复/权限/产物场景决策 |
-| 希望扩展现成个人助手，而不是自建全部控制面 | 验证OpenClaw+Space；先约定业务账本、记忆与权限由哪一层负责，再判断能省多少Cylo实现 |
-
+AO 的 native 恢复和独立 host 是实质适配优势，保留作具体缺口的替代参考；OpenClaw、LiveKit/Pipecat 和客户端项目保留历史证据，不新增并行验证路线。[10](docs/research/10-cao-ao-comparative-poc.md) 记录已有清理实验及本次按需求收敛后的实施顺序。
 TEN Framework 本轮不进入前两名：当前根许可证是在 Apache 2.0 上附加部署限制，包含 End User devices、与 Agora 竞争及允许第三方开发/部署应用等条件；不应写成纯 Apache 2.0。该判断针对本轮固定版本根 LICENSE，不代表每个依赖都采用同样条款。
 
 ## 6. 独立复核证据与限制
@@ -90,4 +91,4 @@ TEN Framework 本轮不进入前两名：当前根许可证是在 Apache 2.0 上
 
 维护判断看实际提交、测试和实现，不以 Star 或最新 push 自动推定可靠。LiveKit/Pipecat/AO 本轮固定 HEAD 均有2026-10-21代码提交；这表明活跃开发，同时意味着需固定版本和升级回归，不证明维护 SLA。OpenClaw、Vibe Kanban及客户端的固定版本、维护/许可证见09。Space/Python fork 的具体提交与差异见08；已有“in-call failover”注释也不能替代配额实验。
 
-本轮没有导入真实账号、真实付费通话、运行完整 AO/CAO fleet 或进行 macOS/iOS 真机实验。结构化 completed 也仍需 Cylo 的幂等、修订、授权和账本，开源框架不会自动赋予业务上的 exactly-once。选型结论是当前需求下的优先级与换路门槛，产品是否满足仍按实际验收证据判断。
+本轮没有导入真实账号、真实付费通话、运行完整 AO/CAO fleet 或进行 macOS/iOS 真机实验。结构化 completed 也仍需 Cylo 的幂等、修订、授权和账本，开源框架不会自动赋予业务上的 exactly-once。当前实施建议是按需求推进 CAO 单主线，产品是否满足仍按实际验收证据判断。

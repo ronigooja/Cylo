@@ -2,11 +2,13 @@
 
 Cylo 是一个跨设备、可长期运行、管理真实任务与记忆，并在授权下调用 Agent 和部署普通后台服务的开放式 AI 系统。本仓库当前是**实现前研究与架构决策材料**，尚未开始产品实现。
 
-选型先看 [开源项目总对比](Cylo-开源项目选型比较.md)：按最新“自动编排/恢复优先、人工无缝接管可选、尽量同栈”的偏好，**新建优先验证 OrchestratorInc/AO Go daemon + Space Go语音网关**，Cylo新服务端Go仅为选型建议、尚无runtime代码。该组合须通过真实执行/恢复及语音桥接POC后再明确改选。已研究的 [实现调研与架构方案](Cylo-实现调研与架构方案.md) 仍以 awslabs/CAO + Space 为基线；CAO是最低迁移成本方案。语音继续保留ChatGPT网页实时上游与多账号池，LiveKit/Pipecat是有换路成本的候选。官方Codex桌面App已取消；基础CLI执行、恢复、停止查看，以及macOS/Linux部署与跨环境迁移仍在范围。
+当前实施建议是 **CAO 最小增强 + Cylo 持久控制平面**，按产品需求推进一条编排主线，不再安排 CAO/AO 双 daemon 选型对跑。CAO 已有 Super/Worker 委派、独立执行和工作流基础，首期补 Codex 身份/恢复、停止、权限与产物保全；AO 的原生恢复与独立 host 有参考价值，但尚无证据证明整体改选更省适配。详见 [需求符合性与选型](Cylo-开源项目选型比较.md) 和 [实施架构](Cylo-实现调研与架构方案.md)。
+
+**用户已选定 Space3044/chatgpt-web-voice 的 Go 网关、ChatGPT 网页实时上游和账号池；用户尚未指定改用 AO。** 语音稳定提交、业务回执和额度调度是选定方案的集成工作。语音 Agent 负责自然交互，复杂任务由 Super 协调，任务与权限以 Cylo 控制平面为准。Go 同栈是维护偏好，Cylo 服务端语言仍是待定实施选择。官方 Codex 桌面 App 已取消；基础 CLI 执行、恢复、停止查看，以及 macOS/Linux 部署与跨环境迁移仍在范围。
 
 | 文档 | 作用 |
 |---|---|
-| [开源项目总对比](Cylo-开源项目选型比较.md) | 本轮候选排名、组合技术栈、同栈首推与改选条件 |
+| [开源项目总对比](Cylo-开源项目选型比较.md) | 当前需求符合性、已定选择与单主线实施建议 |
 | [Cylo 完整产品需求](Cylo-完整产品需求说明书.md) | 当前需求基线；桌面App取消，人工无缝接管可选，基础CLI与实时语音保留 |
 | [旧 Codex Super 讨论稿](codex-super-agent-requirements-and-architecture.md) | 历史参考，已由新版取代；其中技术建议不是新版硬约束 |
 | [01 需求追踪](docs/research/01-requirements.md) | 全22章、稳定需求ID、场景A—E、逐项验收 |
@@ -18,7 +20,7 @@ Cylo 是一个跨设备、可长期运行、管理真实任务与记忆，并在
 | [07 CAO CLI接续改造](docs/research/07-cao-cli-handoff-plan.md) | 基础CLI恢复与可选人工接管增强，app-server深入路线 |
 | [08 语音候选比较](docs/research/08-voice-project-alternatives.md) | 同源网页网关、LiveKit/Pipecat、协议/账号池/技术栈边界 |
 | [09 编排候选比较](docs/research/09-agent-orchestration-alternatives.md) | AO、CAO、OpenClaw等实际源码、恢复与技术栈比较 |
-| [10 CAO / AO 对照 PoC](docs/research/10-cao-ao-comparative-poc.md) | 下一步执行顺序、离线产物清理对照与真实运行验收门槛 |
+| [10 编排需求符合性与实施路线](docs/research/10-cao-ao-comparative-poc.md) | 既有清理实验、需求适配与 CAO 单主线验收 |
 | [11 语音真实 PoC 准备](docs/research/11-voice-real-poc-readiness.md) | 真实语音闭环的环境、账号及验收准备 |
 
 研究日期为2026-10-21。Linux同机同隔离CODEX_HOME的合成文本已通过app-server→官方交互CLI→app-server三轮接续；这是两个官方入口的fixture实验，并非CAO已支持。基础CLI真实工具/审批恢复、iPhone/iPad音频、跨环境迁移、生产可靠性及性能成本仍须验收；同会话人工双向接续为可选增强。官方桌面App、深链及官方host handoff不再作为Go/No-Go门槛。
