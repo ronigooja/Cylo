@@ -86,6 +86,7 @@ func Register(server *control.Server, store *storage.Store, cfg Config) error {
 	}
 	return server.RegisterRunnerRoutes(func(mux *http.ServeMux) {
 		mux.HandleFunc("POST /runner/v1/deployments/claims", svc.claimDeployment)
+		mux.HandleFunc("GET /runner/v1/deployments/claims/current", svc.currentDeploymentClaim)
 		mux.HandleFunc("POST /runner/v1/deployments/{deployment_id}/observations", svc.observeDeployment)
 	})
 }
@@ -326,6 +327,14 @@ func (s *Service) claimDeployment(w http.ResponseWriter, r *http.Request) {
 		if !runnerHasCapabilityScope(runner, "capability:deploy") {
 			return control.NewAPIError(403, "forbidden", "capability:deploy runner scope required", nil)
 		}
+		current, err := activeDeploymentClaim(r.Context(), tx, runner)
+		if err != nil {
+			return err
+		}
+		if current != nil {
+			claim = current
+			return nil
+		}
 		rows, err := tx.QueryContext(r.Context(), `SELECT j.attempt_id,j.fence,j.operation,j.deployment_id,j.workspace_id,j.claim_json FROM capability_deployment_jobs j JOIN capability_deployments d ON d.deployment_id=j.deployment_id WHERE j.status='pending' AND j.fence=d.latest_fence ORDER BY j.created_at LIMIT 100`)
 		if err != nil {
 			return err
@@ -359,6 +368,9 @@ func (s *Service) claimDeployment(w http.ResponseWriter, r *http.Request) {
 			if err := json.Unmarshal(x.claimJSON, &snapshot); err != nil {
 				return err
 			}
+			if err := validateManifest(&snapshot.Manifest); err != nil {
+				return control.NewAPIError(500, "invalid_claim_snapshot", "deployment claim manifest failed immutable validation", nil)
+			}
 			if !snapshot.Grant.ExpiresAt.After(time.Now().UTC()) || !contains(snapshot.Grant.Actions, snapshot.DesiredOp) || snapshot.WorkspaceID != x.workspace || snapshot.DeploymentID != x.deployment || snapshot.AttemptID != x.attempt || snapshot.Fence != x.fence || snapshot.DesiredOp != x.op {
 				continue
 			}
@@ -375,6 +387,10 @@ func (s *Service) claimDeployment(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			snapshot.VolumeIDs = uniqueSorted(snapshot.VolumeIDs)
+			snapshot.ClaimState = "claimed"
+			if err := tx.QueryRowContext(r.Context(), `SELECT desired_state FROM capability_deployments WHERE deployment_id=?`, x.deployment).Scan(&snapshot.DesiredControl); err != nil {
+				return err
+			}
 			claim = &snapshot
 			break
 		}
@@ -389,6 +405,76 @@ func (s *Service) claimDeployment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, claim)
+}
+
+func (s *Service) currentDeploymentClaim(w http.ResponseWriter, r *http.Request) {
+	runner, ok := control.RunnerPrincipalFromContext(r.Context())
+	if !ok || !runnerHasCapabilityScope(runner, "capability:deploy") {
+		control.WriteError(w, control.NewAPIError(401, "unauthenticated", "capability:deploy runner authentication required", nil))
+		return
+	}
+	var claim *contracts.DeploymentClaim
+	err := s.server.RunnerTransaction(r.Context(), func(tx *sql.Tx, runner contracts.RunnerPrincipal) error {
+		var err error
+		claim, err = activeDeploymentClaim(r.Context(), tx, runner)
+		return err
+	})
+	if err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	if claim == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeJSON(w, http.StatusOK, claim)
+}
+
+func activeDeploymentClaim(ctx context.Context, tx *sql.Tx, runner contracts.RunnerPrincipal) (*contracts.DeploymentClaim, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT j.claim_json,j.status,d.desired_state,j.workspace_id FROM capability_deployment_jobs j JOIN capability_deployments d ON d.deployment_id=j.deployment_id WHERE j.runner_id=? AND j.status IN ('claimed','uncertain') ORDER BY j.claimed_at DESC LIMIT 2`, runner.RunnerID)
+	if err != nil {
+		return nil, err
+	}
+	type active struct {
+		body                      []byte
+		state, desired, workspace string
+	}
+	var claims []active
+	for rows.Next() {
+		var item active
+		if err := rows.Scan(&item.body, &item.state, &item.desired, &item.workspace); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		claims = append(claims, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if len(claims) > 1 {
+		return nil, control.NewAPIError(409, "multiple_active_deployments", "runner has multiple unresolved deployment effects; reconcile them individually", nil)
+	}
+	if len(claims) == 0 {
+		return nil, nil
+	}
+	current := claims[0]
+	if !control.HasRunnerScope(runner, "capability:deploy", current.workspace) {
+		return nil, control.NewAPIError(403, "forbidden", "runner cannot access the current deployment claim", nil)
+	}
+	var claim contracts.DeploymentClaim
+	if err := json.Unmarshal(current.body, &claim); err != nil {
+		return nil, err
+	}
+	if err := validateManifest(&claim.Manifest); err != nil {
+		return nil, control.NewAPIError(500, "invalid_claim_snapshot", "deployment claim manifest failed immutable validation", nil)
+	}
+	claim.ClaimState = current.state
+	claim.DesiredControl = current.desired
+	return &claim, nil
 }
 
 func (s *Service) observeDeployment(w http.ResponseWriter, r *http.Request) {
@@ -571,6 +657,11 @@ func validateManifest(m *contracts.CapabilityManifest) error {
 			return errors.New("mounts require named volume IDs and safe absolute targets")
 		}
 	}
+	if m.HealthCheck != nil {
+		if err := validateHealthCheck(*m.HealthCheck); err != nil {
+			return err
+		}
+	}
 	for k, v := range m.SecretRefs {
 		if k == "" || !strings.HasPrefix(v, "secret://") || strings.ContainsAny(v, "= \t\r\n") {
 			return errors.New("secret references must be named references, not values")
@@ -595,6 +686,46 @@ func validateManifest(m *contracts.CapabilityManifest) error {
 		return m.Triggers[i].Kind+"\x00"+m.Triggers[i].Source < m.Triggers[j].Kind+"\x00"+m.Triggers[j].Source
 	})
 	return nil
+}
+
+func validateHealthCheck(check contracts.CapabilityHealthCheck) error {
+	if check.IntervalSeconds < 5 || check.IntervalSeconds > 300 || check.TimeoutSeconds < 1 || check.TimeoutSeconds > 30 || check.FailureThreshold < 1 || check.FailureThreshold > 10 {
+		return errors.New("health check interval, timeout, or failure threshold exceeds server bounds")
+	}
+	switch check.Kind {
+	case "http":
+		if !strings.HasPrefix(check.Target, "/") || strings.HasPrefix(check.Target, "//") || len(check.Target) > 1024 || strings.ContainsAny(check.Target, "\\\r\n\x00") || check.Port < 1 || check.Port > 65535 || len(check.Args) != 0 {
+			return errors.New("HTTP health check requires a safe path and valid port")
+		}
+	case "tcp":
+		if check.Port < 1 || check.Port > 65535 || check.Target != "" || len(check.Args) != 0 {
+			return errors.New("TCP health check requires only a valid port")
+		}
+	case "exec":
+		if !validExecutableName(check.Target) || check.Port != 0 || len(check.Args) > 32 {
+			return errors.New("exec health check requires a bare executable name and at most 32 arguments")
+		}
+		for _, arg := range check.Args {
+			if len(arg) > 1024 || strings.ContainsAny(arg, "\x00\r\n") {
+				return errors.New("exec health check arguments contain invalid values")
+			}
+		}
+	default:
+		return errors.New("health check kind must be http, tcp, or exec")
+	}
+	return nil
+}
+
+func validExecutableName(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("._+-", r)) {
+			return false
+		}
+	}
+	return true
 }
 func decode(raw json.RawMessage, dst any) error {
 	d := json.NewDecoder(strings.NewReader(string(raw)))

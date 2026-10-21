@@ -107,10 +107,15 @@ func TestCapabilityReleaseRequiresExplicitGrantAndAuthorizationBeforeJob(t *test
 }
 
 func TestManifestRejectsUnsafeAndOverbroadInputs(t *testing.T) {
-	base := contracts.CapabilityManifest{SchemaVersion: 1, ArtifactRef: "oci://registry.example/app@sha256:" + strings.Repeat("b", 64), ArtifactDigest: "sha256:" + strings.Repeat("b", 64), Entrypoint: "/app/run", Capabilities: []string{"mail.read"}, Budget: contracts.CapabilityResourceBudget{CPUMillis: 1, MemoryBytes: 1, DiskBytes: 1, TimeoutSeconds: 1, Concurrency: 1}, Network: contracts.CapabilityNetworkPolicy{Mode: "none"}}
+	base := contracts.CapabilityManifest{SchemaVersion: 1, ArtifactRef: "oci://registry.example/app@sha256:" + strings.Repeat("b", 64), ArtifactDigest: "sha256:" + strings.Repeat("b", 64), Entrypoint: "/app/run", Capabilities: []string{"mail.read"}, HealthCheck: &contracts.CapabilityHealthCheck{Kind: "http", Target: "/health", Port: 8080, IntervalSeconds: 30, TimeoutSeconds: 5, FailureThreshold: 3}, Budget: contracts.CapabilityResourceBudget{CPUMillis: 1, MemoryBytes: 1, DiskBytes: 1, TimeoutSeconds: 1, Concurrency: 1}, Network: contracts.CapabilityNetworkPolicy{Mode: "none"}}
 	if err := validateManifest(&base); err != nil {
 		t.Fatal(err)
 	}
+	base.HealthCheck = &contracts.CapabilityHealthCheck{Kind: "exec", Target: "/bin/sh", Args: []string{"-c", "true"}, IntervalSeconds: 30, TimeoutSeconds: 5, FailureThreshold: 3}
+	if err := validateManifest(&base); err == nil {
+		t.Fatal("shell or host-path health check accepted")
+	}
+	base.HealthCheck = nil
 	base.Mounts = []contracts.CapabilityMount{{VolumeID: "user-volume", Target: "/../../host", ReadOnly: false}}
 	if err := validateManifest(&base); err == nil {
 		t.Fatal("unsafe mount target accepted")
@@ -185,6 +190,25 @@ func TestRunnerDeploymentClaimAndFencedObservation(t *testing.T) {
 	}
 	if claim.DeploymentID != dep.ResourceID || claim.Fence != 1 || claim.DesiredOp != "install" {
 		t.Fatalf("bad deployment claim: %#v", claim)
+	}
+	currentReq := httptest.NewRequest(http.MethodGet, "/runner/v1/deployments/claims/current", nil)
+	currentReq.Header.Set("Authorization", "Bearer "+runnerToken)
+	currentResp := httptest.NewRecorder()
+	handler.ServeHTTP(currentResp, currentReq)
+	if currentResp.Code != http.StatusOK {
+		t.Fatalf("current claim status=%d body=%s", currentResp.Code, currentResp.Body.String())
+	}
+	var current contracts.DeploymentClaim
+	if err = json.Unmarshal(currentResp.Body.Bytes(), &current); err != nil || current.AttemptID != claim.AttemptID || current.Fence != claim.Fence || current.ClaimState != "claimed" {
+		t.Fatalf("current claim changed identity: current=%#v err=%v", current, err)
+	}
+	retryClaimReq := httptest.NewRequest(http.MethodPost, "/runner/v1/deployments/claims", nil)
+	retryClaimReq.Header.Set("Authorization", "Bearer "+runnerToken)
+	retryClaimResp := httptest.NewRecorder()
+	handler.ServeHTTP(retryClaimResp, retryClaimReq)
+	var retried contracts.DeploymentClaim
+	if retryClaimResp.Code != http.StatusOK || json.Unmarshal(retryClaimResp.Body.Bytes(), &retried) != nil || retried.AttemptID != claim.AttemptID || retried.Fence != claim.Fence {
+		t.Fatalf("claim retry created another attempt: status=%d body=%s", retryClaimResp.Code, retryClaimResp.Body.String())
 	}
 	obs := contracts.DeploymentObservation{DeploymentID: claim.DeploymentID, AttemptID: claim.AttemptID, Fence: claim.Fence, ObservationID: "obs-one", Operation: "install", State: "running", ExternalEffectRef: []string{"container:test-id"}, Health: contracts.CapabilityHealth{State: "healthy", CheckedAt: time.Now().UTC(), EvidenceRef: "health:test"}, ObservedAt: time.Now().UTC()}
 	body, _ := json.Marshal(obs)

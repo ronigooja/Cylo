@@ -13,6 +13,7 @@ type CapabilityManifest struct {
 	SecretRefs     map[string]string        `json:"secret_refs,omitempty"`
 	Mounts         []CapabilityMount        `json:"mounts,omitempty"`
 	Capabilities   []string                 `json:"capabilities"`
+	HealthCheck    *CapabilityHealthCheck   `json:"health_check,omitempty"`
 	Triggers       []CapabilityTrigger      `json:"triggers,omitempty"`
 	Budget         CapabilityResourceBudget `json:"budget"`
 	Network        CapabilityNetworkPolicy  `json:"network"`
@@ -22,6 +23,19 @@ type CapabilityMount struct {
 	VolumeID string `json:"volume_id"`
 	Target   string `json:"target"`
 	ReadOnly bool   `json:"read_only"`
+}
+
+// CapabilityHealthCheck is executed inside the immutable image. Exec probes
+// use an argv vector and a bare executable name; shell text and host paths
+// are not accepted.
+type CapabilityHealthCheck struct {
+	Kind             string   `json:"kind"`
+	Target           string   `json:"target,omitempty"`
+	Port             int      `json:"port,omitempty"`
+	Args             []string `json:"args,omitempty"`
+	IntervalSeconds  int      `json:"interval_seconds"`
+	TimeoutSeconds   int      `json:"timeout_seconds"`
+	FailureThreshold int      `json:"failure_threshold"`
 }
 
 type CapabilityTrigger struct {
@@ -74,6 +88,8 @@ type DeploymentClaim struct {
 	ConfigSHA256   string             `json:"config_sha256,omitempty"`
 	VolumeIDs      []string           `json:"volume_ids,omitempty"`
 	RuntimeBackend string             `json:"runtime_backend"`
+	ClaimState     string             `json:"claim_state,omitempty"`
+	DesiredControl string             `json:"desired_control,omitempty"`
 }
 
 type DeploymentObservation struct {
