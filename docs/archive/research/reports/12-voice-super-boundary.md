@@ -1,67 +1,67 @@
-# 语音 Agent 与 Super：职责、并发及集成边界
+# Voice Agent and Super: Responsibilities, Concurrency, and Integration Boundaries
 
-日期：2026-10-21。**Space3044/chatgpt-web-voice 已选定**，保留 Go 网关、ChatGPT 网页实时语音与账号池；后续实验解决集成缺口，不再重开语音选型。本页是架构补充，未实现 runtime、读取凭据或调用真实账号。媒体/账号细节见[03](../../../research/03-voice.md)，独立源码复核见[06](../../../research/06-realtime-integration-review.md)，下一步集成见[11](11-voice-real-poc-readiness.md)。
+Date: 2026-10-21. **Space3044/chatgpt-web-voice is selected**, retaining the Go gateway, ChatGPT web real-time voice, and account pool. Later experiments address integration gaps; voice selection will not be reopened. This page supplements the architecture. No runtime was implemented, credentials read, or real account used. Media/account details are in [03](../../../research/03-voice.md), the independent source review is in [06](../../../research/06-realtime-integration-review.md), and the next integration step is in [11](11-voice-real-poc-readiness.md).
 
-## 1. 语音也是 Agent，会不会与 Super 冲突？
+## 1. Is voice also an agent, and does it conflict with Super?
 
-**会有理解与回复能力重叠；通过职责分离可避免调度冲突，但回答一致性仍需额外处理。** 实时语音模型会理解用户、闲聊、澄清甚至口头提出计划，它不是单纯的麦克风和扬声器。推荐让它成为交互 Agent：业务意图只作为提议；Super 对复杂目标形成正式计划、拆分依赖并调度 Worker；Cylo 持久控制平面校验计划、权限与执行证据，是任务状态的最终事实来源。
+**Their understanding and response capabilities overlap; dividing responsibilities avoids scheduling conflicts, but answer consistency still needs separate handling.** The real-time voice model understands users, makes small talk, clarifies, and may even propose a plan aloud. It is not just a microphone and speaker. Make it the interaction agent: business intent is only a proposal; Super turns complex goals into formal plans, dependencies, and Worker scheduling; Cylo's persistent control plane validates plans, authorization, and execution evidence and remains the final source of task state.
 
-也可以在理论上把实时语音 Agent 直接作为唯一 Super：前提是有可靠工具往返、持久计划与任务恢复、受控结果回注及脱离通话的执行机制。独立 Super 不是唯一技术路线。但当前网页会话受账号额度、换号、媒体断线与关麦生命周期影响，固定源码又没有已证实的 Cylo 工具桥和响应控制，因此不推荐把长期任务规划者绑定在该通话中。即便未来合并模型角色，任务、权限和证据仍由 Cylo 持有。
+In theory the real-time voice agent could itself be the only Super, provided it had reliable tool round-trips, persistent plans and task recovery, controlled result injection, and a way to execute after the call ends. A separate Super is not the only possible technical design. However, the current web session depends on account quota, account switching, media connectivity, and microphone/call lifetime. The fixed source also has no proven Cylo tool bridge or response control. Therefore, do not bind the long-running task planner to the call. Even if model roles are combined in the future, Cylo still owns tasks, permissions, and evidence.
 
-| 角色 | 负责 | 不具有的权力 |
+| Role | Responsible for | Does not have authority to |
 |---|---|---|
-| 实时语音交互 Agent | 听说、闲聊、澄清、表达请求/结果；提出业务意图 | 不能凭口头方案另行派发 Worker、授予权限或确认完成 |
-| VoiceSessionAdapter（程序） | 协议事件、轮次确认、去重、提交、回执关联、代次和播放控制 | 不用字幕猜测授权，不把 assistant 文本当执行证据 |
-| Super | 复杂任务的正式规划、依赖、协调与异常处理 | 不能跳过 Cylo 授权和持久命令直接改变权威任务状态 |
-| Cylo 控制平面/Worker | 控制面持久化与授权；Worker 按正式任务执行并提交证据 | 不能把模型自报、HTTP 接收或一次对话结束当目标完成 |
+| Real-time voice interaction agent | Listening/speaking, small talk, clarification, expressing requests/results, proposing business intent | Dispatch Workers, grant permission, or declare completion based on a spoken plan |
+| VoiceSessionAdapter (program) | Protocol events, turn confirmation, deduplication, submission, receipt association, generations, playback control | Infer authorization from captions or treat assistant text as execution evidence |
+| Super | Formal planning for complex tasks, dependencies, coordination, and exception handling | Bypass Cylo authorization and durable commands to change authoritative task state |
+| Cylo control plane / Worker | Durable control-plane state and authorization; Workers execute formal tasks and submit evidence | Treat model self-report, HTTP receipt, or an ended conversation as goal completion |
 
-防止**双执行**：同一确认轮次只进入一个幂等 command，只有控制面批准的计划可派发 Worker；工具凭据不交给语音模型。防止**双规划**：语音模型的口头建议不成为另一份可执行任务树；已有任务的修改提交到原 task/plan revision，由其规划者处理。仍可能发生重复推理、前后答案不一致；这些不能靠权限隔离消除。防止**虚假完成播报**需要单独的响应/播放控制，提示词和屏幕纠正都不能撤回用户已经听到的错误承诺。
+Prevent **double execution**: route each confirmed turn to one idempotent command; only a plan approved by the control plane may dispatch Workers. Do not give tool credentials to the voice model. Prevent **double planning**: spoken suggestions from the voice model do not become a second executable task tree; changes to existing work go through the original task/plan revision and its planner. Duplicate reasoning and inconsistent answers may still occur; permission isolation does not eliminate them. Preventing **false completion announcements** requires separate response/playback control. Prompts and on-screen corrections cannot retract a false promise the user has already heard.
 
-## 2. 推荐拓扑与三类请求
+## 2. Recommended topology and three request types
 
 ```text
-用户 ←→ WebRTC / 私有 DataChannel ←→ 网页实时语音 Agent
+User ←→ WebRTC / private DataChannel ←→ web real-time voice agent
  │                  ↑
- │ 媒体与字幕组件    │ 经验证的回执文本注入（现有 relay 是 user 角色）
- └→ VoiceSessionAdapter → Cylo 认证、轮次确认、唯一 command 入口
-                                ├→ 确定性查询服务 → 权威状态/来源
-                                └→ Super 正式计划 → 控制面授权派发 → Worker
+ │ media and captions│ validated receipt-text injection (existing relay uses user role)
+ └→ VoiceSessionAdapter → Cylo authentication, turn confirmation, sole command entry
+                                ├→ deterministic query service → authoritative state/source
+                                └→ Super formal plan → control-plane authorization → Worker
                                                       ↓
-                                      任务库 / 事件 / 执行证据 → 回执
-建连控制：Cylo BFF ←→ Space Go 网关 / 账号池 ←→ 网页上游信令
+                                      task DB / events / execution evidence → receipt
+Connection control: Cylo BFF ←→ Space Go gateway / account pool ←→ web upstream signaling
 ```
 
-媒体路径保留实时 speech-to-speech；不增加独立 STT/TTS。路由是 Cylo 新增能力，不假定上游已提供结构化意图/工具事件。最初可用明确业务入口与确认提交区分模式；自动路由必须基于已确认用户轮次，歧义先澄清。
+Keep the real-time speech-to-speech media path; do not add standalone STT/TTS. Routing is a new Cylo capability; do not assume the upstream already exposes structured intent/tool events. Initially distinguish modes using an explicit business entry point and confirmed submission. Automatic routing must be based on a confirmed user turn; clarify ambiguity first.
 
-- **简单查询**：“任务 T1 到哪了？”确认目标与权限后直接查 Cylo 任务库，返回状态、观测时间和来源；无需 Super 再规划一次。回执经选定语音会话解释，准确回读仍需集成验证。开放知识问答可由语音模型直接回答，但不能冒充业务实时查询。
-- **业务命令**：“实现登录并测试。”确认用户轮次→幂等 command→持久接收回执→Super 计划→授权与 Worker 执行→持久证据/验收→状态回执。接收只代表已接收，running 不得说完成。上游先说出的方案或“做好了”不派生第二次执行。
-- **闲聊**：“今天想聊聊旅行。”由实时语音模型直接回应，不为每句闲聊调用 Super，不自动创建任务。聊到“帮我订票”等业务动作时进入明确命令/审批路径；不能由语音模型自行取得执行权限。
+- **Simple query:** “What is the status of task T1?” After confirming the target and permission, query Cylo's task database and return status, observation time, and source; no second Super planning call is needed. The selected voice session can explain the receipt, but accurate readback still needs integration validation. The voice model may answer general knowledge questions directly, but must not impersonate a live business-status query.
+- **Business command:** “Implement login and test it.” Confirm user turn → idempotent command → durable acceptance receipt → Super plan → authorization and Worker execution → durable evidence/acceptance → status receipt. Acceptance means only that the command was received; a running task must not be called complete. A plan or “it's done” spoken by the upstream must not trigger a second execution.
+- **Small talk:** “I feel like talking about travel today.” The real-time voice model responds directly; do not call Super for every chat turn or create tasks automatically. If the conversation turns to “book me a ticket,” use the explicit command/approval path. The voice model cannot grant itself execution authority.
 
-## 3. 长任务、闲聊及中断
+## 3. Long tasks, small talk, and interruptions
 
-任务和媒体是两个生命周期：任务已持久接收后，用户可以继续闲聊，Super/Worker 在后台运行；关麦、挂断、换账号或上游会话重建都不取消任务。结果先进持久通知收件箱，再由播报队列按当前会话代次、优先级和用户设置投递。用户正在说话或闲聊回复尚未结束时可延后通知；相同 receipt/revision 不重复播报，旧状态被新状态覆盖时不再播旧进度。
+Tasks and media have separate lifecycles. After a task is durably accepted, the user can keep chatting while Super/Workers continue in the background; muting, hanging up, switching accounts, or recreating the upstream session does not cancel the task. Results first enter a durable notification inbox, then a playback queue delivers them according to the current session generation, priority, and user settings. Delay a notification while the user is speaking or a small-talk reply is still in progress. Do not announce the same receipt/revision twice; when a newer state supersedes an old one, do not announce stale progress.
 
-这是目标行为，不代表当前单条远端音轨已能可靠区分“闲聊音频”和“任务回执音频”。缺少来源/响应边界时不能承诺一边自由闲聊一边精确屏蔽错误业务答复。初期可显式进入业务提交模式，在开口前关闭整条远端播放并显示任务卡片；这会牺牲该时段的自然回复。不能等 final 才关播放来保证先答未泄漏，也不能只凭回执到达就恢复播放，避免漏出旧缓存/未知响应。恢复条件与清缓冲必须通过实测确认；必要时先继续屏幕回执，记录语音回读缺口，仍使用选定实时通话方案。
+This is desired behavior; it does not mean the current remote audio track can reliably distinguish “small-talk audio” from “task-receipt audio.” Without a source/response boundary, do not promise that users can chat freely while incorrect business answers are precisely blocked. Initially, explicitly enter business-submission mode, disable the entire remote playback track before speaking, and show the task card; natural replies will be unavailable during that period. Disabling playback only after finality arrives cannot ensure a premature answer was not leaked. Nor can playback be resumed as soon as a receipt arrives, which risks old buffered or unknown-response audio leaking. Recovery and buffer clearing require real tests. If necessary, keep the receipt on screen and record the voice-readback gap while retaining the selected real-time voice solution.
 
-| 用户动作 | 媒体效果与任务效果 |
+| User action | Media effect and task effect |
 |---|---|
-| 插话/“先别说了” | 停当前播报/响应；不取消后台任务，也不回滚副作用 |
-| 静音麦克风/挂断 | 停收音或结束媒体；已接收任务继续，结果留在收件箱 |
-| “暂停任务 T1”/“取消任务 T1” | 独立授权 command；执行端确认后更新真实状态，已发生副作用另行说明 |
-| 修改长任务目标 | 关联原 task 与计划版本，经 Super/控制面处理冲突；不靠中断音频或重放旧语句修改 |
+| Interrupt / “stop talking for a moment” | Stop the current response/playback; do not cancel the background task or roll back side effects. |
+| Mute microphone / hang up | Stop capture or end media; accepted tasks continue and results remain in the inbox. |
+| “Pause task T1” / “Cancel task T1” | Send a separate authorized command; update real state only after execution-side confirmation, and separately explain any side effects that already occurred. |
+| Change the goal of a long task | Associate the change with the original task and plan version; let Super/control plane resolve conflicts. Do not change it by interrupting audio or replaying an old utterance. |
 
-## 4. 固定源码限制与实施路线
+## 4. Fixed-source limits and implementation path
 
-固定 SHA：`6338ac478070aaa34bfe7a3c0469caf9e9174c02`。本次只读检查以下源码：
+Fixed SHA: `6338ac478070aaa34bfe7a3c0469caf9e9174c02`. This read-only review checked:
 
-| 源码证据 | 对设计的限制 |
+| Source evidence | Design constraint |
 |---|---|
-| [service.go L628](https://github.com/Space3044/chatgpt-web-voice/blob/6338ac478070aaa34bfe7a3c0469caf9e9174c02/internal/voice/service.go#L628)：`client_tools:[]`，`primary_assistant`，模型字段为空 | 已有实时 assistant；未实现 Cylo 工具注册/往返，不能假定具体模型型号或自行获得调度工具 |
-| [voice.html L3822](https://github.com/Space3044/chatgpt-web-voice/blob/6338ac478070aaa34bfe7a3c0469caf9e9174c02/static/voice.html#L3822)、[L4081](https://github.com/Space3044/chatgpt-web-voice/blob/6338ac478070aaa34bfe7a3c0469caf9e9174c02/static/voice.html#L4081)：relay 与 `author.role:user` | 回执是文本输入，不是真 tool result、system message 或精确朗读协议；需防回环和改写 |
-| [voice.html L3849](https://github.com/Space3044/chatgpt-web-voice/blob/6338ac478070aaa34bfe7a3c0469caf9e9174c02/static/voice.html#L3849)：字幕合并/角色推断 | 不等于可靠用户 final；先明确确认提交，不逐个 partial 执行 |
-| [voice.html L3773](https://github.com/Space3044/chatgpt-web-voice/blob/6338ac478070aaa34bfe7a3c0469caf9e9174c02/static/voice.html#L3773)：`stop_speaking`，注释明确不本地 mute | 只是停止请求，不是业务 cancel、禁答开关或已经停播的证明 |
-| [downstream.go L25](https://github.com/Space3044/chatgpt-web-voice/blob/6338ac478070aaa34bfe7a3c0469caf9e9174c02/internal/api/downstream.go#L25)：拒绝未知字段 | 不可直接添加官方 tools/instructions 参数并宣称网页接口支持；无已证实的自定义 system/完全禁答机制 |
+| [service.go L628](https://github.com/Space3044/chatgpt-web-voice/blob/6338ac478070aaa34bfe7a3c0469caf9e9174c02/internal/voice/service.go#L628): `client_tools:[]`, `primary_assistant`, empty model field | A real-time assistant exists, but Cylo tool registration/round-trip is not implemented. Do not assume a particular model or that the assistant can obtain scheduling tools. |
+| [voice.html L3822](https://github.com/Space3044/chatgpt-web-voice/blob/6338ac478070aaa34bfe7a3c0469caf9e9174c02/static/voice.html#L3822), [L4081](https://github.com/Space3044/chatgpt-web-voice/blob/6338ac478070aaa34bfe7a3c0469caf9e9174c02/static/voice.html#L4081): relay and `author.role:user` | A receipt is text input, not a true tool result, system message, or exact read-aloud protocol. Guard against loops and rewriting. |
+| [voice.html L3849](https://github.com/Space3044/chatgpt-web-voice/blob/6338ac478070aaa34bfe7a3c0469caf9e9174c02/static/voice.html#L3849): caption merging/role inference | This is not reliable user-final detection. Require explicit confirmation first; do not execute each partial. |
+| [voice.html L3773](https://github.com/Space3044/chatgpt-web-voice/blob/6338ac478070aaa34bfe7a3c0469caf9e9174c02/static/voice.html#L3773): `stop_speaking`, with comment explicitly saying it does not locally mute | This is only a stop request, not business cancellation, a no-answer switch, or proof that playback stopped. |
+| [downstream.go L25](https://github.com/Space3044/chatgpt-web-voice/blob/6338ac478070aaa34bfe7a3c0469caf9e9174c02/internal/api/downstream.go#L25): rejects unknown fields | Do not add official tools/instructions parameters and claim the web API supports them. There is no verified custom system/no-answer mechanism. |
 
-实施顺序：先保留原生通话并增加确定提交与持久任务入口，补齐查询/复杂命令路由、幂等及证据回执；再在同一上游内验证回读、响应/播放控制和长任务期间闲聊；账号租约/冷却/新会话恢复按03独立推进。工具桥、system/instructions、响应抑制或服务端 peer 作为针对缺口的增强，逐项以真实协议证据确认，不能用官方 Realtime 文档或离线 mock 代替。服务端 peer 能改善观测与媒体控制，但不会凭空创造上游工具能力。
+Implementation order: retain native calls and add confirmed submission and a durable task entry point; add query/complex-command routing, idempotency, and evidence receipts; then validate readback, response/playback control, and small talk during long-running work against the same upstream. Advance account leases/cooldowns/new-session recovery separately in 03. Treat a tool bridge, system/instructions, response suppression, or server-side peer as targeted enhancements for demonstrated gaps, and confirm each with real protocol evidence. Official Realtime documentation or an offline mock is not a substitute. A server-side peer may improve observation and media control but cannot create upstream tool capability by itself.
 
-验收围绕实际能力：同句修订只执行一次、任务未完成不播完成、查询不重规划、闲聊不派 Worker、断线不取消任务、明确取消才改变任务状态、换号不重放命令。任何失败形成选定方案的集成待办与相应发布限制，不构成重新选择语音项目的理由。本次仅交付文档设计，真实通话、音频控制与并发行为均未验证。
+Acceptance should exercise actual behavior: a corrected utterance executes only once; an unfinished task is not announced as complete; a query does not trigger replanning; small talk does not dispatch a Worker; a disconnect does not cancel a task; only explicit cancellation changes task state; switching accounts does not replay a command. Each failure becomes an integration task and a corresponding release limitation for the selected solution, not a reason to select a different voice project. This round delivered documentation only; real calls, audio control, and concurrency remain unverified.

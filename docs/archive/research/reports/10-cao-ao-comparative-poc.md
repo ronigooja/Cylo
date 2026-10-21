@@ -1,24 +1,24 @@
-# 编排需求符合性与单主线实施路线
+# Orchestration Requirements Fit and Single-Track Implementation Plan
 
-日期：2026-10-21。**用户已明确采用 OrchestratorInc/agent-orchestrator（AO，Go）；当前实施主线为 AO + Space + Cylo 控制平面，Cylo 新服务端优先 Go。** 不再安排 CAO/AO 双 daemon 选型对跑。下文保留已完成的 CAO 模块/AO 命令清理实验，采用 AO 不改变这些实验的证明范围。人工无缝接管可选，官方 macOS Codex App 不在范围，首期仅保证 Linux 服务端与执行宿主部署，其 CLI 仍需验收；macOS 客户端/浏览器及用户自行使用 CLI 保留，macOS 后台运行后续按需评估。
+Date: 2026-10-21. **The user has explicitly adopted OrchestratorInc/agent-orchestrator (AO, Go); the current implementation track is AO + Space + the Cylo control plane, with Go preferred for new Cylo services.** No further CAO/AO dual-daemon selection run is planned. The completed CAO module/AO command cleanup experiment is retained below; adopting AO does not change what that experiment demonstrated. Optional human seamless takeover, the official macOS Codex App, and macOS server operation are outside the initial scope. The first release targets Linux server and execution-host deployment, with its CLI still requiring acceptance. macOS clients/browser access and users' independent CLI use remain in scope; macOS background operation can be assessed later if needed.
 
-## 本轮交付：产物清理边界的可复现切片
+## Delivery in this round: a reproducible slice for artifact cleanup boundaries
 
-已有 [02](../../../research/02-orchestration-and-codex.md) 实验覆盖 Codex 原生 thread 持久化与 CAO 强制清理；[09](../../../research/09-agent-orchestration-alternatives.md) 已有候选源码对照。本轮不重复原生文字交接，新增**相同 Git 场景下的 CAO 模块执行与 AO 命令契约执行**，以确定清理保护的实际 Git 后果。不是完整双 daemon PoC，也没有自动 Super 推理。
+Report [02](../../../research/02-orchestration-and-codex.md) already covers native Codex thread persistence and CAO forced cleanup; [09](../../../research/09-agent-orchestration-alternatives.md) already compares candidate source code. This round does not repeat the native text handoff experiment. It adds **CAO module execution and AO command-contract execution in the same Git scenario** to determine the actual Git consequences of cleanup protection. This is not a full two-daemon PoC and includes no automatic Super reasoning.
 
-| 场景 | CAO | AO |
+| Scenario | CAO | AO |
 |---|---|---|
-| 两个工作区修改相同文件 | 实际上游 create_worktree 创建、互不覆盖 | fixture Git 创建、互不覆盖；未执行 AO Create |
-| 普通清理脏工作区 | 实际上游 remove_worktree 丢弃修改与未跟踪产物 | 从固定源码提取 worktreeRemoveArgs 并执行 Git，返回128、原产物仍在 |
-| 强制清理边界 | 普通 teardown 已使用 force | 提取 worktreeForceRemoveArgs 后直接执行，会删除脏产物；未执行 ForceDestroy 前置保存链路 |
-| 已提交产物 | 清理后未合并分支保留、可 git show 读回 | 命令清理后分支保留、可 git show 读回；未验证 daemon 后续分支策略 |
-| 新进程重读 | 新 Git 进程能发现两个注册工作区 | 相同；仅 Git 注册可重读，不能称 daemon/任务恢复 |
+| Two workspaces modify the same file | Real upstream `create_worktree`; changes do not overwrite each other | Fixture Git; changes do not overwrite each other. AO Create was not executed. |
+| Ordinary cleanup of a dirty workspace | Real upstream `remove_worktree` discards modifications and untracked artifacts | Extracted `worktreeRemoveArgs` from fixed source and executed Git; returned 128, with original artifacts still present. |
+| Forced-cleanup boundary | Ordinary teardown already uses force | Extracted `worktreeForceRemoveArgs` and ran it directly; it deletes dirty artifacts. The pre-save path before ForceDestroy was not executed. |
+| Committed artifacts | Unmerged branch survives cleanup and can be read with `git show` | Branch survives command cleanup and can be read with `git show`; later daemon branch policy was not verified. |
+| Read by a new process | A new Git process can discover both registered workspaces | Same; only Git registration can be reread. This is not daemon/task recovery. |
 
-**结论：AO 的普通 Git 删除命令比 CAO teardown 更保守，但两者都有危险清理路径。** AO Go 的 Destroy 还有 discard/reclaim、错误分类与保存逻辑，本轮没有执行这些分支；不能将命令层结果写成 AO 整体安全或端到端胜出。CAO 首期必须在 teardown 前保存并核验未提交/未跟踪产物；AO 首期必须确认只有成功保存后才可 ForceDestroy。普通服务日志、ignored 文件、符号链接及外部路径仍需独立产物清单，Git commit 不覆盖所有成果。
+**AO's ordinary Git removal command is more conservative than CAO teardown, but both have dangerous cleanup paths.** AO Go's Destroy also has discard/reclaim, error classification, and save logic; this round did not execute those branches. The command-level result cannot be described as proving that AO as a whole is safe or wins end to end. Before CAO's first release, save and verify uncommitted/untracked artifacts before teardown. Before AO's first release, confirm that ForceDestroy can run only after a successful save. Ordinary service logs, ignored files, symlinks, and external paths still need their own artifact inventory; a Git commit does not cover every result.
 
-源码版本：CAO `4e990a9d78b154ad76c6cf94c7b51e36fce69f21`，AO `7c83bd68c1e60c85b6a90e3ffa1340c859e4a3ff`。脚本检查 HEAD 和实际执行/提取文件与 Git 固定版本一致；结果另记录文件 SHA256、Python/Git 版本。环境无 Go/tmux，本轮未安装整套工具链。AO go.mod 要求 Go 1.27.1，后续先确认官方工具链可取得，失败须记录阻断，不能降 go.mod 后声称原版通过。
+Source versions: CAO `4e990a9d78b154ad76c6cf94c7b51e36fce69f21`, AO `7c83bd68c1e60c85b6a90e3ffa1340c859e4a3ff`. The script checks that HEAD and the source files executed/extracted match the fixed versions; the result also records file SHA256 and Python/Git versions. Go and tmux were unavailable in the environment; the full toolchain was not installed. AO go.mod requires Go 1.27.1. First confirm that the official toolchain can be obtained; if not, record a blocker rather than lowering go.mod and claiming the original passed.
 
-复现依赖仅 Python 3.10+、Git 和固定源码，不需要 Codex、账号或联网。源码缺失时，先在新目录 clone，再 `git fetch origin <SHA>`、`git checkout --detach <SHA>`；已有目录先核对来源，勿覆盖。上游获取命令见02/09；路径可通过参数指定：
+Reproduction requires only Python 3.10+, Git, and the pinned sources; Codex, accounts, and network access are not needed. If the source is absent, clone into a new directory, then run `git fetch origin <SHA>` and `git checkout --detach <SHA>`; if a directory already exists, check its origin and do not overwrite it. Upstream fetch commands are in 02/09; paths can be supplied as arguments:
 
 ```bash
 python3 docs/archive/research/evidence/cao-ao-worktree-poc.py \
@@ -26,17 +26,17 @@ python3 docs/archive/research/evidence/cao-ao-worktree-poc.py \
   > /tmp/cao-ao-worktree-poc-result.json
 ```
 
-[可执行脚本](../evidence/cao-ao-worktree-poc.py) 使用临时 HOME、禁用用户/系统 Git 配置，只有临时仓库被修改，退出后清理；不启动模型或访问真实会话。当前 [结果快照](../evidence/cao-ao-worktree-poc-result.json) 的 `false` 是实际观测到 CAO 丢弃脏产物的预期断言，**不是安全验收通过**。临时路径已归一化为 `$TEMP`。实际 Worker 写入由确定性 fixture 代替，不把它算作 LLM 工具调用。
+The [executable script](../evidence/cao-ao-worktree-poc.py) uses a temporary HOME, disables user/system Git configuration, modifies only temporary repositories, and cleans up on exit. It does not start a model or access real sessions. In the current [result snapshot](../evidence/cao-ao-worktree-poc-result.json), `false` is the expected assertion for the observed CAO discard of dirty artifacts; it **does not mean security acceptance passed**. Temporary paths have been normalized to `$TEMP`. Deterministic fixtures replace actual Worker writes; do not count them as LLM tool calls.
 
-## 按需求推进的下一批实施与验收
+## Next implementation and acceptance work, ordered by requirements
 
-AO 提供 orchestrator/worker、独立工作区、Codex native ID/resume 与 host/reconcile，作为已选执行底座接入；Cylo 管业务账本、授权、记忆、长期普通服务与语音池调度。AO 的 fresh fallback 不能算同 thread 恢复，采用决定也不证明完整业务恢复或清理安全。AWS CAO 的研究与 [07](../../../research/07-cao-cli-handoff-plan.md) 改造方案保留历史用途，不再作为当前实施计划。完整映射见[选型文档](../../../project-selection-comparison.md)。
+Integrate AO's orchestrator/worker, isolated workspaces, Codex native IDs/resume, and host/reconcile capabilities as the selected execution foundation. Cylo owns the business ledger, authorization, memory, long-running ordinary services, and voice-pool scheduling. AO fresh fallback is not same-thread recovery, and adopting AO does not prove full business recovery or safe cleanup. AWS CAO research and the modification plan in [07](../../../research/07-cao-cli-handoff-plan.md) remain useful as historical material, but are no longer the current implementation plan. See the [selection document](../../../project-selection-comparison.md) for the complete mapping.
 
-1. **落地 AO adapter。** 以 [09](../../../research/09-agent-orchestration-alternatives.md) 固定源码为起点，核验 Go 工具链和 daemon/API/事件契约，建立 task→run→AO session→host/Worker→worktree→native thread 映射，接入现有 Codex resume，约束显式权限并验证清理前保存/核验。仅一套执行 owner；Cylo 持有任务、授权、预算和结果权威。先不做可选的人工无缝交接状态机。
-2. **贯通一条真实产品链路。** 先以临时工作区与离线 fixture 验证接线，再在获准环境验证复杂目标→Super 拆分→两个独立 Worker/worktree→产物与测试验收；简单请求可由 Cylo 直接路由 Worker，不额外调用 Super。消息送达、终端 idle 不算任务完成。无需为此再跑 CAO 副本。
-3. **验收恢复、停止、权限和保全。** 重启控制服务、杀 Worker、缺 native history、工具执行后丢回执，分别记录存活重附着、原 thread resume、fresh/fork、result-unknown；未知副作用不自动重放。停止须确认进程树和写入终止。按 AO Codex adapter 的实际参数去掉默认审批/sandbox 绕过路径，验证实际允许/拒绝。普通/强制清理注入保存失败时不得删除；tracked、untracked、ignored、符号链接和外部产物按清单核验。首期在 Linux 验收后台常驻与主机迁移并留证；跨环境备份导出保留，macOS 后台验收后续按需安排。
-4. **接入已定语音与长期能力。** Space 保留网页实时媒体和账号池，完成稳定语义提交→幂等 command→实际任务回执→播报，以及额度耗尽后新媒体会话/业务上下文恢复。这是集成验收，不是重新选择 Space 的门槛；无账号/设备时标未测，继续完成可离线开发。普通后台服务另交 OS supervisor，不能绑定 Super 或媒体会话的寿命；记忆与授权也不借用编排 daemon 的会话状态。
+1. **Implement the AO adapter.** Start from the fixed source in [09](../../../research/09-agent-orchestration-alternatives.md), verify the Go toolchain and daemon/API/event contracts, and map task → run → AO session → host/Worker → worktree → native thread. Integrate existing Codex resume, constrain explicit permissions, and verify save/check before cleanup. Keep one execution owner; Cylo remains authoritative for tasks, authorization, budget, and results. Do not build the optional human seamless-handoff state machine yet.
+2. **Complete one real product path.** First verify wiring with a temporary workspace and offline fixture. Then, in an authorized environment, test a complex goal → Super decomposition → two independent Workers/worktrees → artifact and test acceptance. Cylo may route simple requests directly to a Worker without an extra Super call. Message delivery or terminal idle does not mean the task is complete. No duplicate CAO instance is needed for this.
+3. **Accept recovery, stop, permissions, and preservation.** Separately record live reattachment, original-thread resume, fresh/fork, and result-unknown after restarting the control service, killing a Worker, missing native history, and losing a receipt after tool execution. Do not automatically replay unknown side effects. Confirm that stopping terminates the process tree and writes. Remove default approval/sandbox bypass paths according to AO's actual Codex adapter parameters, then verify allowed and denied operations. Inject save failures before ordinary/forced cleanup; verify tracked, untracked, ignored, symlink, and external artifacts against an inventory. Accept Linux daemon persistence and host migration first, with evidence. Retain cross-environment backup/export; schedule macOS background acceptance later if needed.
+4. **Integrate the selected voice and long-running capabilities.** Space retains web real-time media and its account pool. Complete stable semantic submission → idempotent command → actual task receipt → spoken response, plus recovery of new media sessions/business context after quota exhaustion. This is integration acceptance, not a new selection gate for Space; if accounts/devices are unavailable, mark the work untested and continue with offline development. Give ordinary background services a separate OS supervisor; do not bind their lifetime to Super or a media session. Memory and authorization must not borrow orchestration-daemon session state.
 
-每步交付 `executed / simulated / static / not-tested`、版本、任务/进程/原生 thread 映射、故障注入、恢复模式、产物校验、权限拒绝证据与残余进程记录。离线 fixture 不证明真实模型或生产可靠性；已有实验失败与手工补救均保留，不能计为自动恢复。
+Each step should deliver `executed / simulated / static / not-tested`, versions, task/process/native-thread mappings, fault injection, recovery mode, artifact checks, permission-denial evidence, and residual-process records. Offline fixtures do not prove real-model or production reliability. Preserve existing experiment failures and manual recovery; do not count them as automatic recovery.
 
-当前不重开底座选型；实际缺口按 AO adapter/必要上游改造逐项落实。AO 的 Codex 账号池与 CLIProxyAPI 接入等待专门报告确认，不预先列为必需新增组件。语音真实通话、移动音频和费用实验仍按已授权环境单独验收，本次文档修订不运行 daemon 或连接账号。
+Do not reopen foundation selection. Address actual gaps individually in the AO adapter or necessary upstream changes. Whether AO's Codex account pool can integrate with CLIProxyAPI awaits the dedicated reports; do not predeclare another mandatory component. Real voice calls, mobile audio, and cost experiments remain subject to separately authorized acceptance in the appropriate environment. This documentation edit did not run a daemon or connect to accounts.

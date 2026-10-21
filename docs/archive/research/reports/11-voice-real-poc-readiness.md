@@ -1,58 +1,58 @@
-# 已选语音方案：集成验证与缺口处理
+# Selected Voice Solution: Integration Validation and Gap Handling
 
-日期：2026-10-21。范围是通话前准备与实验计划，未导入账号、启动网关、连接真实媒体或产生模型调用。沿用 [03](../../../research/03-voice.md)、[06](../../../research/06-realtime-integration-review.md)、[08](../../../research/08-voice-project-alternatives.md) 的 Space3044 Go 网关与多账号池；不替换为独立 STT/TTS。需求依据为[产品需求](../../../product-requirements.md) §3.3、§6.1、§8：语音和后台任务分离，完成必须有真实执行证据。
+Date: 2026-10-21. This report covers call preparation and an experiment plan. No accounts were imported, no gateway was started, no real media was connected, and no model calls were made. It continues the selected Space3044 Go gateway and multi-account pool from [03](../../../research/03-voice.md), [06](../../../research/06-realtime-integration-review.md), and [08](../../../research/08-voice-project-alternatives.md); it does not replace them with standalone STT/TTS. The requirements are in the [product requirements](../../../product-requirements.md), sections 3.3, 6.1, and 8: voice and background tasks are separate, and completion requires evidence of real execution.
 
-**Space3044/chatgpt-web-voice 已选定。下一步用一个账号的短时协议验证补齐业务桥接集成，编排侧按 Cylo 必需能力验证 CLI 执行与持久恢复；不再通过语音 PoC 决定是否选 Space。** 不应等完整 UI 或完整任务系统开发后才发现 turn final、回执回读或先答控制不可行。一个账号足以验证协议与回读，两个账号才具备真实切号实验配置。
+**Space3044/chatgpt-web-voice is selected. The next step is a short protocol test with one account to fill the business-bridge integration gaps; on the orchestration side, validate the required Cylo CLI execution and persistent recovery. The voice PoC will not decide whether to select Space again.** Do not wait until the full UI or task system has been built before discovering that turn finalization, receipt readback, or pre-answer control is infeasible. One account is enough to test the protocol and readback; two accounts are needed for an actual account-switch experiment.
 
-## 当前准备度与避免重复
+## Current readiness and avoiding duplicate work
 
-仓库目前是研究方案，没有 Cylo BFF、VoiceSessionAdapter、持久 command runtime 或真实 Super 桥。已有证据如下，不重复增加同类 mock：
+The repository currently contains research plans, not a Cylo BFF, VoiceSessionAdapter, persistent command runtime, or real Super bridge. Existing evidence is below; do not create more mocks of the same kind.
 
-| 已有检查 | 可证明 | 不能证明 |
+| Existing check | What it can prove | What it cannot prove |
 |---|---|---|
-| `evidence/voice-pool-poc.py` | 固定源码断言；串行内存状态机的粘性、冷却、代次、幂等示意 | Go 实际运行、事务并发、真实额度、真实用户 final |
-| `evidence/voice-static-check.cjs` | 内联 JS 语法；抽取函数在 stub 下发送 stop_speaking | 扬声器真正停止、DOM、媒体、上游确认 |
-| 08 中 Python 候选测试 | 首账号选择、禁用后选择、导入行为 | Go 网关能力、真实换号、语音执行闭环 |
+| `docs/archive/research/evidence/voice-pool-poc.py` | Fixed-source assertions; an in-memory serial state-machine demonstration of stickiness, cooldown, generations, and idempotency | Actual Go execution, transactional concurrency, real quota, real user final messages |
+| `docs/archive/research/evidence/voice-static-check.cjs` | Inline JavaScript syntax; extracted function sends `stop_speaking` under a stub | Actual speaker stops, DOM/media behavior, upstream confirmation |
+| Python candidate test in 08 | First-account selection, selection after disabling an account, import behavior | Go gateway capability, real switching, completed voice execution loop |
 
-本轮仅核对固定源码和配置模板，不重跑上述 mock，也不新增假后端来重复幂等/冷却演示。三个待处理集成缺口仍是：可靠用户 final、真实结果经 user-role relay 忠实回读、防止执行前先说“完成”。职责与并发设计见[12](12-voice-super-boundary.md)；该方案保留实时上游和账号池，不以 STT/TTS 替换。
+This round only checks pinned source and configuration templates. It does not rerun the above mocks or add a fake backend to repeat idempotency/cooldown demonstrations. Three integration gaps remain: reliable user-final detection, faithful readback of real results through a user-role relay, and preventing a premature “complete” response before execution. See [12](12-voice-super-boundary.md) for responsibilities and concurrency design. It retains the real-time upstream and account pool; it does not substitute STT/TTS.
 
-## 本机最少配置（由账号持有人本机操作）
+## Minimum local setup (performed on the account holder's machine)
 
-1. 单独实验目录/数据卷，固定 `Space3044/chatgpt-web-voice` SHA `6338ac478070aaa34bfe7a3c0469caf9e9174c02`，保留 MIT 说明。不要直接运行上游 compose 的 `image: ...:main` 和 `pull_policy: always` 作为固定版本实验；从固定 checkout 构建并记录镜像 ID。PoC 初期只开一个会话、一个设备。
-2. 上游 `.env.example` 要求 `VOICE_AUTH_USERNAME`、`VOICE_AUTH_PASSWORD`、`VOICE_TOKEN_ENCRYPTION_KEY`；在本机生成实验专用值，独立加密密钥不随数据库备份一起公开。配置 `VOICE_DATA_DIR` / `VOICE_DATABASE_FILE` 指向实验数据。通过受信 HTTPS 访问；纯本机 localhost 可用于初测，手机远程访问需有效 HTTPS。网关仅内部可达，不照搬默认 host network 暴露管理口。
-3. 账号持有人在隔离管理界面导入 **1 个本人有权使用、可正常使用网页语音的测试 ChatGPT Web 账号**；跨账号实验增加第二个可用账号。这里需要 Web access_token，并非 API key；不请求把 token 粘贴到对话、仓库或工单。不要自动搜索、读取、复制已有凭据库。探活成功仅表示鉴权存活，不保证语音额度。
-4. 若启用 BFF，单独创建网关下游 key，仅存服务端。浏览器不得持有该 key、账号 token 或加密主密钥；服务端校验用户/会话归属。直接使用上游管理页仅可验证原生通话，不能冒充 Cylo 桥接已就绪。
-5. 一台带麦克风/扬声器或耳机的桌面浏览器；先用合成测试语句，不含个人项目资料。网络须同时满足网关 HTTP 上游与浏览器 WebRTC 路径；HTTP proxy 可用不表示媒体可用。
-6. 事先设定人工停止时长与会话次数，保守建议首轮总通话不超过 10 分钟、最多 3 次建连；这是实验预算，不是上游额度承诺。新增 Super 真实调用单独计入既有预算；本轮准备工作未授权实际调用。
+1. Use a separate experiment directory/data volume and pin `Space3044/chatgpt-web-voice` to SHA `6338ac478070aaa34bfe7a3c0469caf9e9174c02`, retaining the MIT notice. Do not treat the upstream compose `image: ...:main` with `pull_policy: always` as a pinned experiment. Build from the fixed checkout and record the image ID. Initially allow only one session and one device.
+2. The upstream `.env.example` requires `VOICE_AUTH_USERNAME`, `VOICE_AUTH_PASSWORD`, and `VOICE_TOKEN_ENCRYPTION_KEY`. Generate experiment-only values locally; do not publish the separate encryption key with database backups. Point `VOICE_DATA_DIR` / `VOICE_DATABASE_FILE` to experiment data. Use trusted HTTPS; localhost is suitable for an initial local check, while remote phone access requires valid HTTPS. Keep the gateway reachable only internally; do not copy the default host-network exposure of the management port.
+3. The account holder imports **one personally owned ChatGPT Web account that they are authorized to use and that can use web voice** through the isolated management interface. Add a second usable account for cross-account testing. This requires a Web `access_token`, not an API key. Do not paste tokens into chat, the repository, or tickets. Do not search for, read, or copy existing credential stores automatically. A successful probe shows authentication is alive, not that voice quota is available.
+4. If enabling a BFF, create a separate downstream key for the gateway and store it server-side only. The browser must not hold this key, account tokens, or the encryption master key; the server must validate user/session ownership. Direct use of the upstream management page can test native calls only; it cannot be presented as a ready Cylo bridge.
+5. Use a desktop browser with a microphone and speaker/headphones; start with synthetic test phrases that contain no personal project information. The network must support both gateway HTTP upstream traffic and browser WebRTC. A working HTTP proxy does not prove media connectivity.
+6. Set a manual stop duration and session count in advance. A conservative first round is no more than 10 minutes of total calls and no more than 3 connection attempts; this is an experiment budget, not an upstream quota promise. Any new real Super calls count against their separately existing budget; this preparation did not authorize real calls.
 
-本轮本机检查：Python、Node、Docker 可执行文件存在，Go 不在 PATH；未验证 Docker daemon、构建成功或 TLS/网络。此前“无 Go”记录仍成立；实际运行需安装固定版本所需 Go 工具链（go.mod 为 Go 1.24.1），或构建固定源码 Docker 镜像。
+Local checks this round: Python, Node, and Docker executables were present; Go was not on PATH. Docker daemon availability, successful builds, TLS, and network were not verified. The earlier record that Go was unavailable remains valid. Actual execution requires installing the Go toolchain version required by the fixed source (`go.mod` specifies Go 1.24.1) or building a Docker image from that fixed source.
 
-## 按集成依赖排序的最小验证路径
+## Minimum validation path, ordered by integration dependencies
 
-每一步记录实测能力和缺口，缺口只限制相应能力的发布声明，不重开语音选型。按确定提交、任务账本和播放控制依赖逐步实现；不依赖该缺口的账号管理、原生通话和任务持久化可继续推进。
+At each step record measured capabilities and gaps. A gap limits only the release claim for the affected capability; account management, native calls, and task persistence that do not depend on it can proceed. Implement in order of deterministic submission, the task ledger, and playback control.
 
-| 步骤 | 最少真实操作与断言 | 集成缺口及处理 |
+| Step | Minimum real operation and assertions | Gap and handling |
 |---|---|---|
-| A 原生通话与 turn | 1账号、1次建连。说“先创建甲任务……不，改成乙任务”、数字/否定句和普通闲聊；记录 DC 接收事件的角色、消息 ID、修订与真正完成信号。断线/重复/乱序可对脱敏事件离线重放。至少重复 3 次含更正句 | 只有 partial 或静音计时、没有可复现 final：只能采用明确按键确认提交，自动免手持业务入口未通过。不得每次字幕更新派发 |
-| B 回执路径与先答 | 同一会话先注入一条来自本机确定性任务账本的结果，如“任务 T1 失败；未创建文件；计数 17”，使用原私有 data_message→relay_message/user 文本封装。人工听音并核对字幕中的状态、否定、数字；合成回执消息不得回环成用户命令 | send() 成功/字幕显示不足以通过。编造成功、读错否定/数字、重复派发、无法阻止先答：业务播报未通过，进入同上游协议控制研究。此步是回执机制实验，尚不是 Super 执行证明 |
-| C 真实 Super 闭环 | 在 A/B 通过后增加最小持久 adapter；明确提交一个需要规划的无副作用请求，例如“规划两个互相依赖的本地测试任务”。记录 durable command→真实 Super 调用→持久结果→同会话回读。简单查状态直接读任务库。令任务停在 running/waiting，再分别产生 failed/completed 真实状态；回执由执行结果产生，不由模型自报 | command ACK 丢失重发仍仅执行一次；关闭语音后任务继续。没有真实 Super 调用与结果证据只能标记本机后端 PoC。任务仍 running 时任何完成播报不得到达用户；仅提示词或 stop_speaking 请求不能作为保证 |
-| D 两账号新媒体切换 | 2账号，A 会话先取得真实 task/command。先通过实验开关注入故障验证控制逻辑；确认旧媒体关闭，旧代次事件失效，A 冷却/隔离，B 新 PeerConnection/上游会话，清除 A 的 conversation/parent/voice IDs；Cylo task/command 保持。B 查询原任务不重执行 | 注入故障只证明恢复流程。真实配额耗尽必须另有上游脱敏证据；未观察则标记“真实额度待测”，不为耗尽而持续烧额度。旧媒体关闭未确认则隔离 A，不因 TTL 就复用 |
+| A. Native call and turn finality | With one account, connect once. Say “create task A… no, change it to task B,” numbers/negations, and ordinary small talk. Record the role, message ID, revisions, and actual completion signal of DataChannel events. Anonymized events may be replayed offline for disconnects, duplicates, and reordering. Repeat at least 3 times with a correction phrase. | If there is only partial text or silence-timeout finality, with no reproducible final signal, use explicit button confirmation for submission. Hands-free automatic business submission has not passed. Never dispatch on each caption update. |
+| B. Receipt path and premature answers | In the same call, inject a result from a deterministic local task ledger, such as “Task T1 failed; no file was created; count 17,” wrapped using the original private `data_message → relay_message/user` text flow. Listen and compare the status, negation, and number in captions. Prevent the synthetic receipt from looping back as a user command. | Successful `send()` or visible captions are insufficient. If it invents success, misreads negation/numbers, dispatches again, or cannot prevent a premature answer, business readback has not passed; investigate protocol control for the same upstream. This tests receipt mechanics, not Super execution. |
+| C. Real Super loop | After A/B pass, add a minimal persistent adapter. Submit a clearly confirmed, side-effect-free planning request, e.g. “plan two dependent local test tasks.” Record durable command → real Super call → persistent result → readback in the same call. Read simple status requests directly from the task database. Leave a task in running/waiting, then separately produce real failed/completed states. Receipts must come from execution results, not model claims. | Retrying after a lost command ACK must still execute once; the task must continue after voice closes. Without evidence of a real Super call and result, label it a local backend PoC. While a task is still running, no completion statement may reach the user. Prompting or requesting `stop_speaking` alone is not a guarantee. |
+| D. New media after two-account switch | With two accounts, first create a real task/command in account A's call. Use a test flag to inject a failure and verify the control logic; confirm old media is closed, old-generation events are ignored, A is cooled down/isolated, B has a new PeerConnection/upstream session, A's conversation/parent/voice IDs are cleared, and the Cylo task/command remains. B checks the original task without executing it again. | Fault injection proves the recovery flow only. A real exhausted quota needs separate sanitized upstream evidence; if not observed, mark “real quota not tested” and do not burn quota to force it. If closure of old media cannot be confirmed, isolate A; do not reuse it based on TTL alone. |
 
-步骤 C 的先答检查应故意让后端等待，例如人工保留 running 约 10 秒，并在期间询问“是不是已经完成”。对远端实际音频与扬声器实际播放分别记时，保证控制边界位于用户听到之前。若以本地播放门控实现，需验证关闭后不会漏播旧缓存、恢复不会播放旧代次音频，并记录它对自然闲聊与插话的影响；没有响应/音频来源边界时不能声称只屏蔽错误业务音频。
+For step C's premature-answer check, deliberately hold the backend—for example, leave `running` for about 10 seconds—and ask “is it finished yet?” during that period. Separately time remote audio, actual speaker output, and playback stopping, so the control boundary is before the user hears the audio. If local playback gating is used, verify that no old buffered audio leaks after close and recovery does not play audio from an old generation; record effects on small talk and interruption. Without a response/audio-source boundary, do not claim that only incorrect business audio is blocked.
 
-D 中认证 401、普通限流 429、明确配额耗尽、网络断开分开记录。真实 429 也不自动等于额度耗尽；上游当前会把部分错误折为 502，需要在服务端安全投影原始分类。Retry-After 是重试线索，不是每日额度 reset。冷却到期只准许有限半开探测，未知 reset 保持 null。全池不可用停止建连；不循环切账号撞限额。
+In D, record authentication 401, ordinary rate-limit 429, explicit quota exhaustion, and network loss separately. A real 429 does not automatically mean quota exhaustion; the upstream currently folds some errors into 502, so safely project the original server-side classification. `Retry-After` is a retry hint, not a daily quota reset. When the reset is unknown, keep it null and allow only a limited half-open probe after cooldown. Stop opening new connections when the pool is unavailable; do not cycle accounts to hit limits.
 
-## 实验证据与能力交付范围
+## Evidence requirements and capability claims
 
-开始 A 前必须有：固定源码/镜像身份、隔离空数据库、账号持有人本机完成配置、明确通话预算、可用录音/播放观察方法与 DC 事件安全采集。不要上传完整 HAR、SDP、ICE candidate、Authorization、cookie、原始账号响应或带真实邮箱的管理截图；这些可能含凭据/网络地址。原始材料仅本机受限保管，入库使用人工审查后的白名单投影与账号别名 A/B。
+Before A, have the pinned source/image identity, isolated empty database, account-holder setup, explicit call budget, and a safe way to observe recording/playback and DataChannel events. Do not upload full HAR, SDP, ICE candidates, Authorization headers, cookies, raw account responses, or management screenshots with real email addresses; these may contain credentials or network addresses. Keep raw material locally under restricted access; commit only manually reviewed allowlisted projections and account aliases A/B.
 
-单次实验记录至少包括：`run_id`、源码 SHA、浏览器/OS、场景、账号别名、`media_generation`、角色/消息别名、turn/revision、Cylo command/task/event ID、状态前后、UTC 时间及单调时间相对值、实际输入、期待回执、实际听到内容、结论和证据引用。真实协议事件保留能说明 final 的最小字段及来源，未知字段不自行起名当成 provider 规范。将原始 provider ID 本机映射为稳定别名，保留跨事件关系。延迟分开记 speech_end、provider final、durable ack、Super result、首音、实际播放、停止播放；没有 final 就写 unknown。
+Each run record should contain at least: `run_id`, source SHA, browser/OS, scenario, account alias, `media_generation`, role/message aliases, turn/revision, Cylo command/task/event IDs, before/after status, UTC and relative monotonic time, actual input, expected receipt, content actually heard, result, and evidence reference. Retain the minimum source fields needed to explain finality; do not invent provider field names for unknown fields. Map raw provider IDs locally to stable aliases while preserving event relationships. Measure speech end, provider final, durable ACK, Super result, first audio, actual playback, and playback stop separately; if there is no final, record `unknown`.
 
-准出分级：
+Acceptance levels:
 
-- **原生通话通过**：A 的双向媒体与字幕实测成立；不等于可靠 final。
-- **确认提交闭环通过**：B/C 的真实持久命令、真实 Super 结果、准确回读与播放控制通过；若依赖按键确认，明确记录操作要求。
-- **自动语音闭环通过**：额外证明可复现 final/修订规则，重复/重连不重复执行，执行前不播虚假完成。
-- **池切换控制通过**：D 的真实 B 新媒体和 task 延续成立；故障来源注入/真实必须标明。真实额度事件、冷却恢复观察未取得时，不宣称额度恢复已验收。
+- **Native call passed:** A demonstrates actual two-way media and captions. This does not prove reliable finality.
+- **Confirmed-submission loop passed:** B/C demonstrate a real persistent command, real Super result, accurate readback, and playback control. If explicit button confirmation is required, record that requirement.
+- **Automatic voice loop passed:** additionally demonstrate reproducible final/revision rules, no duplicate execution after repeat/reconnect, and no false completion before execution.
+- **Pool-switch control passed:** D demonstrates real new B media and task continuity; identify whether failure was injected or real. If no real quota event and cooldown recovery were observed, do not claim quota recovery passed.
 
-缺口处理：无可信 final 时先做明确确认提交；回读不可靠或无法阻止错误完成播报时保留屏幕权威回执，并继续实现同一上游的响应/播放控制，不能把屏幕可用宣称为可靠语音回读。旧媒体无法隔离时保守隔离账号，不重出租；凭据进入前端或采集材料时先修复凭据边界。探索 client_tools 或服务端 peer 仍需真实协议证据，不因字段存在就宣称支持。这些是选定方案的集成待办，不是淘汰 Space 的门槛；本轮不扩展到完整产品实现。移动后台/锁屏、并发容量、服务端强制终止和性能分位数属于后续专项，此轮短通话不能覆盖。
+Gap handling: without trusted finality, require explicit confirmation to submit. If readback is unreliable or false completion cannot be blocked, keep the on-screen receipt authoritative and continue implementing response/playback control for the same upstream; do not describe the available screen as reliable voice readback. If old media cannot be isolated, quarantine the account rather than reassigning it. If credentials reach the frontend or collected material, fix that boundary first. Explore `client_tools` or a server-side peer only with real protocol evidence; the presence of a field does not prove support. These are integration tasks for the selected solution, not reasons to reject Space; this report does not expand into full product implementation. Mobile background/locked-screen use, concurrent capacity, server-enforced termination, and performance percentiles need later focused work; short calls cannot cover them.
