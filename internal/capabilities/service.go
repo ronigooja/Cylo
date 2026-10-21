@@ -525,7 +525,7 @@ func (s *Service) observeDeployment(w http.ResponseWriter, r *http.Request) {
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if jobStatus != "claimed" {
+		if jobStatus != "claimed" && jobStatus != "uncertain" {
 			return control.NewAPIError(409, "stale_deployment_fence", "observation does not match active authorized attempt", nil)
 		}
 		_, err := tx.ExecContext(r.Context(), `INSERT INTO capability_observations(observation_id,workspace_id,deployment_id,attempt_id,fence,body,observed_at) VALUES(?,?,?,?,?,?,?)`, obs.ObservationID, workspace, obs.DeploymentID, obs.AttemptID, obs.Fence, body, obs.ObservedAt.UTC().Format(time.RFC3339Nano))
