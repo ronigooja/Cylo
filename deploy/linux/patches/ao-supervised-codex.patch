@@ -1,0 +1,1264 @@
+diff --git a/backend/internal/adapters/agentaccount/codex.go b/backend/internal/adapters/agentaccount/codex.go
+index 1a547dfed..fe787523a 100644
+--- a/backend/internal/adapters/agentaccount/codex.go
++++ b/backend/internal/adapters/agentaccount/codex.go
+@@ -48,6 +48,7 @@ type Codex struct {
+ 	Binary     func(context.Context) (string, error)
+ 	Accounts   ports.CodexAccountClientFactory
+ 	DeviceHome string // the computer's own CODEX_HOME (~/.codex)
++	External   *CodexExternalProfile
+ }
+ 
+ var _ ports.AgentAccountProviderCLI = (*Codex)(nil)
+@@ -56,7 +57,7 @@ var _ ports.AgentAccountProviderCLI = (*Codex)(nil)
+ func (*Codex) Provider() domain.AgentAccountProvider { return domain.AgentAccountProviderCodex }
+ 
+ // LaunchEnv points Codex at home.
+-func (*Codex) LaunchEnv(home string) map[string]string {
++func (c *Codex) LaunchEnv(home string) map[string]string {
+ 	if home == "" {
+ 		return nil
+ 	}
+@@ -65,6 +66,18 @@ func (*Codex) LaunchEnv(home string) map[string]string {
+ 	return env
+ }
+ 
++// LaunchEnvForSession opts AO worker sessions into the configured external API
++// profile. Account login terminals continue to use LaunchEnv and retain their
++// native account home.
++func (c *Codex) LaunchEnvForSession(home, sessionID string) map[string]string {
++	if c.External != nil {
++		return c.External.RuntimeEnvForSession(sessionID)
++	}
++	return c.LaunchEnv(home)
++}
++
++func (c *Codex) HasSessionLaunchEnv() bool { return c.External != nil }
++
+ // LoginArgv is Codex's own sign-in with a device code, so the user picks the
+ // ChatGPT account in any browser instead of the one already signed in there.
+ func (c *Codex) LoginArgv(ctx context.Context) ([]string, error) {
+diff --git a/backend/internal/adapters/agentaccount/codex_external.go b/backend/internal/adapters/agentaccount/codex_external.go
+new file mode 100644
+index 000000000..b824263ea
+--- /dev/null
++++ b/backend/internal/adapters/agentaccount/codex_external.go
+@@ -0,0 +1,247 @@
++package agentaccount
++
++import (
++	"context"
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"net/http"
++	"net/url"
++	"os"
++	"path/filepath"
++	"runtime"
++	"strconv"
++	"strings"
++	"syscall"
++	"time"
++)
++
++const codexExternalAPIKeyEnv = "CYLO_CODEX_API_KEY"
++const codexExternalProfileErrorEnv = "CYLO_CODEX_PROFILE_ERROR"
++
++// CodexExternalProfile is a deployment-selected OpenAI-compatible Responses
++// API route. Its CODEX_HOME is AO-owned and separate from the operator's home.
++// The API key stays in a private deployment file and is never serialized into
++// AO requests, Codex config.toml, or logs.
++type CodexExternalProfile struct {
++	BaseURL        string
++	APIKeyFile     string
++	ContainerImage string
++	Home           string
++}
++
++// NewCodexExternalProfile returns nil when the external route is not
++// configured. A partial or malformed configuration returns an error so AO can
++// fail closed rather than falling back to another account or provider.
++func NewCodexExternalProfile(stateDir, baseURL, apiKeyFile string) (*CodexExternalProfile, error) {
++	baseURL, apiKeyFile = strings.TrimSpace(baseURL), strings.TrimSpace(apiKeyFile)
++	if baseURL == "" && apiKeyFile == "" {
++		return nil, nil
++	}
++	if baseURL == "" || apiKeyFile == "" || !filepath.IsAbs(stateDir) || !filepath.IsAbs(apiKeyFile) {
++		return nil, errors.New("external Codex provider requires an absolute AO state directory, HTTPS base URL, and absolute secret-file path")
++	}
++	u, err := url.Parse(baseURL)
++	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost" || u.Hostname() == "::1"))) {
++		return nil, errors.New("external Codex provider base URL must use HTTPS or local HTTP without credentials, query, or fragment")
++	}
++	return &CodexExternalProfile{BaseURL: strings.TrimRight(u.String(), "/"), APIKeyFile: apiKeyFile, Home: filepath.Join(stateDir, "harnesses", "codex", "external-provider")}, nil
++}
++
++func (p *CodexExternalProfile) Configured() bool { return p != nil }
++
++// Check performs only the provider's read-only models probe. It proves the
++// selected model is advertised by this configured route; it does not claim a
++// ChatGPT account identity or usage subscription.
++func (p *CodexExternalProfile) Check(ctx context.Context, model string) error {
++	if p == nil {
++		return errors.New("external Codex provider is not configured")
++	}
++	model = strings.TrimSpace(model)
++	if model == "" {
++		return errors.New("external Codex provider requires an explicit model")
++	}
++	key, err := p.readAPIKey()
++	if err != nil {
++		return errors.New("external Codex provider credential is unavailable")
++	}
++	endpoint := strings.TrimRight(p.BaseURL, "/")
++	if !strings.HasSuffix(endpoint, "/v1") {
++		endpoint += "/v1"
++	}
++	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/models", nil)
++	if err != nil {
++		return errors.New("external Codex provider probe could not be prepared")
++	}
++	request.Header.Set("Authorization", "Bearer "+key)
++	client := &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
++	response, err := client.Do(request)
++	if err != nil {
++		return errors.New("external Codex provider models probe failed")
++	}
++	defer response.Body.Close()
++	if response.StatusCode != http.StatusOK {
++		return errors.New("external Codex provider models probe was rejected")
++	}
++	var catalog struct {
++		Data []struct {
++			ID string `json:"id"`
++		} `json:"data"`
++	}
++	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&catalog); err != nil {
++		return errors.New("external Codex provider returned an invalid models catalog")
++	}
++	for _, item := range catalog.Data {
++		if item.ID == model {
++			return nil
++		}
++	}
++	return errors.New("external Codex provider does not advertise the selected model")
++}
++
++// RuntimeEnvForSession writes a separate, private Codex home for one AO
++// session. The session id is hashed before it becomes part of a filesystem
++// path, and the credential remains an environment reference rather than
++// config.toml content.
++func (p *CodexExternalProfile) RuntimeEnvForSession(sessionID string) map[string]string {
++	if p == nil {
++		return nil
++	}
++	home := p.sessionHome(sessionID)
++	env := map[string]string{
++		"CODEX_HOME":                 home,
++		"CYLO_CODEX_SESSION_ID":      sessionID,
++		"CYLO_CODEX_PROXY_UPSTREAM":  p.BaseURL,
++		codexExternalProfileErrorEnv: "",
++	}
++	if strings.TrimSpace(p.ContainerImage) != "" {
++		env["AO_CODEX_CONTAINER_IMAGE"] = strings.TrimSpace(p.ContainerImage)
++	}
++	if err := p.writeConfig(home); err != nil {
++		env[codexExternalProfileErrorEnv] = "profile_config_unavailable"
++		return env
++	}
++	key, err := p.readAPIKey()
++	if err != nil {
++		env[codexExternalProfileErrorEnv] = "provider_credential_unavailable"
++		return env
++	}
++	env[codexExternalAPIKeyEnv] = key
++	return env
++}
++
++func (p *CodexExternalProfile) sessionHome(sessionID string) string {
++	if strings.TrimSpace(sessionID) == "" {
++		sessionID = "default"
++	}
++	sum := sha256.Sum256([]byte(sessionID))
++	return filepath.Join(p.Home, "runs", hex.EncodeToString(sum[:16]))
++}
++
++func (p *CodexExternalProfile) readAPIKey() (string, error) {
++	info, err := os.Lstat(p.APIKeyFile)
++	if err != nil {
++		return "", errors.New("secret file must be a private regular file")
++	}
++	if info.Mode().IsRegular() {
++		if info.Mode().Perm()&0077 != 0 {
++			return "", errors.New("secret file must be a private regular file")
++		}
++	} else if !privateMemfdPath(p.APIKeyFile, info) {
++		return "", errors.New("secret file must be a private regular file")
++	}
++	data, err := os.ReadFile(p.APIKeyFile)
++	if err != nil {
++		return "", err
++	}
++	key := strings.TrimSpace(string(data))
++	if key == "" || len(key) > 16<<10 || strings.ContainsAny(key, "\r\n\x00") {
++		return "", errors.New("secret file content is invalid")
++	}
++	return key, nil
++}
++
++// privateMemfdPath permits a Linux launcher to lend AO a private in-memory
++// secret without writing it to disk. The descriptor must belong to this user,
++// have restrictive permissions, and resolve to a memfd (never an arbitrary
++// /proc descriptor or symlink).
++func privateMemfdPath(path string, linkInfo os.FileInfo) bool {
++	if runtime.GOOS != "linux" || linkInfo == nil || linkInfo.Mode()&os.ModeSymlink == 0 {
++		return false
++	}
++	parts := strings.Split(filepath.Clean(path), string(os.PathSeparator))
++	if len(parts) != 5 || parts[1] != "proc" || parts[3] != "fd" {
++		return false
++	}
++	pid, pidErr := strconv.Atoi(parts[2])
++	fd, fdErr := strconv.Atoi(parts[4])
++	if pidErr != nil || fdErr != nil || pid < 1 || fd < 0 {
++		return false
++	}
++	target, err := os.Readlink(path)
++	if err != nil || !strings.HasPrefix(target, "/memfd:") {
++		return false
++	}
++	info, err := os.Stat(path)
++	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
++		return false
++	}
++	stat, ok := info.Sys().(*syscall.Stat_t)
++	return ok && stat.Uid == uint32(os.Getuid()) && info.Mode().Perm()&0077 == 0
++}
++
++func (p *CodexExternalProfile) writeConfig(home string) error {
++	return p.writeConfigAt(home, p.BaseURL, true)
++}
++
++func (p *CodexExternalProfile) writeConfigAt(home, baseURL string, includeEnvKey bool) error {
++	if p == nil || !filepath.IsAbs(home) {
++		return errors.New("external Codex profile home must be absolute")
++	}
++	if err := os.MkdirAll(home, 0700); err != nil {
++		return err
++	}
++	if err := os.Chmod(home, 0700); err != nil {
++		return err
++	}
++	info, err := os.Lstat(home)
++	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
++		return errors.New("external Codex profile home must be a real private directory")
++	}
++	configPath := filepath.Join(home, "config.toml")
++	if existing, err := os.Lstat(configPath); err == nil && (existing.Mode()&os.ModeSymlink != 0 || !existing.Mode().IsRegular()) {
++		return errors.New("external Codex config must be a regular file")
++	}
++	contents := fmt.Sprintf("model_provider = %q\n\n[model_providers.cylo_external]\nname = %q\nbase_url = %q\nwire_api = %q\nrequires_openai_auth = false\n", "cylo_external", "Cylo external API", baseURL, "responses")
++	if includeEnvKey {
++		contents += fmt.Sprintf("env_key = %q\n", codexExternalAPIKeyEnv)
++	}
++	tmp, err := os.CreateTemp(home, ".config.toml-*")
++	if err != nil {
++		return err
++	}
++	tmpPath := tmp.Name()
++	defer os.Remove(tmpPath)
++	if err := tmp.Chmod(0600); err != nil {
++		_ = tmp.Close()
++		return err
++	}
++	if _, err := tmp.WriteString(contents); err != nil {
++		_ = tmp.Close()
++		return err
++	}
++	if err := tmp.Sync(); err != nil {
++		_ = tmp.Close()
++		return err
++	}
++	if err := tmp.Close(); err != nil {
++		return err
++	}
++	if err := os.Rename(tmpPath, configPath); err != nil {
++		return err
++	}
++	return nil
++}
+diff --git a/backend/internal/adapters/agentaccount/codex_external_memfd_linux_test.go b/backend/internal/adapters/agentaccount/codex_external_memfd_linux_test.go
+new file mode 100644
+index 000000000..0e063b9d1
+--- /dev/null
++++ b/backend/internal/adapters/agentaccount/codex_external_memfd_linux_test.go
+@@ -0,0 +1,34 @@
++//go:build linux
++
++package agentaccount
++
++import (
++	"os"
++	"path/filepath"
++	"strconv"
++	"testing"
++
++	"golang.org/x/sys/unix"
++)
++
++func TestCodexExternalProfileReadsPrivateMemfdWithoutPersistingKey(t *testing.T) {
++	const marker = "synthetic-memfd-provider-test-key"
++	fd, err := unix.MemfdCreate("cylo-provider-test", unix.MFD_CLOEXEC)
++	if err != nil {
++		t.Fatal(err)
++	}
++	file := os.NewFile(uintptr(fd), "cylo-provider-test")
++	defer file.Close()
++	if _, err := file.WriteString(marker); err != nil {
++		t.Fatal(err)
++	}
++	if err := file.Chmod(0400); err != nil {
++		t.Fatal(err)
++	}
++
++	profile := &CodexExternalProfile{APIKeyFile: filepath.Join("/proc", strconv.Itoa(os.Getpid()), "fd", strconv.Itoa(fd))}
++	got, err := profile.readAPIKey()
++	if err != nil || got != marker {
++		t.Fatalf("read private memfd key = %q, err=%v", got, err)
++	}
++}
+diff --git a/backend/internal/adapters/agentaccount/codex_external_test.go b/backend/internal/adapters/agentaccount/codex_external_test.go
+new file mode 100644
+index 000000000..e2f7ff0df
+--- /dev/null
++++ b/backend/internal/adapters/agentaccount/codex_external_test.go
+@@ -0,0 +1,154 @@
++package agentaccount
++
++import (
++	"context"
++	"crypto/rand"
++	"encoding/base64"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++)
++
++func TestCodexExternalProfileUsesPrivateIsolatedHomeAndNamedEnvKey(t *testing.T) {
++	apiKey := externalTestKey(t)
++	state := t.TempDir()
++	oldHome := t.TempDir()
++	oldConfig := filepath.Join(oldHome, "config.toml")
++	if err := os.WriteFile(oldConfig, []byte("model_provider = \"openai\"\n"), 0600); err != nil {
++		t.Fatal(err)
++	}
++	keyFile := filepath.Join(t.TempDir(), "external-key")
++	if err := os.WriteFile(keyFile, []byte(apiKey+"\n"), 0600); err != nil {
++		t.Fatal(err)
++	}
++	profile, err := NewCodexExternalProfile(state, "https://gateway.example/v1", keyFile)
++	if err != nil {
++		t.Fatal(err)
++	}
++	profile.ContainerImage = "cylo-ao-codex:test"
++	if profile.Home == oldHome || !strings.HasPrefix(profile.Home, state) {
++		t.Fatalf("profile home=%q old home=%q", profile.Home, oldHome)
++	}
++	env := profile.RuntimeEnvForSession("session one")
++	second := profile.RuntimeEnvForSession("session/two")
++	if env["CODEX_HOME"] == second["CODEX_HOME"] || !strings.HasPrefix(env["CODEX_HOME"], profile.Home+string(os.PathSeparator)+"runs"+string(os.PathSeparator)) || env[codexExternalAPIKeyEnv] != apiKey || env["AO_CODEX_CONTAINER_IMAGE"] != profile.ContainerImage {
++		t.Fatalf("runtime environment is incomplete; keys=%v", externalKeys(env))
++	}
++	config, err := os.ReadFile(filepath.Join(env["CODEX_HOME"], "config.toml"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	text := string(config)
++	for _, want := range []string{"model_provider = \"cylo_external\"", "wire_api = \"responses\"", "env_key = \"CYLO_CODEX_API_KEY\"", "https://gateway.example/v1"} {
++		if !strings.Contains(text, want) {
++			t.Fatalf("config missing %q: %s", want, text)
++		}
++	}
++	if strings.Contains(text, apiKey) {
++		t.Fatal("secret value was written into Codex config")
++	}
++	if got, err := os.ReadFile(oldConfig); err != nil || string(got) != "model_provider = \"openai\"\n" {
++		t.Fatalf("existing CODEX_HOME config changed: %q err=%v", got, err)
++	}
++	info, err := os.Stat(filepath.Join(env["CODEX_HOME"], "config.toml"))
++	if err != nil || info.Mode().Perm() != 0600 {
++		t.Fatalf("profile config permissions=%v err=%v", info, err)
++	}
++	codex := &Codex{External: profile}
++	loginEnv := codex.LaunchEnv(oldHome)
++	if loginEnv["CODEX_HOME"] != oldHome || loginEnv[codexExternalAPIKeyEnv] != "" {
++		t.Fatalf("account login was redirected to the external route: keys=%v", loginEnv)
++	}
++	workerEnv := codex.LaunchEnvForSession(oldHome, "session one")
++	if workerEnv["CODEX_HOME"] != env["CODEX_HOME"] || workerEnv[codexExternalAPIKeyEnv] != apiKey {
++		t.Fatalf("worker external route is incomplete: keys=%v", externalKeys(workerEnv))
++	}
++}
++
++func TestCodexExternalProfileChecksReadOnlyAdvertisedModel(t *testing.T) {
++	apiKey := externalTestKey(t)
++	keyFile := filepath.Join(t.TempDir(), "provider-key")
++	if err := os.WriteFile(keyFile, []byte(apiKey), 0600); err != nil {
++		t.Fatal(err)
++	}
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.Method != http.MethodGet || r.URL.Path != "/v1/models" {
++			t.Errorf("request=%s %s", r.Method, r.URL.Path)
++		}
++		if r.Header.Get("Authorization") != "Bearer "+apiKey {
++			t.Errorf("authorization header was not set")
++		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-6-luna"}]}`))
++	}))
++	defer server.Close()
++	profile, err := NewCodexExternalProfile(t.TempDir(), server.URL+"/v1", keyFile)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := profile.Check(context.Background(), "gpt-6-luna"); err != nil {
++		t.Fatalf("models probe: %v", err)
++	}
++	if err := profile.Check(context.Background(), "missing-model"); err == nil {
++		t.Fatal("unadvertised model accepted")
++	}
++}
++
++func externalTestKey(t *testing.T) string {
++	t.Helper()
++	raw := make([]byte, 32)
++	if _, err := rand.Read(raw); err != nil {
++		t.Fatal(err)
++	}
++	return base64.RawURLEncoding.EncodeToString(raw)
++}
++
++func externalKeys(values map[string]string) []string {
++	keys := make([]string, 0, len(values))
++	for key := range values {
++		keys = append(keys, key)
++	}
++	return keys
++}
++
++func TestCodexExternalProfileRejectsInsecureOrIncompleteConfiguration(t *testing.T) {
++	if profile, err := NewCodexExternalProfile(t.TempDir(), "", "/tmp/key"); err == nil || profile != nil {
++		t.Fatalf("partial config = (%v,%v)", profile, err)
++	}
++	if profile, err := NewCodexExternalProfile(t.TempDir(), "http://gateway.example", "/tmp/key"); err == nil || profile != nil {
++		t.Fatalf("remote HTTP config = (%v,%v)", profile, err)
++	}
++}
++
++func TestCodexExternalProfileRejectsReadableSecretFile(t *testing.T) {
++	apiKey := externalTestKey(t)
++	keyFile := filepath.Join(t.TempDir(), "provider-key")
++	if err := os.WriteFile(keyFile, []byte(apiKey), 0644); err != nil {
++		t.Fatal(err)
++	}
++	profile, err := NewCodexExternalProfile(t.TempDir(), "https://gateway.example/v1", keyFile)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, err := profile.readAPIKey(); err == nil {
++		t.Fatal("group-readable provider secret accepted")
++	}
++}
++
++func TestCodexExternalProfileMarksCredentialReadFailureWithoutLosingRouteMarker(t *testing.T) {
++	profile, err := NewCodexExternalProfile(t.TempDir(), "https://gateway.example/v1", filepath.Join(t.TempDir(), "missing-secret"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	profile.ContainerImage = "cylo-ao-codex:test"
++	env := profile.RuntimeEnvForSession("session-e2e")
++	if env["CYLO_CODEX_PROXY_UPSTREAM"] != profile.BaseURL || env["AO_CODEX_CONTAINER_IMAGE"] != profile.ContainerImage || env[codexExternalProfileErrorEnv] != "provider_credential_unavailable" {
++		t.Fatalf("failed profile did not preserve fail-closed markers: keys=%v", externalKeys(env))
++	}
++	if _, ok := env[codexExternalAPIKeyEnv]; ok {
++		t.Fatal("provider credential appeared after secret read failure")
++	}
++}
+diff --git a/backend/internal/adapters/chatdriver/codexappserver/container.go b/backend/internal/adapters/chatdriver/codexappserver/container.go
+new file mode 100644
+index 000000000..62eae725c
+--- /dev/null
++++ b/backend/internal/adapters/chatdriver/codexappserver/container.go
+@@ -0,0 +1,267 @@
++package codexappserver
++
++import (
++	"context"
++	"crypto/sha256"
++	"errors"
++	"fmt"
++	"io"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"strings"
++	"sync"
++	"time"
++
++	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
++)
++
++const (
++	containerModeEnv    = "CYLO_CODEX_CONTAINER"
++	containerImageEnv   = "AO_CODEX_CONTAINER_IMAGE"
++	providerUpstreamEnv = "CYLO_CODEX_PROXY_UPSTREAM"
++	providerKeyEnv      = "CYLO_CODEX_PROXY_KEY"
++	sessionIDEnv        = "CYLO_CODEX_SESSION_ID"
++)
++
++func spawnContainerAppServer(ctx context.Context, workdir string, env []string) (*process, error) {
++	values := environmentMap(env)
++	sessionID := strings.TrimSpace(values[sessionIDEnv])
++	image := strings.TrimSpace(values[containerImageEnv])
++	home := strings.TrimSpace(values["CODEX_HOME"])
++	providerKey := strings.TrimSpace(values[providerKeyEnv])
++	if providerKey == "" {
++		providerKey = strings.TrimSpace(values["CYLO_CODEX_API_KEY"])
++	}
++	if sessionID == "" || image == "" || home == "" || !filepath.IsAbs(workdir) || !filepath.IsAbs(home) {
++		return nil, errors.New("supervised Codex container requires session identity, image, absolute workspace, and private CODEX_HOME")
++	}
++	if strings.ContainsAny(sessionID+image+workdir+home, "\x00\r\n,") || strings.HasPrefix(image, "-") {
++		return nil, errors.New("supervised Codex container configuration is invalid")
++	}
++	if info, err := os.Stat(workdir); err != nil || !info.IsDir() {
++		return nil, errors.New("supervised Codex workspace is unavailable")
++	}
++	if info, err := os.Stat(home); err != nil || !info.IsDir() {
++		return nil, errors.New("supervised Codex home is unavailable")
++	}
++	broker, err := startProviderBroker(values[providerUpstreamEnv], providerKey)
++	if err != nil {
++		return nil, err
++	}
++	root := filepath.Dir(broker.SocketPath())
++	cidfile := filepath.Join(root, "container-id")
++	docker := strings.TrimSpace(values["AO_CODEX_DOCKER_BINARY"])
++	if docker == "" {
++		docker = "docker"
++	}
++	name := "cylo-ao-" + shortSessionHash(sessionID)
++	uidgid := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
++	args := []string{
++		"run", "--rm", "--init", "-i", "--cidfile", cidfile,
++		"--name", name,
++		"--label", "io.cylo.managed=true",
++		"--label", "io.cylo.runtime=ao-codex-chat",
++		"--label", "io.cylo.ao.session=" + sessionID,
++		"--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
++		"--read-only", "--pids-limit", "256", "--memory", "2g", "--cpus", "2",
++		"--user", uidgid,
++		"--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=256m",
++		// Bind mounts are read/write by default; Docker's --mount parser does
++		// not accept the bare `rw` option supported by --volume.
++		"--mount", "type=bind,src=" + workdir + ",dst=" + workdir,
++		"--mount", "type=bind,src=" + home + ",dst=/codex-home",
++		"--mount", "type=bind,src=" + broker.SocketPath() + ",dst=/run/cylo/provider.sock,readonly",
++		"--workdir", workdir,
++		"--env", "CODEX_HOME=/codex-home",
++		"--env", "HOME=/tmp",
++		"--env", "CYLO_PROVIDER_SOCKET=/run/cylo/provider.sock",
++		// Codex expects the configured env_key to exist even though auth is
++		// disabled. The host broker always replaces Authorization upstream.
++		"--env", "CYLO_CONTAINER_PROXY_NO_AUTH=cylo-provider-broker-no-auth",
++		"--env", "PATH=/usr/local/bin:/usr/bin:/bin",
++		image,
++		"--", "/usr/local/bin/codex",
++		"-c", `model_provider="cylo_external"`,
++		"-c", `model_providers.cylo_external.base_url="http://127.0.0.1:47631/v1"`,
++		"-c", `model_providers.cylo_external.env_key="CYLO_CONTAINER_PROXY_NO_AUTH"`,
++		"-c", `model_providers.cylo_external.requires_openai_auth=false`,
++		"-c", `sandbox_mode="danger-full-access"`,
++		"app-server",
++	}
++	cmd := aoprocess.CommandContext(ctx, docker, args...)
++	cmd.Dir = workdir
++	// Docker receives no provider key or AO session environment. The credential
++	// is held only by the in-process host broker above.
++	cmd.Env = sanitizedDockerEnvironment(env)
++	stdin, err := cmd.StdinPipe()
++	if err != nil {
++		_ = broker.Close()
++		return nil, fmt.Errorf("container stdin pipe: %w", err)
++	}
++	stdout, err := cmd.StdoutPipe()
++	if err != nil {
++		_ = broker.Close()
++		return nil, fmt.Errorf("container stdout pipe: %w", err)
++	}
++	stderr, err := cmd.StderrPipe()
++	if err != nil {
++		_ = broker.Close()
++		return nil, fmt.Errorf("container stderr pipe: %w", err)
++	}
++	if err := cmd.Start(); err != nil {
++		_ = broker.Close()
++		return nil, fmt.Errorf("start supervised Codex container: %w", err)
++	}
++	go func() { _, _ = io.Copy(io.Discard, stderr) }()
++	done := make(chan error, 1)
++	go func() {
++		done <- cmd.Wait()
++		close(done)
++	}()
++	containerID, err := waitContainerID(ctx, done, cidfile)
++	if err != nil {
++		_ = stdin.Close()
++		_ = cmd.Process.Kill()
++		<-done
++		_ = broker.Close()
++		return nil, err
++	}
++	var stopMu sync.Once
++	var stopErr error
++	stop := func() error {
++		stopMu.Do(func() {
++			_ = stdin.Close()
++			stopErr = stopContainerAndWait(docker, containerID, done)
++			if brokerErr := broker.Close(); stopErr == nil {
++				stopErr = brokerErr
++			}
++		})
++		return stopErr
++	}
++	return &process{
++		stdin: stdin, stdout: stdout,
++		stop:      stop,
++		terminate: stop,
++	}, nil
++}
++
++func supervisedExternalRoute(env map[string]string, image string) (bool, error) {
++	if strings.TrimSpace(env["CYLO_CODEX_PROFILE_ERROR"]) != "" {
++		return false, errors.New("external Codex worker profile is incomplete")
++	}
++	if strings.TrimSpace(env[providerUpstreamEnv]) == "" {
++		return false, nil
++	}
++	if strings.TrimSpace(image) == "" {
++		return false, errors.New("external Codex worker route requires the supervised container image")
++	}
++	return true, nil
++}
++
++func waitContainerID(ctx context.Context, done <-chan error, path string) (string, error) {
++	deadline := time.NewTimer(10 * time.Second)
++	defer deadline.Stop()
++	ticker := time.NewTicker(20 * time.Millisecond)
++	defer ticker.Stop()
++	for {
++		if data, err := os.ReadFile(path); err == nil {
++			id := strings.TrimSpace(string(data))
++			if len(id) >= 12 && len(id) <= 128 && isHex(id) {
++				// Docker writes the complete ID before the container command starts.
++				// cmd.Wait remains owned by the process stop closure below.
++				return id, nil
++			}
++		}
++		select {
++		case err := <-done:
++			return "", fmt.Errorf("Codex container exited before reporting its identity: %w", err)
++		case <-ctx.Done():
++			return "", ctx.Err()
++		case <-deadline.C:
++			return "", errors.New("Codex container did not report an identity before startup timeout")
++		case <-ticker.C:
++		}
++	}
++}
++
++func stopContainerAndWait(docker, containerID string, done <-chan error) error {
++	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
++	defer cancel()
++	_, stopErr := exec.CommandContext(ctx, docker, "stop", "--time", "5", containerID).CombinedOutput()
++	missing, inspectErr := inspectContainerMissing(ctx, docker, containerID)
++	if inspectErr != nil {
++		return inspectErr
++	}
++	if !missing {
++		// Force removal targets only the ID read from this launch's cidfile.
++		if _, err := exec.CommandContext(ctx, docker, "rm", "--force", containerID).CombinedOutput(); err != nil {
++			if stopErr != nil {
++				return errors.New("supervised Codex container could not be terminated")
++			}
++		}
++		missing, inspectErr = inspectContainerMissing(ctx, docker, containerID)
++		if inspectErr != nil {
++			return inspectErr
++		}
++		if !missing {
++			return errors.New("supervised Codex container still exists after stop")
++		}
++	}
++	select {
++	case <-done:
++	case <-ctx.Done():
++		return errors.New("Docker attach process did not exit after container termination")
++	}
++	return nil
++}
++
++func inspectContainerMissing(ctx context.Context, docker, id string) (bool, error) {
++	output, err := exec.CommandContext(ctx, docker, "inspect", id).CombinedOutput()
++	if err == nil {
++		return false, nil
++	}
++	message := strings.ToLower(string(output))
++	if strings.Contains(message, "no such object") || strings.Contains(message, "no such container") {
++		return true, nil
++	}
++	return false, errors.New("supervised Codex container termination could not be verified")
++}
++
++func environmentMap(env []string) map[string]string {
++	out := make(map[string]string, len(env))
++	for _, item := range env {
++		key, value, ok := strings.Cut(item, "=")
++		if ok {
++			out[key] = value
++		}
++	}
++	return out
++}
++
++func sanitizedDockerEnvironment(env []string) []string {
++	values := environmentMap(env)
++	for key := range values {
++		if strings.HasPrefix(key, "CYLO_CODEX_") || key == "CYLO_PROVIDER_SOCKET" {
++			delete(values, key)
++		}
++	}
++	out := make([]string, 0, len(values))
++	for key, value := range values {
++		out = append(out, key+"="+value)
++	}
++	return out
++}
++
++func shortSessionHash(sessionID string) string {
++	return fmt.Sprintf("%x", sha256.Sum256([]byte(sessionID)))[:16]
++}
++
++func isHex(value string) bool {
++	for _, r := range value {
++		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
++			return false
++		}
++	}
++	return value != ""
++}
+diff --git a/backend/internal/adapters/chatdriver/codexappserver/container_test.go b/backend/internal/adapters/chatdriver/codexappserver/container_test.go
+new file mode 100644
+index 000000000..b0dee83fe
+--- /dev/null
++++ b/backend/internal/adapters/chatdriver/codexappserver/container_test.go
+@@ -0,0 +1,45 @@
++package codexappserver
++
++import (
++	"context"
++	"errors"
++	"path/filepath"
++	"testing"
++)
++
++func TestExternalRouteRequiresSupervisedContainerImage(t *testing.T) {
++	tests := []struct {
++		name  string
++		env   map[string]string
++		image string
++		want  bool
++		bad   bool
++	}{
++		{name: "native route remains native", env: map[string]string{}, want: false},
++		{name: "external route without image fails closed", env: map[string]string{providerUpstreamEnv: "https://proxy.example/v1"}, bad: true},
++		{name: "external profile setup failure fails closed", env: map[string]string{providerUpstreamEnv: "https://proxy.example/v1", "CYLO_CODEX_PROFILE_ERROR": "provider_credential_unavailable"}, image: "cylo-ao-codex:test", bad: true},
++		{name: "external route with image is supervised", env: map[string]string{providerUpstreamEnv: "https://proxy.example/v1"}, image: "cylo-ao-codex:test", want: true},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			got, err := supervisedExternalRoute(tt.env, tt.image)
++			if (err != nil) != tt.bad || got != tt.want {
++				t.Fatalf("supervisedExternalRoute() = %v, %v; want %v, error=%v", got, err, tt.want, tt.bad)
++			}
++		})
++	}
++}
++
++func TestContainerStartupWaitCanDrainClosedWaitChannelAfterEarlyExit(t *testing.T) {
++	done := make(chan error, 1)
++	done <- errors.New("docker exited before writing cidfile")
++	close(done)
++	if _, err := waitContainerID(context.Background(), done, filepath.Join(t.TempDir(), "missing-cid")); err == nil {
++		t.Fatal("waitContainerID unexpectedly succeeded without a container ID")
++	}
++	select {
++	case <-done:
++	default:
++		t.Fatal("closed process wait channel blocked the startup cleanup path")
++	}
++}
+diff --git a/backend/internal/adapters/chatdriver/codexappserver/driver.go b/backend/internal/adapters/chatdriver/codexappserver/driver.go
+index 84dfa7c7c..816d090f0 100644
+--- a/backend/internal/adapters/chatdriver/codexappserver/driver.go
++++ b/backend/internal/adapters/chatdriver/codexappserver/driver.go
+@@ -542,9 +542,16 @@ func (d *Driver) connectSession(
+ 	providerScopeID string,
+ 	reconnectOnly bool,
+ ) (*conversation, bool, error) {
++	// The external Codex route is a Cylo worker profile. When its supervised
++	// image is configured, do not attach to AO's persistent host: that host
++	// survives the controller and would escape the container PID namespace.
++	containerized, routeErr := supervisedExternalRoute(env, os.Getenv(containerImageEnv))
++	if routeErr != nil {
++		return nil, false, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, routeErr)
++	}
+ 	// Injected driver tests intentionally retain the direct pipe launcher. The
+ 	// shipped driver uses spawnAppServer and therefore the persistent host.
+-	if !d.persistent {
++	if !d.persistent || containerized {
+ 		if reconnectOnly {
+ 			return nil, false, ports.ErrChatHostNotRunning
+ 		}
+@@ -721,6 +728,14 @@ func launchApprovalSettings(mode ports.PermissionMode, readOnly bool) (policy, s
+ 
+ // spawnAppServer is the real launcher.
+ func spawnAppServer(ctx context.Context, bin, workdir string, env []string) (*process, error) {
++	containerEnv := environmentMap(env)
++	containerized, err := supervisedExternalRoute(containerEnv, containerEnv[containerImageEnv])
++	if err != nil {
++		return nil, err
++	}
++	if containerized {
++		return spawnContainerAppServer(ctx, workdir, env)
++	}
+ 	args := []string{"app-server"}
+ 	cmd := aoprocess.Command(bin, args...)
+ 	cmd.Dir = workdir
+diff --git a/backend/internal/adapters/chatdriver/codexappserver/provider_broker.go b/backend/internal/adapters/chatdriver/codexappserver/provider_broker.go
+new file mode 100644
+index 000000000..6fed171a5
+--- /dev/null
++++ b/backend/internal/adapters/chatdriver/codexappserver/provider_broker.go
+@@ -0,0 +1,107 @@
++package codexappserver
++
++import (
++	"errors"
++	"fmt"
++	"net"
++	"net/http"
++	"net/http/httputil"
++	"net/url"
++	"os"
++	"path/filepath"
++	"strings"
++	"time"
++)
++
++// providerBroker keeps the deployment credential in the AO daemon. The
++// worker container can reach only this per-session Unix socket, and the
++// container-side bridge exposes only the fixed Responses provider routes on
++// loopback.
++type providerBroker struct {
++	server   *http.Server
++	listener net.Listener
++	root     string
++}
++
++func startProviderBroker(upstream, key string) (*providerBroker, error) {
++	upstream, key = strings.TrimRight(strings.TrimSpace(upstream), "/"), strings.TrimSpace(key)
++	if key == "" {
++		return nil, errors.New("Codex provider bridge credential is unavailable")
++	}
++	target, err := url.Parse(upstream)
++	if err != nil || target.Host == "" || target.User != nil || target.RawQuery != "" || target.Fragment != "" || (target.Scheme != "https" && !(target.Scheme == "http" && (target.Hostname() == "127.0.0.1" || target.Hostname() == "localhost" || target.Hostname() == "::1"))) {
++		return nil, errors.New("Codex provider bridge requires a fixed HTTPS or loopback HTTP endpoint")
++	}
++	if !strings.HasSuffix(strings.TrimRight(target.Path, "/"), "/v1") && target.Path != "/v1" {
++		target.Path = strings.TrimRight(target.Path, "/") + "/v1"
++	}
++	root, err := os.MkdirTemp(os.TempDir(), "cylo-codex-proxy-")
++	if err != nil {
++		return nil, err
++	}
++	if err := os.Chmod(root, 0700); err != nil {
++		_ = os.RemoveAll(root)
++		return nil, err
++	}
++	socket := filepath.Join(root, "provider.sock")
++	listener, err := net.Listen("unix", socket)
++	if err != nil {
++		_ = os.RemoveAll(root)
++		return nil, err
++	}
++	if err := os.Chmod(socket, 0600); err != nil {
++		_ = listener.Close()
++		_ = os.RemoveAll(root)
++		return nil, err
++	}
++	proxy := httputil.NewSingleHostReverseProxy(target)
++	proxy.Transport = &http.Transport{Proxy: nil, ResponseHeaderTimeout: 2 * time.Minute, DisableKeepAlives: true}
++	proxy.Director = nil
++	proxy.Rewrite = func(pr *httputil.ProxyRequest) {
++		pr.SetURL(target)
++		resource := strings.TrimPrefix(pr.In.URL.Path, "/v1")
++		if resource == "" {
++			resource = "/"
++		}
++		pr.Out.URL.Path = strings.TrimRight(target.Path, "/") + resource
++		pr.Out.URL.RawPath = ""
++		pr.Out.Host = target.Host
++		pr.Out.Header.Set("Authorization", "Bearer "+key)
++		pr.Out.Header.Del("Proxy-Authorization")
++	}
++	server := &http.Server{
++		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++			if !((r.Method == http.MethodGet && r.URL.Path == "/v1/models") || (r.Method == http.MethodPost && (r.URL.Path == "/v1/responses" || r.URL.Path == "/v1/responses/compact"))) {
++				http.Error(w, "provider route denied", http.StatusNotFound)
++				return
++			}
++			r.Body = http.MaxBytesReader(w, r.Body, 32<<20)
++			proxy.ServeHTTP(w, r)
++		}),
++		ReadHeaderTimeout: 10 * time.Second,
++	}
++	b := &providerBroker{server: server, listener: listener, root: root}
++	go func() { _ = server.Serve(listener) }()
++	return b, nil
++}
++
++func (b *providerBroker) SocketPath() string {
++	if b == nil {
++		return ""
++	}
++	return filepath.Join(b.root, "provider.sock")
++}
++
++func (b *providerBroker) Close() error {
++	if b == nil {
++		return nil
++	}
++	_ = b.server.Close()
++	if err := b.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
++		return err
++	}
++	if err := os.RemoveAll(b.root); err != nil {
++		return fmt.Errorf("remove Codex provider bridge socket: %w", err)
++	}
++	return nil
++}
+diff --git a/backend/internal/adapters/chatdriver/codexappserver/provider_broker_test.go b/backend/internal/adapters/chatdriver/codexappserver/provider_broker_test.go
+new file mode 100644
+index 000000000..03c4555cb
+--- /dev/null
++++ b/backend/internal/adapters/chatdriver/codexappserver/provider_broker_test.go
+@@ -0,0 +1,81 @@
++package codexappserver
++
++import (
++	"context"
++	"crypto/rand"
++	"encoding/base64"
++	"io"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestProviderBrokerKeepsCredentialHostSideAndRestrictsRoutes(t *testing.T) {
++	secret := make([]byte, 32)
++	if _, err := rand.Read(secret); err != nil {
++		t.Fatal(err)
++	}
++	apiKey := base64.RawURLEncoding.EncodeToString(secret)
++	var calls int
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		calls++
++		if got := r.Header.Get("Authorization"); got != "Bearer "+apiKey {
++			t.Errorf("upstream authorization did not match host-held key")
++		}
++		if r.URL.Path == "/v1/models" {
++			_, _ = io.WriteString(w, `{"data":[{"id":"gpt-6-luna"}]}`)
++			return
++		}
++		w.Header().Set("Content-Type", "text/event-stream")
++		w.WriteHeader(http.StatusOK)
++		_, _ = io.WriteString(w, "data: provider-response\n\n")
++		if f, ok := w.(http.Flusher); ok {
++			f.Flush()
++		}
++	}))
++	defer upstream.Close()
++
++	broker, err := startProviderBroker(upstream.URL, apiKey)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer broker.Close()
++	transport := &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) {
++		return net.Dial("unix", broker.SocketPath())
++	}}
++	client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
++	response, err := client.Get("http://provider/v1/models")
++	if err != nil {
++		t.Fatal(err)
++	}
++	body, err := io.ReadAll(response.Body)
++	response.Body.Close()
++	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(body), "gpt-6-luna") {
++		t.Fatalf("models proxy status/body = %d/%q, err=%v", response.StatusCode, body, err)
++	}
++
++	response, err = client.Get("http://provider/v1/secret")
++	if err != nil {
++		t.Fatal(err)
++	}
++	response.Body.Close()
++	if response.StatusCode != http.StatusNotFound || calls != 1 {
++		t.Fatalf("unapproved route status/calls = %d/%d", response.StatusCode, calls)
++	}
++
++	response, err = client.Post("http://provider/v1/responses", "application/json", strings.NewReader(`{"model":"gpt-6-luna"}`))
++	if err != nil {
++		t.Fatal(err)
++	}
++	body, err = io.ReadAll(response.Body)
++	response.Body.Close()
++	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(body), "provider-response") {
++		t.Fatalf("stream proxy status/body = %d/%q, err=%v", response.StatusCode, body, err)
++	}
++	if calls != 2 {
++		t.Fatalf("upstream calls = %d, want two allowed calls", calls)
++	}
++}
+diff --git a/backend/internal/daemon/daemon.go b/backend/internal/daemon/daemon.go
+index 0772cce6e..67c28bb67 100644
+--- a/backend/internal/daemon/daemon.go
++++ b/backend/internal/daemon/daemon.go
+@@ -519,7 +519,20 @@ func Run(buildVersion string) error {
+ 	if switcher, ok := wiredSessMgr.(chatsvc.TerminalProviderSwitcher); ok {
+ 		chatSvc.SetTerminalProviderSwitcher(switcher)
+ 	}
+-	agentAccountSvc := newAgentAccounts(cfg, store, codexHome, agentDeps.CodexAccounts, log)
++	externalCodex, err := agentaccount.NewCodexExternalProfile(cfg.StateDir, os.Getenv("AO_CODEX_EXTERNAL_BASE_URL"), os.Getenv("AO_CODEX_EXTERNAL_API_KEY_FILE"))
++	if err != nil {
++		stop()
++		lcStack.Stop()
++		if cdcErr := cdcPipe.Stop(); cdcErr != nil {
++			log.Error("cdc pipeline shutdown", "err", cdcErr)
++		}
++		return fmt.Errorf("configure external Codex provider: %w", err)
++	}
++	if externalCodex != nil {
++		externalCodex.ContainerImage = strings.TrimSpace(os.Getenv("AO_CODEX_CONTAINER_IMAGE"))
++	}
++	sessionSvc.SetExternalCodexProvider(externalCodex)
++	agentAccountSvc := newAgentAccounts(cfg, store, codexHome, agentDeps.CodexAccounts, externalCodex, log)
+ 	chatSvc.SetUsageLimitAccounts(agentAccountSvc)
+ 	if wired, ok := sessMgr.(interface {
+ 		SetAgentAccounts(ports.AgentAccountLaunchEnv)
+@@ -1367,7 +1380,7 @@ func stabilizeWorkingDirectory(dataDir string) error {
+ // newAgentAccounts builds the Claude Code and Codex account catalog. Each
+ // account is a config folder under the state dir; "This computer" is the CLI's
+ // own folder, which AO never changes the login of.
+-func newAgentAccounts(cfg config.Config, store *sqlite.Store, codexHome string, codexAccounts ports.CodexAccountClientFactory, log *slog.Logger) *agentaccounts.Service {
++func newAgentAccounts(cfg config.Config, store *sqlite.Store, codexHome string, codexAccounts ports.CodexAccountClientFactory, externalCodex *agentaccount.CodexExternalProfile, log *slog.Logger) *agentaccounts.Service {
+ 	claudeHome, claudeConfig := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")), ""
+ 	if claudeHome != "" {
+ 		claudeConfig = filepath.Join(claudeHome, ".claude.json")
+@@ -1376,7 +1389,7 @@ func newAgentAccounts(cfg config.Config, store *sqlite.Store, codexHome string,
+ 	}
+ 	providers := []ports.AgentAccountProviderCLI{
+ 		&agentaccount.Claude{Binary: claudecodeagent.New().ResolveBinary, DeviceHome: claudeHome, DeviceConfig: claudeConfig},
+-		&agentaccount.Codex{Binary: codexagent.New().ResolveBinary, Accounts: codexAccounts, DeviceHome: codexHome},
++		&agentaccount.Codex{Binary: codexagent.New().ResolveBinary, Accounts: codexAccounts, DeviceHome: codexHome, External: externalCodex},
+ 	}
+ 	return agentaccounts.New(store, providers, filepath.Join(cfg.StateDir, "agent-accounts"), nil, log)
+ }
+diff --git a/backend/internal/service/agentaccounts/service.go b/backend/internal/service/agentaccounts/service.go
+index beef915f6..c9fa02560 100644
+--- a/backend/internal/service/agentaccounts/service.go
++++ b/backend/internal/service/agentaccounts/service.go
+@@ -62,6 +62,11 @@ type Service struct {
+ 	defaultChanged func(domain.AgentAccountProvider)
+ }
+ 
++type sessionLaunchEnvProvider interface {
++	HasSessionLaunchEnv() bool
++	LaunchEnvForSession(home, sessionID string) map[string]string
++}
++
+ // reading is the last identity and limits read for one account.
+ type reading struct {
+ 	identity    domain.AgentAccountIdentityCheck
+@@ -959,6 +964,12 @@ func (s *Service) launchEnv(ctx context.Context, id domain.SessionID, override d
+ 				}
+ 			}
+ 		}
++		if sessionProvider, ok := provider.(sessionLaunchEnvProvider); ok && sessionProvider.HasSessionLaunchEnv() && override.Provider != p {
++			for key, value := range sessionProvider.LaunchEnvForSession(account.Home, string(id)) {
++				env[key] = value
++			}
++			continue
++		}
+ 		if account.Device() {
+ 			continue
+ 		}
+diff --git a/backend/internal/service/session/service.go b/backend/internal/service/session/service.go
+index de040c1cf..90195b71a 100644
+--- a/backend/internal/service/session/service.go
++++ b/backend/internal/service/session/service.go
+@@ -184,6 +184,11 @@ type outputTypeReconciler interface {
+ 	ReconcileSessionOutputType(ctx context.Context, id domain.SessionID) error
+ }
+ 
++type externalCodexProvider interface {
++	Configured() bool
++	Check(context.Context, string) error
++}
++
+ // Service is the controller-facing session service. It delegates command-side
+ // session operations to the internal sessionmanager.Manager and owns read-model
+ // assembly, including user-facing display status derivation.
+@@ -199,6 +204,7 @@ type Service struct {
+ 	logger              *slog.Logger
+ 	backgroundContext   context.Context
+ 	agentReadiness      ports.AgentReadinessProvider
++	externalCodex       externalCodexProvider
+ 	runBackground       func(func())
+ 	orchestratorLocksMu sync.Mutex
+ 	orchestratorLocks   map[domain.ProjectID]*sync.Mutex
+@@ -380,7 +386,13 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
+ 			return domain.Session{}, 0, 0, apierr.Invalid("HARNESS_REQUIRED", "harness is required for a standalone session", nil)
+ 		}
+ 	}
+-	if s.agentReadiness != nil && cfg.Harness != "" {
++	externalCodexSelected := cfg.Harness == domain.HarnessCodex && cfg.AgentAccountID == "" && s.externalCodex != nil && s.externalCodex.Configured()
++	if externalCodexSelected {
++		if err := s.externalCodex.Check(ctx, cfg.AgentConfig.Model); err != nil {
++			return domain.Session{}, 0, 0, apierr.Conflict("CODEX_EXTERNAL_PROVIDER_UNAVAILABLE", "The configured external Codex provider did not prove access to the selected model", nil)
++		}
++	}
++	if !externalCodexSelected && s.agentReadiness != nil && cfg.Harness != "" {
+ 		readiness, err := s.agentReadiness.EnsureAgentReadiness(ctx, string(cfg.Harness), domain.AgentReadinessPurposeLaunch)
+ 		if err != nil {
+ 			return domain.Session{}, 0, 0, err
+@@ -408,6 +420,13 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
+ 	return sess, promptBytes, systemPromptBytes, nil
+ }
+ 
++// SetExternalCodexProvider enables the explicitly deployment-configured API
++// route. Native account identity remains available through Agent Accounts; only
++// the Codex launch readiness gate follows this route when it is configured.
++func (s *Service) SetExternalCodexProvider(provider externalCodexProvider) {
++	s.externalCodex = provider
++}
++
+ // spawnWithTelemetry is the only path from the service into manager.Spawn, so
+ // every created session emits ao.session.spawned or ao.session.spawn_failed
+ // exactly once. Client-request replays return before reaching it.
+diff --git a/backend/internal/service/session/service_test.go b/backend/internal/service/session/service_test.go
+index e532e419b..686806721 100644
+--- a/backend/internal/service/session/service_test.go
++++ b/backend/internal/service/session/service_test.go
+@@ -3173,6 +3173,79 @@ func TestSpawnStillRejectsFreshUnauthorizedCodexAccount(t *testing.T) {
+ 	}
+ }
+ 
++type fakeExternalCodexProvider struct {
++	configured bool
++	err        error
++	models     []string
++}
++
++func (p *fakeExternalCodexProvider) Configured() bool { return p.configured }
++func (p *fakeExternalCodexProvider) Check(_ context.Context, model string) error {
++	p.models = append(p.models, model)
++	return p.err
++}
++
++func TestSpawnUsesExplicitExternalCodexProviderReadiness(t *testing.T) {
++	st := newFakeStore()
++	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
++	fc := &fakeCommander{}
++	readiness := &fakeAgentReadiness{snapshot: domain.AgentReadinessSnapshot{
++		ID: "codex", Installation: domain.AgentInstallationObservation{State: domain.AgentInstallationInstalled},
++		Authentication: domain.AgentAuthenticationObservation{State: domain.AgentAuthenticationUnauthorized, Freshness: domain.AgentReadinessFresh},
++	}}
++	provider := &fakeExternalCodexProvider{configured: true}
++	svc := NewWithDeps(Deps{Manager: fc, Store: st, AgentReadiness: readiness})
++	svc.SetExternalCodexProvider(provider)
++	_, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessCodex, AgentConfig: ports.AgentConfig{Model: "gpt-6-luna"}})
++	if err != nil {
++		t.Fatalf("external provider spawn: %v", err)
++	}
++	if fc.spawnCalls != 1 || readiness.calls != 0 || len(provider.models) != 1 || provider.models[0] != "gpt-6-luna" {
++		t.Fatalf("spawn=%d native readiness=%d external models=%v", fc.spawnCalls, readiness.calls, provider.models)
++	}
++}
++
++func TestSpawnFailsClosedWhenExternalCodexModelProbeFails(t *testing.T) {
++	st := newFakeStore()
++	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
++	fc := &fakeCommander{}
++	provider := &fakeExternalCodexProvider{configured: true, err: errors.New("private provider detail")}
++	svc := NewWithDeps(Deps{Manager: fc, Store: st})
++	svc.SetExternalCodexProvider(provider)
++	_, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessCodex, AgentConfig: ports.AgentConfig{Model: "gpt-6-luna"}})
++	var apiError *apierr.Error
++	if !errors.As(err, &apiError) || apiError.Code != "CODEX_EXTERNAL_PROVIDER_UNAVAILABLE" {
++		t.Fatalf("Spawn error=%v", err)
++	}
++	if fc.spawnCalls != 0 {
++		t.Fatalf("manager.Spawn ran despite failed external-provider proof")
++	}
++	if strings.Contains(err.Error(), "private provider detail") {
++		t.Fatalf("provider error leaked: %v", err)
++	}
++}
++
++func TestSpawnExplicitCodexAccountDoesNotSwitchToExternalProvider(t *testing.T) {
++	st := newFakeStore()
++	st.projects["mer"] = domain.ProjectRecord{ID: "mer"}
++	fc := &fakeCommander{}
++	readiness := &fakeAgentReadiness{snapshot: domain.AgentReadinessSnapshot{
++		ID: "codex", Installation: domain.AgentInstallationObservation{State: domain.AgentInstallationInstalled},
++		Authentication: domain.AgentAuthenticationObservation{State: domain.AgentAuthenticationUnauthorized, Freshness: domain.AgentReadinessFresh},
++	}}
++	provider := &fakeExternalCodexProvider{configured: true}
++	svc := NewWithDeps(Deps{Manager: fc, Store: st, AgentReadiness: readiness})
++	svc.SetExternalCodexProvider(provider)
++	_, _, _, err := svc.Spawn(context.Background(), ports.SpawnConfig{ProjectID: "mer", Kind: domain.KindWorker, Harness: domain.HarnessCodex, AgentAccountID: "native-account", AgentConfig: ports.AgentConfig{Model: "gpt-6-luna"}})
++	var apiError *apierr.Error
++	if !errors.As(err, &apiError) || apiError.Code != "CODEX_ACCOUNT_AUTH_UNVERIFIED" {
++		t.Fatalf("explicit native account spawn error=%v", err)
++	}
++	if len(provider.models) != 0 || readiness.calls != 1 || fc.spawnCalls != 0 {
++		t.Fatalf("external models=%v readiness=%d spawn=%d", provider.models, readiness.calls, fc.spawnCalls)
++	}
++}
++
+ // The readiness gate reads the computer's own Codex login. A task that will run
+ // on a saved account does not use that login, so its state is not a reason to
+ // refuse; the launch checks the account it runs on.
