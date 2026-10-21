@@ -1,6 +1,6 @@
 # CLIProxyAPI 与 AO 的账号池接入核查
 
-核查日期：2026-10-21。结论：**AO 已有 Codex 多账号管理；若目标还包括无人值守在订阅额度耗尽后自动选择另一账号，推荐对 CLIProxyAPI 做独立接入 PoC。它不是 AO 的必需依赖，也不是已选 Space 语音网关的替代品。** AO 管会话与任务，CLIProxyAPI 可以管这一条模型请求路由的上游账号选择。首轮不需要 fork AO；先用 Codex 自定义 Responses provider 接入，再验收工具、续接、失败恢复。仅“能启动/接口同名”不足以宣布成功。
+核查日期：2026-10-21。结论：**CLIProxyAPI 已存在于用户基础设施，当前本机 Codex 也已配置自定义 Responses provider；Cylo 应优先复用现有部署，无需先引入第二套代理。** 用户报告登录与使用均已能走代理；本轮只读核查部署与配置，没有复测登录或模型调用。部署证据及复用方案见 [现有部署核查](15-existing-cliproxy-deployment.md)。AO 已有 Codex 多账号管理；若目标包括订阅额度耗尽后无人值守换号，仍须验收现有代理与 AO/Codex 的组合行为。AO 管会话与任务，CLIProxyAPI 管这一条模型请求路由的上游账号选择；它不是 AO 的必需依赖，也不是已选 Space 语音网关的替代品。首轮无需 fork AO，复用自定义 Responses provider 后验收工具、续接与失败恢复。
 
 ## 固定基线与证据范围
 
@@ -23,7 +23,7 @@
 
 AO 的 `backend/internal/adapters/agentaccount/codex.go`、`backend/internal/service/agentaccounts/service.go` 与 `backend/internal/session_manager/agent_account.go` 已有账号导入、默认账号、每会话绑定及显式换号；每账号使用独立 `CODEX_HOME/auth.json`，配置和历史等共享。Chat 与 TUI 支持路径不同，不能把全局 `/codex/accounts` switch 当成任意 agent 的账号切换。
 
-固定 AO 的 `usage_limit.go` 路径是对特定 Chat 失败轮次人工开启等待 reset 后以同号恢复，未证实遇到 429 就自动扫描另一个账号。**“管理多个账号”“手动切换同 thread”“请求级自动冷却/故障切换”是三个能力。** CLIProxy 主要补第三个，以及多客户端集中池、多协议转换。若仅需要账号隔离、人工挑号，AO 原生功能已足够；若要求订阅耗尽后继续无人值守执行，代理值得引入验证，但已经开始输出的 turn 仍需要 AO/Codex 错误恢复。
+固定 AO 的 `usage_limit.go` 路径是对特定 Chat 失败轮次人工开启等待 reset 后以同号恢复，未证实遇到 429 就自动扫描另一个账号。**“管理多个账号”“手动切换同 thread”“请求级自动冷却/故障切换”是三个能力。** CLIProxy 主要补第三个，以及多客户端集中池、多协议转换。若仅需要账号隔离、人工挑号，AO 原生功能已足够；若要求订阅耗尽后继续无人值守执行，应复用现有代理验证自动切号，但已经开始输出的 turn 仍需要 AO/Codex 错误恢复。
 
 ## CLIProxy OAuth 账号池：实际实现与边界
 
@@ -80,6 +80,8 @@ supports_websockets = false
 只有当现有 AO 缺少专用 provider 配置入口、密钥传递或需要显示代理选择结果时，才评估小型 adapter/UI 扩展；普通 `base_url` 接入本身不构成 fork AO 的理由。
 
 ## 每个账号独立网络代理：支持，但登录和运行要区分
+
+**登录代理是实现支持的能力，用户已报告实际使用；本轮未复测。** 以下区分登录进程全局出口与运行时每账号出口，未发现专用每号登录选项不等于登录不能走代理。
 
 这里的网络代理（HTTP/HTTPS/SOCKS 出口）不同于 `model_providers.*.base_url`（模型服务端点）。CLIProxy OAuth 文件顶层可设置 `"proxy_url": "http://127.0.0.1:19081"`；不同账号文件填不同值。它是已有 auth record 的补充字段，**不是可独立使用的完整凭据文件**。API key credential 组则用配置字段 `proxy-url`。
 
