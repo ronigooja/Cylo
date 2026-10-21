@@ -258,6 +258,10 @@ func TestMemoryWorkerStaleIndexCompletionRepairsCurrentRevision(t *testing.T) {
 	if _, err := store.DB().Exec(`INSERT INTO memory_revision_sources(claim_id,revision,workspace_id,source_id,source_version) VALUES('claim-revision-race',2,'default','source-claim-revision-race',1)`); err != nil {
 		t.Fatal(err)
 	}
+	currentJobID := "current-revision-job"
+	if _, err := store.DB().Exec(`INSERT INTO memory_jobs(id,workspace_id,kind,entity_id,entity_version,target,payload,status,attempts,available_at,lease_owner,lease_until,created_at,updated_at) VALUES(?,'default','index','claim-revision-race',2,'qdrant','{}','leased',1,?,'memory-worker',?,?,?)`, currentJobID, now, time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano), now, now); err != nil {
+		t.Fatal(err)
+	}
 	completed := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/jobs/"+job.ID+"/complete", map[string]any{"attempt": job.Attempt})
 	if completed.Code != http.StatusOK {
 		t.Fatalf("completion status=%d body=%s", completed.Code, completed.Body.String())
@@ -268,6 +272,10 @@ func TestMemoryWorkerStaleIndexCompletionRepairsCurrentRevision(t *testing.T) {
 	}
 	if repaired != 1 {
 		t.Fatalf("stale index effect did not schedule current revision repair: pending=%d", repaired)
+	}
+	late := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/jobs/"+currentJobID+"/complete", map[string]any{"attempt": 1})
+	if late.Code != http.StatusNotFound && late.Code != http.StatusConflict {
+		t.Fatalf("repaired job accepted its prior lease completion: status=%d body=%s", late.Code, late.Body.String())
 	}
 }
 

@@ -733,16 +733,16 @@ func (s *derivedService) repairStaleEffectTx(ctx context.Context, tx *sql.Tx, wo
 		if err := insertDerivedJob(ctx, tx, workspace, "delete_cleanup", entityID, currentRevision, cleanupTarget, map[string]any{"claim_id": entityID, "target": cleanupTarget}, now); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE memory_jobs SET status='pending',attempts=0,available_at=?,lease_owner='',lease_until=NULL,last_error_code='',updated_at=?
-WHERE workspace_id=? AND kind='delete_cleanup' AND entity_id=? AND entity_version=? AND target=?`, now, now, workspace, entityID, currentRevision, cleanupTarget)
+		_, err = tx.ExecContext(ctx, `UPDATE memory_jobs SET id=?,status='pending',attempts=0,available_at=?,lease_owner='',lease_until=NULL,last_error_code='',updated_at=?
+WHERE workspace_id=? AND kind='delete_cleanup' AND entity_id=? AND entity_version=? AND target=?`, uuid.NewString(), now, now, workspace, entityID, currentRevision, cleanupTarget)
 		return err
 	}
 	if kind == "delete_cleanup" && target == "qdrant" && status != string(ClaimTombstoned) && currentRevision > entityVersion && (status == string(ClaimActive) || status == string(ClaimConflicted)) {
 		if err := insertDerivedJob(ctx, tx, workspace, "index", entityID, currentRevision, "qdrant", map[string]any{"claim_id": entityID, "revision": currentRevision}, now); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE memory_jobs SET status='pending',attempts=0,available_at=?,lease_owner='',lease_until=NULL,last_error_code='',updated_at=?
-WHERE workspace_id=? AND kind='index' AND entity_id=? AND entity_version=? AND target='qdrant'`, now, now, workspace, entityID, currentRevision)
+		_, err = tx.ExecContext(ctx, `UPDATE memory_jobs SET id=?,status='pending',attempts=0,available_at=?,lease_owner='',lease_until=NULL,last_error_code='',updated_at=?
+WHERE workspace_id=? AND kind='index' AND entity_id=? AND entity_version=? AND target='qdrant'`, uuid.NewString(), now, now, workspace, entityID, currentRevision)
 		return err
 	}
 	if kind != "index" || currentRevision <= entityVersion || status != string(ClaimActive) && status != string(ClaimConflicted) {
@@ -751,8 +751,8 @@ WHERE workspace_id=? AND kind='index' AND entity_id=? AND entity_version=? AND t
 	if err := insertDerivedJob(ctx, tx, workspace, "index", entityID, currentRevision, "qdrant", map[string]any{"claim_id": entityID, "revision": currentRevision}, now); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE memory_jobs SET status='pending',attempts=0,available_at=?,lease_owner='',lease_until=NULL,last_error_code='',updated_at=?
-WHERE workspace_id=? AND kind='index' AND entity_id=? AND entity_version=? AND target='qdrant'`, now, now, workspace, entityID, currentRevision)
+	_, err = tx.ExecContext(ctx, `UPDATE memory_jobs SET id=?,status='pending',attempts=0,available_at=?,lease_owner='',lease_until=NULL,last_error_code='',updated_at=?
+WHERE workspace_id=? AND kind='index' AND entity_id=? AND entity_version=? AND target='qdrant'`, uuid.NewString(), now, now, workspace, entityID, currentRevision)
 	return err
 }
 
