@@ -1,159 +1,161 @@
-# Cylo 记忆需求与最小实现设计
+> Historical design proposal dated 2026-10-21; it was not a delivered runtime. For the current implementation plan, see the [master plan](../../../master-plan.md).
 
-日期：2026-10-21。本文是设计建议，不是已交付运行时。依据当前产品需求、已采用的 AO/Space/CLIProxyAPI 边界与已有架构；未读取凭据、调用模型或验证第三方记忆引擎。只补充记忆专项，不改变总架构。
+# Cylo Memory Requirements and Minimal Implementation Design
 
-## 1. 建议：自己掌握记忆控制层，复用开源组件
+Date: 2026-10-21. This is a design proposal, not a delivered runtime. It is based on current product requirements and the adopted AO/Space/CLIProxyAPI boundaries and existing architecture; no credentials were read, no models were called, and no third-party memory engine was validated. This document adds only the memory-specific design and does not change the overall architecture.
 
-**首版用 Go 记忆 API 掌握权限、scope、版本与持久化，用规则处理确定性写入，按需复用 Mem0 的通用抽取/检索；复杂跨记录整理按需启用 Memory Agent。专门的整理职责不等于必须独立 Agent，更不要求常驻进程。SQLite + FTS 起步，自动抽取或语义需求进入首版时接入 Mem0。**
+## 1. Recommendation: Own the Memory Control Layer and Reuse Open-Source Components
 
-Cylo 的主要难点是“谁确认了什么、在哪个项目生效、后来如何改变、哪些 Agent 能读、删除后不能再被旧摘要找回”。这些规则必须与现有任务、授权和证据一致。即使用开源记忆引擎，Cylo 仍须承担这层工作。首版没有产品 runtime，不必先维护 Python 记忆服务、图数据库和向量库；但也不用自研数据库、全文检索、embedding 算法或通用 Agent 框架。
+**For the first release, use a Go memory API to own permissions, scope, versions, and persistence; use rules for deterministic writes; reuse Mem0's general-purpose extraction/retrieval as needed; and enable a Memory Agent for complex cross-record organization when useful. A dedicated organization responsibility does not require a separate Agent, nor a resident process. Start with SQLite + FTS; connect Mem0 in the first release if automatic extraction or semantic needs enter that release.**
 
-| 路线 | 对 Cylo 的用途 | 当前建议 |
+Cylo's main challenge is “who confirmed what, which project it applies to, how it changed later, which Agents may read it, and how to prevent old summaries from retrieving it after deletion.” These rules must agree with the existing task, authorization, and evidence systems. Even when an open-source memory engine is used, Cylo remains responsible for this layer. With no product runtime in the first release, there is no need to start by maintaining a Python memory service, graph database, and vector database. There is also no need to build a database, full-text search, embedding algorithm, or general Agent framework from scratch.
+
+| Path | Use in Cylo | Current recommendation |
 |---|---|---|
-| Go 控制模块 + SQLite/FTS | 统一作用域、来源、决定版本、候选审核、检索和删除；复用已有控制面契约 | 首版主线 |
-| [Mem0](https://github.com/mem0ai/mem0) 类记忆提取/检索组件 | 后续可替换候选抽取或语义召回实现 | 作为可插拔候选，不默认授予权威写权 |
-| [Zep/Graphiti](https://github.com/getzep/graphiti) 类时间关系图 | 当跨实体、跨时期关系检索出现真实缺口时评估 | 目前没有必须上图数据库的需求证据 |
-| [Letta](https://github.com/letta-ai/letta) 类有状态 Agent 平台 | 当需要其 Agent 运行及记忆管理体系时评估 | AO 已负责多 runtime 编排，首版另引平台容易重复会话与运行生命周期 |
+| Go control module + SQLite/FTS | Unify scope, sources, decision versions, candidate review, retrieval, and deletion; reuse existing control-plane contracts | First-release main path |
+| A memory extraction/retrieval component such as [Mem0](https://github.com/mem0ai/mem0) | Could later provide replaceable candidate extraction or semantic recall | Pluggable candidate; do not grant authoritative write access by default |
+| A temporal relationship graph such as [Zep/Graphiti](https://github.com/getzep/graphiti) | Evaluate if real gaps emerge in cross-entity, cross-period relationship retrieval | There is currently no evidence that a graph database is required |
+| A stateful Agent platform such as [Letta](https://github.com/letta-ai/letta) | Evaluate when its Agent runtime and memory-management system are needed | AO already orchestrates multiple runtimes; adding another platform in the first release risks duplicating session and runtime lifecycles |
 
-上表是架构适配判断，不是第三方项目功能、许可证、运维成本或当前版本的实测比较。若将来采用，必须按固定版本验证接口、数据导出/删除、权限过滤和许可证；不能因项目名叫“memory”就认定已满足 PRD。引擎选型不成为当前设计落地的前置条件。
+The table is an architecture-fit judgment, not a hands-on comparison of third-party functionality, licenses, operational cost, or current versions. If adopted in the future, validate the pinned version's interfaces, data export/deletion, permission filtering, and license. A project name containing “memory” does not prove it meets the PRD. Engine selection is not a prerequisite for implementing the current design.
 
-## 2. 需求依据与范围
+## 2. Requirements Basis and Scope
 
-权威需求：[完整产品需求](../../../product-requirements.md)；可追踪验收：[01 需求映射](../../../research/01-requirements.md)。以下段落号以 PRD 为准。
+Authoritative requirements: the [Complete Product Requirements](../product-requirements.md); traceable acceptance: [01 Requirements Mapping](01-requirements.md). Section numbers below refer to the PRD.
 
-| 实际要求 | 来源 | 设计含义与边界 |
+| Actual requirement | Source | Design implication and boundary |
 |---|---|---|
-| 跨对话、任务、项目和设备持久记忆；客户端关闭/服务重启可恢复 | §10.1、§4.2、§12.1 | 数据在服务端；跨项目可连续检索不等于跨项目无条件公开 |
-| 全局、项目、任务、原始历史四层 | §10.2 | 用 scope 和引用组织，不需要四套数据库或四个 Agent |
-| 整理事实、关系、重复、过期、矛盾与更新建议，可由后台事件触发 | §10.3 | 采用规则/人工/按需 Agent 组合落实整理；独立 Agent 是可选实现，不要求常驻或每轮调模型 |
-| 确认事实、执行结果、AI 推断分开；支持旧/新决定、时间与依据 | §10.4、场景 C | 来源类型和有效版本独立存储；高模型置信度不能代替确认 |
-| 正式任务、权限、配置、已确认决定是可靠权威记录，不能被总结覆盖 | §10.5 | 记忆索引引用账本，而非以自然语言摘要重建状态 |
-| 相关检索、低 Token、项目隔离、缺失/冲突说不确定 | §10.6、§11、§17.1—2 | 检索与上下文组装是程序能力；简单查询不必调用 Super |
-| Agent、模型、语音可替换，不丢任务与记忆 | §13.1—3、§16.2 | 记忆主键/格式独立于 provider、AO session 和语音账号 |
-| 可查看、导出、删除，来源/时间/版本可查 | §16.1—6 | 原始资料、修订、索引、缓存与备份有一致删除路径 |
-| 支持项目/历史/权限/记忆跨 macOS、Linux 或服务器恢复 | §4.3、§16.2—3 | 数据及对象迁移；原生进程不是可搬运记忆 |
-| 首版可单用户，结构不能锁死一个人/项目/Agent，未来多用户隔离 | §18 | 从一开始有 workspace/principal/scope；不强加首版完整团队协作 UI |
-| 语音会话结束不影响后台任务，不同 Agent 遵守统一状态 | §3.3、§6、§12 | 语音和 Worker 都读同一控制面，不维护相互竞争的事实 |
+| Persistent memory across conversations, tasks, projects, and devices; recover after client close or service restart | §§10.1, 4.2, 12.1 | Data resides server-side; cross-project retrieval continuity does not mean unconditional cross-project disclosure |
+| Four layers: global, project, task, and raw history | §10.2 | Organize with scopes and references; four databases or four Agents are unnecessary |
+| Organize facts, relationships, duplicates, stale/conflicting items, and update suggestions; may be triggered by background events | §10.3 | Implement through a combination of rules, human review, and on-demand Agents; a separate Agent is an optional implementation, not a resident process or per-turn model call |
+| Distinguish confirmed facts, execution results, and AI inferences; support old/new decisions, time, and rationale | §10.4, Scenario C | Store source type and effective version independently; high model confidence is not a substitute for confirmation |
+| Formal tasks, permissions, configuration, and confirmed decisions are reliable authoritative records and cannot be overwritten by summaries | §10.5 | The memory index references the ledger instead of reconstructing state from natural-language summaries |
+| Relevant retrieval, low token use, project isolation, and expressing uncertainty when information is missing/conflicting | §10.6, §11, §§17.1–2 | Retrieval and context assembly are program capabilities; simple queries need not invoke Super |
+| Replaceable Agents, models, and voice without losing tasks and memory | §§13.1–3, 16.2 | Memory keys/formats are independent of provider, AO session, and voice account |
+| View, export, and delete; inspect source/time/version | §§16.1–6 | Raw material, revisions, indexes, caches, and backups need a consistent deletion path |
+| Restore projects/history/permissions/memory across macOS, Linux, or servers | §§4.3, 16.2–3 | Migrate data and objects; native processes are not portable memory |
+| First release may be single-user, but structure cannot lock into one person/project/Agent; isolate future users | §18 | Include workspace/principal/scope from the start; do not require a full team-collaboration UI in the first release |
+| Ending voice does not affect background tasks; different Agents follow unified state | §§3.3, 6, 12 | Voice and Workers read the same control plane and do not maintain competing facts |
 
-“修改记忆”在此按来源/版本与准确性需求设计成修订、纠错及候选处理；§16.6 明文列的是查看、导出、删除，未单列一个完整记忆编辑器。建议提供简单管理页/接口，不把复杂知识库编辑产品当新增交付门槛。
+“Modify memory” is designed here as revision, correction, and candidate handling based on the source/version and accuracy requirements. §16.6 explicitly lists viewing, exporting, and deleting; it does not separately require a complete memory editor. A simple management page/API is recommended, but a complex knowledge-base editing product is not an added delivery gate.
 
-### Memory Agent、Super、API 与引擎的分工
+### Responsibilities of the Memory Agent, Super, API, and Engine
 
-PRD §10.3 的原文是“Cylo 可以通过独立的 Memory Agent 负责记忆整理”，并明确“不需要参与每一次用户对话”。专门整理职责、独立 Agent 角色、常驻进程是三回事。首版显式记忆/决定登记、鉴权版本、规则去重及普通检索由 API 与规则完成，通用事实抽取和语义检索可交给 Mem0，不必额外运行一个 Agent。跨记录历史梳理、语义冲突/过期判断、关联和复杂项目总结出现实际价值时，再由 AO 按需派发整理角色与后台任务；不把独立 Agent 列为首版前置。其 runtime/model 沿用 AO 的可配置选择，不锁定 Codex；确定性的索引、去重和快速查询不必单独调用模型。
+The original text of PRD §10.3 says, “Cylo can use a separate Memory Agent to organize memory,” and explicitly says it “does not need to participate in every user conversation.” A dedicated organization responsibility, an independent Agent role, and a resident process are three separate things. In the first release, the API and rules handle explicit memory/decision registration, authorization versions, rule-based deduplication, and ordinary retrieval. Mem0 can perform general fact extraction and semantic retrieval, without requiring another Agent runtime. When cross-record historical organization, semantic conflict/staleness judgment, linking, or complex project summaries provide real value, AO can dispatch an organization role and background task on demand. A separate Agent is not a first-release prerequisite. Its runtime/model uses AO's configurable selection and is not locked to Codex; deterministic indexing, deduplication, and fast queries need not invoke a model.
 
 ```text
-Cylo / Super → Memory Agent（按需）→ Cylo Memory API → SQLite / FTS
-                                           └→ Mem0 抽取/检索引擎（按需接入）
-Cylo / Super / 已授权 Worker ─→ Cylo Memory API（快速读写）
+Cylo / Super → Memory Agent (on demand) → Cylo Memory API → SQLite / FTS
+                                                  └→ Mem0 extraction/retrieval engine (connect as needed)
+Cylo / Super / authorized Worker ───────────────→ Cylo Memory API (fast read/write)
 ```
 
-- **Super** 负责理解请求、任务协调和采用相关上下文；需要复杂历史整理、关系梳理或检索协助时派发 Memory Agent，不亲自承担所有后台整理。
-- **Memory Agent（按需启用）** 识别值得保留的信息、提取事实、整理项目历史与摘要、建立关联、合并重复候选、发现过期信息和矛盾、提出更新建议；可在复杂检索时协助定位证据。冲突无法按来源和版本消解时保留双方，不自行裁定用户决定。事件触发或定期后台作业可以调用该角色；定期执行是实现选项，PRD 未规定频率。
-- **Cylo Memory API / Go 服务** 校验身份、scope、来源与版本，提交授权写入，维护持久化、删除和上下文预算；**Mem0** 执行可复用的抽取或检索步骤，不取得独立权威写权。Mem0 能覆盖通用抽取/检索；复杂整理是否需要 Agent 按实际价值判断。
+- **Super** understands requests, coordinates tasks, and uses relevant context. It dispatches a Memory Agent when complex historical organization, relationship analysis, or retrieval assistance is needed; it does not personally perform all background organization.
+- **Memory Agent (enabled on demand)** identifies information worth retaining, extracts facts, organizes project history and summaries, links items, merges duplicate candidates, finds stale/conflicting information, and proposes updates; it can help locate evidence for complex retrieval. If sources and versions cannot resolve a conflict, preserve both sides rather than adjudicating a user's decision. Event-triggered or periodic background jobs may invoke this role; periodic execution is an implementation option, not a frequency specified by the PRD.
+- **Cylo Memory API / Go service** checks identity, scope, source, and version; commits authorized writes; and maintains persistence, deletion, and context budgets. **Mem0** performs reusable extraction or retrieval steps and does not receive independent authoritative write access. Mem0 can cover general extraction/retrieval; decide whether complex organization needs an Agent based on actual value.
 
-避免双重抽取：不要对同一来源先由 Agent 提取，再让 Mem0 默认重新提取。通用抽取直接委托 Mem0；已整理候选经受控适配跳过重复提取。固定版 Mem0 的 `infer=False` 可跳过事实提取 LLM，但仍调用 embedding，不是零模型路径；确定性事件走规则/API。
+Avoid duplicate extraction: do not extract the same source with an Agent and then let Mem0 extract it again by default. Delegate general extraction directly to Mem0; use a controlled adapter to skip re-extraction for already organized candidates. In a pinned Mem0 version, `infer=False` can skip the fact-extraction LLM but still calls embeddings; it is not a zero-model path. Deterministic events go through rules/API.
 
-快速检索、明确用户记忆与正式决定登记可由授权入口直接调用 API，不必等待 Memory Agent；用户已明确作出的决定按原消息登记，不重复确认。Memory Agent 和 Super 都仅能读取任务授权范围；共享相关项目记忆不等于把所有 Worker 的私有历史或原生会话共享出去。
+Authorized entry points can call the API directly for fast retrieval, explicit user memories, and formal decision registration; they need not wait for a Memory Agent. Register a decision the user has clearly made from the original message and do not ask them to confirm it again. The Memory Agent and Super can only read within the task's authorization scope; sharing relevant project memory does not mean exposing every Worker's private history or native session.
 
-“离线”要区分本机离线检索与离线 AI：本地部署且主机可用时，SQLite 的查看/检索/修订不需要模型；客户端断开后台时可显示标记为过期的已授权缓存，重连后以服务端版本为准。PRD 没有要求手机离线多人写入、离线运行云模型或不同部署间自动双向合并。§4 的主机离线要求是诚实标状态和恢复，不是断电后仍执行。
+Distinguish “offline” local retrieval from offline AI. When a local deployment's host is available, viewing/retrieving/revising SQLite data does not require a model. If the client is disconnected from the backend, it may display authorized cached data marked stale; after reconnecting, use the server version. The PRD does not require mobile offline multi-user writes, running a cloud model offline, or automatic bidirectional merging across deployments. The host-offline requirement in §4 means accurately displaying state and recovering, not continuing execution after power is lost.
 
-## 3. 三类数据分别归谁管
+## 3. Ownership of the Three Data Categories
 
-| 数据 | 保存与权威 | 记忆模块怎么使用 |
+| Data | Storage and authority | Use by the memory module |
 |---|---|---|
-| 业务事实：任务/run 状态、权限、配置、正式决定、执行回执 | Cylo 业务账本，授权命令 + 事务；账号凭据在各自安全存储 | 实时查询或引用版本；Memory Agent 不得改写 |
-| 原生 Agent 执行上下文：消息历史、native session ID、运行进程、worktree | AO + 对应 runtime/宿主，按原生能力 resume/fork/fresh | 保存关联和必要恢复摘要；不能宣称不同 runtime 的历史可无损互换 |
-| 长期语义记忆：偏好、项目背景、讨论摘要、经验、未解决问题和事实索引 | Cylo memory/context 模块，来源与 scope 可追踪 | 跨会话、跨模型按需召回，推断保持标记 |
+| Business facts: task/run status, permissions, configuration, formal decisions, execution receipts | Cylo business ledger, authorized command + transaction; account credentials in their respective secure stores | Query live or reference a version; Memory Agent must not rewrite them |
+| Native Agent execution context: message history, native session ID, running process, worktree | AO + corresponding runtime/host, using native resume/fork/fresh capabilities | Save associations and necessary recovery summaries; do not claim lossless history interchange across runtimes |
+| Long-term semantic memory: preferences, project context, discussion summaries, experience, unresolved questions, and fact indexes | Cylo memory/context module, with traceable sources and scopes | Retrieve on demand across sessions/models, keeping inferences marked |
 
-例如“任务是否完成”查任务/验收账本；“我们为什么换数据库”查决定版本及讨论证据；“继续上次 Codex 会话”由 AO 原生 adapter 处理。三者相互引用，但 resume 成功不等于拥有跨项目长期记忆，长期摘要也不能证明任务当前正在运行。
+For example, check the task/acceptance ledger to answer “Is the task complete?”; check decision versions and discussion evidence to answer “Why did we change databases?”; use AO's native adapter to answer “Continue my last Codex session.” The three can reference one another, but successful resume does not imply cross-project long-term memory, and a long-term summary does not prove that a task is currently running.
 
-账号池只影响请求路由：现有 CLIProxyAPI 管模型路由/账号，Space 管语音账号，账号身份不作为 Cylo 用户身份或记忆分区依据。不得把 OAuth token、API key、账号池 secret 放入记忆提取内容。
+Account pools affect request routing only: the existing CLIProxyAPI handles model routing/accounts, and Space handles voice accounts. Account identity is not a basis for Cylo user identity or memory partitioning. Never put OAuth tokens, API keys, or account-pool secrets into memory extraction content.
 
-## 4. 最小数据模型
+## 4. Minimal Data Model
 
-沿用 [04 架构 §8](../../../research/04-architecture.md#8-长期记忆证据事实和版本失效) 的 claim/revision/evidence/context 契约，避免再建一套权威系统。以下是逻辑对象，不要求各占一个服务。
+Reuse the claim/revision/evidence/context contract in [04 Architecture §8](04-architecture.md#8-long-term-memory-evidence-facts-and-version-invalidation) to avoid building a second authoritative system. These are logical objects; they do not need to be separate services.
 
-| 对象 | 最少字段/规则 |
+| Object | Minimum fields/rules |
 |---|---|
-| `evidence` 原始来源 | `id, workspace_id, scope, kind, source_ref, source_version/hash, recorded_at, producer, retention/deletion_state`；引用消息、文件版本、执行事件或回执，定位到段落/事件 |
-| `memory_claim` + revision | `id, workspace_id, scope_kind/id, subject/key, content, authority_kind, status, valid_from/to, recorded_at, revision, supersedes, evidence_refs`；个人偏好还有 owner principal |
-| `memory_proposal` | 候选内容、来源、目标 scope、抽取器版本、与现有条目的关系、待处理原因、基准 revision；审批操作带幂等 key |
-| 派生索引/摘要 | `claim_revision/evidence_hash, index_version, stale`；可重建，不是唯一正文 |
-| `context_manifest` | task/run/recipient、查询范围、实际条目及版本、注入时间、预算与裁剪/缺失说明；按相同权限保护 |
+| `evidence` raw source | `id, workspace_id, scope, kind, source_ref, source_version/hash, recorded_at, producer, retention/deletion_state`; reference a message, file version, execution event, or receipt and locate its paragraph/event |
+| `memory_claim` + revision | `id, workspace_id, scope_kind/id, subject/key, content, authority_kind, status, valid_from/to, recorded_at, revision, supersedes, evidence_refs`; personal preferences also have an owner principal |
+| `memory_proposal` | Candidate content, source, target scope, extractor version, relationship to existing entries, reason for pending, baseline revision; approval operation uses an idempotency key |
+| Derived index/summary | `claim_revision/evidence_hash, index_version, stale`; rebuildable and not the sole canonical content |
+| `context_manifest` | task/run/recipient, query scope, actual entries and versions, injection time, budget, and trimming/missing-information notes; protected by the same permissions |
 
-`authority_kind` 继承既有方案：`user_confirmed / execution_observed / imported_authoritative / model_inferred`；`confidence` 仅辅助候选排序。`status` 可为 proposed/active/conflicted/superseded/retracted/deleted，具体表枚举在实现时冻结。scope 可为 personal、workspace、project、task；“全局”是获得授权的个人/组织范围，不是部署内所有用户共享。
+`authority_kind` follows the existing design: `user_confirmed / execution_observed / imported_authoritative / model_inferred`; `confidence` only helps rank candidates. `status` may be proposed/active/conflicted/superseded/retracted/deleted; freeze exact table enums during implementation. Scope may be personal, workspace, project, or task. “Global” means the authorized scope of a person/organization, not all users in a deployment.
 
-正式决定的正文/生效修订仍由 decision 账本管理；记忆 claim 用引用表达，不复制成第二个可编辑“当前决定”。SQL 约束和服务端鉴权都带 workspace 与归属检查；Agent 不能仅通过传一个 project_id 取得权限。
+The decision ledger continues to own the body/effective revision of a formal decision. A memory claim references it rather than copying it into a second editable “current decision.” SQL constraints and server-side authorization both check workspace and ownership; an Agent cannot gain permission just by supplying a `project_id`.
 
-## 5. 写入、整理、冲突与确认
+## 5. Writing, Organization, Conflicts, and Confirmation
 
-1. **先可靠写入来源。** 已确认的用户轮次、任务事件、执行结果、正式决定和用户导入文档先由所属模块提交。记录身份、时间、对象和版本。语音 partial、assistant 口头承诺不直接写成事实；重要原文由保留策略保存，并非必须无限保存全部音视频。
-2. **事务事件触发整理作业。** 复用 outbox/jobs；按来源 ID + 版本 + 抽取器版本去重，任务验收、决定变更、会话结束、批量历史和人工整理均可触发，也可定期整理。先规则去重/精确引用/FTS 更新；通用抽取直接委托可替换抽取器或 Mem0，复杂跨记录判断再按需派发 Memory Agent，不让每句话都跑抽取或 embedding。整理失败不阻塞任务或语音。
-3. **生成候选。** 候选说明内容、来源定位、拟议 scope、事实类型、适用时间和关系（新增/重复/补充/替代/矛盾）。默认继承来源范围；从项目提升为组织通用规则须有明确依据/授权，不能因为模型觉得“通用”就扩大范围。
-4. **控制面验证。** 验证来源存在且有权限、引用可解、范围不越界、基准版本未改变。来源里的命令只是资料，不能覆盖系统授权。模型生成的“用户已批准”不能成为审批凭证。
-5. **按类别提交。** 确定性索引、标签化摘要和推断可自动保存，无需用户逐条点确认；`execution_observed` 由已验证回执产生且仅陈述证据支持的范围。用户明确“记住以后用中文”可以经普通已授权 command 形成确认偏好；明确“采用 AO”“语音保留 Space”“复用现有 CLIProxyAPI”应直接登记正式决定、说话者和原消息来源，不要求再弹一次确认。含糊偏好或替换已有决定的模型建议停留候选；需要判断时再向用户澄清。正式决定变更、权限与配置沿用各自命令入口和必要授权，不让 Memory Agent 直接升级事实。
-6. **并发和矛盾处理。** 使用 expected revision/事务检查；第二个 Worker 基于旧版本的提案需要重新核对。相同内容合并引用；证据冲突标记 conflicted 并保留双方，不能采用“最后写入者胜出”或最高相似度胜出。
+1. **Reliably store the source first.** The owning module first commits confirmed user turns, task events, execution results, formal decisions, and user-imported documents. Record identity, time, object, and version. Voice partials and an assistant's spoken promise are not directly stored as facts. Preserve important source text according to retention policy; retaining all audio/video forever is not required.
+2. **Trigger an organization job through a transactional event.** Reuse outbox/jobs; deduplicate by source ID + version + extractor version. Task acceptance, decision changes, session end, bulk history, and manual organization can all trigger it; organization can also run periodically. First apply rule-based deduplication, exact references, and FTS updates. Delegate general extraction directly to a replaceable extractor or Mem0; dispatch a Memory Agent only for complex cross-record judgment. Do not run extraction or embeddings on every sentence. Organization failure must not block a task or voice interaction.
+3. **Generate a candidate.** State its content, source location, proposed scope, fact type, applicable time, and relationship (new/duplicate/supplement/replacement/conflict). Inherit the source's scope by default. Elevating a project-specific item to an organization-wide rule requires explicit evidence/authorization; a model's judgment that something is “general” cannot broaden scope.
+4. **Validate in the control plane.** Verify the source exists and is authorized, the reference resolves, scope is not exceeded, and the baseline version has not changed. Commands inside a source are material, not authorization to override system rules. A model-generated statement that “the user approved this” is not an approval credential.
+5. **Commit by category.** Deterministic indexes, labeled summaries, and inferences can be saved automatically without asking the user to confirm every item. `execution_observed` comes from a verified receipt and states only what the evidence supports. A user saying “Remember to use Chinese from now on” can create a confirmed preference through an ordinary authorized command. “Adopt AO,” “keep Space for voice,” or “reuse the existing CLIProxyAPI” should be registered directly as formal decisions with the speaker and original-message source; do not show another confirmation prompt. Ambiguous preferences or a model suggestion that replaces an existing decision remain candidates; ask the user only when judgment is needed. Formal decision changes, permissions, and configuration keep their own command paths and required authorization; the Memory Agent must not promote facts directly.
+6. **Handle concurrency and contradictions.** Use expected-revision/transaction checks. Recheck a proposal from a second Worker if it was based on an old revision. Merge identical content with its references; mark conflicting evidence as conflicted and preserve both sides. Do not use “last writer wins” or highest similarity as the deciding rule.
 
-SQLite→PostgreSQL 示例：T1 正式确认 d1，T2 通过业务命令确认 d2 并记理由，在同一事务设置 d1 的有效结束、d2 的生效时间和 supersedes。今天问用什么，取 d2；问 T1 时取 d1；问为什么变，取 T2 理由和原讨论。若没有理由证据，回答“有变更记录，未找到原因”，不从技术常识补写用户动机。修订的记录时间与实际生效时间分开，支持补录历史。
+SQLite → PostgreSQL example: T1 formally confirms d1; T2 confirms d2 through a business command and records the reason; in one transaction, set d1's effective end, d2's effective time, and `supersedes`. When asked today, return d2; when asked about T1, return d1; when asked why it changed, return T2's reason and the original discussion. If there is no evidence for the reason, answer “A change is recorded, but I couldn't find the reason”; do not infer the user's motivation from technical common sense. Keep recording time separate from actual effective time to support backdated history.
 
-## 6. 检索与按需上下文
+## 6. Retrieval and On-Demand Context
 
-检索链路：**身份/任务范围 → 当前权威快照 → 有效决定 → 相关记忆与证据 → 二次验证 → 按接收者组装**。
+Retrieval path: **identity/task scope → current authoritative snapshot → effective decisions → relevant memories and evidence → revalidation → assembly for the recipient**.
 
-- 简单状态问题直接查账本；“刚才那个项目”先利用当前交互绑定和最近授权对象消歧，仍有多个候选则澄清。
-- FTS、项目/任务链接、时间/来源筛选先用起来。SQLite FTS5 默认 unicode61 对中文分词不足，trigram 也不能保证一两个汉字短词的召回；首版采用经验证的中文关键词/分词、精确词别名与项目/任务/时间结构过滤，并用中文样本说明覆盖范围，不承诺天然具备中文语义检索。后续语义召回与 FTS 组合，始终在授权集合内查询，返回前再次检查当前 ACL、删除状态、claim/source 版本和有效时间。
-- 可检索历史决定，但默认“当前”问题不把 superseded 条目当当前约束；历史查询显式带时间/版本。推断独立标记；缺来源和矛盾随答案传递。
-- Worker 只拿任务目标/验收、必要当前状态、有效约束、相关项目资料和少量历史；邮件 Worker 不默认获取代码项目。Super 按协调任务取得授权的跨任务摘要，需要更多时再检索。
-- 优先保留授权边界、当前指令与目标、当前状态/恢复点、有效决定，再分配历史证据预算。长日志给引用和局部摘录。预算可配置，超限先压缩背景；关键约束仍放不下时分步执行或返回缺口，不能静默截掉。
-- 保存 context manifest，便于说明“这次用了哪些记忆”。原生 session 已带历史时补增量和当前版本提示，避免每次重复全文；压缩不改变底层事实。
+- Answer simple status questions directly from the ledger. For “that project from earlier,” first disambiguate using the current interaction binding and recent authorized objects; ask if several candidates remain.
+- Start with FTS, project/task links, and time/source filters. SQLite FTS5's default unicode61 tokenization is inadequate for Chinese; trigram search also cannot guarantee recall of one- or two-character Chinese terms. In the first release use a validated Chinese keyword/tokenization strategy, exact-term aliases, and structured project/task/time filters. State the coverage demonstrated by Chinese samples; do not claim Chinese semantic retrieval is built in. Later combine semantic recall with FTS, always search within the authorized set, and recheck current ACL, deletion state, claim/source version, and effective time before returning results.
+- Historical decisions remain searchable, but do not treat superseded items as current constraints when asked what applies “now”; historical queries specify time/version. Keep inferences separately labeled and carry missing sources/conflicts into the answer.
+- Give a Worker only its task goal/acceptance, necessary current state, effective constraints, relevant project material, and a small amount of history. An email Worker does not automatically receive code-project data. Super receives authorized cross-task summaries for coordination and retrieves more as needed.
+- Prioritize authorization boundaries, current instructions and goals, current status/recovery point, and effective decisions before allocating a historical-evidence budget. For long logs, provide references and local excerpts. Make the budget configurable; when it is exceeded, compress background first. If a critical constraint still cannot fit, work in stages or report the gap; do not silently truncate it.
+- Save a context manifest so the system can explain “which memories were used for this response.” If a native session already has history, provide deltas and current-version notices instead of repeating the full history. Compression does not change underlying facts.
 
-语义向量只是召回通道，不负责确认、权限或时间裁决。后续 embedding 的 provider/model/version 变化通过重建派生索引解决，不改变 memory ID。检索质量不足再评估嵌入或图关系，不能单凭功能清单增加基础设施。
+Semantic vectors are only a retrieval channel; they do not confirm facts or decide permissions or effective dates. Changes to embedding provider/model/version rebuild derived indexes without changing memory IDs. Evaluate embeddings or graph relationships only if retrieval quality is insufficient; do not add infrastructure based only on a feature list.
 
-## 7. AO 多 Agent 共享与模型切换
+## 7. AO Multi-Agent Sharing and Model Switching
 
-Cylo 是唯一记忆控制入口；AO 负责会话编排。新运行由控制面基于 task/run 生成上下文包，AO adapter 通过已验证的启动输入/提示入口交给对应 runtime。后续读取采用同一受限 API，MCP 只是该 API 的工具适配；不假设 AO 已内置 Cylo 记忆插件。
+Cylo is the sole memory-control entry point; AO orchestrates sessions. For a new run, the control plane assembles context from the task/run and the AO adapter passes it to the selected runtime through a validated launch-input/prompt interface. Later reads use the same restricted API; MCP is only an adapter for that API. Do not assume AO already has a Cylo memory plugin.
 
-建议最小能力：`search_memory`、`read_evidence`、`propose_memory` 和 `get_task_context`。Agent 只能在其 run 绑定的主体/scope 内请求；请求体中的 scope 不能覆盖服务端授予的范围。用户管理端另有查看、修订、候选处理、导出、删除接口。不要为每个 Agent 再配可自行改权威事实的独立记忆库。
+Suggested minimum capabilities: `search_memory`, `read_evidence`, `propose_memory`, and `get_task_context`. An Agent can request only within the principal/scope bound to its run; a scope in the request body cannot override the range granted server-side. The user-management interface separately provides viewing, revision, candidate handling, export, and deletion. Do not give each Agent its own memory store that can independently modify authoritative facts.
 
-runtime 不支持工具/MCP 时，控制面可生成带版本和来源引用的 `CYLO_CONTEXT.md` 文件投影作为降级。它是一次授权快照，限制在该 run 的目录，避免提交到仓库或泄漏给其他工作区；Agent 修改该文件不等于写回记忆，需要提交提案。撤权/删除时停止继续提供旧投影并清理可控副本；已有进程读过的文本不能靠删文件抹掉，必要时停止旧运行并以新上下文重建会话。原生 provider 的已传输副本依其实际能力处理。
+When a runtime does not support tools/MCP, the control plane can provide a versioned, source-referenced `CYLO_CONTEXT.md` projection as a fallback. It is an authorized snapshot scoped to that run's directory; prevent it from being committed to the repository or leaking into other workspaces. An Agent editing that file is not writing memory; it must submit a proposal. On revocation/deletion, stop providing the old projection and clean up controlled copies. Deleting a file cannot erase text already read by a running process; when needed, stop the old run and rebuild the session with clean context. Handle copies already sent to a native provider according to its actual capabilities.
 
-模型或 runtime 切换：保留 task/run、记忆和证据 ID，重新组装当前上下文；AO 能原生 resume 就复用，不能就明确新开/fork 并带恢复摘要及工作区状态。不同模型间不承诺 token/原生消息历史无损转换。恢复前核对业务状态、在途操作与工作区，不依据摘要重复执行已发生的副作用。详见 [16 AO 边界](16-ao-agent-provider-boundaries.md)。
+When switching models or runtimes, keep task/run, memory, and evidence IDs and rebuild current context. If AO can natively resume, reuse it; otherwise explicitly open/fork a new session with a recovery summary and workspace state. Do not promise lossless conversion of tokens/native message history between models. Before recovery, verify business state, in-flight operations, and workspace; do not repeat side effects based on a summary. See [16 AO Boundaries](16-ao-agent-provider-boundaries.md).
 
-## 8. 语音上下文与账号隔离
+## 8. Voice Context and Account Isolation
 
-Space 只负责媒体/语音账号与信令，Cylo 对稳定用户轮次、任务和记忆负责。语音查询走同一检索服务，但通常只注入本次问题相关的简短事实、当前任务快照、必要偏好和用户可见结果，附来源引用供界面查看。换语音账号/新会话只补必要摘要，不复制完整历史；挂断不删除长期记忆，也不终止后台任务。
+Space handles media, voice accounts, and signaling; Cylo owns stable user turns, tasks, and memory. Voice queries use the same retrieval service but typically inject only brief facts relevant to the current question, current task snapshot, necessary preferences, and user-visible results, with source references the interface can display. Switching voice accounts or starting a new session adds only a necessary summary, not the full history. Hanging up neither deletes long-term memory nor terminates background tasks.
 
-注入内容按 Cylo 用户、项目和当前语音会话授权筛选。语音账号池不是跨用户共享知识库；不把密钥、全项目文档、所有记忆或其他用户对话发送上游。曾发送内容可能存在上游副本，本地删除不代表已删除上游历史。
+Filter injected content according to Cylo user, project, and current voice-session permissions. The voice account pool is not a cross-user knowledge base; do not send keys, all project documents, all memories, or other users' conversations upstream. Content previously sent may remain in upstream copies; local deletion does not mean upstream history was deleted.
 
-当前 Space 私有协议没有已证实的 system/tool 桥，既有 relay 是 user 角色文本；上述组装设计不能被写成“已经可可靠注入系统记忆”。适配能力和回读准确性须按 [12 语音边界](12-voice-super-boundary.md) 实测；在此之前，Cylo 屏幕结果与来源可独立成立，不能靠语音 assistant 自报记住/完成验收。
+The current Space private protocol has no verified system/tool bridge; its existing relay uses the user role. The assembly design above must not be described as “reliably injecting system memory already.” Validate adapter capabilities and readback accuracy according to [12 Voice Boundaries](12-voice-super-boundary.md). Until then, Cylo's on-screen result and sources can stand independently; a voice assistant's own report that it remembered/completed something is not acceptance evidence.
 
-## 9. 查看、纠错、遗忘、删除与迁移
+## 9. Viewing, Correction, Forgetting, Deletion, and Migration
 
-最小管理视图展示 scope、类型、正文、确认/推断状态、生效时间、来源和修订；支持按项目/关键词查找。用户纠错写新修订，必要时同步到正式决定命令；单纯改摘要不能改账本。过期条目退出当前召回，历史查询仍可见；遗忘一条错误推断可撤回，和彻底删除来源是不同操作。
+The minimal management view shows scope, type, content, confirmed/inferred status, effective time, source, and revision, with search by project/keyword. A user correction creates a new revision and, when necessary, synchronizes through the formal-decision command. Editing only a summary does not change the ledger. Stale items leave current retrieval but remain visible to historical queries. Forgetting an incorrect inference can retract it; that differs from deleting its source entirely.
 
-删除链路：授权请求 → 同事务标记不可检索/撤回引用并发清理作业 → 派生摘要/FTS/向量/缓存/文件投影清理 → 根据策略清理原文/对象。检索二次验证立即阻挡旧索引，不等异步清理完成才生效。删除范围包含所有依赖来源的派生内容，不能只删来源行后留下可读摘要。审计只保留必要的无正文删除元数据；备份保留/到期擦除规则向有权用户可见，恢复时应用已知删除清单，不能静默恢复已删内容。旧备份若缺少较新的删除清单，必须声明该恢复点的删除状态缺口，先核对再开放查询。
+Deletion path: authorized request → mark it non-retrievable/retract references in one transaction and enqueue cleanup → remove derived summaries/FTS/vector/cache/file projections → delete source text/objects according to policy. Revalidation during retrieval immediately blocks stale indexes; effect does not wait for asynchronous cleanup. Deletion scope includes every derived item that depends on a source; do not delete only the source row and leave a readable summary. Retain only necessary content-free deletion metadata for audit. Show authorized users backup-retention/expiration rules; apply known deletion manifests on restore and do not silently restore deleted content. If an old backup lacks a newer deletion manifest, explicitly state the deletion-state gap for that recovery point and reconcile before enabling queries.
 
-已发送给原生 Agent/上游的内容单独跟踪可控副本和外部删除能力；不能承诺从正在运行的模型上下文中收回已读信息。相应旧会话须标记不再复用，重新组装干净上下文。删除后的运行恢复不得重新注入旧摘要。
+Track copies sent to native Agents/upstreams separately, along with the ability to control/delete them. Do not promise to withdraw information already read into a running model's context. Mark the corresponding old session as not reusable and assemble clean context again. Recovery after deletion must not reinject old summaries.
 
-导出采用版本化 JSON/JSONL + 来源对象 manifest，含稳定 ID、scope、版本、时间、证据关联和删除记录；索引可不导出，恢复后重建。复用控制面的 SQLite 一致性备份机制，不直接复制运行中主文件而遗漏 WAL。Mac→Linux 只需迁移逻辑数据/对象并重映射路径；凭据独立处理，原生会话按实际 runtime 支持恢复。没有 embedding 服务时仍能查看、FTS 检索与导出，不把模型可用性变成数据可访问性的前提。
+Export versioned JSON/JSONL plus a source-object manifest containing stable IDs, scope, version, time, evidence associations, and deletion records; indexes need not be exported and can be rebuilt on restore. Reuse the control plane's consistent SQLite backup mechanism; do not copy a running main file and omit the WAL. For Mac → Linux, migrate logical data/objects and remap paths; handle credentials separately and recover native sessions according to actual runtime support. Without an embedding service, users can still view, search with FTS, and export; model availability must not determine data accessibility.
 
-## 10. 最小落地与验证
+## 10. Minimal Implementation and Validation
 
-1. **先来源与边界。** 在现有业务实体契约上建 evidence/decision 引用、scope、版本、来源与删除状态，接入命令和事件；提供查看/导出/删除基础 API。尚无产品 runtime 时先形成 Go 模块/API 与数据契约，不虚报已集成。
-2. **再可用检索。** FTS + scope/时间过滤、来源读取、context manifest、任务上下文与 AO 输入投影；明确中文检索策略。手工确认资料即可验证核心价值，不依赖先接记忆模型。
-3. **再接通后台整理，按价值启用 Memory Agent。** 规则/人工/通用抽取器先处理候选，复杂整理再由 AO 按需派发该角色，后台事件/定期任务触发候选整理、冲突与修订建议，通过 API 使用可替换抽取器或 Mem0；接语音与多个 Agent 后统一走同一入口。把摘要用量、作业延迟、Token 和候选接受/纠错情况记入现有观测。
-4. **按缺口升级。** 语义检索、图关系、独立引擎或 PostgreSQL 都由真实检索/并发需求触发。新增引擎仍走来源/权限/删除契约；不能把“迁入开源引擎”当完成质量验收。
+1. **Start with sources and boundaries.** On the existing business-entity contract, add evidence/decision references, scope, version, source, and deletion state; connect commands/events and provide basic view/export/delete APIs. With no product runtime yet, first define the Go module/API and data contract; do not claim integration has been completed.
+2. **Then provide usable retrieval.** Add FTS + scope/time filtering, source reads, context manifest, task context, and AO input projection; define the Chinese retrieval strategy. Manually confirmed material is enough to test core value; connecting a memory model is not a prerequisite.
+3. **Then connect background organization and enable Memory Agent if useful.** Let rules/humans/general extractors handle candidates first; dispatch the role through AO on demand for complex organization. Background events/periodic tasks trigger candidate organization, conflict, and revision suggestions through the API using a replaceable extractor or Mem0. Once voice and multiple Agents are connected, route all access through the same entry point. Record summary usage, job latency, tokens, candidate acceptance, and corrections in existing observability.
+4. **Upgrade only to address real gaps.** Semantic search, graph relationships, separate engines, or PostgreSQL are triggered by actual retrieval/concurrency needs. New engines still follow source/permission/deletion contracts; moving to an open-source engine does not complete quality acceptance.
 
-最小验证使用固定本地 fixture 与可替换假抽取器，不必先做真实模型调用：
+Minimal validation uses fixed local fixtures and a replaceable fake extractor; it does not require real model calls:
 
-| 验证 | 应有结果 |
+| Validation | Expected result |
 |---|---|
-| SQLite→PostgreSQL 决定变更，插入 AI 错误摘要与缺理由记录 | 当前/历史/时间/依据正确；不采纳错误摘要，不编造理由 |
-| 项目 A/B、两个主体、个人/组织偏好 | 未授权查询、工具调用与来源读取均拒绝；scope 不靠前端过滤 |
-| 两 Worker 提交冲突提案/重复事件 | 幂等去重，旧 revision 不覆盖新决定，矛盾可见 |
-| 删除/撤权后向量索引与投影仍旧，随后恢复备份 | 旧条目立即不再注入；清理完成可核对；恢复不复活已知删除 |
-| 结束会话、服务重启、换设备/模型/runtime/语音账号 | 相同记忆 ID/来源可读；新上下文只带授权相关摘要；不将 fresh 宣称 resume |
-| 长期任务在原生 session 丢失后恢复 | 从账本核对状态和副作用，摘要只补背景，不重复执行 |
-| 中文回指、跨数周历史、Token 预算不足、来源缺失 | 能消歧/检索，重要约束保留，明确给出缺口与不确定性 |
+| SQLite → PostgreSQL decision change; insert an incorrect AI summary and a record with no rationale | Current/history/time/rationale are correct; reject the incorrect summary and do not invent a rationale |
+| Project A/B, two principals, personal/organization preferences | Unauthorized queries, tool calls, and source reads are all rejected; scope is not enforced only by frontend filtering |
+| Two Workers submit conflicting proposals/duplicate events | Idempotent deduplication; an old revision cannot overwrite a new decision; conflict is visible |
+| After deletion/revocation, vector index and projection are stale, then a backup is restored | Old entry is immediately no longer injected; completed cleanup is verifiable; restore does not revive a known deletion |
+| End session, restart service, switch device/model/runtime/voice account | Same memory IDs/sources remain readable; new context contains only authorized relevant summaries; fresh start is not described as resume |
+| Recover a long-running task after its native session is lost | Verify status and side effects from the ledger; summary supplies background only and does not repeat execution |
+| Chinese reference resolution, history across several weeks, insufficient token budget, missing source | Disambiguate/retrieve; preserve important constraints; clearly state gaps and uncertainty |
 
-本次交付仅专项设计；上述验证是实施验收建议，均未冒充已完成的产品或真实上游实验。
+This delivery is a specialist design only. The validations above are implementation acceptance recommendations; none is claimed as a completed product test or real upstream experiment.
