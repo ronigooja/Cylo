@@ -1,0 +1,17 @@
+ARG GO_BUILDER_IMAGE=golang:1.26.4-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b
+ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+
+FROM ${GO_BUILDER_IMAGE} AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false -ldflags='-s -w' -o /out/cylo-runner ./cmd/cylo-runner
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false -ldflags='-s -w' -o /out/cylo-secret-entrypoint ./deploy/linux/secret-entrypoint.go
+
+FROM ${RUNTIME_IMAGE}
+COPY --from=build --chown=65532:65532 /out/cylo-runner /usr/local/bin/cylo-runner
+COPY --from=build --chown=65532:65532 /out/cylo-secret-entrypoint /usr/local/bin/cylo-secret-entrypoint
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/cylo-secret-entrypoint"]
+CMD ["/usr/local/bin/cylo-runner"]
