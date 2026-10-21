@@ -9,14 +9,14 @@
 | 应用结构 | TypeScript 模块化单体控制服务 + 独立执行 runner；React 响应式 PWA；明确版本化 JSON Schema 契约 | 核心控制服务无吞吐证据前不拆微服务；CAO可通过Python适配器接入，provider与session改造路线见[07](07-cao-cli-handoff-plan.md) |
 | 权威数据 | 单机 SQLite WAL、本地磁盘、控制服务唯一业务写入口；事务 outbox 与 durable jobs 同库 | 多节点控制平面/团队写并发需求出现后迁 PostgreSQL；不将 SQLite 放 NFS [S3] |
 | 后台运行 | macOS launchd / Linux systemd 管理守护服务，执行主机 runner 持有进程与工作目录 | 不要求 Docker 才能使用本机开发环境；多租户执行用 Linux 容器/VM 隔离 |
-| Agent 集成 | `AgentRuntime`适配CAO；先增强Codex CLI/tmux接续，固定版本 | 需要结构化事件/审批时可深入app-server adapter；该路线仍须验证实验/生产支持边界[S1] |
+| Agent 集成 | `AgentRuntime`适配CAO；先验证自动编排并补基础Codex CLI执行/停止查看/恢复，固定版本；人工接管后续可选 | 需要结构化事件/审批时可深入app-server adapter；该路线仍须验证实验/生产支持边界[S1] |
 | CAO | 保留为拟采用的CLI编排底座，可修改Codex provider与session管理；Cylo持有业务权威 | tmux/CLI增强与app-server adapter两路线见[07](07-cao-cli-handoff-plan.md)；默认权限与清理须改造 |
 | 客户端 | PWA 先完成 Mac/iPhone/iPad 同一业务接续，前台语音 | 若锁屏持续语音、系统通知行为、音频路由实测不达产品目标，增加 SwiftUI 原生 iOS/iPadOS 客户端，复用服务契约 |
 | 语音 | 采纳 chatgpt-web-voice 的实时语音上游、Go 网关和多账号池；VoiceSessionAdapter 桥接 Cylo command/回执 | 补齐稳定提交、业务结果注入、账号粘性/并发租约/额度状态；私有协议能力以源码及真实 POC 为准；独立 STT/TTS 仅故障降级 |
 | 记忆 | 原始证据、已确认决策、执行事实、推断分离；Memory Agent 仅产提案/索引 | FTS 起步，嵌入检索后加；向量库不是权威事实库 |
 | 长期能力 | 不可变 release + deployment + 独立 service instance；确定性程序自行运行 | Agent 创建代码与服务部署分离授权，容器不是跨系统唯一发布格式 |
 
-“完整产品”保留所有需求；MVP 是验证顺序，不删除长期能力、记忆或官方工具互通目标。跨端业务接续、保存会话恢复、活跃会话接管分别验收。
+完整必需范围保留长期能力、记忆、基础 CLI 执行与保存会话恢复；人工同 thread 无缝接管和双向交接按最新决定列为可选增强，不阻断首期或必需范围验收。优先自动 Super 拆分、独立 Worker、多 worktree、长任务/后台服务、持久恢复、产物与成本。CAO 仍是拟采用候选，进一步比较尚未定案。
 
 ## 2. 部署拓扑和边界
 
@@ -234,11 +234,11 @@ interface CapabilityRunner {
 
 凭证只以 SecretRef/短时凭证进入适配器，不进上下文。语音账号凭据由网关后端解引用，不能把永久 token 通过上述接口送浏览器；上游所需会话临时材料与 Cylo 登录分开。`relayReceipt` 是 Cylo 适配抽象，当前上游仅有 `author:user` 的私有文本回注候选，不表示 tool_result/system 通道已存在。原始 provider event 留证，映射后的 RuntimeEvent 必带 native IDs、原始来源、observed_at、provider版本。提供者没有可重放事件游标时，不能编造；控制服务断线后 inspect + 拉历史补账，不能证明连续性则标 gap/unknown，保留需要人工核实事项。
 
-### 7.1 Codex 原生接续的门槛
+### 7.1 基础 CLI 恢复与可选原生交接
 
 官方当前文档提供 `thread/list/read/resume`、历史分页、`turn/start/steer/interrupt`；`thread/list` 默认 `sourceKinds` 只有 cli/vscode，发现 Cylo发起会话必须显式包含appServer/exec等 [S1]。`thread/resume` 是保存会话恢复，不证明可抢占活跃会话；官方桌面App发现不在当前验收范围。当前文档仍写 app-server命令和WebSocket传输实验且不支持生产；优先stdio不意味着已经消除实验风险。
 
-必须固定 Codex CLI版本、账号/认证域、配置目录、host、cwd和原生thread ID，验证以下矩阵后才能标“原生接续”：
+基础执行与恢复必须固定 Codex CLI版本、账号/认证域、配置目录、host、cwd和原生thread ID，并验证真实执行、停止查看、持久恢复与单写保护。以下人工双向接续矩阵仅在选择该可选增强并宣称“原生接续”时验收：
 
 | 场景 | 验收证据 |
 |---|---|
@@ -252,7 +252,7 @@ interface CapabilityRunner {
 
 Linux三turn实验由app-server与官方CLI直接完成，尚未证明CAO已有同样能力；CAO provider/session增强与app-server adapter的改造边界见[07](07-cao-cli-handoff-plan.md)。
 
-交接：`prepare` 停止新turn→中断/等当前turn结束→核对工作区与外部副作用→存checkpoint和handoff包→释放lease→原生工具继续；反向先观察原生工具已停止，再claim并reconcile。Cylo lease只约束Cylo的runner，不能强制独立官方CLI尊重本地锁；无法检测外部写者时要求显式用户交接并禁止自动接管。活跃会话“无缝迁移”不在已验证承诺内。门槛失败仍可提供项目路径、git状态、原生resume指令（仅实测有效者）和带证据的handoff摘要，标识为降级接续，不等价原生历史。
+若选做人工交接：`prepare` 停止新turn→中断/等当前turn结束→核对工作区与外部副作用→存checkpoint和handoff包→释放lease→原生工具继续；反向先观察原生工具已停止，再claim并reconcile。Cylo lease只约束Cylo的runner，不能强制独立官方CLI尊重本地锁；无法检测外部写者时要求显式用户交接并禁止自动接管。活跃会话“无缝迁移”不在已验证承诺内。门槛失败仍可提供项目路径、git状态、原生resume指令（仅实测有效者）和带证据的handoff摘要，标识为降级接续，不等价原生历史。
 
 官方 [S1] 另明确 app-server认证从未允许商业或托管服务；单机本地/开源与团队SaaS不能共用未经核实的认证假设。托管扩展前独立验证 Sign in with ChatGPT/API key可用性、条款和账号隔离，不能把语音网关的 ChatGPT 账号池当作 Codex 认证池；语音上游和 Codex 使用独立凭据、授权与用量账本。
 
@@ -434,9 +434,9 @@ SQLite→PostgreSQL：从首版通过仓储接口与显式迁移脚本隔离SQL�
 
 | 阶段 | 交付与前置依赖 | 必须通过的验收 |
 |---|---|---|
-| 0 证据与协议冻结 | 完整需求ID映射；固定Codex/候选版本；JSON Schema；原生互通；上游真实语音/稳定提交/回执/两账号额度切换及真机POC | 每条原生接续路径分开给实测结果；空thread不能视作已落盘；无模型调用也能确认持久消息 |
+| 0 证据与协议冻结 | 完整需求ID映射；固定Codex/候选版本；JSON Schema；基础CLI执行/停止查看/持久恢复；上游真实语音/稳定提交/回执/两账号额度切换及真机POC | 基础CLI路径给实测结果；人工同thread接管不作为前置；空thread不能视作已落盘；无模型调用也能确认持久消息 |
 | 1 控制与单机可靠闭环 | SQLite schema、command/outbox/jobs、认证、任务/run状态、runner、基础PWA | 重复发送仅一command；提交后断线/重启不丢；快照与cursor无缺口；暂停/取消显示真实确认 |
-| 2 专业执行与官方互通 | AgentRuntime + Codex固定版本；一个Super按需和Worker直接调用；独立worktree；证据验收 | 关闭客户端继续；run结束不误标task完成；macOS/Linux CLI双向恢复、真实工具与审批；外部活跃写者不并发接管 |
+| 2 专业执行与官方互通 | AgentRuntime + Codex固定版本；一个Super按需和Worker直接调用；独立worktree；证据验收 | 关闭客户端继续；run结束不误标task完成；macOS/Linux基础CLI调用/停止查看/恢复、真实工具与必要审批；外部活跃写者不并发执行；人工双向接续另作可选 |
 | 3 语音与跨设备 | 实时上游/Go网关、账号slot/额度观察、稳定turn与回执桥接、通知收件箱、设备游标；依赖阶段1业务契约 | iPhone/iPad/Mac同任务；打断不重复动作；耗尽换账号新媒体且任务不重派；锁屏后后端仍跑；重开恢复事件；记录后台采音限制 |
 | 4 能力创建与独立运行 | manifest/release/deployment、授权、secret、supervisor、健康、checkpoint；依赖阶段1/2 | 邮件监控在Super停用时仍运行；规则直接Worker；超时发送不重发；升级失败可核对/回滚；卸载撤权 |
 | 5 记忆与上下文 | evidence/decision版本、Memory提案、FTS/检索、context manifest；依赖权威事件稳定 | SQLite→PostgreSQL决定不混淆；推断不升格事实；撤权/删除/旧索引不泄露；任务恢复不靠摘要猜状态 |
@@ -448,7 +448,7 @@ SQLite→PostgreSQL：从首版通过仓储接口与显式迁移脚本隔离SQL�
 
 ## 15. 尚未验证与阻断条件
 
-- Codex app-server尽管有丰富接口仍实验；CLI独立创建会话的发现/反向关联、macOS CLI与真实工具/审批仍需验收。官方桌面App、深链和官方host handoff不在范围，不阻断实施。编排专项实测0.163.0仅`thread/start(ephemeral=false)`且无turn的会话在重启后`resume`报`no rollout found`，所以“返回thread ID”不是可恢复持久化提交点；需要真实有历史的会话验证落盘/重启。不得制造空turn来绕过验收。
+- Codex app-server尽管有丰富接口仍实验；macOS/Linux基础CLI执行/停止查看/恢复与真实工具/审批仍需验收；独立CLI会话发现/反向关联、人工同thread交接为可选增强，未验收不阻断必需路径。官方桌面App、深链和官方host handoff不在范围，不阻断实施。编排专项实测0.163.0仅`thread/start(ephemeral=false)`且无turn的会话在重启后`resume`报`no rollout found`，所以“返回thread ID”不是可恢复持久化提交点；需要真实有历史的会话验证落盘/重启。不得制造空turn来绕过验收。
 - 官方CLI出现`--remote`、Unix socket与WebSocket路径，不推导跨host持久化保证；stdio仍为最小集成选择，稳定字段与整体成熟度分别判断。
 - 当前官方认证文档文字需按具体鉴权表面与部署类型验证；不推出Codex全面禁止商业、也不默认ChatGPT个人登录可用于托管团队。
 - PWA音频在当前目标iPhone/iPad机型、网络和系统版本上的延迟、打断、前后台切换与通知未实测；若目标必须锁屏持续对话，原生客户端立项需先验证系统能力。

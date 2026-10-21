@@ -4,7 +4,7 @@
 
 ## 直接结论
 
-**如果沿用 CAO，主要就是改 `awslabs/cli-agent-orchestrator` 的 Codex adapter、会话元数据和交接生命周期，再由 Cylo 提供接管入口。推荐先做路线 A，保留 CAO Super/Worker 编排。** 不必为 CLI 接续重写 Codex 会话引擎，也不必先把 CAO 换成 app-server。
+**最新优先级：首期验证自动 Super 拆分、独立 Worker、多 worktree、长任务、持久恢复、产物和成本。若沿用 CAO，先改 Codex adapter、原生会话关联、resume、停止查看及成果保留。路线 A 的人工同 thread 附着/交回控制和复杂交接协议降为可选后续，不作为选型或首期 Go/No-Go 前置。CAO 暂保留为拟采用候选，进一步候选比较仍在进行。** 不必为 CLI 接续重写 Codex 会话引擎，也不必先把 CAO 换成 app-server。
 
 两种操作要分开：
 
@@ -35,9 +35,9 @@ CAO 固定提交 [`4e990a9d78b154ad76c6cf94c7b51e36fce69f21`](https://github.com
 
 本次只做静态核验和官方文档/help 复核，未运行 CAO/tmux fleet。此前 [02 P5](02-orchestration-and-codex.md#p5-同thread双向交接三轮文字闭环新增) 是 app-server ↔ 官方交互 CLI 的同机假 provider 三轮文字验证，**不是 CAO 已支持接续**。
 
-## 路线 A：最小 CAO CLI/tmux 增强（推荐）
+## 路线 A：CAO CLI/tmux 增强（首期基础子集，人工交接可选）
 
-接口及字段以下均为**拟新增**；不是现有 CAO API。
+接口及字段以下均为**拟新增**；不是现有 CAO API。首期只需原生 binding/resume、执行 owner 与 generation、真实停止/查看、worktree/产物保留及安全清理。下表 `beginManual` / `returnControl`、manual/transferring/reconciling 人工状态与人机输入切换仅在选择可选交接增强时实现；worker lease/fencing、旧写者停止确认和必要审批仍为首期安全要求。
 
 | 改动位置 | 最小改动目标与接口 |
 |---|---|
@@ -55,7 +55,7 @@ CAO 固定提交 [`4e990a9d78b154ad76c6cf94c7b51e36fce69f21`](https://github.com
 3. 若固定 CLI 版本提供确切的官方 session ID 输出，可优先捕获并用 `thread/read` 验证；本次没有验证到交互 TUI 的稳定机器可读 launch-ID 输出。`codex exec --json` 的结构化事件属于另一执行模式，不能据此声称交互 CLI 已有同接口。
 4. 路线 A 可以只增加一个只读 discovery helper 使用 app-server API，**不把 turn 执行改到 app-server**。这仍有协议版本依赖；如果不接受该依赖，先用用户显式 ID 导入。读取原生 JSONL/SQLite 只能是另行核验并固定版本的兼容 fallback，不把私有表结构当稳定 API；不复制正在写的 SQLite 来“同步”。
 
-### 控制权流程
+### 可选人工控制权流程
 
 - `beginManual`：冻结 CAO 新派发及重投 → 等待当前回合/工具停稳，或由用户明确选择中断 → 确认无在途输入 → 持久授予 manual → 附着原 pane。只查看可并行，只有一方可输入。
 - 若选择另起 `codex resume`：先优雅退出旧 CLI 并确认其及相关工具不再写入，再启动新的官方 CLI。不能只 detach 原 pane 就开第二个写者。thread/store 相同也不意味着跨进程天然互斥。
@@ -73,19 +73,21 @@ CAO 固定提交 [`4e990a9d78b154ad76c6cf94c7b51e36fce69f21`](https://github.com
 - 协议映射：create/resume/list/read → `thread/*`；send/steer/cancel → `turn/start`、`turn/steer`、`turn/interrupt`；完成与用量 → turn/item 通知；command/fileChange 审批及 user-input → server-initiated request/reply，按 thread/turn/request/connection 与决策版本关联，不能复用过期 request ID。
 - shell/file/MCP 由 Codex 自身执行。CAO 协作工具通过 Codex 的 MCP 配置暴露，或在固定版本验证后映射实验 `dynamicTools`/`item/tool/call`；两者不是天然等价。客户端承载的 dynamic tool 在独立 CLI 接手时未必有宿主可回应，优先采用 CLI 也可访问、鉴权一致的 MCP 服务。
 
-B 仍须做 A 的互斥、保留目录、取消确认与 reconcile；app-server 不替 Cylo 解决业务任务、预算和副作用账本。app-server 是进程协议名称，**不表示本产品支持官方桌面 App**。
+B 仍须做 A 的执行互斥、保留目录、取消确认与恢复核对；人工交接状态机仅选做时实现；app-server 不替 Cylo 解决业务任务、预算和副作用账本。app-server 是进程协议名称，**不表示本产品支持官方桌面 App**。
 
 ## 必须验证什么，以及哪些不必为 CLI 先做
 
 只做 CLI 接续，不必做桌面 App 发现/深链/项目注册、App SSH handoff、跨 host 搬迁、移动逐条原生审批桥或完整 app-server turn adapter。默认执行留在同一 host/store/worktree；远程终端可 SSH 到该 host 附着。完整产品的跨环境数据迁移仍保留，按04第13节/CY-04-03单独验收；取消的是官方桌面App支持，不是数据迁移要求。
 
-产品仍须管理：业务 task/run 状态与真实完成证据、持久交接/输入 owner、进程停止/unknown、dirty worktree 与产物、工具服务凭据/权限、备份、预算、Cylo 自身工具审批与外部副作用核对。它们不能靠“CLI 能 resume”推定已完成。
+产品仍须管理：业务 task/run 状态与真实完成证据、持久执行 owner/lease/fencing、进程停止/unknown、dirty worktree 与产物、工具服务凭据/权限、备份、预算、Cylo 自身工具审批与外部副作用核对。它们不能靠“CLI 能 resume”推定已完成。
 
-最小交付验收保留四组：
+首期必需验收：
 
-1. 真 CAO/tmux 同 pane 接管，含自动 inbox/重投竞争、只读观察、断线和 CAO 重启；验证人输入时没有监督输入或清理。
-2. CAO CLI → 退出 → 官方 `resume <id>` 新 turn → 退出 → CAO 同 ID 恢复；再测用户先创建的原生 thread 导入。多候选不误选、目录消失明确失败，未提交/未跟踪文件保留。
-3. 真实 Codex shell/file/MCP 与批准/拒绝；交接后工具配置一致。中断、进程异常和 pending 审批回收不重复批准/执行，旧请求不可误用。
+1. 真 CAO/tmux 自动 Super 拆分、独立 Worker、多 worktree 与长任务；可查看真实进度/产物/成本，客户端退出和 CAO 重启后正确核对执行，重复 inbox/重投不导致双写。
+2. 基础 Codex CLI 调用 → 保存原生 thread/host/store/cwd → 停止/退出或崩溃后确认旧写者已停 → 同 ID 恢复。目录消失明确失败，未提交/未跟踪文件保留，不能只用摘要声称已恢复。
+3. 真实 Codex shell/file/MCP 与必要批准/拒绝；恢复后工具与权限配置正确，中断、进程异常和 pending 审批回收不重复批准/执行，旧请求不可误用。
 4. 取消分别证明停止回合、退出 CLI、终止会继续写的子进程；无法证明则 unknown，拒绝第二写者，不能返回虚假“已停止”。
 
-官方事实依 **OpenAI Docs** 技能，2026-10-21 实际取回 [CLI reference](https://developers.openai.com/codex/cli/reference)、[app-server](https://developers.openai.com/codex/app-server) Markdown，并复核本机 `codex-cli 0.163.0` 的 `resume --help`。没有可用官方搜索工具，使用直接官方页面；官方 app-server 当前仍明确实验/生产支持边界，实施须固定版本与 schema。源码静态核验不是上述四组产品验收通过。
+可选人工增强另验：同 pane 人工接管与交回、自动 inbox/重投和人工输入竞态、只读观察/断线/重启、CAO→官方 CLI→CAO 同 thread 双向新 turn，以及外部 thread 导入。只在宣称该能力时要求通过，未实现不阻断首期或完整必需范围。
+
+官方事实依 **OpenAI Docs** 技能，2026-10-21 实际取回 [CLI reference](https://developers.openai.com/codex/cli/reference)、[app-server](https://developers.openai.com/codex/app-server) Markdown，并复核本机 `codex-cli 0.163.0` 的 `resume --help`。没有可用官方搜索工具，使用直接官方页面；官方 app-server 当前仍明确实验/生产支持边界，实施须固定版本与 schema。源码静态核验不是上述必需或可选产品验收通过。

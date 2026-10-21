@@ -4,11 +4,11 @@
 
 ## 1. 决策
 
-**当前建议：保留 CAO Super/Worker，先做原生 Codex CLI/tmux 接续增强；具体源码改动与 A/B 路线见 [07 改造方案](07-cao-cli-handoff-plan.md)。** 当前范围仅官方 CLI；用户明确不要求官方 macOS 桌面 App。下面历史 App 文档、入口和实验限制作为范围外证据保留，不是产品需求、准入或交付阻断条件。macOS 上运行 CLI 与浏览器不因此排除。
+**当前建议：CAO 暂保留为 Super/Worker 编排候选，进一步候选比较仍在进行；先验证自动拆分、独立 Worker、多 worktree、长任务、持久恢复、产物和成本，补基础 CLI 执行/停止查看/恢复；人工同 thread 接管为可选后续。具体源码改动与 A/B 路线见 [07 改造方案](07-cao-cli-handoff-plan.md)。** 当前范围仅官方 CLI；用户明确不要求官方 macOS 桌面 App。下面历史 App 文档、入口和实验限制作为范围外证据保留，不是产品需求、准入或交付阻断条件。macOS 上运行 CLI 与浏览器不因此排除。
 
 本次调整基于用户取消官方桌面 App 范围，以及 CAO 已有真实 tmux 附着、协作与持久化的源码事实；不是证明所有 Cylo 产品要求已被 CAO 覆盖。抓屏正则、默认 `--yolo`、强制清理的风险仍保留在下文，作为具体改造项。
 
-CAO 已具备真实 tmux 附着，可手动操作同一运行中的原生 CLI；要补的是 CAO 自动输入/回收互斥，以及 CLI 退出后的官方 thread ID 绑定和 `resume`。CAO 自己的 terminal/session ID 不能当 Codex thread ID。推荐路线 A 复用其编排，app-server adapter 仅在需要结构化工具/审批/turn 控制时采用路线 B，不因桌面 App 范围外能力重构整个运行时。
+CAO 已具备真实 tmux 附着，可手动操作同一运行中的原生 CLI。首期需补 CLI 退出后的官方 thread ID 绑定和 `resume`、停止查看与成果保留；人工输入/回收互斥仅在选择接管增强时补齐。CAO 自己的 terminal/session ID 不能当 Codex thread ID。推荐路线 A 复用其编排，app-server adapter 仅在需要结构化工具/审批/turn 控制时采用路线 B，不因桌面 App 范围外能力重构整个运行时。
 
 **已有实测限定：** Linux 同主机、同 CODEX_HOME 的“app-server 首轮 → 官方交互 CLI 同 thread 新一轮 → app-server 第三轮”通过隔离假 provider 三轮文字闭环；不是 CAO 改造已完成，也不替代真实模型、shell/MCP、审批与并发交接验证。app-server 自身重启恢复已实测；同进程 tmux 附着与退出后同 thread resume 是两类接管。
 
@@ -115,7 +115,7 @@ Codex SDK源码证据：[TS exec封装](https://github.com/openai/codex/blob/d13
 
 官方 [worktrees](https://developers.openai.com/codex/app/worktrees) 描述的worktree/环境能力不能替代Cylo自身资源保留策略。项目文件通过Git同步、把摘要贴入新会话、导入JSON文本或复制聊天消息，均只能标“上下文重建/导入”，**不是同一原生thread接续**。官方 App 的 host handoff 是另一个明确文档化的迁移机制（见5.3）；复制会话store的实验不能冒充该机制或升级为受支持同步。
 
-### 5.2 可审查的原生交接协议（设计建议，尚未实现）
+### 5.2 可选原生交接协议（后续增强设计，尚未实现）
 
 1. `requestHandoff(taskId, targetClient)`：控制服务阻止新派发；保存消息、task revision、threadId、turnId、hostId、CODEX_HOME标识、repo/worktree与dirty manifest。若仍在执行，等待terminal turn或请求interrupt并收到确认；仅数据库标pause不够。
 2. `sealHandoff`：确认无活跃工具/审批/未知副作用；保存原始history游标与产物。存在pending审批时，绑定原request和有效期限；无法安全交接则保留阻塞，不自动作批准。
@@ -125,7 +125,7 @@ Codex SDK源码证据：[TS exec封装](https://github.com/openai/codex/blob/d13
 
 ### 5.3 历史能力分级（当前仅CLI，B/C/E及App相关描述为范围外证据）
 
-**接续可以实现。优先做“同一个执行环境、轮流接管”：Cylo 先做，人随时转入官方 Codex继续，退出后交回Cylo。** 同机Linux文字闭环已有P5证据；可靠产品还需围绕原生接口实现少量但关键的交接控制。难度不在复制聊天，而在明确谁能写、如何保住工作目录、如何核对未知工具结果。
+**以下“同一个执行环境、轮流接管”是可选增强，不再作为首期优先项或 Go/No-Go 前置。** 同机Linux文字闭环已有P5证据；可靠产品还需围绕原生接口实现少量但关键的交接控制。难度不在复制聊天，而在明确谁能写、如何保住工作目录、如何核对未知工具结果。
 
 | 级别与用户体验 | 当前证据等级 | 可交付形态及条件 | 有条件的难度判断 |
 |---|---|---|---|
@@ -136,7 +136,7 @@ Codex SDK源码证据：[TS exec封装](https://github.com/openai/codex/blob/d13
 | **E：把执行位置从Linux搬回Mac，之后再搬回**。官方App chat footer选择run location→目的host→Hand off | **官方host handoff明确；未实测** | 两端已连接、保存同repo project（同子目录），App转chat+Git state并建/复用worktree；Cylo需验迁移后thread/host映射、未跟踪产物与工具依赖 | 高于远程访问；应复用官方流程，先验完整性再纳入Cylo。文档未保证技术threadId恒定、任意非Git产物或工具进程迁移 |
 | **F：两端同时写、不断工具进程跨机瞬移、任意账号/任意store自动同步** | **不能承诺** | 当前方案不提供此语义；需要独立且尚未建立的并发/迁移保证 | 不列为“加一个按钮”的后续小功能 |
 
-A的第一版完整操作应是：
+如选择可选增强 A，完整操作应是：
 
 1. 用户在Cylo点“交给Codex”。Cylo停止派发新turn，等待当前turn结束或interrupt完成，核对后台工具；显示会话已暂停、执行host和工作目录。
 2. 控制服务封存checkpoint：原生thread/turn/history游标、任务验收目标、权限配置、Git HEAD/分支/dirty patch、未跟踪文件和附件引用。checkpoint不是内存/进程快照；有未知副作用须显示待核对。
@@ -144,7 +144,7 @@ A的第一版完整操作应是：
 4. 用户退出原生工具并点“交回Cylo”。运行端确认无另一写进程，重新读原生turn/items与文件变化；Cylo展示新增执行/产物，随后恢复调度。用户不必重贴聊天，任务验收仍由Cylo判断。
 5. App自行修改了权限、项目路径或迁移host时，先做配置差异核对；原请求的批准不能自动复用。pending审批要保持原绑定且确认仍有效，进程已退出时不得假装审批/工具仍活着。
 
-Cylo数据库租约约束不了用户绕过Cylo启动的独立官方CLI。基础产品应采用明确“退出再收回”的流程，并由执行端锁/进程核验合作；发现无法排除并发时阻止恢复派发。不能用UI上一个“已交接”标签充当强制互斥。
+Cylo数据库租约约束不了用户绕过Cylo启动的独立官方CLI。选做人工交接时应采用明确“退出再收回”的流程，并由执行端锁/进程核验合作；发现无法排除并发时阻止恢复派发。不能用UI上一个“已交接”标签充当强制互斥。
 
 ### 5.4 最新官方App/SSH/迁移入口证据（2026-10-21实际读取）
 
@@ -281,8 +281,8 @@ print("interrupted_visible=", b"Conversation interrupted" in output)
 
 建议核验门槛清单：
 
-1. **可继续调研/隔离开发（Go）**：优先路线A CAO CLI/tmux 增强，app-server为按需路线B；Cylo持有业务权威，单个run仅一个执行owner。版本与源码及离线原生恢复证据已有。
-2. **Codex CLI“原生双向接续”产品承诺（尚未Go）**：通过07四组验收，涵盖真CAO/tmux互斥、精确thread恢复、真实shell/file/MCP与批准/拒绝、停止/重启/未知结果。P5文字闭环不替代这些；原生steer仅路线B承诺时必测。
+1. **可继续调研/隔离开发（Go）**：优先自动编排与基础 CLI 执行恢复；CAO 路线先做07的首期子集，人工交接为可选增强，app-server为按需路线B；Cylo持有业务权威，单个run仅一个执行owner。版本与源码及离线原生恢复证据已有。
+2. **基础 CLI 闭环（待验收）**：通过07的必需验收，涵盖调用、状态/产物查看、保存会话恢复、真实shell/file/MCP与必要批准/拒绝、停止/重启/未知结果及单写保护。**人工同 thread 双向接续（可选，尚未Go）** 另验同pane人工控制、反向导入及交回；未实现不阻断基础交付。P5文字闭环不能代替任一真实工具验收；原生steer仅路线B承诺时必测。
 3. **跨环境迁移与部署验收**：迁移仍为完整产品要求，按04第13节验证停写、一致备份、目录/凭据重映射与旧host停止；区别于remote attach。官方App host handoff不在范围，托管鉴权按实际部署单独核验。
 
 本选型按用户最新要求排除官方桌面 App 支持，不把未验证 CLI 能力降为文本摘要“接续”。它明确目前能证明什么、缺哪些真实环境证据，以及哪一层应承担补足责任。
