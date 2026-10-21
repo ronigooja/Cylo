@@ -1,6 +1,6 @@
 # Cylo master plan
 
-**Status:** documentation Stage 0 is complete and product implementation is underway. The repository now contains a partial Go control foundation and native Apple client source. Milestone 1 is not accepted: AO/runtime integration, complete runner delivery, production deployment, device acceptance, and full scenario evidence remain outstanding. This document is the current decision and delivery plan. Source requirements and research are preserved under `docs/archive/`; archived proposals are evidence, not current decisions.
+**Status:** documentation Stage 0 is complete and product implementation is underway. The table below records the evidence-backed implementation boundary. Milestone 1 is not accepted: AO/runtime integration, complete runner delivery, production deployment, device acceptance, and full scenario evidence remain outstanding. This document is the current decision and delivery plan. Source requirements and research are preserved under `docs/archive/`; archived proposals are evidence, not current decisions.
 
 ## 1. Status and decisions
 
@@ -20,6 +20,17 @@ Decisions and limits:
 - Raw audio is not retained by default.
 - Memory authority uses versions and tombstones. Changes become visible synchronously in the authority; asynchronous cleanup updates derived stores. Backups are included in deletion and recovery rules.
 - At most one active server instance may operate on a database during migration or restore.
+
+Current implementation status:
+
+| Area | Implemented evidence | Remaining acceptance |
+|---|---|---|
+| Control plane | Linux Go server source, SQLite migrations, authenticated device and runner APIs, durable command receipts/events, task/run/result handling, owner and typed project membership checks, and inbox notifications; subprocess restart and recovery tests run locally. | AO lifecycle integration, real runtime termination proof, production deployment/restore rehearsal, and complete task scenarios. |
+| Runner | Independent runner executable and authenticated claim/report path are present. Claims preserve their admitted isolation policy and grants across restart. | Real AO execution adapter, registered isolation verifier/backend, end-to-end execution, and production recovery evidence. |
+| Memory | Source-linked, versioned authority with typed scopes, ownership checks, tombstones, and synchronous command/search paths; wired into server startup. | Mem0 worker integration, Qdrant rebuild/index path, encrypted backup and restore/deletion evidence. |
+| Voice | Space3044 signaling and stable turn bridge source is wired into server startup; confirmed transcript task admission writes canonical task data and event payloads atomically. A missing gateway returns an unavailable response. | Live gateway/account-pool behavior, media lifecycle, interruption and device tests, and end-to-end task completion. |
+| Native Apple clients | Shared Swift client, native macOS/iOS app source, server-backed task and inbox flows, and WebRTC client source are present. | Swift/Xcode build, signing, device installation, notification delivery, and real-device voice acceptance. |
+| Capabilities | Deployment contract DTOs exist. | Capability registry, approval/deployment lifecycle, runner execution, and external action acceptance. |
 - Daily backups retained for 30 days, RPO of 24 hours, and RTO of two hours are planning targets, not measured guarantees.
 
 ## 2. Requirements and scope

@@ -22,7 +22,9 @@ import (
 	"time"
 
 	"github.com/ronigooja/Cylo/internal/control"
+	"github.com/ronigooja/Cylo/internal/memory"
 	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Cylo/internal/voice"
 )
 
 func main() {
@@ -57,6 +59,12 @@ func recoverBootstrap(args []string) error {
 	}
 	defer store.Close()
 	if err = storage.RegisterCoreMigrations(store); err != nil {
+		return err
+	}
+	if err = memory.RegisterMigrations(store); err != nil {
+		return err
+	}
+	if err = voice.RegisterMigrations(store); err != nil {
 		return err
 	}
 	if err = store.Migrate(ctx); err != nil {
@@ -146,14 +154,6 @@ func run() error {
 	if err = storage.RegisterCoreMigrations(store); err != nil {
 		return err
 	}
-	if err = store.Migrate(ctx); err != nil {
-		return err
-	}
-	if runnerToken != "" {
-		if err = control.RegisterRunnerCredentialIfMissing(ctx, store, runnerToken, env("CYLO_RUNNER_ID", "configured-runner"), splitEnv("CYLO_RUNNER_WORKSPACES", "default"), splitEnv("CYLO_RUNNER_SCOPES", "runner:claim,runner:observe,runner:control:read")); err != nil {
-			return err
-		}
-	}
 	cfg := control.Config{
 		BootstrapCode:      bootstrapCode,
 		RunnerToken:        runnerToken,
@@ -167,6 +167,20 @@ func run() error {
 	server, err := control.NewServer(store, cfg)
 	if err != nil {
 		return err
+	}
+	if err = memory.Register(server, store); err != nil {
+		return err
+	}
+	if err = voice.Register(server, store, voice.Config{GatewayURL: os.Getenv("CYLO_VOICE_GATEWAY_URL"), GatewayAPIKey: os.Getenv("CYLO_VOICE_GATEWAY_API_KEY")}); err != nil {
+		return err
+	}
+	if err = store.Migrate(ctx); err != nil {
+		return err
+	}
+	if runnerToken != "" {
+		if err = control.RegisterRunnerCredentialIfMissing(ctx, store, runnerToken, env("CYLO_RUNNER_ID", "configured-runner"), splitEnv("CYLO_RUNNER_WORKSPACES", "default"), splitEnv("CYLO_RUNNER_SCOPES", "runner:claim,runner:observe,runner:control:read")); err != nil {
+			return err
+		}
 	}
 	httpServer := &http.Server{
 		Addr:              addr,

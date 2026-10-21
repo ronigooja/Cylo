@@ -31,7 +31,7 @@ func TestServerSubprocessBootstrapAndRestart(t *testing.T) {
 	code, token := subprocessSecret(t), subprocessSecret(t)
 	start := func() *exec.Cmd {
 		cmd := exec.Command(binary)
-		cmd.Env = append(os.Environ(), "CYLO_LISTEN_ADDR="+addr, "CYLO_DATABASE_PATH="+db, "CYLO_BOOTSTRAP_CODE="+code)
+		cmd.Env = append(os.Environ(), "CYLO_LISTEN_ADDR="+addr, "CYLO_DATABASE_PATH="+db, "CYLO_BOOTSTRAP_CODE="+code, "CYLO_VOICE_GATEWAY_URL=", "CYLO_VOICE_GATEWAY_API_KEY=")
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -50,6 +50,26 @@ func TestServerSubprocessBootstrapAndRestart(t *testing.T) {
 		if bearer != "" {
 			req.Header.Set("Authorization", "Bearer "+bearer)
 		}
+		res, err := client.Do(req)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer res.Body.Close()
+		var buf bytes.Buffer
+		_, err = buf.ReadFrom(res.Body)
+		return res, buf.Bytes(), err
+	}
+	callCommand := func(bearer, key string, body any) (*http.Response, []byte, error) {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return nil, nil, err
+		}
+		req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/v1/commands", bytes.NewReader(data))
+		if err != nil {
+			return nil, nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		req.Header.Set("Idempotency-Key", key)
 		res, err := client.Do(req)
 		if err != nil {
 			return nil, nil, err
@@ -114,6 +134,18 @@ func TestServerSubprocessBootstrapAndRestart(t *testing.T) {
 	res, body, err = call(http.MethodGet, "/v1/snapshot", newToken, nil)
 	if err != nil || res.StatusCode != http.StatusOK {
 		t.Fatalf("snapshot after restart status=%v err=%v body=%s", responseStatus(res), err, body)
+	}
+	res, body, err = callCommand(newToken, "memory-smoke", map[string]any{"kind": "memory.remember", "payload": map[string]any{"scope": map[string]string{"kind": "personal"}, "subject": "server restart", "key": "memory readiness", "content": "memory command is available after restart", "source_kind": "user_note"}})
+	if err != nil || res.StatusCode != http.StatusOK {
+		t.Fatalf("memory write after restart status=%v err=%v body=%s", responseStatus(res), err, body)
+	}
+	res, body, err = call(http.MethodGet, "/v1/memory?q=available+after+restart", newToken, nil)
+	if err != nil || res.StatusCode != http.StatusOK || !bytes.Contains(body, []byte("memory command is available after restart")) {
+		t.Fatalf("memory search after restart status=%v err=%v body=%s", responseStatus(res), err, body)
+	}
+	res, body, err = call(http.MethodGet, "/v1/voice/config", newToken, nil)
+	if err != nil || res.StatusCode != http.StatusServiceUnavailable || !bytes.Contains(body, []byte("voice_unavailable")) {
+		t.Fatalf("voice candidate without gateway should fail closed after restart: status=%v err=%v body=%s", responseStatus(res), err, body)
 	}
 }
 
