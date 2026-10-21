@@ -1,30 +1,30 @@
-# 实时语音与账号池复核证据
+# Real-Time Voice and Account-Pool Review Evidence
 
-日期2026-10-21，范围为研究。本文支持[03](../../../research/03-voice.md)，没有真实账号、通话、设备或收费API请求。
+Date: 2026-10-21; research scope. This supports [03](../../../research/03-voice.md). No real accounts, calls, devices, or billable API requests were used.
 
-## 源码与协议
+## Source and protocol
 
-`git -C /tmp/cylo-research-voice rev-parse HEAD`和`git -C /tmp/cylo-research-voice ls-remote origin HEAD`均返回：
+Both `git -C /tmp/cylo-research-voice rev-parse HEAD` and `git -C /tmp/cylo-research-voice ls-remote origin HEAD` returned:
 
 ```text
 6338ac478070aaa34bfe7a3c0469caf9e9174c02
 ```
 
-精确定位（均为此SHA，不依赖未来main）：
+Precise locations below are all at this SHA and do not depend on a future `main`:
 
-- `internal/voice/service.go:628 buildSessionJSON`：`client_tools: []any{}`；`conversation_mode.kind=primary_assistant`；`history_and_training_disabled=false`；无Cylo tools/instructions桥。conversation/parent注释明确上游可能忽略字段，仍作新会话。
-- `service.go:740 ProbeAccountToken`：settings/user 200 JSON→alive；401禁用；其他unknown。实现分支按status==401处理，虽然注释强调JSON，代码没有先检查JSON；不能把“所有HTML 401绝不会禁用”写成保证。
-- `service.go:943 CreateSession`：live binding→account ID→durable账号→LRU；粘性账号失败不静默切换。`1085`的401分支禁用；其他非2xx/非SDP在`1113`之后统一502，不继续轮换、也不保留额度/重置字段。
-- `internal/accounts/pool.go`：`Pick`是LRU选择而非slot预留，`PickByID`保留账号，`MarkInvalid`禁用；没有remaining/reset/cooldown字段。
-- `internal/api/downstream.go:25`：Bearer key owner，下游只保留voice_session_id，不返回账号/token；`context`只存ID，不注入模型conversation内容。
-- `static/voice.html:4081 buildBaseUserMessage`：构造`author.role='user'`；`3822 sendRelayMessageTo`将双层relay_message发至上游DataChannel。`4285 sendTextMessage`和`3925`附近preview greeting确实走此上行输入候选路径，并非客户端之间互传。底层`sendDcEventTo`再包`{type:"data_message", data:JSON.stringify(eventObj)}`；复用时必须保留这个外层，而非直接发送官方Realtime事件。
-- `static/voice.html:3849 applyCaptionDelta`：读取`message.author.role`或`audio_transcription.direction(in/out)`、全量/append增量。`4193`附近接收字幕，`4224`附近transcript子串匹配仅兼容候选。没有可靠的final状态判断，`rememberDcText`也会保存partial；不能直接触发业务执行。
-- `static/voice.html:3773 interruptAssistant`：只发私有`action_request/stop_speaking`，不本地mute；停止事件发出不证明音频已停，也不禁止下一次自主回复。
-- `internal/tokenutil/jwt.go`：exp解码显式跳过签名验证，只用于显示；不是配额reset。
+- `internal/voice/service.go:628 buildSessionJSON`: `client_tools: []any{}`; `conversation_mode.kind=primary_assistant`; `history_and_training_disabled=false`; no Cylo tools/instructions bridge. Comments say upstream may ignore conversation/parent fields and still create a new session.
+- `service.go:740 ProbeAccountToken`: settings/user 200 JSON → alive; 401 → disabled; other outcomes → unknown. The implementation branches on `status == 401`, although the comment emphasizes JSON and the code does not check JSON first. Do not claim as a guarantee that “all HTML 401 responses will never disable an account.”
+- `service.go:943 CreateSession`: live binding → account ID → durable account → LRU; a failed sticky account is not silently replaced. The 401 branch at `1085` disables the account; other non-2xx/non-SDP results are uniformly mapped to 502 after `1113`, with no further rotation and no quota/reset fields retained.
+- `internal/accounts/pool.go`: `Pick` chooses by LRU rather than reserving a slot, `PickByID` retains an account, and `MarkInvalid` disables one. There are no remaining/reset/cooldown fields.
+- `internal/api/downstream.go:25`: downstream Bearer key identifies an owner; downstream state keeps only `voice_session_id` and returns no account/token. `context` stores IDs and does not inject model conversation content.
+- `static/voice.html:4081 buildBaseUserMessage` constructs `author.role='user'`; `3822 sendRelayMessageTo` sends a two-layer `relay_message` to the upstream DataChannel. `4285 sendTextMessage` and the preview greeting near `3925` use this candidate upstream-input path; they are not messages sent between clients. The lower-level `sendDcEventTo` wraps it again as `{type:"data_message", data:JSON.stringify(eventObj)}`. Any reuse must preserve this outer wrapper rather than sending an official Realtime event directly.
+- `static/voice.html:3849 applyCaptionDelta` reads `message.author.role` or `audio_transcription.direction(in/out)`, full text, and appended deltas. The caption receiver is near `4193`; substring matching against transcripts near `4224` is compatibility logic only. There is no reliable final-state check, and `rememberDcText` also stores partials; captions cannot directly trigger business execution.
+- `static/voice.html:3773 interruptAssistant` sends only the private `action_request/stop_speaking`; it does not mute locally. Sending the stop event proves neither that audio stopped nor that the next autonomous reply is prohibited.
+- `internal/tokenutil/jwt.go` decodes `exp` with signature verification explicitly skipped, for display only; this is not a quota reset.
 
-原有报告中MIT、媒体直连、无自动refresh、CSP禁止iframe、浏览器AEC请求、RMS/RAF打断、释放绑定不结束已建WebRTC等准确观察保留；“不采用账号/上游”“STT+TTS主线”属于已被本轮纠正的选型，不再有效。
+Accurate observations in the prior report remain: MIT license, direct media, no automatic refresh, CSP blocking iframes, browser AEC request, RMS/RAF interruption, and releasing a binding does not terminate an established WebRTC session. The earlier choices “do not use the account/upstream” and “make STT+TTS the main path” were corrected by this review and are no longer valid.
 
-## 实际执行的离线检查
+## Offline checks actually run
 
 ```text
 $ python3 docs/archive/research/evidence/voice-pool-poc.py /tmp/cylo-research-voice
@@ -41,25 +41,25 @@ PASS: active stop_speaking, duplicate suppression, muted mic guard, text interru
 NOT TESTED: DOM, WebRTC, audio, upstream acknowledgement, Chinese recognition, mobile devices
 ```
 
-Python脚本账号调度为**单进程串行内存mock**，只证明建议不变量在给定模拟转移下成立；不证明并发race/数据库事务实现、真实池逻辑执行或上游额度。脚本60秒只为本地重试策略示例，不是上游reset。JS测试仅抽取真实函数运行stub，无DOM/媒体。无Go工具链，未运行go test/编译。
+The Python account scheduler is a **single-process, serial, in-memory mock**. It proves only that the proposed invariants hold for the supplied simulated transitions. It does not prove concurrency-race/database-transaction implementation, execution of real pool logic, or upstream quota behavior. The script's 60 seconds is an example for local retry policy, not an upstream reset. The JS check extracts real functions and runs them with stubs; it has no DOM/media. There was no Go toolchain, so no `go test` or build was run.
 
-## 官方比较材料：重新实际取回
+## Official comparison material: fetched again
 
-环境没有文档搜索工具；尝试`https://developers.openai.com/search?q=Realtime%20function%20calling%20sideband`返回404，随后实际取回以下官方正文。本节仅证明官方API能力，不能为网页私有协议背书。
+The environment had no documentation search tool. A request to `https://developers.openai.com/search?q=Realtime%20function%20calling%20sideband` returned 404; the official pages below were then fetched directly. This section proves official API capabilities only and does not establish anything about the private web protocol.
 
-1. [Realtime server controls](https://developers.openai.com/api/docs/guides/realtime-server-controls)重定向至`voice-server-controls?voice-api=realtime`，本次HTTP取回原HTML SHA256：`d7fe797add3067c3e405923b77518b00e7a447b808a4c8955b269408dee1a4f3`。
+1. [Realtime server controls](https://developers.openai.com/api/docs/guides/realtime-server-controls) redirects to `voice-server-controls?voice-api=realtime`; SHA256 of the original HTML retrieved over HTTP this round: `d7fe797add3067c3e405923b77518b00e7a447b808a4c8955b269408dee1a4f3`.
 
-   Realtime分支原文：
+   Original text in the Realtime branch:
 
    > using that call ID with the URL wss://api.openai.com/v1/realtime?call_id=rtc_xxxxx
 
    > In this way, you are able to add tools, monitor sessions, and carry out business logic on the server instead of needing to configure those actions on the client.
 
-   示例用`OPENAI_API_KEY`和`session.update`。同页Live的`/v1/live/sessions/{session_id}/attach`与`session.instructions.append`是另一分支，不能与Realtime或ChatGPT Web UUID混用。
+   The example uses `OPENAI_API_KEY` and `session.update`. The same page's Live `/v1/live/sessions/{session_id}/attach` and `session.instructions.append` are a separate branch; do not mix them with Realtime or ChatGPT Web UUIDs.
 
-2. [Realtime conversations](https://developers.openai.com/api/docs/guides/realtime-conversations)，HTTP200，SHA256：`9206ba0c522161e9c68bfcb3d67ed6f02de07f534885ab9167930ccf2f033f57`。
+2. [Realtime conversations](https://developers.openai.com/api/docs/guides/realtime-conversations), HTTP 200, SHA256: `9206ba0c522161e9c68bfcb3d67ed6f02de07f534885ab9167930ccf2f033f57`.
 
-   原文：
+   Original text:
 
    > Create a new text conversation item using the conversation.item.create client event.
 
@@ -67,14 +67,12 @@ Python脚本账号调度为**单进程串行内存mock**，只证明建议不变
 
    > Once we have added the conversation item containing our function call results, we again emit the response.create event from the client.
 
-   支持官方协议的工具结果和session instructions，但上游Web源码没有这些实现。
+These support tool results and session instructions in the official protocol, but the upstream web source does not implement them. The existing [official excerpts](voice-official-excerpts.md) preserve facts from previously fetched transcription/TTS/deprecation material. They are retained only as comparison/historical evidence, not to choose this round's main path or claim that web voice can use standalone STT/TTS.
 
-既有[官方摘录](voice-official-excerpts.md)保留此前实际抓取的转录/TTS/弃用等事实，现仅为比较/历史证据，不用于本轮主线选型或宣称Web语音能接独立STT/TTS。
+## Three bridge gates that require real validation
 
-## 必须真实验证的三个桥接门槛
+1. Reproducible final/completion signal for private user captions, including role, revisions, reordering, and deduplication. A silence timer must not masquerade as upstream finality.
+2. A real Cylo receipt must enter the **same** real-time session through the user-role relay and be spoken back correctly. Check each number, negation, and task state; testing only `send()` or visible captions is insufficient.
+3. The upstream can answer on its own after receiving microphone input; there is currently no evidence of a no-reply control or authorization-identity injection. Test whether premature “completed” and duplicate answers can be prevented. Prompts and `stop_speaking` do not guarantee this by themselves.
 
-1. 私有用户字幕可复现的final/完成信号、角色、修订、乱序和去重；沉默计时不能冒充上游final。
-2. 真实Cylo回执经user-role relay进入**同一**实时会话并口头正确反馈；对数字、否定、任务状态逐条核对，不只验证send()或字幕出现。
-3. 上游接收麦克风会自主先答，当前无禁止回复/授权身份注入证据；验证可否阻止先说“已完成”和重复应答。提示词和stop_speaking不能天然保证。
-
-任一未过，能力状态只能是“候选原生实时语音对话 + Cylo独立任务状态”，**业务语音闭环未验收**；继续保留指定上游/账号池研究和改造，不改口以独立TTS算完成。
+If any gate fails, the capability can only be described as “candidate native real-time voice conversation + independent Cylo task state”; **the business voice loop has not passed acceptance**. Continue research and changes for the selected upstream/account pool rather than claiming completion through independent TTS.

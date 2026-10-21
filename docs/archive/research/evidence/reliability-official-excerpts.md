@@ -1,6 +1,6 @@
-# 可靠性研究：官方摘录与获取指纹
+# Reliability Research: Official Excerpts and Retrieval Fingerprints
 
-访问日期：2026-10-21。HTML经标准库HTMLParser去除script/style并压缩空白；以下为短摘录，完整HTML仅在临时取证目录，不vendor进仓库。hash是下载字节的SHA-256，可用同URL再次下载比对，但动态页面变更不意味着本次读取无效。设计与实验边界见05正文。
+Accessed: 2026-10-21. HTML was processed with the standard-library HTMLParser to remove script/style and compress whitespace. The excerpts below are short; full HTML is kept only in a temporary evidence directory and is not vendored into the repository. Hashes are SHA-256 of downloaded bytes and can be compared by downloading the same URL again; changes to a dynamic page do not invalidate this captured reading. See report 05 for design and experiment boundaries.
 
 ## sqlite-wal
 
@@ -142,12 +142,12 @@ SHA-256: `012d235de29574b4dece5158dd6e1468a3f38ca4aa1d87bceb4cdea54513b6df`
 
 > Activities won’t record to the Event History until they return or produce an error.
 
-## CAO固定源码静态核验
+## Static review of pinned CAO source
 
-来源：02编排专岗已clone的 `/tmp/cylo-research-cao`，本报告再次只读核对；commit `4e990a9d78b154ad76c6cf94c7b51e36fce69f21`。未运行fleet。
+Source: `/tmp/cylo-research-cao`, cloned for orchestration research in report 02 and checked read-only again for this report; commit `4e990a9d78b154ad76c6cf94c7b51e36fce69f21`. Fleet was not run.
 
 - URL: https://github.com/awslabs/cli-agent-orchestrator/blob/4e990a9d78b154ad76c6cf94c7b51e36fce69f21/src/cli_agent_orchestrator/providers/codex.py
-- 文件SHA-256: `a55f40780ffb795df8018e3f58ddb1795986a581ba27c1875745df5a63106afa`
+- File SHA-256: `a55f40780ffb795df8018e3f58ddb1795986a581ba27c1875745df5a63106afa`
 - 1368: `# --yolo (alias for --dangerously-bypass-approvals-and-sandbox)`
 - 1397: `"contains '*', which forces --yolo and discards it. This worker "`
 - 1405: `# --yolo is --dangerously-bypass-approvals-and-sandbox, so NOTHING in`
@@ -155,6 +155,6 @@ SHA-256: `012d235de29574b4dece5158dd6e1468a3f38ca4aa1d87bceb4cdea54513b6df`
 - 1419: `command_parts = ["codex", "--yolo"]`
 
 - URL: https://github.com/awslabs/cli-agent-orchestrator/blob/4e990a9d78b154ad76c6cf94c7b51e36fce69f21/src/cli_agent_orchestrator/services/worktree_service.py
-- 文件SHA-256: `8d7871545c2fcd734ce30558a86a8d9127b3dace77b89d8459ab3b8c9e36a28a`
+- File SHA-256: `8d7871545c2fcd734ce30558a86a8d9127b3dace77b89d8459ab3b8c9e36a28a`
 - 172: `result = _run_git(["worktree", "remove", "--force", path], cwd=repo_root)`
 - 179: `result = _run_git(["branch", "-d", branch], cwd=repo_root)`

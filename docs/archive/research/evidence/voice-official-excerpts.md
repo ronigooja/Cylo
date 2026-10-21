@@ -1,8 +1,8 @@
-# Voice 官方API文档取证摘录（比较/历史证据）
+# Voice: Official API Documentation Excerpts (Comparison/Historical Evidence)
 
-本附件保留此前准确官方事实，仅供官方API比较/历史取证；不是Space3044网页私有协议能力依据，也不再支持STT+TTS主线选型。当前采用实时Web语音网关及账号池，见[03](../../../research/03-voice.md)。
+This appendix preserves previously captured official facts for comparison and historical evidence only. It is not evidence of Space3044's private web-protocol capabilities and no longer supports selecting an STT+TTS main path. The current choice is a real-time web voice gateway and account pool; see [03](../../../research/03-voice.md).
 
-抓取日期：2026-10-21；以下为实际HTTP 200页面正文摘录，换行来自HTML文本提取。模型可用性、价格及账户访问未进行API验证。
+Retrieved: 2026-10-21. The excerpts below are from pages that actually returned HTTP 200; line breaks come from HTML text extraction. Model availability, pricing, and account access were not verified through API calls.
 
 ## live-transcription
 

@@ -1,94 +1,94 @@
-# Cylo 客户端信息架构建议
+# Cylo Client Information Architecture Proposal
 
-日期：2026-10-21。本文是页面与信息优先级设计，尚非产品实现或已验收能力。依据 [完整 PRD](../../../product-requirements.md) §3、5、7—10、12、14—17，以及当前 [架构](../../../superseded-implementation-plan.md)、[选型](../../../project-selection-comparison.md) 和 [记忆设计](17-memory-requirements-and-design.md)。仓库及适用祖先未发现 AGENTS.md。
+Date: 2026-10-21. This is a design for page structure and information priority, not an implementation or accepted capability. It follows the [complete PRD](../../../product-requirements.md) §§3, 5, 7–10, 12, 14–17, as well as the current [architecture](../../../superseded-implementation-plan.md), [selection](../../../project-selection-comparison.md), and [memory design](17-memory-requirements-and-design.md). No AGENTS.md was found in the repository or applicable ancestors.
 
-按最新范围，首期服务端运行于 **Linux**；Mac 上的 Cylo 客户端和浏览器访问仍保留。当前采用 AO 多 Agent 执行、Space 网页实时语音账号池、现有 CLIProxyAPI 模型账号/代理、Cylo Go 业务层，以及 Mem0 与按需记忆整理角色。它们是服务端分工，不应各变成普通用户必须管理的一组页面。
+Under the latest scope, the first server release runs on **Linux**; Cylo clients and browser access on Mac remain in scope. The current choices are AO multi-agent execution, the Space web real-time voice account pool, the existing CLIProxyAPI model-account/proxy service, the Cylo Go business layer, and Mem0 with an on-demand memory-curation role. These are server-side responsibilities and should not become a set of pages that ordinary users must manage separately.
 
-## 1. 用户首先看到什么
+## 1. What users see first
 
-**默认首页就是对话，显示语音/文字入口、当前相关任务、待处理确认和最近成果；醒目标明长任务仍在后台执行。** 用户先能表达目标、了解进展、拿到结果、介入工作。无需再设一个重复的统计仪表盘。
+**The default home page is conversation, with voice/text entry, relevant current tasks, pending confirmations, and recent results; clearly show when long-running tasks continue in the background.** Users should be able to state a goal, understand progress, receive a result, and step in. A duplicate statistics dashboard is unnecessary.
 
-主导航建议为「对话、任务、项目」；「能力与服务、记忆、设置」放次级导航。通知为全局入口，确认卡片可出现在首页、通知和任务详情，但引用同一条确认记录。页面组织是实施建议，PRD 必需的是这些能力，不是固定六个独立页面。
+Recommended primary navigation: “Conversation, Tasks, Projects.” Put “Capabilities & Services, Memory, Settings” in secondary navigation. Notifications are a global entry point. A confirmation card may appear on the home page, notifications, and task detail, but all views reference the same confirmation record. Page organization is an implementation proposal; the PRD requires the capabilities, not six fixed standalone pages.
 
-| 页面或区域 | 主要内容 | 关键状态与动作 | 权限与 PRD 依据 |
+| Page or area | Main content | Key states and actions | Permissions and PRD references |
 |---|---|---|---|
-| 首页 / 对话 | 语音与文字、历史对话；当前项目/任务关联；正在执行、待你处理、最近成果卡片 | 新对话、继续对话、发送文字、开麦、结束语音、打开任务；目标有歧义时选择对象 | 只见有权访问的对话与关联对象；§3、8.5、12.3 |
-| 语音会话（对话内） | 听说状态、可区分角色的字幕、已接收任务回执、必要文字结果 | 连接中、正在听、正在说、重连、不可用；静音、插话、结束通话、改用文字 | 语音可用不代表已取得任务或工具授权；§3.3、14 |
-| 任务列表 | 目标、项目、真实状态、最近进展、更新时间；优先待用户与异常任务 | 按项目/状态查看，进入详情；统一包含开发、研究和普通服务触发的任务 | 服务端按项目/主体过滤；§8、12、15.3 |
-| 任务详情 | 目标、来源、当前步骤/子任务、依赖或等待原因、执行结果、验证证据、失败原因；必要时显示资源消耗 | 追加要求、答复澄清、授权、停止；支持且安全时暂停/恢复/重试；控制请求处理中另有提示 | 操作按任务权限判断；执行主体、运行历史、日志、终端等按需展开；§5.1、8、14、15、17 |
-| 项目与产物 | 项目目标、状态、任务、当前决定/相关记忆、代码与文档等成果入口 | 继续项目、查看/预览/下载可访问产物、定位生成任务和验证结果 | 路径不能代替访问控制；基础成果访问不依赖人工 CLI 接管；§5、8.5、10、16 |
-| 能力与服务 | 已安装能力、用途、触发条件、所属项目、运行/健康状态、最近执行、已有授权 | 查看配置/执行记录；按权限安装、配置、授权、启动、暂停、恢复、更新、停止、卸载 | 与一次性任务分开展示；部署授权与生成代码授权分开；§7、9、14 |
-| 通知 / 待处理 | 完成、异常、重要事件、等待确认；来源与发生时间 | 打开来源对象、阅读结果、处理授权或异常；已处理确认随权威记录更新 | 不能仅靠系统推送保留事件；拒绝/撤销同样有记录；§3.4、9.4、14 |
-| 记忆（二级页，可从项目进入） | 全局/项目/任务范围；当前事实与决定、来源、时间、历史版本；推断/冲突标记 | 检索、查看依据、按权限纠错/处理建议、导出/删除；正式决定沿用业务命令 | 任务状态直接读账本；已明确的用户决定不重复确认；无需显示 Mem0 作业或要求管理 Memory Agent；§10、16 |
-| 设置：个人与授权 | 服务连接状态、语音/通知偏好、已有授权与范围、重要操作记录、数据控制入口 | 管理通知、查看/调整/撤销授权，按数据权限导出/删除 | 撤权与停止任务分别明确作用对象；§3、14、16 |
-| 设置：管理员管理区 | 执行环境健康、服务配置、备份恢复、资源/调用限制；语音池及模型路由的管理入口 | 查看可用性、处理连接/凭据失效、按管理权限配置/限制 | 仅具对应管理权限的主体可见；不要求首期完整团队角色系统；§4、14—18 |
+| Home / Conversation | Voice and text, conversation history, current project/task associations, cards for running work, items needing attention, and recent results | Start/continue a conversation, send text, enable mic, end voice, open a task; choose the target when a goal is ambiguous | Show only conversations and related objects the user may access; §§3, 8.5, 12.3 |
+| Voice session (inside conversation) | Listening/speaking status, captions with distinguishable roles, accepted-task receipts, and necessary text results | Connecting, listening, speaking, reconnecting, unavailable; mute, interrupt, end call, switch to text | Available voice does not mean the user has task or tool authorization; §§3.3, 14 |
+| Task list | Goal, project, actual status, recent progress, update time; prioritize tasks waiting for the user or in an exceptional state | Browse by project/status and open details; include development, research, and ordinary service-triggered tasks | Server filters by project/subject; §§8, 12, 15.3 |
+| Task detail | Goal, origin, current step/subtasks, dependencies or wait reason, execution result, verification evidence, failure reason; resource use when useful | Add requirements, answer clarification, authorize, stop; pause/resume/retry only when supported and safe; separately show control requests in progress | Enforce task permissions. Expand execution agent, run history, logs, terminal, etc. as needed; §§5.1, 8, 14, 15, 17 |
+| Projects and artifacts | Project goal/status/tasks, current decisions and relevant memories, entry points to code, documents, and other outputs | Continue project, view/preview/download accessible artifacts, locate producing task and verification result | Paths do not replace access control. Basic artifact access does not depend on manual CLI takeover; §§5, 8.5, 10, 16 |
+| Capabilities and services | Installed capabilities, purpose, trigger conditions, project, runtime/health status, recent runs, existing authorization | View configuration/run history; install, configure, authorize, start, pause, resume, update, stop, or uninstall as permitted | Show separately from one-off tasks. Separate deployment authorization from authorization to generate code; §§7, 9, 14 |
+| Notifications / pending items | Completion, exceptions, important events, pending confirmations; source and time | Open source object, read result, handle authorization or exception; processed confirmation updates with the authoritative record | Do not rely on system push alone to retain events. Rejections/revocations are recorded too; §§3.4, 9.4, 14 |
+| Memory (secondary page, reachable from projects) | Global/project/task scope; current facts and decisions, source, time, version history; mark inference/conflict | Search, inspect support, correct or handle suggestions according to permission, export/delete; formal decisions use business commands | Read task status from the ledger. Do not reconfirm explicit user decisions, expose Mem0 jobs, or require management of a Memory Agent; §§10, 16 |
+| Settings: personal and authorization | Service connection status, voice/notification preferences, current grants and scope, important activity, data controls | Manage notifications, inspect/change/revoke authorization, export/delete data under applicable permissions | Make the target of revocation distinct from stopping a task; §§3, 14, 16 |
+| Settings: administrator area | Execution environment health, service configuration, backup/recovery, resource/call limits; management entry for voice pool and model routes | Inspect availability, address connection/credential failures, configure/limit under admin permission | Visible only to subjects with the corresponding admin permission; a full team-role system is not required in the first release; §§4, 14–18 |
 
-## 2. 任务详情如何避免显示假进度
+## 2. Showing task progress without inventing it
 
-首屏采用「目标 → 当前事实/下一步 → 需要你做什么 → 成果」顺序。显示计划、实际操作与证据摘要，不把模型内部思维链作为产品字段。阶段说明可以使用自然语言；没有可靠总量时不显示编造的百分比。并行子任务可汇总为简明列表，用户需要时再展开执行主体和各自记录。
+Order the first screen as “Goal → current facts/next step → what we need from you → results.” Show the plan, actual operations, and evidence summary; do not expose model chain-of-thought as a product field. Describe phases in natural language. Do not show an invented percentage when there is no reliable total. Summarize parallel subtasks and let users expand each executor and its record when needed.
 
-| 状态 / 情况 | 应显示的信息与可用动作 |
+| Status / situation | Information and actions to show |
 |---|---|
-| 待执行 | 已收到目标；尚未开始，若已知则说明排队原因 |
-| 执行中 | 最近可验证步骤、更新时间；可追加要求或请求停止 |
-| 等待中 | 等待哪个依赖/资源/事件；可见时展示预计恢复条件，不猜测完成时间 |
-| 等待用户 | 具体问题或待授权动作、影响对象和范围；允许答复、批准或拒绝 |
-| 已暂停 | 实际已暂停的证据及可恢复条件；不支持暂停时不提供该按钮 |
-| 已完成 | 成果与验证结果；Agent 回复完成不能单独使任务进入此状态 |
-| 已失败 | 失败步骤、原因、已保留成果；明确支持的恢复/重试选项 |
-| 已取消 | 已确认停止；保留发生过的文件/外部操作，不暗示自动撤销 |
-| 请求已提交，尚待执行端确认 | 独立显示「正在停止/正在恢复/变更已接收」；保持最后确认的任务状态 |
-| 客户端断线 / 主机不可用 / 结果待核对 | 展示最后确认状态与观测时间、同步或离线提示；无法确认时说明未知，不能继续声称正在运行或已停止 |
+| Queued | Goal received; not started. Explain the queue reason when known. |
+| Running | Latest verifiable step and update time; allow adding requirements or requesting a stop. |
+| Waiting | Which dependency/resource/event is awaited; show the expected recovery condition when known, without guessing a completion time. |
+| Waiting for user | Specific question or authorization, affected object, and scope; allow answer, approve, or reject. |
+| Paused | Evidence that work is actually paused and conditions to resume; do not show a pause button if pause is unsupported. |
+| Completed | Result and verification; an agent's reply alone cannot move a task into this state. |
+| Failed | Failed step, reason, and preserved results; offer only explicitly supported recovery/retry choices. |
+| Cancelled | Stop has been confirmed; preserve records of files/external operations that already happened and do not imply automatic rollback. |
+| Request submitted, execution side has not confirmed | Separately show “stopping,” “resuming,” or “change received”; retain the last confirmed task status. |
+| Client disconnected / host unavailable / result needs reconciliation | Show last confirmed state and observation time, with sync/offline status. Say unknown when it cannot be confirmed; do not continue to claim that work is running or stopped. |
 
-「已接收」「已安排」「已执行」「结果验证通过」需要区分。追加要求显示关联任务与接收回执；是否已应用于当前执行以真实记录为准。权限不足、拒绝和确认失效应提供原因；任务已变化时重新读取当前待确认动作，不能重复提交旧批准。
+Distinguish “received,” “scheduled,” “executed,” and “result verified.” Show the associated task and receipt for added requirements; use actual records to establish whether they were applied to current execution. Explain insufficient permission, rejection, and expired confirmation. If the task has changed, reread the current pending action; never resubmit an old approval.
 
-## 3. 语音与后台工作的关系
+## 3. Voice and background work
 
-语音区提供「静音/结束通话」，任务区提供「停止任务」；两个动作使用独立按钮和明确对象，不共用含糊的停止按钮。
+The voice area has “Mute/End call”; the task area has “Stop task.” Use separate controls with clear targets; do not use one ambiguous stop action.
 
-| 用户行为 / 情况 | 客户端反馈 | 后台工作语义 |
+| User action / situation | Client feedback | Background-work semantics |
 |---|---|---|
-| 结束通话、关闭页面、切换设备 | 结束当前语音；相关任务卡片继续可查 | 已持久接收且已授权的任务继续，不由媒体会话生命周期决定 |
-| 插话、纠正或点击停止播报 | 立即停止当前播报，显示新的输入/字幕 | 插话本身不取消任务；纠正形成对已有任务的新要求，已发生的操作不被自动撤销 |
-| 明确说「停止这个任务」或点击停止任务 | 显示对象与「正在停止」；无明确对象时先澄清 | 发出独立任务控制命令，执行端确认后才显示已取消/已停止 |
-| 说「停一下」且对象不明 | 停止播报并澄清是否也要停止相关任务 | 不把语音歧义直接当作后台取消指令 |
-| 媒体连接丢失或上游额度耗尽 | 「语音正在重连」或「语音暂不可用，可用文字继续」 | 可换可用账号建立新媒体会话；保留 Cylo 对话/任务，不承诺同一上游会话无缝迁移 |
-| 语音文字尚在变化 | 显示临时字幕；需要时提供可见提交/确认 | 临时字幕和 assistant 的口头承诺不代表任务已被持久接收；桥接未验证时用文字回执兜底 |
-| 在另一台设备继续 | 恢复同一项目、任务、对话，显式开启新语音连接 | 延续业务上下文，不自动继承另一设备的麦克风或当前媒体流 |
+| End call, close page, switch device | End current voice session; keep related task cards available | Tasks already durably received and authorized continue independently of the media session. |
+| Interrupt, correct, or click stop playback | Stop current playback immediately and show new input/captions | Interruption alone does not cancel a task. A correction creates a new requirement for existing work; operations already performed are not automatically undone. |
+| Clearly say “Stop this task” or click Stop Task | Show target and “Stopping”; clarify first when target is ambiguous | Send a separate task-control command; show cancelled/stopped only after execution-side confirmation. |
+| Say “Stop for a moment” with no clear target | Stop playback and ask whether related work should also stop | Do not interpret ambiguous speech as a background-cancellation command. |
+| Media connection lost or upstream quota exhausted | “Voice is reconnecting” or “Voice unavailable; continue in text” | A new media session may use another available account; retain Cylo conversation/task. Do not promise seamless migration of the same upstream session. |
+| Voice text is still changing | Show interim captions and, if needed, visible submit/confirm action | Interim captions and an assistant's spoken promise do not mean the task was durably accepted. Use a text receipt until the bridge is validated. |
+| Continue on another device | Restore the same project/task/conversation and explicitly start a new voice connection | Continue business context, but do not automatically inherit another device's microphone or current media stream. |
 
-高风险动作显示具体操作、目标、授权范围及必要影响，在已有授权规则要求时才确认；不要将每句语音变成重复弹窗。首期 PWA 按前台显式开麦验证，不能先承诺 iPhone 锁屏/后台持续通话。
+Show the concrete operation, target, authorization scope, and necessary impact for high-risk actions, and request confirmation when existing authorization rules require it. Do not turn every utterance into a repeated modal. Validate the first PWA with the app foregrounded and mic explicitly enabled; do not promise iPhone lock-screen/background calls in advance.
 
-## 4. 桌面、移动与实施范围
+## 4. Desktop, mobile, and delivery scope
 
-| 维度 | 桌面 / 大屏 | 手机 / 小屏 |
+| Dimension | Desktop / large screen | Phone / small screen |
 |---|---|---|
-| 首要信息 | 对话与当前任务/成果可并列；项目切换方便 | 语音/文字入口、待处理确认、当前进展、结果摘要依次可达 |
-| 任务与成果 | 展开并行子任务、文档/代码差异与验证证据 | 先显示摘要与关键证据，复杂成果按需打开/下载；不强制朗读日志 |
-| 异常与确认 | 同一对象详情中处理 | 从通知直接进入对应动作，批准前保留必要上下文 |
-| 高级信息 | 可展开执行记录、终端、资源统计 | 入口可保留，默认收起，避免挤占对话和控制 |
+| Primary information | Conversation alongside current task/results; easy project switching | Voice/text entry, pending confirmations, current progress, and result summary within easy reach |
+| Tasks and results | Expand parallel subtasks, document/code diffs, and verification evidence | Start with summary and key evidence; open/download complex results as needed; do not force logs to be read aloud |
+| Exceptions and confirmations | Handle within details for the same object | Open the relevant action directly from a notification; retain needed context before approval |
+| Advanced information | Expand execution history, terminal, and resource statistics | Keep the entry point, collapsed by default so it does not crowd conversation and controls |
 
-上述是同一权威状态的响应式布局建议，不是分别实现两套任务系统。iPad 按可用屏幕空间采用相应布局。
+These are responsive layouts over one authoritative state, not two separate task systems. Use the layout appropriate to the available screen space on iPad.
 
-| 范围 | 客户端交付边界 |
+| Scope | Client delivery boundary |
 |---|---|
-| 首期闭环 | Linux 后台的跨设备浏览器访问；语音/文字、真实任务状态、必要确认、停止与支持的持久恢复、产物查看、项目关联、通知及状态同步。服务、记忆、授权可先采用紧凑二级页，不能用「界面极简」删掉其查看/控制入口 |
-| 完整 PRD 必需、可逐步补全 | 新能力完整生命周期、后台健康/异常处理、记忆来源和历史、数据导出删除、权限与调用消耗管理。PRD 本身不划 MVP；此处实施顺序不把这些要求降为可选 |
-| 可选后续增强 | 官方 CLI 人工同会话接续/双向交接、实时终端接管、团队协作专用界面；原生客户端和锁屏持续通话按实测需求与平台能力另行决定。Mac/iPhone/iPad 的访问目标仍保留 |
-| 当前不在范围 | 官方 Codex macOS 桌面 App 发现、深链与接续；首期 macOS 服务端运行 |
+| First-release loop | Cross-device browser access to a Linux server; voice/text, real task status, necessary confirmations, stop and supported persistent recovery, artifact viewing, project associations, notifications, and state sync. Services, memory, and authorization may start as compact secondary pages, but “minimal UI” must not remove their view/control entry points. |
+| Full PRD requirements, completed progressively | Full lifecycle for new capabilities, background health/exception handling, memory sources/history, data export/deletion, permission and usage management. The PRD does not define an MVP; sequencing here does not downgrade those requirements to optional. |
+| Optional later enhancements | Manual continuation/round-trip handoff in the official CLI, live terminal takeover, and a dedicated team-collaboration UI. Native clients and lock-screen voice depend on measured need and platform capabilities. Mac/iPhone/iPad access remains a goal. |
+| Currently out of scope | Discovery, deep links, and continuation in the official Codex macOS desktop app; running the server on macOS in the first release. |
 
-## 5. 管理区与 AO 的复用边界
+## 5. Admin area and reuse boundaries with AO
 
-AO 已有开发看板、执行会话、终端等界面可作为开发任务的高级视图候选，接入前仍需权限和状态映射验收。Cylo 主任务页需要统一表示 Codex、其他 Worker、普通程序和服务触发的工作，不能直接把 AO session 看板当作全部业务任务。AO 原生状态只是观测来源之一，不能覆盖 Cylo 的任务、授权和验收账本。
+AO's existing development board, execution sessions, and terminal UI are candidates for an advanced view of development tasks, subject to permission and state-mapping acceptance before integration. Cylo's main task page must represent Codex, other Workers, ordinary programs, and service-triggered work consistently. AO's session board cannot stand in for every business task. AO-native status is one observation source; it cannot replace Cylo's task, authorization, and acceptance ledger.
 
-| 区域 | 普通使用者可见 | 授权管理员可见 / 操作边界 |
+| Area | Visible to ordinary users | Visible/actionable to authorized administrators |
 |---|---|---|
-| Space 语音账号池 | 语音连接、重连、不可用及可继续使用文字的反馈 | 可用账号数量、占用/冷却/错误、额度观测来源与时间、凭据状态；不能把未知额度显示成精确剩余值 |
-| CLIProxyAPI 模型账号与代理 | 所属任务等待资源或上游不可用；有权时查看任务用量 | 复用现有管理入口或受控摘要，配置路由/代理与处理账号故障；不在 Cylo 再造一套选号权威 |
-| AO 执行环境 | 当前步骤、真实成果、停止/恢复结果 | 运行环境、执行映射、会话诊断等按管理/开发权限展开；终端入口不自动授予 shell 权限 |
-| 记忆后端 | 记住了什么、依据、作用域、纠错与数据控制 | 索引/抽取作业健康等诊断；Mem0 与按需整理角色不成为聊天使用前置知识 |
+| Space voice account pool | Voice connection, reconnection, unavailable state, and option to continue with text | Available account count, occupancy/cooldown/errors, quota observation source/time, credential status; never show unknown quota as an exact remaining amount |
+| CLIProxyAPI model accounts and proxy | Task waiting for resources or upstream unavailable; task usage when permitted | Reuse existing management entry or controlled summary; configure routes/proxy and handle account failures. Do not create a second account-selection authority in Cylo. |
+| AO execution environment | Current step, real outputs, stop/recovery result | Runtime environment, execution mapping, and session diagnostics according to admin/developer permission; terminal access does not automatically grant shell permission |
+| Memory backend | What is remembered, supporting source, scope, corrections, data controls | Diagnostics such as index/extraction job health; Mem0 and on-demand curation roles are not prerequisite knowledge for chat |
 
-Space 与 CLIProxyAPI 的账号池独立；不能根据模型代理账号面板推断当前语音额度，也不能用提供商账号身份代替 Cylo 用户权限。凭据、token、密钥和带密码代理地址不下发客户端；内部 thread、lease、CODEX_HOME 不出现在普通流程。
+Space and CLIProxyAPI account pools are independent. Do not infer voice quota from the model proxy account panel or use a provider account identity in place of Cylo user authorization. Do not send credentials, tokens, keys, or proxy URLs containing passwords to the client. Keep internal thread, lease, and CODEX_HOME details out of ordinary user flows.
 
-## 6. 文档检查范围
+## 6. Documentation review scope
 
-本次仅新增信息架构文档，逐项对照上述 PRD 章节与既有设计；未新增产品页面代码、未请求真实模型或读取凭据。交付检查为 Markdown 相对链接存在性与 `git diff --check`；语音重连、移动后台限制、停止/恢复及 AO 高级视图仍需后续实现与实测，本文不将它们写成已交付。
+This round added only the information-architecture document and checked it against the PRD sections above and existing designs. No product page code was added, and no real model was requested or credential read. Delivery checks were Markdown relative-link existence and `git diff --check`. Voice reconnection, mobile background limits, stop/recovery, and the AO advanced view still need implementation and real validation; this document does not claim they are delivered.
