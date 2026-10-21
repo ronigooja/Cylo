@@ -1,6 +1,6 @@
 # Voice: Official API Documentation Excerpts (Comparison/Historical Evidence)
 
-This appendix preserves previously captured official facts for comparison and historical evidence only. It is not evidence of Space3044's private web-protocol capabilities and no longer supports selecting an STT+TTS main path. The current choice is a real-time web voice gateway and account pool; see [03](../../../research/03-voice.md).
+This appendix preserves previously captured official facts for comparison and historical evidence only. It is not evidence of Space3044's private web-protocol capabilities and no longer supports selecting an STT+TTS main path. The current choice is a real-time web voice gateway and account pool; see [03](../reports/03-voice.md).
 
 Retrieved: 2026-10-21. The excerpts below are from pages that actually returned HTTP 200; line breaks come from HTML text extraction. Model availability, pricing, and account access were not verified through API calls.
 

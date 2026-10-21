@@ -1,6 +1,6 @@
 # Voice Agent and Super: Responsibilities, Concurrency, and Integration Boundaries
 
-Date: 2026-10-21. **Space3044/chatgpt-web-voice is selected**, retaining the Go gateway, ChatGPT web real-time voice, and account pool. Later experiments address integration gaps; voice selection will not be reopened. This page supplements the architecture. No runtime was implemented, credentials read, or real account used. Media/account details are in [03](../../../research/03-voice.md), the independent source review is in [06](../../../research/06-realtime-integration-review.md), and the next integration step is in [11](11-voice-real-poc-readiness.md).
+Date: 2026-10-21. **Space3044/chatgpt-web-voice is selected**, retaining the Go gateway, ChatGPT web real-time voice, and account pool. Later experiments address integration gaps; voice selection will not be reopened. This page supplements the architecture. No runtime was implemented, credentials read, or real account used. Media/account details are in [03](03-voice.md), the independent source review is in [06](06-realtime-integration-review.md), and the next integration step is in [11](11-voice-real-poc-readiness.md).
 
 ## 1. Is voice also an agent, and does it conflict with Super?
 

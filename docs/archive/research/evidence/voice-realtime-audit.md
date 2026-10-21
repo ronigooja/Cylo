@@ -1,6 +1,6 @@
 # Real-Time Voice and Account-Pool Review Evidence
 
-Date: 2026-10-21; research scope. This supports [03](../../../research/03-voice.md). No real accounts, calls, devices, or billable API requests were used.
+Date: 2026-10-21; research scope. This supports [03](../reports/03-voice.md). No real accounts, calls, devices, or billable API requests were used.
 
 ## Source and protocol
 

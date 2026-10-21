@@ -1,6 +1,6 @@
 # Cylo Client Information Architecture Proposal
 
-Date: 2026-10-21. This is a design for page structure and information priority, not an implementation or accepted capability. It follows the [complete PRD](../../../product-requirements.md) §§3, 5, 7–10, 12, 14–17, as well as the current [architecture](../../../superseded-implementation-plan.md), [selection](../../../project-selection-comparison.md), and [memory design](17-memory-requirements-and-design.md). No AGENTS.md was found in the repository or applicable ancestors.
+Date: 2026-10-21. This is a design for page structure and information priority, not an implementation or accepted capability. It follows the [complete PRD](../product-requirements.md) §§3, 5, 7–10, 12, 14–17, as well as the current [architecture](../superseded-implementation-plan.md), [selection](../project-selection-comparison.md), and [memory design](17-memory-requirements-and-design.md). No AGENTS.md was found in the repository or applicable ancestors.
 
 Under the latest scope, the first server release runs on **Linux**; Cylo clients and browser access on Mac remain in scope. The current choices are AO multi-agent execution, the Space web real-time voice account pool, the existing CLIProxyAPI model-account/proxy service, the Cylo Go business layer, and Mem0 with an on-demand memory-curation role. These are server-side responsibilities and should not become a set of pages that ordinary users must manage separately.
 
