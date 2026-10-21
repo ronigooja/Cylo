@@ -316,7 +316,7 @@ func DispatchPushDeliveries(ctx context.Context, store *storage.Store, sender Pu
 			}
 		case res.StatusCode == http.StatusTooManyRequests || res.StatusCode >= 500 || res.StatusCode == 0:
 			attempt := d.attempts + 1
-			delay := time.Second * time.Duration(1<<minInt(attempt, 10))
+			delay := time.Second * time.Duration(1<<min(attempt, 10))
 			if delay > time.Hour {
 				delay = time.Hour
 			}

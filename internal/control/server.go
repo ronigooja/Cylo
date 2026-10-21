@@ -24,6 +24,7 @@ type Config struct {
 	RunnerScopes       []string
 	DeviceScopes       []string
 	DefaultProfileID   string
+	RoleProfiles       map[string]string
 	RuntimeRouteID     string
 	ModelRouteID       string
 	Profiles           map[string]RuntimeProfile
@@ -33,15 +34,23 @@ type Config struct {
 }
 
 type RuntimeProfile struct {
-	ID              string   `json:"id"`
-	AOProjectID     string   `json:"ao_project_id"`
-	RuntimeRouteID  string   `json:"runtime_route_id"`
-	ModelRouteID    string   `json:"model_route_id"`
-	Role            string   `json:"role"`
-	AOAgentKind     string   `json:"ao_agent_kind"`
-	IsolationPolicy string   `json:"isolation_policy"`
-	CapabilityIDs   []string `json:"capability_ids"`
-	Scopes          []string `json:"scopes"`
+	ID              string      `json:"id"`
+	AOProjectID     string      `json:"ao_project_id"`
+	RuntimeRouteID  string      `json:"runtime_route_id"`
+	ModelRouteID    string      `json:"model_route_id"`
+	Role            string      `json:"role"`
+	AOAgentKind     string      `json:"ao_agent_kind"`
+	IsolationPolicy string      `json:"isolation_policy"`
+	CapabilityIDs   []string    `json:"capability_ids"`
+	Scopes          []string    `json:"scopes"`
+	ChildPolicy     ChildPolicy `json:"child_policy,omitempty"`
+}
+
+type ChildPolicy struct {
+	AllowedProfileIDs []string `json:"allowed_profile_ids"`
+	CapabilityIDs     []string `json:"capability_ids"`
+	MaxChildRuns      int      `json:"max_child_runs"`
+	MaxDepth          int      `json:"max_depth"`
 }
 
 type CommandContext struct {
@@ -57,6 +66,28 @@ type TaskSourceRequest struct {
 	Title          string
 	Goal           string
 	InitialMessage string
+	TrustedSource  bool `json:"-"`
+	GrantSnapshot  json.RawMessage
+}
+
+type AdmissionContext struct {
+	Principal      contracts.Principal
+	Source         string
+	SourceRef      json.RawMessage
+	IdempotencyKey string
+	GrantSnapshot  json.RawMessage
+	ProfileID      string
+	ProjectID      string
+	Title          string
+	Goal           string
+	InitialMessage string
+	AcceptedAt     time.Time
+	TrustedSource  bool `json:"-"`
+}
+
+type TaskAdmissionResult struct {
+	Task   contracts.Task
+	Events []contracts.Event
 }
 
 type TaskSourceAdmissionHandler func(context.Context, *sql.Tx, contracts.Principal, string, *TaskSourceRequest, json.RawMessage, time.Time) ([]contracts.Event, error)
@@ -145,6 +176,28 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 	if cfg.MaxRequestBytes <= 0 {
 		cfg.MaxRequestBytes = 1 << 20
 	}
+	profiles := make(map[string]RuntimeProfile, len(cfg.Profiles))
+	for id, profile := range cfg.Profiles {
+		profile.CapabilityIDs = append([]string(nil), profile.CapabilityIDs...)
+		profile.Scopes = append([]string(nil), profile.Scopes...)
+		profile.ChildPolicy.AllowedProfileIDs = append([]string(nil), profile.ChildPolicy.AllowedProfileIDs...)
+		profile.ChildPolicy.CapabilityIDs = append([]string(nil), profile.ChildPolicy.CapabilityIDs...)
+		profiles[id] = profile
+	}
+	cfg.Profiles = profiles
+	roleProfiles := make(map[string]string, len(cfg.RoleProfiles))
+	for role, profileID := range cfg.RoleProfiles {
+		role, profileID = strings.TrimSpace(role), strings.TrimSpace(profileID)
+		profile, ok := cfg.Profiles[profileID]
+		if role == "" || !ok || profile.Role != role || profile.AOAgentKind != "worker" {
+			return nil, fmt.Errorf("role profile mapping %q -> %q must reference a configured worker profile with the same role", role, profileID)
+		}
+		if _, exists := roleProfiles[role]; exists {
+			return nil, fmt.Errorf("role profile mapping for normalized role %q is defined more than once", role)
+		}
+		roleProfiles[role] = profileID
+	}
+	cfg.RoleProfiles = roleProfiles
 	if cfg.DeviceScopes == nil {
 		cfg.DeviceScopes = DefaultOwnerScopes()
 	} else {
@@ -159,6 +212,30 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 		if id == "" || profile.ID != id || profile.AOProjectID == "" || profile.RuntimeRouteID == "" || profile.ModelRouteID == "" || profile.Role == "" || profile.AOAgentKind != "worker" || profile.IsolationPolicy == "" {
 			return nil, fmt.Errorf("runtime profile %q is incomplete or does not select AO worker execution", id)
 		}
+		policy := profile.ChildPolicy
+		if policy.MaxChildRuns == 0 {
+			policy.MaxChildRuns = 4
+		}
+		if policy.MaxDepth == 0 {
+			policy.MaxDepth = 4
+		}
+		if policy.MaxChildRuns < 1 || policy.MaxChildRuns > 64 || policy.MaxDepth < 1 || policy.MaxDepth > 8 {
+			return nil, fmt.Errorf("runtime profile %q child policy limits are outside supported bounds", id)
+		}
+		policy.AllowedProfileIDs = uniqueNonEmpty(policy.AllowedProfileIDs)
+		policy.CapabilityIDs = uniqueNonEmpty(policy.CapabilityIDs)
+		for _, allowed := range policy.AllowedProfileIDs {
+			if _, ok := cfg.Profiles[allowed]; !ok {
+				return nil, fmt.Errorf("runtime profile %q child policy references unknown profile %q", id, allowed)
+			}
+		}
+		for _, capability := range policy.CapabilityIDs {
+			if !containsString(profile.CapabilityIDs, capability) {
+				return nil, fmt.Errorf("runtime profile %q child policy grants capability %q absent from its own grants", id, capability)
+			}
+		}
+		profile.ChildPolicy = policy
+		cfg.Profiles[id] = profile
 	}
 	if cfg.DefaultProfileID != "" {
 		if _, ok := cfg.Profiles[cfg.DefaultProfileID]; !ok {
@@ -168,6 +245,53 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 	s := &Server{store: store, cfg: cfg, commands: make(map[string]CommandHandler), taskSources: make(map[string]TaskSourceAdmissionHandler), public: http.NewServeMux(), device: http.NewServeMux(), runner: http.NewServeMux(), pushSender: cfg.PushSender}
 	s.registerCoreRoutes()
 	return s, nil
+}
+
+func (s *Server) ProfileForRole(role string) (string, bool) {
+	role = strings.TrimSpace(role)
+	if role == "" {
+		return "", false
+	}
+	if profileID, ok := s.cfg.RoleProfiles[role]; ok {
+		return profileID, true
+	}
+	profileID := ""
+	for id, profile := range s.cfg.Profiles {
+		if profile.Role != role || profile.AOAgentKind != "worker" {
+			continue
+		}
+		if profileID != "" {
+			return "", false
+		}
+		profileID = id
+	}
+	return profileID, profileID != ""
+}
+
+func uniqueNonEmpty(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
 }
 
 // RegisterTaskSourceHandler admits non-user task sources inside the same SQL

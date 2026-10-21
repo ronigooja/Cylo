@@ -257,7 +257,7 @@ func TestReviewLegacyNamespaceBackfillRollsBackOnHistoryGap(t *testing.T) {
 	if err := s.DB().QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE namespace<>''`).Scan(&named); err != nil {
 		t.Fatal(err)
 	}
-	if blank != 2 || named != 0 {
+	if blank != 3 || named != 0 {
 		t.Fatalf("failed validation partially backfilled legacy history: blank=%d named=%d", blank, named)
 	}
 }

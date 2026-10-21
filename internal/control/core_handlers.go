@@ -95,6 +95,9 @@ func (s *Server) commandTaskCreate(ctx context.Context, tx *sql.Tx, c CommandCon
 			return contracts.CommandResult{}, nil, apiError(400, "invalid_request", "user task source cannot include a source reference", nil)
 		}
 	case "voice", "service", "system":
+		if p.Source == "service" {
+			return contracts.CommandResult{}, nil, apiError(403, "source_unavailable", "service task source is available only to trusted server features", nil)
+		}
 		if len(p.SourceReference) == 0 || !json.Valid(p.SourceReference) {
 			return contracts.CommandResult{}, nil, apiError(400, "invalid_request", "non-user task source requires a server-validated source reference", nil)
 		}
@@ -173,6 +176,149 @@ func (s *Server) commandTaskCreate(ctx context.Context, tx *sql.Tx, c CommandCon
 	}
 	events = append(events, sourceEvents...)
 	return contracts.CommandResult{ResourceType: "task", ResourceID: id, ResourceVersion: 1}, events, nil
+}
+
+func (s *Server) AppendEventsTx(ctx context.Context, tx *sql.Tx, p contracts.Principal, events []contracts.Event) error {
+	if tx == nil || p.WorkspaceID == "" || p.SubjectID == "" {
+		return errors.New("transaction and trusted event principal are required")
+	}
+	for i := range events {
+		e := &events[i]
+		if e.AggregateType == "" || e.AggregateID == "" {
+			return apiError(500, "invalid_event", "event is missing aggregate identity", nil)
+		}
+		if e.EventID == "" {
+			id, err := randomID()
+			if err != nil {
+				return err
+			}
+			e.EventID = id
+		}
+		e.SchemaVersion = 1
+		e.WorkspaceID = p.WorkspaceID
+		e.SubjectID = p.SubjectID
+		if e.OccurredAt.IsZero() {
+			e.OccurredAt = time.Now().UTC()
+		}
+		var cursor int64
+		if err := tx.QueryRowContext(ctx, `UPDATE event_counters SET current_cursor=current_cursor+1 WHERE workspace_id=? RETURNING current_cursor`, p.WorkspaceID).Scan(&cursor); err != nil {
+			return err
+		}
+		e.Cursor = fmt.Sprint(cursor)
+		payload, err := json.Marshal(e)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO events(event_id,workspace_id,cursor,schema_version,event_type,occurred_at,subject_id,aggregate_type,aggregate_id,aggregate_version,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, e.EventID, p.WorkspaceID, cursor, e.SchemaVersion, e.Type, e.OccurredAt.Format(time.RFC3339Nano), p.SubjectID, e.AggregateType, e.AggregateID, e.AggregateVersion, payload); err != nil {
+			return err
+		}
+		if err = enqueueEventNotification(ctx, tx, *e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) AdmitTaskTx(ctx context.Context, tx *sql.Tx, in AdmissionContext) (TaskAdmissionResult, error) {
+	if tx == nil || in.IdempotencyKey == "" || in.Principal.WorkspaceID == "" || in.Principal.SubjectID == "" || in.Principal.DeviceID == "" {
+		return TaskAdmissionResult{}, apiError(400, "invalid_admission", "transaction, stable idempotency key, and trusted principal are required", nil)
+	}
+	in.Title = strings.TrimSpace(in.Title)
+	in.Goal = strings.TrimSpace(in.Goal)
+	if in.Title == "" || in.Goal == "" || len(in.Title) > 300 || len(in.Goal) > 20000 || len(in.InitialMessage) > 20000 {
+		return TaskAdmissionResult{}, apiError(400, "invalid_request", "task title and goal are required and must fit limits", nil)
+	}
+	if len(in.GrantSnapshot) != 0 && !json.Valid(in.GrantSnapshot) {
+		return TaskAdmissionResult{}, apiError(400, "invalid_admission", "grant snapshot must be valid JSON", nil)
+	}
+	switch in.Source {
+	case "user":
+		if len(in.SourceRef) != 0 {
+			return TaskAdmissionResult{}, apiError(400, "invalid_request", "user task source cannot include a source reference", nil)
+		}
+	case "voice", "service", "system":
+		if in.Source == "service" && !in.TrustedSource {
+			return TaskAdmissionResult{}, apiError(403, "source_unavailable", "service task source is available only to trusted server features", nil)
+		}
+		if len(in.SourceRef) == 0 || !json.Valid(in.SourceRef) {
+			return TaskAdmissionResult{}, apiError(400, "invalid_request", "non-user task source requires a server-validated source reference", nil)
+		}
+		s.mu.RLock()
+		_, registered := s.taskSources[in.Source]
+		s.mu.RUnlock()
+		if !registered {
+			return TaskAdmissionResult{}, apiError(403, "source_unavailable", "task source is not authorized by a registered server feature", map[string]string{"source": in.Source})
+		}
+	default:
+		return TaskAdmissionResult{}, apiError(400, "invalid_request", "source is invalid", nil)
+	}
+	if in.ProjectID != "" {
+		allowed, err := PrincipalCanWriteProject(ctx, tx, in.Principal, in.ProjectID)
+		if err != nil {
+			return TaskAdmissionResult{}, err
+		}
+		if !allowed {
+			return TaskAdmissionResult{}, apiError(404, "not_found", "project not found", nil)
+		}
+	}
+	profileID := in.ProfileID
+	if profileID == "" {
+		profileID = s.cfg.DefaultProfileID
+	}
+	profile, ok := s.cfg.Profiles[profileID]
+	if !ok {
+		return TaskAdmissionResult{}, apiError(409, "profile_unavailable", "requested execution profile is not configured and authorized", map[string]any{"profile_id": profileID})
+	}
+	id, err := randomID()
+	if err != nil {
+		return TaskAdmissionResult{}, err
+	}
+	at := time.Now().UTC()
+	if !in.AcceptedAt.IsZero() {
+		at = in.AcceptedAt.UTC()
+	}
+	stamp := at.Format(time.RFC3339Nano)
+	_, err = tx.ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,project_id,title,goal,source,profile_id,status,version,created_at,updated_at,accepted_at,created_by_device_id,command_id,owner_subject_id) VALUES(?,?,?,?,?,?,?,'queued',1,?,?,?,?,?,?)`, id, in.Principal.WorkspaceID, nullString(in.ProjectID), in.Title, in.Goal, in.Source, profileID, stamp, stamp, stamp, in.Principal.DeviceID, in.IdempotencyKey, in.Principal.SubjectID)
+	if err != nil {
+		return TaskAdmissionResult{}, err
+	}
+	var sourceEvents []contracts.Event
+	if in.Source != "user" {
+		s.mu.RLock()
+		handler := s.taskSources[in.Source]
+		s.mu.RUnlock()
+		if handler == nil {
+			return TaskAdmissionResult{}, apiError(403, "source_unavailable", "task source is not authorized by a registered server feature", map[string]string{"source": in.Source})
+		}
+		sourceRequest := &TaskSourceRequest{Title: in.Title, Goal: in.Goal, InitialMessage: in.InitialMessage, TrustedSource: in.TrustedSource, GrantSnapshot: append(json.RawMessage(nil), in.GrantSnapshot...)}
+		events, err := handler(ctx, tx, in.Principal, id, sourceRequest, in.SourceRef, at)
+		if err != nil {
+			return TaskAdmissionResult{}, err
+		}
+		if strings.TrimSpace(sourceRequest.Title) == "" || strings.TrimSpace(sourceRequest.Goal) == "" || len(sourceRequest.Title) > 300 || len(sourceRequest.Goal) > 20000 || len(sourceRequest.InitialMessage) > 20000 {
+			return TaskAdmissionResult{}, apiError(400, "invalid_source", "validated task source returned invalid task content", nil)
+		}
+		in.Title, in.Goal, in.InitialMessage = sourceRequest.Title, sourceRequest.Goal, sourceRequest.InitialMessage
+		if _, err = tx.ExecContext(ctx, `UPDATE tasks SET title=?,goal=? WHERE id=? AND workspace_id=?`, in.Title, in.Goal, id, in.Principal.WorkspaceID); err != nil {
+			return TaskAdmissionResult{}, err
+		}
+		sourceEvents = events
+	}
+	task := contracts.Task{ID: id, ProjectID: in.ProjectID, Title: in.Title, Goal: in.Goal, Source: in.Source, ProfileID: profileID, Status: "queued", Version: 1, CreatedAt: at, UpdatedAt: at, AcceptedAt: &at, Evidence: []contracts.Evidence{}}
+	events := []contracts.Event{event("task.created", "task", id, 1, map[string]any{"task": task})}
+	if in.InitialMessage != "" {
+		entryID, err := randomID()
+		if err != nil {
+			return TaskAdmissionResult{}, err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO task_entries(id,task_id,workspace_id,kind,content,author_device_id,created_at) VALUES(?,?,?,'user_message',?,?,?)`, entryID, id, in.Principal.WorkspaceID, in.InitialMessage, in.Principal.DeviceID, stamp); err != nil {
+			return TaskAdmissionResult{}, err
+		}
+		entry := contracts.TaskEntry{ID: entryID, Kind: "user_message", Content: in.InitialMessage, AuthorDeviceID: in.Principal.DeviceID, CreatedAt: at}
+		events = append(events, event("task.entry_appended", "task", id, 1, map[string]any{"task_id": id, "entry": entry}))
+	}
+	events = append(events, sourceEvents...)
+	return TaskAdmissionResult{Task: task, Events: events}, nil
 }
 
 func (s *Server) commandTaskAppend(ctx context.Context, tx *sql.Tx, c CommandContext, req contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
