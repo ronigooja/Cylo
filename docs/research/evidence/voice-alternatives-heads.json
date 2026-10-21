@@ -1,0 +1,75 @@
+{
+  "observed_date": "2026-10-21",
+  "method": "GitHub public API discovery and shallow clone; git log -1; no account/API/media calls",
+  "repositories": [
+    {
+      "repo": "dyhhhhhh/chatgpt-web-voice",
+      "head": "9eb61526118d272beeb20ed18c0df071274d73e8",
+      "author_date": "2026-07-23T14:46:13+08:00",
+      "committer_date": "2026-07-23T14:46:13+08:00",
+      "subject": "docs: drop GitHub Releases marketing link",
+      "license_sha256": "b2f142f8806d5e3de0f2214b1a0893c6653e7c2c51458cd28bf388cb02b552ba"
+    },
+    {
+      "repo": "victorli-cn/chatgpt-web-voice",
+      "head": "9916f10368038fcebf0d17d6b6653d96aae0fd1b",
+      "author_date": "2026-07-27T23:07:37+08:00",
+      "committer_date": "2026-07-27T23:07:37+08:00",
+      "subject": "feat: add web account import",
+      "license_sha256": "b2f142f8806d5e3de0f2214b1a0893c6653e7c2c51458cd28bf388cb02b552ba"
+    },
+    {
+      "repo": "sivaneh/chatgpt-web-voice",
+      "head": "fab99f96d3c544161e68e2164e6b210302ff6520",
+      "author_date": "2026-09-27T16:11:07+05:30",
+      "committer_date": "2026-09-27T16:11:07+05:30",
+      "subject": "first",
+      "license_sha256": "b2f142f8806d5e3de0f2214b1a0893c6653e7c2c51458cd28bf388cb02b552ba"
+    },
+    {
+      "repo": "pipecat-ai/pipecat",
+      "head": "32d63cb97de2bb2ecc732d0427ac1fb4e0c7e8c6",
+      "author_date": "2026-10-21T10:39:04-04:00",
+      "committer_date": "2026-10-21T11:26:22-04:00",
+      "subject": "Name the changelog fragment after the PR",
+      "license_sha256": "e31a733ecb79cbffafd5474e964e5eca15e0a0876a42b1d7253b51b198eb61aa"
+    },
+    {
+      "repo": "livekit/agents",
+      "head": "7c99532ffa629a32326f8e8fd2ad0bad8f909544",
+      "author_date": "2026-10-21T17:50:06+02:00",
+      "committer_date": "2026-10-21T11:50:06-04:00",
+      "subject": "feat(speechify): stream simba-3.5 and any later model without a plugin update (#8029)",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "repo": "TEN-framework/ten-framework",
+      "head": "18a449ea707352f9697b5b27062b218bc7167e13",
+      "author_date": "2026-10-21T20:22:27+08:00",
+      "committer_date": "2026-10-21T20:22:27+08:00",
+      "subject": "test: add graph for fdb benchmark tests (#2365)",
+      "license_sha256": "3fefe43b7c421797c4b7d2f2bb797af7be0a155d39b90ad14bed9fbf7c50acb9"
+    },
+    {
+      "repo": "Space3044/chatgpt-web-voice",
+      "head": "6338ac478070aaa34bfe7a3c0469caf9e9174c02",
+      "author_date": "2026-07-25T00:23:56+08:00",
+      "committer_date": "2026-07-25T00:23:56+08:00",
+      "subject": "fix(voice): hangup ending UI, barge-in without local mute, text stop_speaking",
+      "license_sha256": "b2f142f8806d5e3de0f2214b1a0893c6653e7c2c51458cd28bf388cb02b552ba"
+    },
+    {
+      "repo": "livekit/agents-js",
+      "head": "391489c73ac564e4e43f888e9ffe6f63cc73fea8",
+      "author_date": "2026-10-21T09:13:55-04:00",
+      "committer_date": "2026-10-21T09:13:55-04:00",
+      "subject": "chore: remove dead mocks from agent_session_handoff.test.ts (#2652)",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    }
+  ],
+  "checks": [
+    "Actual dyhhhhhh AccountPool with two synthetic accounts: repeated fresh pick selects first enabled A; mark_invalid(A) allows B; no network.",
+    "victorli-cn python3 -m unittest discover -s tests -v: 4 tests passed.",
+    "Space vs sivaneh source diff reviewed: locale/status/timezone changes; no quota/tool implementation gain identified."
+  ]
+}
