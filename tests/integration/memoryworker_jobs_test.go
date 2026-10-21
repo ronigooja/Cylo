@@ -205,6 +205,9 @@ func TestMemoryWorkerCompletionRechecksTombstoneGeneration(t *testing.T) {
 	if _, err := store.DB().Exec(`INSERT INTO memory_tombstones(claim_id,workspace_id,revision,actor_id,reason,deleted_at) VALUES(?, 'default', 2, 'user', 'user_requested', ?)`, "claim-delete-race", now); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.DB().Exec(`UPDATE memory_jobs SET status='done' WHERE workspace_id='default' AND kind='delete_cleanup' AND entity_id='claim-delete-race' AND entity_version=2 AND target='qdrant'`); err != nil {
+		t.Fatal(err)
+	}
 	completed := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/jobs/"+job.ID+"/complete", map[string]any{"attempt": job.Attempt})
 	if completed.Code != http.StatusOK {
 		t.Fatalf("completion status=%d body=%s", completed.Code, completed.Body.String())
@@ -218,6 +221,53 @@ func TestMemoryWorkerCompletionRechecksTombstoneGeneration(t *testing.T) {
 	}
 	if result.Status != "done" || result.Disposition != "stale_generation" {
 		t.Fatalf("stale index job was acknowledged without a generation result: %#v", result)
+	}
+	var cleanupStatus string
+	if err := store.DB().QueryRow(`SELECT status FROM memory_jobs WHERE workspace_id='default' AND kind='delete_cleanup' AND entity_id='claim-delete-race' AND entity_version=2 AND target='qdrant'`).Scan(&cleanupStatus); err != nil {
+		t.Fatal(err)
+	}
+	if cleanupStatus != "pending" {
+		t.Fatalf("stale index effect did not reschedule tombstone cleanup: status=%q", cleanupStatus)
+	}
+}
+
+func TestMemoryWorkerStaleIndexCompletionRepairsCurrentRevision(t *testing.T) {
+	store, handler, token := memoryWorkerHarness(t, []string{"memory:jobs:claim", "memory:jobs:complete"}, []string{"default"})
+	seedMemoryWorkerClaim(t, store.DB(), "default", "claim-revision-race")
+	claim := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/jobs/claim", map[string]any{"limit": 1})
+	var response struct {
+		Items []struct {
+			ID      string `json:"id"`
+			Attempt int    `json:"attempt"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(claim.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Items) != 1 {
+		t.Fatalf("expected one index job, got %s", claim.Body.String())
+	}
+	job := response.Items[0]
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := store.DB().Exec(`UPDATE memory_claims SET revision=2,updated_at=? WHERE workspace_id='default' AND id='claim-revision-race'`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().Exec(`INSERT INTO memory_revisions(claim_id,revision,content,authority_kind,status,recorded_at,actor_id) VALUES('claim-revision-race',2,'New revision content','user_confirmed','active',?,'user')`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().Exec(`INSERT INTO memory_revision_sources(claim_id,revision,workspace_id,source_id,source_version) VALUES('claim-revision-race',2,'default','source-claim-revision-race',1)`); err != nil {
+		t.Fatal(err)
+	}
+	completed := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/jobs/"+job.ID+"/complete", map[string]any{"attempt": job.Attempt})
+	if completed.Code != http.StatusOK {
+		t.Fatalf("completion status=%d body=%s", completed.Code, completed.Body.String())
+	}
+	var repaired int
+	if err := store.DB().QueryRow(`SELECT count(*) FROM memory_jobs WHERE workspace_id='default' AND kind='index' AND entity_id='claim-revision-race' AND entity_version=2 AND target='qdrant' AND status='pending'`).Scan(&repaired); err != nil {
+		t.Fatal(err)
+	}
+	if repaired != 1 {
+		t.Fatalf("stale index effect did not schedule current revision repair: pending=%d", repaired)
 	}
 }
 
@@ -254,5 +304,33 @@ func TestMemoryWorkerReconciliationAdvancesBeyondFirstPage(t *testing.T) {
 	}
 	if completed != 501 {
 		t.Fatalf("completed %d of 501 jobs", completed)
+	}
+}
+
+func TestMemoryWorkerReconcilesMoreThan500ExtractionSources(t *testing.T) {
+	store, handler, token := memoryWorkerHarness(t, []string{"memory:jobs:claim", "memory:jobs:complete"}, []string{"default"})
+	seedMemoryWorkerClaim(t, store.DB(), "default", "claim-many-sources")
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for i := 0; i < 501; i++ {
+		sourceID := fmt.Sprintf("event-source-%03d", i)
+		if _, err := store.DB().Exec(`INSERT INTO memory_sources(workspace_id,id,version,scope_kind,scope_id,principal_id,kind,reference,content_hash,recorded_at,producer) VALUES('default',?,1,'workspace','','','event',?,?,?,'runner')`, sourceID, "event:"+sourceID, "", now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.DB().Exec(`INSERT INTO memory_revision_sources(claim_id,revision,workspace_id,source_id,source_version) VALUES('claim-many-sources',1,'default',?,1)`, sourceID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		claimed := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/jobs/claim", map[string]any{"limit": 1})
+		if claimed.Code != http.StatusOK {
+			t.Fatalf("poll %d claim status=%d body=%s", i, claimed.Code, claimed.Body.String())
+		}
+	}
+	var count int
+	if err := store.DB().QueryRow(`SELECT count(*) FROM memory_jobs WHERE workspace_id='default' AND kind='extract' AND entity_id='claim-many-sources'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 501 {
+		t.Fatalf("only %d of 501 extraction source jobs were reconciled", count)
 	}
 }

@@ -464,36 +464,42 @@ ORDER BY c.updated_at DESC,c.id LIMIT 500`, workspace)
 		if err := insertDerivedJob(ctx, tx, workspace, "index", claim.id, claim.revision, "qdrant", map[string]any{"claim_id": claim.id, "revision": claim.revision}, nowText); err != nil {
 			return err
 		}
-		refs, err := tx.QueryContext(ctx, `SELECT rs.source_id,rs.source_version,s.kind FROM memory_revision_sources rs JOIN memory_sources s ON s.workspace_id=rs.workspace_id AND s.id=rs.source_id AND s.version=rs.source_version
-WHERE rs.workspace_id=? AND rs.claim_id=? AND rs.revision=? AND s.deleted_at IS NULL AND s.kind IN ('task_entry','event','evidence')
+	}
+	// Reconcile extraction independently from index jobs. A single claim can
+	// have more sources than one batch, and every poll must be able to advance
+	// through the remaining missing source jobs even after its index job exists.
+	refs, err := tx.QueryContext(ctx, `SELECT rs.claim_id,rs.revision,rs.source_id,rs.source_version FROM memory_revision_sources rs
+JOIN memory_claims c ON c.workspace_id=rs.workspace_id AND c.id=rs.claim_id AND c.revision=rs.revision
+JOIN memory_sources s ON s.workspace_id=rs.workspace_id AND s.id=rs.source_id AND s.version=rs.source_version
+WHERE rs.workspace_id=? AND c.deleted_at IS NULL AND c.status IN ('active','conflicted') AND s.deleted_at IS NULL AND s.kind IN ('task_entry','event','evidence')
 AND NOT EXISTS (SELECT 1 FROM memory_jobs j WHERE j.workspace_id=rs.workspace_id AND j.kind='extract' AND j.entity_id=rs.claim_id AND j.entity_version=rs.revision AND j.target=rs.source_id)
-ORDER BY rs.source_id LIMIT 100`, workspace, claim.id, claim.revision)
-		if err != nil {
-			return err
-		}
-		type ref struct {
-			id      string
-			version int64
-			kind    string
-		}
-		var sources []ref
-		for refs.Next() {
-			var source ref
-			if err := refs.Scan(&source.id, &source.version, &source.kind); err != nil {
-				_ = refs.Close()
-				return err
-			}
-			sources = append(sources, source)
-		}
-		if err := refs.Err(); err != nil {
+ORDER BY rs.claim_id,rs.source_id,rs.source_version LIMIT 500`, workspace)
+	if err != nil {
+		return err
+	}
+	type ref struct {
+		claimID  string
+		revision int64
+		id       string
+		version  int64
+	}
+	var sources []ref
+	for refs.Next() {
+		var source ref
+		if err := refs.Scan(&source.claimID, &source.revision, &source.id, &source.version); err != nil {
 			_ = refs.Close()
 			return err
 		}
+		sources = append(sources, source)
+	}
+	if err := refs.Err(); err != nil {
 		_ = refs.Close()
-		for _, source := range sources {
-			if err := insertDerivedJob(ctx, tx, workspace, "extract", claim.id, claim.revision, source.id, map[string]any{"claim_id": claim.id, "claim_revision": claim.revision, "source_id": source.id, "source_version": source.version, "extractor_version": s.cfg.ExtractorID}, nowText); err != nil {
-				return err
-			}
+		return err
+	}
+	_ = refs.Close()
+	for _, source := range sources {
+		if err := insertDerivedJob(ctx, tx, workspace, "extract", source.claimID, source.revision, source.id, map[string]any{"claim_id": source.claimID, "claim_revision": source.revision, "source_id": source.id, "source_version": source.version, "extractor_version": s.cfg.ExtractorID}, nowText); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -661,6 +667,11 @@ func (s *derivedService) finish(ctx context.Context, p contracts.RunnerPrincipal
 		if err != nil {
 			return derivedJobResult{}, err
 		}
+		if disposition == "stale_generation" {
+			if err := s.repairStaleEffectTx(ctx, tx, workspace, kind, entityID, entityVersion, target, nowText); err != nil {
+				return derivedJobResult{}, err
+			}
+		}
 		state := "done"
 		if disposition == "deletion_tombstone_missing" {
 			state = "blocked"
@@ -688,6 +699,61 @@ func (s *derivedService) finish(ctx context.Context, p contracts.RunnerPrincipal
 		return derivedJobResult{}, err
 	}
 	return derivedJobResult{ID: id, Status: state}, nil
+}
+
+// repairStaleEffectTx schedules the current generation again after a worker
+// reports that it completed an external effect for an obsolete generation.
+// Validation happens before the effect, so a concurrent authority write can
+// still land between validation and the external store operation.
+func (s *derivedService) repairStaleEffectTx(ctx context.Context, tx *sql.Tx, workspace, kind, entityID string, entityVersion int64, target, now string) error {
+	var currentRevision int64
+	var status string
+	err := tx.QueryRowContext(ctx, `SELECT revision,status FROM memory_claims WHERE workspace_id=? AND id=?`, workspace, entityID).Scan(&currentRevision, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if status == string(ClaimTombstoned) {
+		cleanupTarget := ""
+		switch kind {
+		case "index":
+			cleanupTarget = "qdrant"
+		case "extract":
+			cleanupTarget = "mem0"
+		case "delete_cleanup":
+			if target == "qdrant" || target == "mem0" {
+				cleanupTarget = target
+			}
+		}
+		if cleanupTarget == "" {
+			return nil
+		}
+		if err := insertDerivedJob(ctx, tx, workspace, "delete_cleanup", entityID, currentRevision, cleanupTarget, map[string]any{"claim_id": entityID, "target": cleanupTarget}, now); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE memory_jobs SET status='pending',attempts=0,available_at=?,lease_owner='',lease_until=NULL,last_error_code='',updated_at=?
+WHERE workspace_id=? AND kind='delete_cleanup' AND entity_id=? AND entity_version=? AND target=?`, now, now, workspace, entityID, currentRevision, cleanupTarget)
+		return err
+	}
+	if kind == "delete_cleanup" && target == "qdrant" && status != string(ClaimTombstoned) && currentRevision > entityVersion && (status == string(ClaimActive) || status == string(ClaimConflicted)) {
+		if err := insertDerivedJob(ctx, tx, workspace, "index", entityID, currentRevision, "qdrant", map[string]any{"claim_id": entityID, "revision": currentRevision}, now); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE memory_jobs SET status='pending',attempts=0,available_at=?,lease_owner='',lease_until=NULL,last_error_code='',updated_at=?
+WHERE workspace_id=? AND kind='index' AND entity_id=? AND entity_version=? AND target='qdrant'`, now, now, workspace, entityID, currentRevision)
+		return err
+	}
+	if kind != "index" || currentRevision <= entityVersion || status != string(ClaimActive) && status != string(ClaimConflicted) {
+		return nil
+	}
+	if err := insertDerivedJob(ctx, tx, workspace, "index", entityID, currentRevision, "qdrant", map[string]any{"claim_id": entityID, "revision": currentRevision}, now); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE memory_jobs SET status='pending',attempts=0,available_at=?,lease_owner='',lease_until=NULL,last_error_code='',updated_at=?
+WHERE workspace_id=? AND kind='index' AND entity_id=? AND entity_version=? AND target='qdrant'`, now, now, workspace, entityID, currentRevision)
+	return err
 }
 
 func retryDelay(c DerivedConfig, attempt int) time.Duration {
