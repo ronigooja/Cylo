@@ -520,6 +520,19 @@ private struct NotificationInboxView: View {
             }
         }
         .navigationTitle("Inbox")
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button("Enable alerts", systemImage: "bell.badge") {
+                    Task {
+                        do {
+                            let enabled = try await NativeNotificationDelivery.shared.requestPermission()
+                            if !enabled { model.setNotice("System notification permission is disabled. The Cylo inbox remains available.") }
+                        } catch { model.setNotice("System notification permission could not be requested: \(error.localizedDescription)") }
+                    }
+                }
+                Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refreshNotifications(unreadOnly: unreadOnly) } }
+            }
+        }
         .task { await model.refreshNotifications(unreadOnly: unreadOnly) }
         .onChange(of: unreadOnly) { _, value in Task { await model.refreshNotifications(unreadOnly: value) } }
         .refreshable { await model.refreshNotifications(unreadOnly: unreadOnly) }

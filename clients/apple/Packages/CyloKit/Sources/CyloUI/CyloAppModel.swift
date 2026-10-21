@@ -39,6 +39,7 @@ public final class CyloAppModel: ObservableObject {
     private var voiceTurnID: String?
     private var voiceProviderMessageID: String?
     private var voiceHeartbeatTask: Task<Void, Never>?
+    private var hasLoadedNotificationInbox = false
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -202,7 +203,14 @@ public final class CyloAppModel: ObservableObject {
         do {
             let result = try await api.notifications(unreadOnly: unreadOnly)
             guard generation == connectionGeneration.value, api === self.api else { return }
+            let oldIDs = Set(notifications.map(\.id))
             notifications = result.notifications
+            if hasLoadedNotificationInbox {
+                for item in result.notifications where item.readAt == nil && !oldIDs.contains(item.id) {
+                    await NativeNotificationDelivery.shared.deliver(item)
+                }
+            }
+            hasLoadedNotificationInbox = true
         } catch {
             guard generation == connectionGeneration.value else { return }
             notice = "The durable notification inbox could not be refreshed: \(userMessage(error))"
@@ -428,6 +436,10 @@ public final class CyloAppModel: ObservableObject {
         voiceDraftRevision += 1
     }
 
+    public func setNotice(_ message: String) {
+        notice = message
+    }
+
     public func createTask(goal: String, title: String, projectID: String?) async {
         var payload: [String: JSONValue] = [
             "title": .string(title),
@@ -523,6 +535,7 @@ public final class CyloAppModel: ObservableObject {
             memoryMissing = []
             memoryConflicts = []
             notifications = []
+            hasLoadedNotificationInbox = false
             voiceConfig = nil
             voicePoolStatus = nil
             voiceDraft = ""
