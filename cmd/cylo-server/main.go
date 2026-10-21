@@ -140,6 +140,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	memoryRunner, err := loadMemoryRunnerCredentialFromEnv()
+	if err != nil {
+		return err
+	}
 	bootstrapCode := os.Getenv("CYLO_BOOTSTRAP_CODE")
 	runnerToken := os.Getenv("CYLO_RUNNER_TOKEN")
 	if !validBearer(bootstrapCode) {
@@ -168,20 +172,11 @@ func run() error {
 		DefaultProfileID:   strings.TrimSpace(os.Getenv("CYLO_DEFAULT_PROFILE_ID")),
 		Profiles:           profiles,
 	}
-	server, err := control.NewServer(store, cfg)
-	if err != nil {
-		return err
-	}
-	if err = memory.Register(server, store); err != nil {
-		return err
-	}
-	if err = voice.Register(server, store, voice.Config{GatewayURL: os.Getenv("CYLO_VOICE_GATEWAY_URL"), GatewayAPIKey: os.Getenv("CYLO_VOICE_GATEWAY_API_KEY")}); err != nil {
-		return err
-	}
-	if err = capabilities.Register(server, store, capabilities.Config{
+	server, err := composeControlServer(store, cfg, voice.Config{GatewayURL: os.Getenv("CYLO_VOICE_GATEWAY_URL"), GatewayAPIKey: os.Getenv("CYLO_VOICE_GATEWAY_API_KEY")}, capabilities.Config{
 		AvailableCapabilityIDs: splitEnv("CYLO_AVAILABLE_CAPABILITY_IDS", ""),
 		RuntimeBackend:         strings.TrimSpace(os.Getenv("CYLO_CAPABILITY_RUNTIME_BACKEND")),
-	}); err != nil {
+	}, memory.DerivedConfig{})
+	if err != nil {
 		return err
 	}
 	if err = store.Migrate(ctx); err != nil {
@@ -189,6 +184,11 @@ func run() error {
 	}
 	if runnerToken != "" {
 		if err = control.RegisterRunnerCredentialIfMissing(ctx, store, runnerToken, env("CYLO_RUNNER_ID", "configured-runner"), splitEnv("CYLO_RUNNER_WORKSPACES", "default"), splitEnv("CYLO_RUNNER_SCOPES", "runner:claim,runner:observe,runner:control:read")); err != nil {
+			return err
+		}
+	}
+	if memoryRunner.Enabled {
+		if err = registerMemoryRunnerCredential(ctx, store, memoryRunner); err != nil {
 			return err
 		}
 	}
