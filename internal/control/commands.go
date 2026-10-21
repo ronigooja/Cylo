@@ -22,6 +22,7 @@ func (s *Server) registerCoreRoutes() {
 	_ = s.RegisterCommand("task.append", s.commandTaskAppend)
 	_ = s.RegisterCommand("task.stop", s.commandTaskStop)
 	_ = s.RegisterCommand("task.approve", s.commandTaskApprove)
+	_ = s.RegisterCommand("task.accept_result", s.commandTaskAcceptResult)
 	_ = s.RegisterCommand("device.approve", s.commandDeviceApprove)
 	_ = s.RegisterCommand("device.revoke", s.commandDeviceRevoke)
 	s.device.HandleFunc("POST /v1/commands", s.handleCommand)
@@ -29,6 +30,10 @@ func (s *Server) registerCoreRoutes() {
 	s.device.HandleFunc("GET /v1/commands", s.handleGetCommandByKey)
 	s.device.HandleFunc("GET /v1/snapshot", s.handleSnapshot)
 	s.device.HandleFunc("GET /v1/events", s.handleEvents)
+	s.runner.HandleFunc("POST /runner/v1/claims", s.handleClaims)
+	s.runner.HandleFunc("GET /runner/v1/claims/current", s.handleCurrentClaims)
+	s.runner.HandleFunc("GET /runner/v1/runs/{run_id}", s.handleRunControl)
+	s.runner.HandleFunc("POST /runner/v1/runs/{run_id}/observations", s.handleObservation)
 }
 
 func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {

@@ -88,22 +88,23 @@ type Project struct {
 }
 
 type Task struct {
-	ID         string     `json:"id"`
-	ProjectID  string     `json:"project_id,omitempty"`
-	Title      string     `json:"title"`
-	Goal       string     `json:"goal"`
-	Source     string     `json:"source"`
-	ProfileID  string     `json:"profile_id,omitempty"`
-	Status     string     `json:"status"`
-	Version    int64      `json:"version"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
-	AcceptedAt *time.Time `json:"accepted_at,omitempty"`
-	StartedAt  *time.Time `json:"started_at,omitempty"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
-	Result     string     `json:"result,omitempty"`
-	Error      string     `json:"error,omitempty"`
-	Evidence   []Evidence `json:"evidence"`
+	ID              string     `json:"id"`
+	ProjectID       string     `json:"project_id,omitempty"`
+	Title           string     `json:"title"`
+	Goal            string     `json:"goal"`
+	Source          string     `json:"source"`
+	ProfileID       string     `json:"profile_id,omitempty"`
+	Status          string     `json:"status"`
+	Version         int64      `json:"version"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	AcceptedAt      *time.Time `json:"accepted_at,omitempty"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	FinishedAt      *time.Time `json:"finished_at,omitempty"`
+	Result          string     `json:"result,omitempty"`
+	Error           string     `json:"error,omitempty"`
+	Evidence        []Evidence `json:"evidence"`
+	CanAcceptResult bool       `json:"can_accept_result"`
 }
 
 type TaskEntry struct {
@@ -128,6 +129,7 @@ type Device struct {
 type Approval struct {
 	ID                    string          `json:"id"`
 	TaskID                string          `json:"task_id"`
+	TaskVersion           int64           `json:"task_version"`
 	Status                string          `json:"status"`
 	Prompt                string          `json:"prompt"`
 	Version               int64           `json:"version"`
@@ -148,15 +150,16 @@ type Snapshot struct {
 }
 
 type Run struct {
-	ID             string     `json:"id"`
-	TaskID         string     `json:"task_id"`
-	AttemptID      string     `json:"attempt_id"`
-	Status         string     `json:"status"`
-	DesiredControl string     `json:"desired_control"`
-	ControlVersion int64      `json:"control_version"`
-	StartedAt      time.Time  `json:"started_at"`
-	StoppedAt      *time.Time `json:"stopped_at,omitempty"`
-	Evidence       []Evidence `json:"evidence"`
+	ID                   string     `json:"id"`
+	TaskID               string     `json:"task_id"`
+	AttemptID            string     `json:"attempt_id"`
+	Status               string     `json:"status"`
+	DesiredControl       string     `json:"desired_control"`
+	ControlVersion       int64      `json:"control_version"`
+	StartedAt            time.Time  `json:"started_at"`
+	StoppedAt            *time.Time `json:"stopped_at,omitempty"`
+	TerminationConfirmed bool       `json:"termination_confirmed"`
+	Evidence             []Evidence `json:"evidence"`
 }
 
 type BootstrapRequest struct {
@@ -204,6 +207,10 @@ type JobClaim struct {
 	AOSessionID    string           `json:"ao_session_id,omitempty"`
 	Authorization  JobAuthorization `json:"authorization"`
 	Fence          uint64           `json:"fence"`
+}
+
+type ClaimRecovery struct {
+	Claims []JobClaim `json:"claims"`
 }
 
 type RunControl struct {

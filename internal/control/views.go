@@ -89,6 +89,14 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (c
 			v := parseTime(finished.String)
 			t.FinishedAt = &v
 		}
+		if t.Status == "awaiting_user" {
+			var canAccept int
+			if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM runs r JOIN evidence e ON e.run_id=r.id WHERE r.workspace_id=? AND r.task_id=? AND r.status='verification_pending' AND e.kind='agent_result' AND e.source='runner' AND e.verified=0`, workspace, t.ID).Scan(&canAccept); err != nil {
+				tasks.Close()
+				return out, err
+			}
+			t.CanAcceptResult = canAccept > 0
+		}
 		t.Evidence, err = loadEvidence(ctx, tx, workspace, t.ID)
 		if err != nil {
 			tasks.Close()
@@ -101,7 +109,7 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (c
 		return out, err
 	}
 	tasks.Close()
-	approvals, err := tx.QueryContext(ctx, `SELECT id,task_id,status,prompt,version,created_at,expires_at,requested_action,requested_action_digest FROM approvals WHERE workspace_id=? AND status='pending' ORDER BY created_at,id`, workspace)
+	approvals, err := tx.QueryContext(ctx, `SELECT id,task_id,task_version,status,prompt,version,created_at,expires_at,requested_action,requested_action_digest FROM approvals WHERE workspace_id=? ORDER BY created_at,id`, workspace)
 	if err != nil {
 		return out, err
 	}
@@ -110,7 +118,7 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (c
 		var created string
 		var expires sql.NullString
 		var action []byte
-		if err = approvals.Scan(&a.ID, &a.TaskID, &a.Status, &a.Prompt, &a.Version, &created, &expires, &action, &a.RequestedActionDigest); err != nil {
+		if err = approvals.Scan(&a.ID, &a.TaskID, &a.TaskVersion, &a.Status, &a.Prompt, &a.Version, &created, &expires, &action, &a.RequestedActionDigest); err != nil {
 			approvals.Close()
 			return out, err
 		}
@@ -170,6 +178,7 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (c
 			return out, err
 		}
 		v.StartedAt = parseTime(started)
+		v.TerminationConfirmed = v.Status == "stopped" || v.Status == "verification_pending" || v.Status == "verified" || v.Status == "failed"
 		if stopped.Valid {
 			t := parseTime(stopped.String)
 			v.StoppedAt = &t

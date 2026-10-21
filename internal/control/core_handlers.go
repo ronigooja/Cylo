@@ -164,6 +164,9 @@ func (s *Server) commandTaskAppend(ctx context.Context, tx *sql.Tx, c CommandCon
 	if _, err = tx.ExecContext(ctx, `UPDATE tasks SET version=?,updated_at=? WHERE id=? AND workspace_id=?`, version, at, p.TaskID, c.Principal.WorkspaceID); err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
+	if _, err = tx.ExecContext(ctx, `UPDATE approvals SET status='canceled',version=version+1 WHERE task_id=? AND workspace_id=? AND status='pending'`, p.TaskID, c.Principal.WorkspaceID); err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
 	entry := contracts.TaskEntry{ID: id, Kind: "user_message", Content: p.Content, AuthorDeviceID: c.Principal.DeviceID, CreatedAt: c.AcceptedAt}
 	return contracts.CommandResult{ResourceType: "task", ResourceID: p.TaskID, ResourceVersion: version}, []contracts.Event{event("task.entry_appended", "task", p.TaskID, version, map[string]any{"task_id": p.TaskID, "entry": entry})}, nil
 }
@@ -190,6 +193,9 @@ func (s *Server) commandTaskStop(ctx context.Context, tx *sql.Tx, c CommandConte
 		if err != nil {
 			return contracts.CommandResult{}, nil, err
 		}
+		if _, err = tx.ExecContext(ctx, `UPDATE approvals SET status='canceled',version=version+1 WHERE task_id=? AND workspace_id=? AND status='pending'`, p.TaskID, c.Principal.WorkspaceID); err != nil {
+			return contracts.CommandResult{}, nil, err
+		}
 	} else {
 		if _, err = tx.ExecContext(ctx, `UPDATE runs SET desired_control='stop',control_version=control_version+1 WHERE task_id=? AND workspace_id=? AND status IN ('dispatching','active','uncertain')`, p.TaskID, c.Principal.WorkspaceID); err != nil {
 			return contracts.CommandResult{}, nil, err
@@ -199,6 +205,9 @@ func (s *Server) commandTaskStop(ctx context.Context, tx *sql.Tx, c CommandConte
 		if err != nil {
 			return contracts.CommandResult{}, nil, err
 		}
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE approvals SET status='canceled',version=version+1 WHERE task_id=? AND workspace_id=? AND status='pending'`, p.TaskID, c.Principal.WorkspaceID); err != nil {
+		return contracts.CommandResult{}, nil, err
 	}
 	return contracts.CommandResult{ResourceType: "task", ResourceID: p.TaskID, ResourceVersion: version}, []contracts.Event{event("task.stop_requested", "task", p.TaskID, version, map[string]any{"task_id": p.TaskID, "reason": p.Reason, "status": status})}, nil
 }
@@ -211,10 +220,10 @@ func (s *Server) commandTaskApprove(ctx context.Context, tx *sql.Tx, c CommandCo
 	if p.TaskID == "" || p.ApprovalID == "" || (p.Decision != "approve" && p.Decision != "reject") {
 		return contracts.CommandResult{}, nil, apiError(400, "invalid_request", "task_id, approval_id, and decision approve|reject are required", nil)
 	}
-	var taskID, status string
-	var version int64
+	var taskID, status, boundStatus string
+	var version, boundTaskVersion, currentTaskVersion int64
 	var expires sql.NullString
-	err := tx.QueryRowContext(ctx, `SELECT task_id,status,version,expires_at FROM approvals WHERE id=? AND workspace_id=?`, p.ApprovalID, c.Principal.WorkspaceID).Scan(&taskID, &status, &version, &expires)
+	err := tx.QueryRowContext(ctx, `SELECT task_id,status,version,task_version,expires_at FROM approvals WHERE id=? AND workspace_id=?`, p.ApprovalID, c.Principal.WorkspaceID).Scan(&taskID, &status, &version, &boundTaskVersion, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return contracts.CommandResult{}, nil, apiError(404, "not_found", "approval not found", nil)
 	}
@@ -229,6 +238,16 @@ func (s *Server) commandTaskApprove(ctx context.Context, tx *sql.Tx, c CommandCo
 	}
 	if status != "pending" {
 		return contracts.CommandResult{}, nil, apiError(409, "state_conflict", "approval is no longer pending", map[string]any{"status": status})
+	}
+	currentTaskVersion, boundStatus, err = taskVersionStatus(ctx, tx, c.Principal.WorkspaceID, p.TaskID)
+	if err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if boundStatus == "complete" || boundStatus == "failed" || boundStatus == "canceled" {
+		return contracts.CommandResult{}, nil, apiError(409, "state_conflict", "approval cannot change a terminal task", map[string]any{"task_status": boundStatus})
+	}
+	if boundTaskVersion != currentTaskVersion {
+		return contracts.CommandResult{}, nil, apiError(409, "version_conflict", "approval is bound to an older task version", map[string]any{"expected_version": boundTaskVersion, "current_version": currentTaskVersion})
 	}
 	if expires.Valid {
 		deadline, e := time.Parse(time.RFC3339Nano, expires.String)
@@ -246,20 +265,94 @@ func (s *Server) commandTaskApprove(ctx context.Context, tx *sql.Tx, c CommandCo
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
-	taskVersion, _, err := taskVersionStatus(ctx, tx, c.Principal.WorkspaceID, p.TaskID)
+	return contracts.CommandResult{ResourceType: "approval", ResourceID: p.ApprovalID, ResourceVersion: version}, []contracts.Event{event("task.approval_decided", "approval", p.ApprovalID, version, map[string]any{"task_id": p.TaskID, "approval_id": p.ApprovalID, "approval_version": version, "task_version": boundTaskVersion, "decision": p.Decision, "comment": p.Comment})}, nil
+}
+
+type acceptResultPayload struct {
+	TaskID   string `json:"task_id"`
+	RunID    string `json:"run_id"`
+	Decision string `json:"decision"`
+	Comment  string `json:"comment,omitempty"`
+}
+
+func (s *Server) commandTaskAcceptResult(ctx context.Context, tx *sql.Tx, c CommandContext, req contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
+	var p acceptResultPayload
+	if err := decodePayload(req.Payload, &p); err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if p.TaskID == "" || p.RunID == "" || (p.Decision != "accept" && p.Decision != "reject") {
+		return contracts.CommandResult{}, nil, apiError(400, "invalid_request", "task_id, run_id, and decision accept|reject are required", nil)
+	}
+	version, status, err := taskVersionStatus(ctx, tx, c.Principal.WorkspaceID, p.TaskID)
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
-	taskVersion++
-	newTaskStatus := "awaiting_user"
-	if p.Decision == "approve" {
-		newTaskStatus = "queued"
+	if req.ExpectedVersion == nil {
+		return contracts.CommandResult{}, nil, apiError(400, "invalid_request", "expected_version is required for result acceptance", nil)
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE tasks SET status=?,version=?,updated_at=? WHERE id=? AND workspace_id=?`, newTaskStatus, taskVersion, at, p.TaskID, c.Principal.WorkspaceID)
+	if err = checkVersion(req.ExpectedVersion, version); err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if status != "awaiting_user" {
+		return contracts.CommandResult{}, nil, apiError(409, "state_conflict", "task has no result awaiting user acceptance", map[string]any{"status": status})
+	}
+	var runStatus string
+	err = tx.QueryRowContext(ctx, `SELECT status FROM runs WHERE id=? AND task_id=? AND workspace_id=?`, p.RunID, p.TaskID, c.Principal.WorkspaceID).Scan(&runStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return contracts.CommandResult{}, nil, apiError(404, "not_found", "task run not found", nil)
+	}
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
-	return contracts.CommandResult{ResourceType: "task", ResourceID: p.TaskID, ResourceVersion: taskVersion}, []contracts.Event{event("task.approval_decided", "task", p.TaskID, taskVersion, map[string]any{"task_id": p.TaskID, "approval_id": p.ApprovalID, "approval_version": version, "decision": p.Decision, "comment": p.Comment})}, nil
+	if runStatus != "verification_pending" {
+		return contracts.CommandResult{}, nil, apiError(409, "state_conflict", "run termination is not confirmed", map[string]any{"run_status": runStatus})
+	}
+	var evidenceCount int
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM evidence WHERE workspace_id=? AND task_id=? AND run_id=? AND kind='agent_result' AND source='runner' AND verified=0`, c.Principal.WorkspaceID, p.TaskID, p.RunID).Scan(&evidenceCount); err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if evidenceCount == 0 {
+		return contracts.CommandResult{}, nil, apiError(409, "state_conflict", "run has no unaccepted result evidence", nil)
+	}
+	next := "complete"
+	if p.Decision == "reject" {
+		next = "waiting"
+	}
+	version++
+	if !validTaskTransition(status, next) {
+		return contracts.CommandResult{}, nil, apiError(409, "state_conflict", "task transition is not allowed", map[string]any{"from": status, "to": next})
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE tasks SET status=?,version=?,updated_at=?,finished_at=CASE WHEN ?='complete' THEN ? ELSE NULL END WHERE id=? AND workspace_id=?`, next, version, c.AcceptedAt.Format(time.RFC3339Nano), next, c.AcceptedAt.Format(time.RFC3339Nano), p.TaskID, c.Principal.WorkspaceID)
+	if err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if next == "complete" {
+		_, err = tx.ExecContext(ctx, `UPDATE runs SET status='verified' WHERE id=? AND status='verification_pending'`, p.RunID)
+		if err != nil {
+			return contracts.CommandResult{}, nil, err
+		}
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE approvals SET status='canceled',version=version+1 WHERE task_id=? AND workspace_id=? AND status='pending'`, p.TaskID, c.Principal.WorkspaceID)
+	if err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	return contracts.CommandResult{ResourceType: "task", ResourceID: p.TaskID, ResourceVersion: version}, []contracts.Event{event("task.result_decided", "task", p.TaskID, version, map[string]any{"task_id": p.TaskID, "run_id": p.RunID, "decision": p.Decision, "comment": p.Comment, "status": next})}, nil
+}
+
+func validTaskTransition(from, to string) bool {
+	switch from {
+	case "queued":
+		return to == "active" || to == "canceled"
+	case "active":
+		return to == "waiting" || to == "awaiting_user" || to == "paused" || to == "canceled" || to == "failed"
+	case "waiting":
+		return to == "queued" || to == "awaiting_user" || to == "canceled" || to == "failed"
+	case "awaiting_user":
+		return to == "queued" || to == "waiting" || to == "complete" || to == "canceled" || to == "failed"
+	case "paused":
+		return to == "queued" || to == "canceled" || to == "failed"
+	}
+	return false
 }
 
 func (s *Server) commandDeviceApprove(ctx context.Context, tx *sql.Tx, c CommandContext, req contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {

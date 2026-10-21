@@ -92,6 +92,7 @@ CREATE TABLE approvals (
   task_id TEXT NOT NULL REFERENCES tasks(id),
   status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','expired','canceled')),
   prompt TEXT NOT NULL,
+  task_version INTEGER NOT NULL,
   requested_action BLOB,
   requested_action_digest TEXT NOT NULL DEFAULT '',
   version INTEGER NOT NULL DEFAULT 1,
@@ -178,6 +179,7 @@ CREATE TABLE evidence (
 );
 CREATE TABLE runner_observations (
   observation_id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL,
   run_id TEXT NOT NULL REFERENCES runs(id),
   attempt_id TEXT NOT NULL,
   fence INTEGER NOT NULL,
@@ -185,7 +187,20 @@ CREATE TABLE runner_observations (
   kind TEXT NOT NULL,
   occurred_at TEXT NOT NULL,
   body_hash BLOB NOT NULL,
-  body BLOB NOT NULL
+  body BLOB NOT NULL,
+  UNIQUE(run_id,runner_id,idempotency_key)
+);
+CREATE TABLE external_effects (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+  task_id TEXT NOT NULL REFERENCES tasks(id),
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  external_reference TEXT NOT NULL DEFAULT '',
+  first_observed_at TEXT NOT NULL,
+  last_observed_at TEXT NOT NULL,
+  details BLOB NOT NULL
 );
 CREATE TABLE runner_credentials (
   token_hash BLOB PRIMARY KEY,
