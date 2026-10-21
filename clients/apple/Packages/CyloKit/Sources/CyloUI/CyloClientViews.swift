@@ -154,6 +154,7 @@ private struct TaskConversation: View {
                         .foregroundStyle(.orange)
                 }
             }
+            ResultDecisionRows(task: task, model: model)
             ApprovalRows(approvals: model.approvals.filter { $0.taskId == task.id && $0.status == "pending" }, model: model)
             EvidenceRows(evidence: task.evidence)
             RunRows(runs: model.runs.filter { $0.taskId == task.id })
@@ -225,6 +226,7 @@ private struct TaskDetailView: View {
                 else { Text("No result has been recorded.").foregroundStyle(.secondary) }
                 if task.status == .awaitingUser { Text("This task is awaiting your review.").foregroundStyle(.orange) }
             }
+            ResultDecisionRows(task: task, model: model)
             ApprovalRows(approvals: model.approvals.filter { $0.taskId == task.id && $0.status == "pending" }, model: model)
             EvidenceRows(evidence: task.evidence)
             RunRows(runs: model.runs.filter { $0.taskId == task.id })
@@ -235,6 +237,47 @@ private struct TaskDetailView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Cylo will report separately when the runtime confirms termination.")
+        }
+    }
+}
+
+private struct ResultDecisionRows: View {
+    let task: TaskRecord
+    @ObservedObject var model: CyloAppModel
+    @State private var showingRejectConfirmation = false
+
+    var body: some View {
+        if task.canAcceptResult {
+            Section("Review result") {
+                if let run = model.resultRun(for: task) {
+                    Text("Runtime termination is confirmed for run \(run.id).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                    Button("Accept result") {
+                        Task { await model.decideResult(for: task, run: run, decision: "accept") }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.isBusy)
+                    Button("Reject result", role: .destructive) { showingRejectConfirmation = true }
+                        .disabled(model.isBusy)
+                    Text("Rejecting returns the task to waiting. It does not automatically retry the task.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("The server marks this result as reviewable, but its confirmed run is not available in the current snapshot. Refresh before deciding.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .confirmationDialog("Reject this result?", isPresented: $showingRejectConfirmation) {
+                Button("Reject result", role: .destructive) {
+                    guard let run = model.resultRun(for: task) else { return }
+                    Task { await model.decideResult(for: task, run: run, decision: "reject") }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The task will return to waiting. Cylo will not automatically retry it.")
+            }
         }
     }
 }

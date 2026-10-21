@@ -3,12 +3,14 @@ import XCTest
 
 final class ClientContractTests: XCTestCase {
     func testSnapshotDecodesAuthoritativeApprovalsAndRuns() throws {
-        let data = Data(#"{"server_version":"srv-3","event_cursor":"19","projects":[],"tasks":[{"id":"task-1","title":"Review","goal":"Review changes","source":"user","status":"awaiting_user","version":4,"created_at":"2026-10-20T12:00:00Z","updated_at":"2026-10-20T12:01:00Z","evidence":[]}],"approvals":[{"id":"approval-1","task_id":"task-1","status":"pending","prompt":"Approve deployment?","version":2,"created_at":"2026-10-20T12:00:00Z","requested_action_digest":"sha256:example"}],"devices":[],"runs":[{"id":"run-1","task_id":"task-1","attempt_id":"attempt-1","status":"active","desired_control":"run","control_version":1,"started_at":"2026-10-20T12:00:00Z","evidence":[]}]}"#.utf8)
+        let data = Data(#"{"server_version":"srv-3","event_cursor":"19","projects":[],"tasks":[{"id":"task-1","title":"Review","goal":"Review changes","source":"user","status":"awaiting_user","version":4,"created_at":"2026-10-20T12:00:00Z","updated_at":"2026-10-20T12:01:00Z","evidence":[],"can_accept_result":true}],"approvals":[{"id":"approval-1","task_id":"task-1","status":"pending","prompt":"Approve deployment?","version":2,"created_at":"2026-10-20T12:00:00Z","requested_action_digest":"sha256:example"}],"devices":[],"runs":[{"id":"run-1","task_id":"task-1","attempt_id":"attempt-1","status":"verification_pending","desired_control":"stop","control_version":1,"started_at":"2026-10-20T12:00:00Z","evidence":[],"termination_confirmed":true}]}"#.utf8)
         let snapshot = try CyloJSON.decoder.decode(Snapshot.self, from: data)
         XCTAssertEqual(snapshot.eventCursor, "19")
         XCTAssertEqual(snapshot.tasks.first?.status, .awaitingUser)
         XCTAssertEqual(snapshot.approvals.first?.id, "approval-1")
-        XCTAssertEqual(snapshot.runs.first?.desiredControl, "run")
+        XCTAssertEqual(snapshot.runs.first?.desiredControl, "stop")
+        XCTAssertEqual(snapshot.tasks.first?.canAcceptResult, true)
+        XCTAssertEqual(snapshot.runs.first?.terminationConfirmed, true)
     }
 
     func testSSEParserCombinesDataLinesAndPreservesDecimalCursor() throws {

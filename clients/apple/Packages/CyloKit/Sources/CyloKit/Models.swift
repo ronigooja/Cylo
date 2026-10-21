@@ -47,6 +47,7 @@ public struct TaskRecord: Codable, Equatable, Identifiable, Sendable {
     public var result: String?
     public var error: String?
     public var evidence: [Evidence]
+    public var canAcceptResult: Bool
 }
 
 public enum TaskStatus: String, Codable, CaseIterable, Sendable {
@@ -108,6 +109,7 @@ public struct Run: Codable, Equatable, Identifiable, Sendable {
     public var startedAt: String
     public var stoppedAt: String?
     public var evidence: [Evidence]
+    public var terminationConfirmed: Bool
 }
 
 public struct TaskEntry: Codable, Equatable, Identifiable, Sendable {

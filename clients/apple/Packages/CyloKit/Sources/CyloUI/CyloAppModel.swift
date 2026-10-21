@@ -152,6 +152,30 @@ public final class CyloAppModel: ObservableObject {
         await send(kind: "task.approve", expectedVersion: approval.version, payload: .object(payload))
     }
 
+    public func resultRun(for task: TaskRecord) -> Run? {
+        guard task.canAcceptResult else { return nil }
+        let candidates = runs.filter {
+            $0.taskId == task.id && $0.status == "verification_pending" && $0.terminationConfirmed
+        }
+        guard candidates.count == 1 else { return nil }
+        return candidates[0]
+    }
+
+    public func decideResult(for task: TaskRecord, run: Run, decision: String) async {
+        guard decision == "accept" || decision == "reject",
+              task.canAcceptResult,
+              run.taskId == task.id,
+              run.status == "verification_pending",
+              run.terminationConfirmed,
+              resultRun(for: task)?.id == run.id else { return }
+        let payload: [String: JSONValue] = [
+            "task_id": .string(task.id),
+            "run_id": .string(run.id),
+            "decision": .string(decision)
+        ]
+        await send(kind: "task.accept_result", expectedVersion: task.version, payload: .object(payload))
+    }
+
     public func approve(_ device: Device) async {
         await send(kind: "device.approve", expectedVersion: device.version, payload: .object(["device_id": .string(device.id)]))
     }
