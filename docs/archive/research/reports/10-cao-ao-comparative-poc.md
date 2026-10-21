@@ -4,7 +4,7 @@
 
 ## 本轮交付：产物清理边界的可复现切片
 
-已有 [02](02-orchestration-and-codex.md) 实验覆盖 Codex 原生 thread 持久化与 CAO 强制清理；[09](09-agent-orchestration-alternatives.md) 已有候选源码对照。本轮不重复原生文字交接，新增**相同 Git 场景下的 CAO 模块执行与 AO 命令契约执行**，以确定清理保护的实际 Git 后果。不是完整双 daemon PoC，也没有自动 Super 推理。
+已有 [02](../../../research/02-orchestration-and-codex.md) 实验覆盖 Codex 原生 thread 持久化与 CAO 强制清理；[09](../../../research/09-agent-orchestration-alternatives.md) 已有候选源码对照。本轮不重复原生文字交接，新增**相同 Git 场景下的 CAO 模块执行与 AO 命令契约执行**，以确定清理保护的实际 Git 后果。不是完整双 daemon PoC，也没有自动 Super 推理。
 
 | 场景 | CAO | AO |
 |---|---|---|
@@ -21,18 +21,18 @@
 复现依赖仅 Python 3.10+、Git 和固定源码，不需要 Codex、账号或联网。源码缺失时，先在新目录 clone，再 `git fetch origin <SHA>`、`git checkout --detach <SHA>`；已有目录先核对来源，勿覆盖。上游获取命令见02/09；路径可通过参数指定：
 
 ```bash
-python3 docs/research/evidence/cao-ao-worktree-poc.py \
+python3 docs/archive/research/evidence/cao-ao-worktree-poc.py \
   --cao /tmp/cylo-research-cao --ao /tmp/cylo-alt-ao \
   > /tmp/cao-ao-worktree-poc-result.json
 ```
 
-[可执行脚本](evidence/cao-ao-worktree-poc.py) 使用临时 HOME、禁用用户/系统 Git 配置，只有临时仓库被修改，退出后清理；不启动模型或访问真实会话。当前 [结果快照](evidence/cao-ao-worktree-poc-result.json) 的 `false` 是实际观测到 CAO 丢弃脏产物的预期断言，**不是安全验收通过**。临时路径已归一化为 `$TEMP`。实际 Worker 写入由确定性 fixture 代替，不把它算作 LLM 工具调用。
+[可执行脚本](../evidence/cao-ao-worktree-poc.py) 使用临时 HOME、禁用用户/系统 Git 配置，只有临时仓库被修改，退出后清理；不启动模型或访问真实会话。当前 [结果快照](../evidence/cao-ao-worktree-poc-result.json) 的 `false` 是实际观测到 CAO 丢弃脏产物的预期断言，**不是安全验收通过**。临时路径已归一化为 `$TEMP`。实际 Worker 写入由确定性 fixture 代替，不把它算作 LLM 工具调用。
 
 ## 按需求推进的下一批实施与验收
 
-AO 提供 orchestrator/worker、独立工作区、Codex native ID/resume 与 host/reconcile，作为已选执行底座接入；Cylo 管业务账本、授权、记忆、长期普通服务与语音池调度。AO 的 fresh fallback 不能算同 thread 恢复，采用决定也不证明完整业务恢复或清理安全。AWS CAO 的研究与 [07](07-cao-cli-handoff-plan.md) 改造方案保留历史用途，不再作为当前实施计划。完整映射见[选型文档](../../Cylo-开源项目选型比较.md)。
+AO 提供 orchestrator/worker、独立工作区、Codex native ID/resume 与 host/reconcile，作为已选执行底座接入；Cylo 管业务账本、授权、记忆、长期普通服务与语音池调度。AO 的 fresh fallback 不能算同 thread 恢复，采用决定也不证明完整业务恢复或清理安全。AWS CAO 的研究与 [07](../../../research/07-cao-cli-handoff-plan.md) 改造方案保留历史用途，不再作为当前实施计划。完整映射见[选型文档](../../../project-selection-comparison.md)。
 
-1. **落地 AO adapter。** 以 [09](09-agent-orchestration-alternatives.md) 固定源码为起点，核验 Go 工具链和 daemon/API/事件契约，建立 task→run→AO session→host/Worker→worktree→native thread 映射，接入现有 Codex resume，约束显式权限并验证清理前保存/核验。仅一套执行 owner；Cylo 持有任务、授权、预算和结果权威。先不做可选的人工无缝交接状态机。
+1. **落地 AO adapter。** 以 [09](../../../research/09-agent-orchestration-alternatives.md) 固定源码为起点，核验 Go 工具链和 daemon/API/事件契约，建立 task→run→AO session→host/Worker→worktree→native thread 映射，接入现有 Codex resume，约束显式权限并验证清理前保存/核验。仅一套执行 owner；Cylo 持有任务、授权、预算和结果权威。先不做可选的人工无缝交接状态机。
 2. **贯通一条真实产品链路。** 先以临时工作区与离线 fixture 验证接线，再在获准环境验证复杂目标→Super 拆分→两个独立 Worker/worktree→产物与测试验收；简单请求可由 Cylo 直接路由 Worker，不额外调用 Super。消息送达、终端 idle 不算任务完成。无需为此再跑 CAO 副本。
 3. **验收恢复、停止、权限和保全。** 重启控制服务、杀 Worker、缺 native history、工具执行后丢回执，分别记录存活重附着、原 thread resume、fresh/fork、result-unknown；未知副作用不自动重放。停止须确认进程树和写入终止。按 AO Codex adapter 的实际参数去掉默认审批/sandbox 绕过路径，验证实际允许/拒绝。普通/强制清理注入保存失败时不得删除；tracked、untracked、ignored、符号链接和外部产物按清单核验。首期在 Linux 验收后台常驻与主机迁移并留证；跨环境备份导出保留，macOS 后台验收后续按需安排。
 4. **接入已定语音与长期能力。** Space 保留网页实时媒体和账号池，完成稳定语义提交→幂等 command→实际任务回执→播报，以及额度耗尽后新媒体会话/业务上下文恢复。这是集成验收，不是重新选择 Space 的门槛；无账号/设备时标未测，继续完成可离线开发。普通后台服务另交 OS supervisor，不能绑定 Super 或媒体会话的寿命；记忆与授权也不借用编排 daemon 的会话状态。

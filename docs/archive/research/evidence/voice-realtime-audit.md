@@ -1,6 +1,6 @@
 # 实时语音与账号池复核证据
 
-日期2026-10-21，范围为研究。本文支持[03](../03-voice.md)，没有真实账号、通话、设备或收费API请求。
+日期2026-10-21，范围为研究。本文支持[03](../../../research/03-voice.md)，没有真实账号、通话、设备或收费API请求。
 
 ## 源码与协议
 
@@ -27,7 +27,7 @@
 ## 实际执行的离线检查
 
 ```text
-$ python3 docs/research/evidence/voice-pool-poc.py /tmp/cylo-research-voice
+$ python3 docs/archive/research/evidence/voice-pool-poc.py /tmp/cylo-research-voice
 PASS source assertions: empty client_tools, 401/502 branches, LRU/sticky, relay/stop construction
 PASS mock: sticky reacquire; two slots; concurrent third selection rejected
 PASS mock: exhausted account excluded; replacement gets new generation and clears upstream context
@@ -35,7 +35,7 @@ PASS mock: stale epoch rejected; repeated committed turn produces one command
 PASS mock: local cooldown retry eligibility; unconfirmed media closure quarantined; disabled excluded
 NOT TESTED: actual Go code execution, transactions/concurrency races, upstream quota/reset, WebRTC, final boundary, relay acceptance, tools, sideband, speech fidelity
 
-$ node docs/research/evidence/voice-static-check.cjs /tmp/cylo-research-voice
+$ node docs/archive/research/evidence/voice-static-check.cjs /tmp/cylo-research-voice
 PASS: 2 inline scripts pass node --check
 PASS: active stop_speaking, duplicate suppression, muted mic guard, text interruption
 NOT TESTED: DOM, WebRTC, audio, upstream acknowledgement, Chinese recognition, mobile devices

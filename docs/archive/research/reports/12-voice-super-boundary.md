@@ -1,6 +1,6 @@
 # 语音 Agent 与 Super：职责、并发及集成边界
 
-日期：2026-10-21。**Space3044/chatgpt-web-voice 已选定**，保留 Go 网关、ChatGPT 网页实时语音与账号池；后续实验解决集成缺口，不再重开语音选型。本页是架构补充，未实现 runtime、读取凭据或调用真实账号。媒体/账号细节见[03](03-voice.md)，独立源码复核见[06](06-realtime-integration-review.md)，下一步集成见[11](11-voice-real-poc-readiness.md)。
+日期：2026-10-21。**Space3044/chatgpt-web-voice 已选定**，保留 Go 网关、ChatGPT 网页实时语音与账号池；后续实验解决集成缺口，不再重开语音选型。本页是架构补充，未实现 runtime、读取凭据或调用真实账号。媒体/账号细节见[03](../../../research/03-voice.md)，独立源码复核见[06](../../../research/06-realtime-integration-review.md)，下一步集成见[11](11-voice-real-poc-readiness.md)。
 
 ## 1. 语音也是 Agent，会不会与 Super 冲突？
 

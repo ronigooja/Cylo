@@ -1,6 +1,6 @@
 # 已选语音方案：集成验证与缺口处理
 
-日期：2026-10-21。范围是通话前准备与实验计划，未导入账号、启动网关、连接真实媒体或产生模型调用。沿用 [03](03-voice.md)、[06](06-realtime-integration-review.md)、[08](08-voice-project-alternatives.md) 的 Space3044 Go 网关与多账号池；不替换为独立 STT/TTS。需求依据为[产品需求](../../Cylo-完整产品需求说明书.md) §3.3、§6.1、§8：语音和后台任务分离，完成必须有真实执行证据。
+日期：2026-10-21。范围是通话前准备与实验计划，未导入账号、启动网关、连接真实媒体或产生模型调用。沿用 [03](../../../research/03-voice.md)、[06](../../../research/06-realtime-integration-review.md)、[08](../../../research/08-voice-project-alternatives.md) 的 Space3044 Go 网关与多账号池；不替换为独立 STT/TTS。需求依据为[产品需求](../../../product-requirements.md) §3.3、§6.1、§8：语音和后台任务分离，完成必须有真实执行证据。
 
 **Space3044/chatgpt-web-voice 已选定。下一步用一个账号的短时协议验证补齐业务桥接集成，编排侧按 Cylo 必需能力验证 CLI 执行与持久恢复；不再通过语音 PoC 决定是否选 Space。** 不应等完整 UI 或完整任务系统开发后才发现 turn final、回执回读或先答控制不可行。一个账号足以验证协议与回读，两个账号才具备真实切号实验配置。
 

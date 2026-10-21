@@ -19,7 +19,7 @@ Cylo 的主要难点是“谁确认了什么、在哪个项目生效、后来如
 
 ## 2. 需求依据与范围
 
-权威需求：[完整产品需求](../../Cylo-完整产品需求说明书.md)；可追踪验收：[01 需求映射](01-requirements.md)。以下段落号以 PRD 为准。
+权威需求：[完整产品需求](../../../product-requirements.md)；可追踪验收：[01 需求映射](../../../research/01-requirements.md)。以下段落号以 PRD 为准。
 
 | 实际要求 | 来源 | 设计含义与边界 |
 |---|---|---|
@@ -71,7 +71,7 @@ Cylo / Super / 已授权 Worker ─→ Cylo Memory API（快速读写）
 
 ## 4. 最小数据模型
 
-沿用 [04 架构 §8](04-architecture.md#8-长期记忆证据事实和版本失效) 的 claim/revision/evidence/context 契约，避免再建一套权威系统。以下是逻辑对象，不要求各占一个服务。
+沿用 [04 架构 §8](../../../research/04-architecture.md#8-长期记忆证据事实和版本失效) 的 claim/revision/evidence/context 契约，避免再建一套权威系统。以下是逻辑对象，不要求各占一个服务。
 
 | 对象 | 最少字段/规则 |
 |---|---|

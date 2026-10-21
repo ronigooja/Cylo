@@ -1,6 +1,6 @@
 # Cylo 客户端信息架构建议
 
-日期：2026-10-21。本文是页面与信息优先级设计，尚非产品实现或已验收能力。依据 [完整 PRD](../../Cylo-完整产品需求说明书.md) §3、5、7—10、12、14—17，以及当前 [架构](../../Cylo-实现调研与架构方案.md)、[选型](../../Cylo-开源项目选型比较.md) 和 [记忆设计](17-memory-requirements-and-design.md)。仓库及适用祖先未发现 AGENTS.md。
+日期：2026-10-21。本文是页面与信息优先级设计，尚非产品实现或已验收能力。依据 [完整 PRD](../../../product-requirements.md) §3、5、7—10、12、14—17，以及当前 [架构](../../../superseded-implementation-plan.md)、[选型](../../../project-selection-comparison.md) 和 [记忆设计](17-memory-requirements-and-design.md)。仓库及适用祖先未发现 AGENTS.md。
 
 按最新范围，首期服务端运行于 **Linux**；Mac 上的 Cylo 客户端和浏览器访问仍保留。当前采用 AO 多 Agent 执行、Space 网页实时语音账号池、现有 CLIProxyAPI 模型账号/代理、Cylo Go 业务层，以及 Mem0 与按需记忆整理角色。它们是服务端分工，不应各变成普通用户必须管理的一组页面。
 

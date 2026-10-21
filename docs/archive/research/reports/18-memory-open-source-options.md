@@ -81,4 +81,4 @@ PRD §10.3 用“可以”引入 Memory Agent，未强制独立角色。需要�
 
 ## 核验记录
 
-固定源码文件 SHA-256、候选版本与本地无模型检查结果见 [memory-open-source-options-evidence.json](evidence/memory-open-source-options-evidence.json)。实测仅直接加载 Mem0 SQLiteManager 标准库文件，验证 history ADD/UPDATE/DELETE 保留与并发写入；没有安装候选完整依赖、联网调用模型、读取用户凭据或修改产品代码。源码静态检查不等于候选平台完整运行验收。
+固定源码文件 SHA-256、候选版本与本地无模型检查结果见 [memory-open-source-options-evidence.json](../evidence/memory-open-source-options-evidence.json)。实测仅直接加载 Mem0 SQLiteManager 标准库文件，验证 history ADD/UPDATE/DELETE 保留与并发写入；没有安装候选完整依赖、联网调用模型、读取用户凭据或修改产品代码。源码静态检查不等于候选平台完整运行验收。

@@ -12,8 +12,8 @@
 
 ## 固定版本、范围和证据方式
 
-- 实际读取本地 `/tmp/cylo-alt-ao`，HEAD：`7c83bd68c1e60c85b6a90e3ffa1340c859e4a3ff`；提交时间 `2026-10-21T21:11:36+05:30`，主题 `feat: switch agents mid-session in chat and terminal (#6588)`。与 [09 选型证据](09-agent-orchestration-alternatives.md) 相同，不以移动的 main 代替它。
-- 阅读 [产品需求](../../Cylo-完整产品需求说明书.md) 与 09；仓库及其适用祖先未发现 AGENTS.md。本报告是独立 worktree 中的文档变更。
+- 实际读取本地 `/tmp/cylo-alt-ao`，HEAD：`7c83bd68c1e60c85b6a90e3ffa1340c859e4a3ff`；提交时间 `2026-10-21T21:11:36+05:30`，主题 `feat: switch agents mid-session in chat and terminal (#6588)`。与 [09 选型证据](../../../research/09-agent-orchestration-alternatives.md) 相同，不以移动的 main 代替它。
+- 阅读 [产品需求](../../../product-requirements.md) 与 09；仓库及其适用祖先未发现 AGENTS.md。本报告是独立 worktree 中的文档变更。
 - 对 backend、frontend 进行静态调用链核查：账号 API → service → session manager → 原生 Codex TUI/app-server；同时检查额度恢复与相关测试源码。未读取用户凭据，未执行登录、真实模型或账号请求，未修改 AO 源码。
 - 本轮没有运行 AO 测试。当前 shell 的 `go` 不在 PATH；AO `backend/go.mod` 要求 Go `1.27.1`。下文测试名称只作为实现意图与覆盖范围的源码证据，不能当作本轮测试通过或真实订阅账号验收。
 
