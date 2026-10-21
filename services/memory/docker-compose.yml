@@ -22,5 +22,11 @@ services:
       CYLO_MEM0_LLM_BASE_URL: ${CYLO_MEM0_LLM_BASE_URL:?set CYLO_MEM0_LLM_BASE_URL}
       CYLO_MEM0_LLM_API_KEY: ${CYLO_MEM0_LLM_API_KEY:?set CYLO_MEM0_LLM_API_KEY}
       CYLO_MEMORY_MODEL_CACHE: /var/lib/cylo/memory/models
+      CYLO_MEM0_HISTORY_DB: /var/lib/cylo/memory/mem0-history.sqlite
     depends_on:
       - qdrant
+    volumes:
+      - memory-worker-state:/var/lib/cylo/memory
+
+volumes:
+  memory-worker-state:

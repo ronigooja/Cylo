@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from pathlib import Path
 from urllib.parse import urlparse
 from typing import Any
 
@@ -12,12 +13,17 @@ os.environ["MEM0_TELEMETRY"] = "false"
 from mem0 import Memory
 
 from .config import WorkerConfig
+from .embedding import LocalEmbedder
+from .mem0_embedder import register_pinned_embedder
 from .responses_llm import register_responses_provider
 from .stores import mem0_user_id
 
 
 class ControlledMem0:
-    def __init__(self, config: WorkerConfig):
+    def __init__(self, config: WorkerConfig, embedder: LocalEmbedder | None = None):
+        if embedder is None:
+            embedder = LocalEmbedder(config.embedder_model, config.embedder_revision, config.embedding_dimensions)
+        register_pinned_embedder(embedder)
         qdrant_address = urlparse(config.qdrant_url)
         if not qdrant_address.hostname:
             raise ValueError("CYLO_QDRANT_URL must include a host")
@@ -58,19 +64,79 @@ class ControlledMem0:
                     "temperature": 0.1,
                 },
             }
+        history_path = Path(os.environ.get("CYLO_MEM0_HISTORY_DB", "/var/lib/cylo/memory/mem0-history.sqlite"))
+        history_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.memory = Memory.from_config(
             {
                 "version": "v1.1",
                 "vector_store": {"provider": "qdrant", "config": vector_config},
                 "embedder": embedder_config,
                 "llm": llm_config,
-                "history_db_path": ":memory:",
+                "history_db_path": str(history_path),
                 "custom_instructions": (
                     "Extract only stable facts directly supported by the current source. "
                     "Never treat retrieved memories as evidence for a new fact. Do not infer preferences or identity."
                 ),
             }
         )
+        os.chmod(history_path, 0o600)
+        self.memory.db.connection.execute("PRAGMA journal_mode=WAL")
+        self.memory.db.connection.execute("PRAGMA synchronous=FULL")
+        self.memory.db.connection.execute(
+            """CREATE TABLE IF NOT EXISTS cylo_memory_ownership (
+                user_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                claim_id TEXT NOT NULL,
+                memory_id TEXT NOT NULL,
+                PRIMARY KEY(user_id, memory_id)
+            )"""
+        )
+        self._track_memory_ownership()
+
+    def _remember_ownership(self, memory_id: str, metadata: dict[str, Any] | None) -> None:
+        if not metadata:
+            return
+        user_id = str(metadata.get("user_id", ""))
+        workspace = str(metadata.get("workspace_id", ""))
+        claim_id = str(metadata.get("claim_id", ""))
+        if not user_id or not workspace or not claim_id:
+            return
+        if user_id != mem0_user_id(workspace, claim_id):
+            raise ValueError("Mem0 memory identity does not match its Cylo workspace and claim")
+        db = self.memory.db
+        with db._lock:
+            db.connection.execute(
+                "INSERT OR IGNORE INTO cylo_memory_ownership(user_id,workspace_id,claim_id,memory_id) VALUES(?,?,?,?)",
+                (user_id, workspace, claim_id, str(memory_id)),
+            )
+            db.connection.commit()
+
+    def _track_memory_ownership(self) -> None:
+        vector_store = self.memory.vector_store
+        original_insert = vector_store.insert
+
+        def tracked_insert(*, vectors, ids, payloads, **kwargs):
+            for memory_id, payload in zip(ids, payloads):
+                self._remember_ownership(str(memory_id), payload)
+            return original_insert(vectors=vectors, ids=ids, payloads=payloads, **kwargs)
+
+        vector_store.insert = tracked_insert
+        original_update = vector_store.update
+
+        def tracked_update(*, vector_id, vector, payload, **kwargs):
+            self._remember_ownership(str(vector_id), payload)
+            return original_update(vector_id=vector_id, vector=vector, payload=payload, **kwargs)
+
+        vector_store.update = tracked_update
+        original_delete = self.memory._delete_memory
+
+        def tracked_delete(memory_id, existing_memory=None, *args, **kwargs):
+            item = existing_memory or vector_store.get(vector_id=memory_id)
+            if item is not None:
+                self._remember_ownership(str(memory_id), item.payload)
+            return original_delete(memory_id, existing_memory, *args, **kwargs)
+
+        self.memory._delete_memory = tracked_delete
 
     def extract(self, job: dict[str, Any]) -> list[dict[str, str]]:
         claim = job.get("claim") or {}
@@ -124,7 +190,15 @@ class ControlledMem0:
         # first so we can erase its history after Mem0 has deleted its vectors.
         # The same claim-scoped user ID is the session scope for source
         # messages, so those rows can be removed without touching other claims.
-        memory_ids: set[str] = set()
+        db = self.memory.db
+        with db._lock:
+            memory_ids = {
+                str(row[0])
+                for row in db.connection.execute(
+                    "SELECT memory_id FROM cylo_memory_ownership WHERE user_id=? AND workspace_id=? AND claim_id=?",
+                    (user_id, workspace, claim_id),
+                ).fetchall()
+            }
         seen_batches: set[tuple[str, ...]] = set()
         while True:
             memories = self.memory.vector_store.list(filters=filters, top_k=100)[0]
@@ -136,12 +210,12 @@ class ControlledMem0:
             seen_batches.add(batch_ids)
             memory_ids.update(batch_ids)
             for memory in memories:
+                self._remember_ownership(str(memory.id), memory.payload)
                 self.memory.delete(str(memory.id))
 
         # Mem0 2.2.x has no scoped history/messages purge API. Keep this
         # compatibility shim narrow: only IDs found under the deterministic
         # claim user ID and the exact matching session_scope are removed.
-        db = self.memory.db
         with db._lock:
             try:
                 db.connection.execute("BEGIN")
@@ -153,6 +227,10 @@ class ControlledMem0:
                 db.connection.execute(
                     "DELETE FROM messages WHERE session_scope = ?",
                     (f"user_id={user_id}",),
+                )
+                db.connection.execute(
+                    "DELETE FROM cylo_memory_ownership WHERE user_id=? AND workspace_id=? AND claim_id=?",
+                    (user_id, workspace, claim_id),
                 )
                 db.connection.execute("COMMIT")
             except sqlite3.Error:
