@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ronigooja/Cylo/contracts"
@@ -50,12 +51,15 @@ type APNSConfig struct {
 }
 
 type APNSSender struct {
-	host   string
-	teamID string
-	keyID  string
-	topic  string
-	key    *ecdsa.PrivateKey
-	client *http.Client
+	host        string
+	teamID      string
+	keyID       string
+	topic       string
+	key         *ecdsa.PrivateKey
+	client      *http.Client
+	mu          sync.Mutex
+	providerJWT string
+	jwtExpires  time.Time
 }
 
 // NewAPNSSender validates a fixed APNs environment and static topic. Device
@@ -105,6 +109,11 @@ func validTopic(topic string) bool {
 }
 
 func (s *APNSSender) jwt(now time.Time) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.providerJWT != "" && now.Before(s.jwtExpires) {
+		return s.providerJWT, nil
+	}
 	header, _ := json.Marshal(map[string]string{"alg": "ES256", "kid": s.keyID})
 	claims, _ := json.Marshal(map[string]any{"iss": s.teamID, "iat": now.Unix()})
 	unsigned := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(claims)
@@ -116,7 +125,11 @@ func (s *APNSSender) jwt(now time.Time) (string, error) {
 	raw := make([]byte, 64)
 	r.FillBytes(raw[:32])
 	sigS.FillBytes(raw[32:])
-	return unsigned + "." + base64.RawURLEncoding.EncodeToString(raw), nil
+	s.providerJWT = unsigned + "." + base64.RawURLEncoding.EncodeToString(raw)
+	// APNs provider JWTs are valid for up to one hour. Rotate early and reuse
+	// the same token across sends to stay within Apple's update guidance.
+	s.jwtExpires = now.Add(50 * time.Minute)
+	return s.providerJWT, nil
 }
 
 func (s *APNSSender) Send(ctx context.Context, p PushRequest) PushResponse {
@@ -281,6 +294,13 @@ func DispatchPushDeliveries(ctx context.Context, store *storage.Store, sender Pu
 	disabledToken := make(map[string]bool)
 	for _, d := range due {
 		if disabledToken[d.tokenID] {
+			continue
+		}
+		var stillAuthorized int
+		if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM push_deliveries pd JOIN device_push_tokens pt ON pt.id=pd.push_token_id JOIN devices dev ON dev.id=pt.device_id WHERE pd.id=? AND pd.status='pending' AND pt.status='active' AND dev.status='approved'`, d.id).Scan(&stillAuthorized); err != nil {
+			return err
+		}
+		if stillAuthorized == 0 {
 			continue
 		}
 		res := sender.Send(ctx, PushRequest{Token: d.token, APNSID: d.apnsID, CollapseID: d.collapseID, Cursor: d.cursor})

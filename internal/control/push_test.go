@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -77,6 +78,23 @@ func TestAPNSSenderSignsJWTAndSendsSilentWakeup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	issuedAt := time.Now()
+	firstJWT, err := sender.jwt(issuedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reusedJWT, err := sender.jwt(issuedAt.Add(49 * time.Minute))
+	if err != nil || reusedJWT != firstJWT {
+		t.Fatalf("provider JWT was not reused within its cache window: %v", err)
+	}
+	rotatedJWT, err := sender.jwt(issuedAt.Add(51 * time.Minute))
+	if err != nil || rotatedJWT == firstJWT {
+		t.Fatalf("provider JWT was not rotated before its one-hour lifetime: %v", err)
+	}
+	sender.mu.Lock()
+	sender.providerJWT = ""
+	sender.jwtExpires = time.Time{}
+	sender.mu.Unlock()
 	response := sender.Send(context.Background(), PushRequest{Token: strings.Repeat("a", 64), APNSID: "apns-test-id", CollapseID: "cylo-test", Cursor: "42"})
 	if !got || response.StatusCode != http.StatusOK || response.APNSID != "apns-test-id" {
 		t.Fatalf("unexpected send result: got=%v response=%+v", got, response)

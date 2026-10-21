@@ -147,3 +147,58 @@ func TestPushRegistrationCreatesSilentWakeupDelivery(t *testing.T) {
 		t.Fatalf("410 did not disable token: %q", status)
 	}
 }
+
+func TestPushRevocationStopsSelectedUnsentDeliveries(t *testing.T) {
+	code, token := reviewToken(t), reviewToken(t)
+	s, h := reviewServer(t, control.Config{BootstrapCode: code}, func(srv *control.Server) {
+		if err := srv.RegisterCommand("review.notification", func(ctx context.Context, tx *sql.Tx, c control.CommandContext, _ contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
+			return contracts.CommandResult{}, []contracts.Event{{Type: "run.runtime_terminated", AggregateType: "run", AggregateID: "run-push-revoke", AggregateVersion: 1, Payload: json.RawMessage(`{"task_id":"task-push-revoke","task_status":"awaiting_user"}`)}}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	d := reviewBootstrap(t, h, code, token)
+	if _, err := s.DB().Exec(`INSERT INTO tasks(id,workspace_id,title,goal,source,profile_id,status,version,created_at,updated_at,created_by_device_id,command_id) VALUES('task-push-revoke','default','Synthetic','Synthetic','user','unused','awaiting_user',1,'2026-10-21T00:00:00Z','2026-10-21T00:00:00Z',?,'cmd-push-revoke')`, d.Device.ID); err != nil {
+		t.Fatal(err)
+	}
+	register := reviewRequest(h, http.MethodPost, "/v1/commands", token, "register-revoke", contracts.CommandRequest{Kind: "device.push_token.register", Payload: json.RawMessage(`{"platform":"ios","token":"10112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"}`)})
+	if register.Code != http.StatusOK {
+		t.Fatalf("register=%d %s", register.Code, register.Body.String())
+	}
+	for _, key := range []string{"notify-revoke-1", "notify-revoke-2"} {
+		response := reviewRequest(h, http.MethodPost, "/v1/commands", token, key, contracts.CommandRequest{Kind: "review.notification", Payload: json.RawMessage(`{}`)})
+		if response.Code != http.StatusOK {
+			t.Fatalf("notification=%d %s", response.Code, response.Body.String())
+		}
+	}
+	var tokenID string
+	if err := s.DB().QueryRow(`SELECT id FROM device_push_tokens`).Scan(&tokenID); err != nil {
+		t.Fatal(err)
+	}
+	sends := 0
+	sender := &recordingPushSender{}
+	sender.response = control.PushResponse{StatusCode: http.StatusOK}
+	callback := pushSendFunc(func(ctx context.Context, req control.PushRequest) control.PushResponse {
+		sends++
+		if sends == 1 {
+			payload, _ := json.Marshal(map[string]string{"token_id": tokenID})
+			revoked := reviewRequest(h, http.MethodPost, "/v1/commands", token, "revoke-push-in-flight", contracts.CommandRequest{Kind: "device.push_token.revoke", Payload: payload})
+			if revoked.Code != http.StatusOK {
+				t.Fatalf("revoke=%d %s", revoked.Code, revoked.Body.String())
+			}
+		}
+		return sender.response
+	})
+	if err := control.DispatchPushDeliveries(context.Background(), s, callback, 10); err != nil {
+		t.Fatal(err)
+	}
+	if sends != 1 {
+		t.Fatalf("sent %d pushes after revocation committed", sends)
+	}
+}
+
+type pushSendFunc func(context.Context, control.PushRequest) control.PushResponse
+
+func (f pushSendFunc) Send(ctx context.Context, req control.PushRequest) control.PushResponse {
+	return f(ctx, req)
+}
