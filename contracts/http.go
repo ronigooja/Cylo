@@ -149,6 +149,18 @@ type Snapshot struct {
 	Runs          []Run      `json:"runs"`
 }
 
+type Notification struct {
+	ID            string     `json:"id"`
+	Kind          string     `json:"kind"`
+	Title         string     `json:"title"`
+	Body          string     `json:"body"`
+	AggregateType string     `json:"aggregate_type"`
+	AggregateID   string     `json:"aggregate_id"`
+	SourceEventID string     `json:"source_event_id"`
+	CreatedAt     time.Time  `json:"created_at"`
+	ReadAt        *time.Time `json:"read_at,omitempty"`
+}
+
 type Run struct {
 	ID                   string     `json:"id"`
 	TaskID               string     `json:"task_id"`
@@ -227,16 +239,27 @@ type ExternalEffect struct {
 }
 
 type RunnerObservation struct {
-	ObservationID   string           `json:"observation_id"`
-	RunID           string           `json:"run_id"`
-	AttemptID       string           `json:"attempt_id"`
-	Fence           uint64           `json:"fence"`
-	Kind            string           `json:"kind"`
-	OccurredAt      time.Time        `json:"occurred_at"`
-	AOProjectID     string           `json:"ao_project_id,omitempty"`
-	AOSessionID     string           `json:"ao_session_id,omitempty"`
-	Evidence        []Evidence       `json:"evidence"`
-	Result          json.RawMessage  `json:"result,omitempty"`
-	Error           string           `json:"error,omitempty"`
-	ExternalEffects []ExternalEffect `json:"external_effects"`
+	ObservationID    string            `json:"observation_id"`
+	RunID            string            `json:"run_id"`
+	AttemptID        string            `json:"attempt_id"`
+	Fence            uint64            `json:"fence"`
+	Kind             string            `json:"kind"`
+	OccurredAt       time.Time         `json:"occurred_at"`
+	AOProjectID      string            `json:"ao_project_id,omitempty"`
+	AOSessionID      string            `json:"ao_session_id,omitempty"`
+	Evidence         []Evidence        `json:"evidence"`
+	Result           json.RawMessage   `json:"result,omitempty"`
+	Error            string            `json:"error,omitempty"`
+	ExternalEffects  []ExternalEffect  `json:"external_effects"`
+	TerminationProof *TerminationProof `json:"termination_proof,omitempty"`
+}
+
+// TerminationProof carries the independent AO process-stop evidence required
+// before the control plane releases a run's capacity slot.
+type TerminationProof struct {
+	Source          string    `json:"source"`
+	Method          string    `json:"method"`
+	SessionID       string    `json:"session_id"`
+	VerifiedAt      time.Time `json:"verified_at"`
+	CleanupComplete bool      `json:"cleanup_complete"`
 }

@@ -22,6 +22,7 @@ type Config struct {
 	RunnerID           string
 	RunnerWorkspaceIDs []string
 	RunnerScopes       []string
+	DeviceScopes       []string
 	DefaultProfileID   string
 	RuntimeRouteID     string
 	ModelRouteID       string
@@ -31,14 +32,15 @@ type Config struct {
 }
 
 type RuntimeProfile struct {
-	ID              string
-	RuntimeRouteID  string
-	ModelRouteID    string
-	Role            string
-	AOAgentKind     string
-	IsolationPolicy string
-	CapabilityIDs   []string
-	Scopes          []string
+	ID              string   `json:"id"`
+	AOProjectID     string   `json:"ao_project_id"`
+	RuntimeRouteID  string   `json:"runtime_route_id"`
+	ModelRouteID    string   `json:"model_route_id"`
+	Role            string   `json:"role"`
+	AOAgentKind     string   `json:"ao_agent_kind"`
+	IsolationPolicy string   `json:"isolation_policy"`
+	CapabilityIDs   []string `json:"capability_ids"`
+	Scopes          []string `json:"scopes"`
 }
 
 type CommandContext struct {
@@ -49,6 +51,28 @@ type CommandContext struct {
 }
 
 type CommandHandler func(context.Context, *sql.Tx, CommandContext, contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error)
+
+type TaskSourceRequest struct {
+	Title          string
+	Goal           string
+	InitialMessage string
+}
+
+type TaskSourceAdmissionHandler func(context.Context, *sql.Tx, contracts.Principal, string, *TaskSourceRequest, json.RawMessage, time.Time) ([]contracts.Event, error)
+
+// PrincipalCanAccessProject/Task are the authoritative row-level access checks
+// for feature modules running within a device transaction.
+func PrincipalCanAccessProject(ctx context.Context, tx *sql.Tx, p contracts.Principal, projectID string) (bool, error) {
+	var count int
+	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM projects p WHERE p.id=? AND p.workspace_id=? AND p.status='active' AND (p.owner_subject_id=? OR EXISTS (SELECT 1 FROM project_memberships m WHERE m.workspace_id=p.workspace_id AND m.project_id=p.id AND m.subject_id=? AND m.status='active'))`, projectID, p.WorkspaceID, p.SubjectID, p.SubjectID).Scan(&count)
+	return count == 1, err
+}
+
+func PrincipalCanAccessTask(ctx context.Context, tx *sql.Tx, p contracts.Principal, taskID string) (bool, error) {
+	var count int
+	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM tasks t WHERE t.id=? AND t.workspace_id=? AND (t.owner_subject_id=? OR (t.project_id IS NOT NULL AND EXISTS (SELECT 1 FROM project_memberships m WHERE m.workspace_id=t.workspace_id AND m.project_id=t.project_id AND m.subject_id=? AND m.status='active')))`, taskID, p.WorkspaceID, p.SubjectID, p.SubjectID).Scan(&count)
+	return count == 1, err
+}
 
 type APIError struct {
 	Status  int
@@ -75,14 +99,23 @@ func NewAPIError(status int, code, message string, details any) *APIError {
 }
 
 type Server struct {
-	store    *storage.Store
-	cfg      Config
-	commands map[string]CommandHandler
-	public   *http.ServeMux
-	device   *http.ServeMux
-	runner   *http.ServeMux
-	mu       sync.RWMutex
-	sealed   bool
+	store       *storage.Store
+	cfg         Config
+	commands    map[string]CommandHandler
+	taskSources map[string]TaskSourceAdmissionHandler
+	public      *http.ServeMux
+	device      *http.ServeMux
+	runner      *http.ServeMux
+	mu          sync.RWMutex
+	sealed      bool
+}
+
+func DefaultOwnerScopes() []string {
+	return []string{
+		"client:read", "client:command", "device:manage",
+		"memory:read:personal", "memory:write:personal", "memory:delete:personal",
+		"memory:read:workspace", "memory:write:workspace", "memory:delete:workspace",
+	}
 }
 
 func NewServer(store *storage.Store, cfg Config) (*Server, error) {
@@ -95,8 +128,18 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 	if cfg.MaxRequestBytes <= 0 {
 		cfg.MaxRequestBytes = 1 << 20
 	}
+	if cfg.DeviceScopes == nil {
+		cfg.DeviceScopes = DefaultOwnerScopes()
+	} else {
+		cfg.DeviceScopes = append([]string(nil), cfg.DeviceScopes...)
+		for _, scope := range cfg.DeviceScopes {
+			if strings.TrimSpace(scope) == "" || scope == "*" {
+				return nil, errors.New("device scopes must be explicit non-empty grants without wildcard")
+			}
+		}
+	}
 	for id, profile := range cfg.Profiles {
-		if id == "" || profile.ID != id || profile.RuntimeRouteID == "" || profile.ModelRouteID == "" || profile.Role == "" || profile.AOAgentKind != "worker" || profile.IsolationPolicy == "" {
+		if id == "" || profile.ID != id || profile.AOProjectID == "" || profile.RuntimeRouteID == "" || profile.ModelRouteID == "" || profile.Role == "" || profile.AOAgentKind != "worker" || profile.IsolationPolicy == "" {
 			return nil, fmt.Errorf("runtime profile %q is incomplete or does not select AO worker execution", id)
 		}
 	}
@@ -105,9 +148,28 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 			return nil, errors.New("default profile is not present in configured profiles")
 		}
 	}
-	s := &Server{store: store, cfg: cfg, commands: make(map[string]CommandHandler), public: http.NewServeMux(), device: http.NewServeMux(), runner: http.NewServeMux()}
+	s := &Server{store: store, cfg: cfg, commands: make(map[string]CommandHandler), taskSources: make(map[string]TaskSourceAdmissionHandler), public: http.NewServeMux(), device: http.NewServeMux(), runner: http.NewServeMux()}
 	s.registerCoreRoutes()
 	return s, nil
+}
+
+// RegisterTaskSourceHandler admits non-user task sources inside the same SQL
+// transaction as task creation, receipt, and outbox events.
+func (s *Server) RegisterTaskSourceHandler(source string, handler TaskSourceAdmissionHandler) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sealed {
+		return errors.New("server registrations are sealed")
+	}
+	source = strings.TrimSpace(source)
+	if source == "" || source == "user" || handler == nil {
+		return errors.New("task source and admission handler are required; user source is built in")
+	}
+	if _, ok := s.taskSources[source]; ok {
+		return fmt.Errorf("task source %q already registered", source)
+	}
+	s.taskSources[source] = handler
+	return nil
 }
 
 func (s *Server) RegisterCommand(kind string, h CommandHandler) error {

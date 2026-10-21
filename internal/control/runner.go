@@ -119,12 +119,18 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err = tx.ExecContext(r.Context(), `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,control_version,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,started_at) VALUES(?,?,?,?,'dispatching','run',1,?,?,?,?,?,?,?,?,?,?)`, runID, chosen.workspace, chosen.id, attemptID, fence, p.RunnerID, chosen.device, chosen.command, chosen.goal, profile.ID, profile.RuntimeRouteID, profile.ModelRouteID, profile.Role, now)
+	newVersion := chosen.version + 1
+	authorization := contracts.JobAuthorization{CapabilityIDs: append([]string{}, profile.CapabilityIDs...), Scopes: append([]string{}, profile.Scopes...)}
+	authorizationJSON, err := json.Marshal(authorization)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	newVersion := chosen.version + 1
+	_, err = tx.ExecContext(r.Context(), `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,control_version,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,ao_project_id,started_at,task_version,authorization_json) VALUES(?,?,?,?,'dispatching','run',1,?,?,?,?,?,?,?,?,?,?,?, ?,?)`, runID, chosen.workspace, chosen.id, attemptID, fence, p.RunnerID, chosen.device, chosen.command, chosen.goal, profile.ID, profile.RuntimeRouteID, profile.ModelRouteID, profile.Role, profile.AOProjectID, now, newVersion, authorizationJSON)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	_, err = tx.ExecContext(r.Context(), `UPDATE tasks SET status='active',version=?,started_at=coalesce(started_at,?),updated_at=? WHERE id=? AND workspace_id=? AND status='queued' AND version=?`, newVersion, now, now, chosen.id, chosen.workspace, chosen.version)
 	if err != nil {
 		writeError(w, err)
@@ -134,7 +140,7 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	claim := contracts.JobClaim{RunID: runID, TaskID: chosen.id, AttemptID: attemptID, WorkspaceID: chosen.workspace, TaskVersion: newVersion, Goal: chosen.goal, ProfileID: profile.ID, RuntimeRouteID: profile.RuntimeRouteID, ModelRouteID: profile.ModelRouteID, Role: profile.Role, Authorization: contracts.JobAuthorization{CapabilityIDs: append([]string{}, profile.CapabilityIDs...), Scopes: append([]string{}, profile.Scopes...)}, Fence: fence}
+	claim := contracts.JobClaim{RunID: runID, TaskID: chosen.id, AttemptID: attemptID, WorkspaceID: chosen.workspace, TaskVersion: newVersion, Goal: chosen.goal, ProfileID: profile.ID, RuntimeRouteID: profile.RuntimeRouteID, ModelRouteID: profile.ModelRouteID, Role: profile.Role, AOProjectID: profile.AOProjectID, Authorization: contracts.JobAuthorization{CapabilityIDs: append([]string{}, profile.CapabilityIDs...), Scopes: append([]string{}, profile.Scopes...)}, Fence: fence}
 	if err = tx.Commit(); err != nil {
 		writeError(w, err)
 		return
@@ -154,11 +160,13 @@ func runnerHasAnyWorkspaceScope(p contracts.RunnerPrincipal, scope string) bool 
 	return false
 }
 func loadClaim(ctx context.Context, tx *sql.Tx, runID string, cfg Config) (contracts.JobClaim, error) {
+	_ = cfg
 	var c contracts.JobClaim
 	var role string
 	var fence uint64
 	var aoProject, aoSession string
-	err := tx.QueryRowContext(ctx, `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,t.version,r.goal,r.profile_id,r.runtime_route_id,r.model_route_id,r.role,r.ao_project_id,r.ao_session_id,r.fence FROM runs r JOIN tasks t ON t.id=r.task_id AND t.workspace_id=r.workspace_id WHERE r.id=?`, runID).Scan(&c.RunID, &c.TaskID, &c.AttemptID, &c.WorkspaceID, &c.TaskVersion, &c.Goal, &c.ProfileID, &c.RuntimeRouteID, &c.ModelRouteID, &role, &aoProject, &aoSession, &fence)
+	var authJSON []byte
+	err := tx.QueryRowContext(ctx, `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.runtime_route_id,r.model_route_id,r.role,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json FROM runs r WHERE r.id=?`, runID).Scan(&c.RunID, &c.TaskID, &c.AttemptID, &c.WorkspaceID, &c.TaskVersion, &c.Goal, &c.ProfileID, &c.RuntimeRouteID, &c.ModelRouteID, &role, &aoProject, &aoSession, &fence, &authJSON)
 	if err != nil {
 		return c, err
 	}
@@ -166,8 +174,8 @@ func loadClaim(ctx context.Context, tx *sql.Tx, runID string, cfg Config) (contr
 	c.AOProjectID = aoProject
 	c.AOSessionID = aoSession
 	c.Fence = fence
-	if profile, ok := cfg.Profiles[c.ProfileID]; ok {
-		c.Authorization = contracts.JobAuthorization{CapabilityIDs: append([]string{}, profile.CapabilityIDs...), Scopes: append([]string{}, profile.Scopes...)}
+	if err := json.Unmarshal(authJSON, &c.Authorization); err != nil {
+		return c, fmt.Errorf("decode persisted run authorization: %w", err)
 	}
 	return c, nil
 }
@@ -183,28 +191,39 @@ func (s *Server) handleCurrentClaims(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	defer rows.Close()
-	recovery := contracts.ClaimRecovery{Claims: []contracts.JobClaim{}}
+	ids := make([]string, 0)
 	for rows.Next() {
 		var id string
 		if err = rows.Scan(&id); err != nil {
+			rows.Close()
 			writeError(w, err)
 			return
 		}
+		ids = append(ids, id)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		writeError(w, err)
+		return
+	}
+	if err = rows.Close(); err != nil {
+		writeError(w, err)
+		return
+	}
+	recovery := contracts.ClaimRecovery{Claims: []contracts.JobClaim{}}
+	for _, id := range ids {
 		var claim contracts.JobClaim
-		err = s.store.DB().QueryRowContext(r.Context(), `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,t.version,r.goal,r.profile_id,r.runtime_route_id,r.model_route_id,r.role,r.ao_project_id,r.ao_session_id,r.fence FROM runs r JOIN tasks t ON t.id=r.task_id AND t.workspace_id=r.workspace_id WHERE r.id=?`, id).Scan(&claim.RunID, &claim.TaskID, &claim.AttemptID, &claim.WorkspaceID, &claim.TaskVersion, &claim.Goal, &claim.ProfileID, &claim.RuntimeRouteID, &claim.ModelRouteID, &claim.Role, &claim.AOProjectID, &claim.AOSessionID, &claim.Fence)
+		var authJSON []byte
+		err = s.store.DB().QueryRowContext(r.Context(), `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.runtime_route_id,r.model_route_id,r.role,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json FROM runs r WHERE r.id=?`, id).Scan(&claim.RunID, &claim.TaskID, &claim.AttemptID, &claim.WorkspaceID, &claim.TaskVersion, &claim.Goal, &claim.ProfileID, &claim.RuntimeRouteID, &claim.ModelRouteID, &claim.Role, &claim.AOProjectID, &claim.AOSessionID, &claim.Fence, &authJSON)
 		if err != nil {
 			writeError(w, err)
 			return
 		}
-		if profile, ok := s.cfg.Profiles[claim.ProfileID]; ok {
-			claim.Authorization = contracts.JobAuthorization{CapabilityIDs: append([]string{}, profile.CapabilityIDs...), Scopes: append([]string{}, profile.Scopes...)}
+		if err = json.Unmarshal(authJSON, &claim.Authorization); err != nil {
+			writeError(w, apiError(500, "internal", "persisted run authorization is invalid", nil))
+			return
 		}
 		recovery.Claims = append(recovery.Claims, claim)
-	}
-	if err = rows.Err(); err != nil {
-		writeError(w, err)
-		return
 	}
 	writeJSON(w, 200, recovery)
 }
@@ -265,9 +284,9 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	var workspace, taskID, attempt, runnerID, status, desired string
+	var workspace, taskID, attempt, runnerID, status, desired, boundProject, boundSession string
 	var fence uint64
-	err = tx.QueryRowContext(r.Context(), `SELECT workspace_id,task_id,attempt_id,runner_id,status,desired_control,fence FROM runs WHERE id=?`, runID).Scan(&workspace, &taskID, &attempt, &runnerID, &status, &desired, &fence)
+	err = tx.QueryRowContext(r.Context(), `SELECT workspace_id,task_id,attempt_id,runner_id,status,desired_control,fence,ao_project_id,ao_session_id FROM runs WHERE id=?`, runID).Scan(&workspace, &taskID, &attempt, &runnerID, &status, &desired, &fence, &boundProject, &boundSession)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, apiError(404, "not_found", "run not found", nil))
 		return
@@ -309,6 +328,18 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 	if observation.Kind == "stop_confirmed" && desired != "stop" {
 		writeError(w, apiError(409, "state_conflict", "stop confirmation requires desired_control=stop", nil))
 		return
+	}
+	if observation.Kind == "stop_confirmed" || observation.Kind == "runtime_terminated" {
+		if boundProject == "" || boundSession == "" || observation.AOProjectID != boundProject || observation.AOSessionID != boundSession {
+			writeError(w, apiError(409, "session_conflict", "termination observation must match the bound AO project and session", nil))
+			return
+		}
+		proof := observation.TerminationProof
+		_, offset := proofTimeZone(proof)
+		if proof == nil || proof.Source != "ao_chat_stop" || proof.Method != "native_process_exit_waited" || proof.SessionID != boundSession || !proof.CleanupComplete || proof.VerifiedAt.IsZero() || offset != 0 || proof.VerifiedAt.After(time.Now().UTC().Add(5*time.Minute)) {
+			writeError(w, apiError(409, "termination_unproven", "termination requires trusted AO stop proof for the bound session", nil))
+			return
+		}
 	}
 	now := time.Now().UTC()
 	if observation.OccurredAt.IsZero() {
@@ -418,7 +449,9 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 			writeError(w, apiError(409, "state_conflict", "stop confirmation requires requested stop", nil))
 			return
 		}
-		// A stop acknowledgment does not prove the runtime has terminated.
+		// Runner emits this only after independent termination and cleanup confirmation.
+		nextRunStatus = "stopped"
+		nextTaskStatus = "canceled"
 	case "runtime_terminated":
 		nextRunStatus = "verification_pending"
 		var resultCount int
@@ -455,7 +488,7 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		if nextTaskStatus == "canceled" || nextTaskStatus == "failed" {
 			finished = now.Format(time.RFC3339Nano)
 		}
-		_, err = tx.ExecContext(r.Context(), `UPDATE tasks SET status=?,version=?,updated_at=?,finished_at=? WHERE id=? AND workspace_id=?`, nextTaskStatus, taskVersion, now.Format(time.RFC3339Nano), finished, taskID, workspace)
+		_, err = tx.ExecContext(r.Context(), `UPDATE tasks SET status=?,version=?,updated_at=?,finished_at=coalesce(?,finished_at) WHERE id=? AND workspace_id=?`, nextTaskStatus, taskVersion, now.Format(time.RFC3339Nano), finished, taskID, workspace)
 		if err != nil {
 			writeError(w, err)
 			return
@@ -481,6 +514,13 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]string{"status": "recorded"})
+}
+
+func proofTimeZone(proof *contracts.TerminationProof) (string, int) {
+	if proof == nil || proof.VerifiedAt.IsZero() {
+		return "", 1
+	}
+	return proof.VerifiedAt.Zone()
 }
 
 func statusForTask(runStatus, taskStatus string) string {
@@ -521,7 +561,10 @@ func appendEventTx(ctx context.Context, tx *sql.Tx, e contracts.Event) error {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO events(event_id,workspace_id,cursor,schema_version,event_type,occurred_at,subject_id,aggregate_type,aggregate_id,aggregate_version,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, e.EventID, e.WorkspaceID, cursor, e.SchemaVersion, e.Type, e.OccurredAt.Format(time.RFC3339Nano), e.SubjectID, e.AggregateType, e.AggregateID, e.AggregateVersion, payload)
-	return err
+	if err != nil {
+		return err
+	}
+	return enqueueEventNotification(ctx, tx, e)
 }
 func sameHash(a, b []byte) bool {
 	if len(a) != len(b) {

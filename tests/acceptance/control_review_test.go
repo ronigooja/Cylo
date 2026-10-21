@@ -211,6 +211,21 @@ func TestReviewConfiguredRunnerRevocation(t *testing.T) {
 	}
 }
 
+func TestReviewExplicitDeviceScopesAreNotExpanded(t *testing.T) {
+	code, token := reviewToken(t), reviewToken(t)
+	_, h := reviewServer(t, control.Config{BootstrapCode: code, DeviceScopes: []string{"client:command"}}, nil)
+	reviewBootstrap(t, h, code, token)
+	if w := reviewRequest(h, "GET", "/v1/snapshot", token, "", nil); w.Code != http.StatusForbidden {
+		t.Errorf("restricted device gained read scope: %d", w.Code)
+	}
+	if w := reviewRequest(h, "POST", "/v1/commands", token, "project", contracts.CommandRequest{Kind: "project.create", Payload: json.RawMessage(`{"name":"allowed"}`)}); w.Code != http.StatusOK {
+		t.Errorf("configured command grant was lost: %d", w.Code)
+	}
+	if w := reviewRequest(h, "POST", "/v1/commands", token, "approve-device", contracts.CommandRequest{Kind: "device.approve", Payload: json.RawMessage(`{"device_id":"anything"}`)}); w.Code != http.StatusForbidden {
+		t.Errorf("device management was implicitly granted: %d", w.Code)
+	}
+}
+
 func TestReviewExpiredPairingCannotBeApproved(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
 	_, h := reviewServer(t, control.Config{BootstrapCode: code, PairingTTL: time.Nanosecond}, nil)

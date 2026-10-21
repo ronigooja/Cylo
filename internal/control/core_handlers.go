@@ -18,12 +18,13 @@ type projectCreatePayload struct {
 	Description string `json:"description,omitempty"`
 }
 type taskCreatePayload struct {
-	ProjectID      string `json:"project_id,omitempty"`
-	Title          string `json:"title"`
-	Goal           string `json:"goal"`
-	Source         string `json:"source"`
-	ProfileID      string `json:"profile_id,omitempty"`
-	InitialMessage string `json:"initial_message,omitempty"`
+	ProjectID       string          `json:"project_id,omitempty"`
+	Title           string          `json:"title"`
+	Goal            string          `json:"goal"`
+	Source          string          `json:"source"`
+	ProfileID       string          `json:"profile_id,omitempty"`
+	InitialMessage  string          `json:"initial_message,omitempty"`
+	SourceReference json.RawMessage `json:"source_reference,omitempty"`
 }
 type taskIDPayload struct {
 	TaskID string `json:"task_id"`
@@ -70,7 +71,7 @@ func (s *Server) commandProjectCreate(ctx context.Context, tx *sql.Tx, c Command
 		return contracts.CommandResult{}, nil, err
 	}
 	at := c.AcceptedAt.Format(time.RFC3339Nano)
-	_, err = tx.ExecContext(ctx, `INSERT INTO projects(id,workspace_id,name,description,status,version,created_at,updated_at) VALUES(?,?,?,?,'active',1,?,?)`, id, c.Principal.WorkspaceID, p.Name, p.Description, at, at)
+	_, err = tx.ExecContext(ctx, `INSERT INTO projects(id,workspace_id,name,description,status,version,created_at,updated_at,owner_subject_id) VALUES(?,?,?,?,'active',1,?,?,?)`, id, c.Principal.WorkspaceID, p.Name, p.Description, at, at, c.Principal.SubjectID)
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
@@ -89,16 +90,29 @@ func (s *Server) commandTaskCreate(ctx context.Context, tx *sql.Tx, c CommandCon
 		return contracts.CommandResult{}, nil, apiError(400, "invalid_request", "task title and goal are required and must fit limits", nil)
 	}
 	switch p.Source {
-	case "user", "voice", "service", "system":
+	case "user":
+		if len(p.SourceReference) != 0 {
+			return contracts.CommandResult{}, nil, apiError(400, "invalid_request", "user task source cannot include a source reference", nil)
+		}
+	case "voice", "service", "system":
+		if len(p.SourceReference) == 0 || !json.Valid(p.SourceReference) {
+			return contracts.CommandResult{}, nil, apiError(400, "invalid_request", "non-user task source requires a server-validated source reference", nil)
+		}
+		s.mu.RLock()
+		_, registered := s.taskSources[p.Source]
+		s.mu.RUnlock()
+		if !registered {
+			return contracts.CommandResult{}, nil, apiError(403, "source_unavailable", "task source is not authorized by a registered server feature", map[string]string{"source": p.Source})
+		}
 	default:
 		return contracts.CommandResult{}, nil, apiError(400, "invalid_request", "source is invalid", nil)
 	}
 	if p.ProjectID != "" {
-		var exists int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM projects WHERE id=? AND workspace_id=? AND status='active'`, p.ProjectID, c.Principal.WorkspaceID).Scan(&exists); err != nil {
-			return contracts.CommandResult{}, nil, err
+		allowed, accessErr := PrincipalCanAccessProject(ctx, tx, c.Principal, p.ProjectID)
+		if accessErr != nil {
+			return contracts.CommandResult{}, nil, accessErr
 		}
-		if exists != 1 {
+		if !allowed {
 			return contracts.CommandResult{}, nil, apiError(404, "not_found", "project not found", nil)
 		}
 	}
@@ -114,7 +128,7 @@ func (s *Server) commandTaskCreate(ctx context.Context, tx *sql.Tx, c CommandCon
 		return contracts.CommandResult{}, nil, err
 	}
 	at := c.AcceptedAt.Format(time.RFC3339Nano)
-	_, err = tx.ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,project_id,title,goal,source,profile_id,status,version,created_at,updated_at,accepted_at,created_by_device_id,command_id) VALUES(?,?,?,?,?,?,?,'queued',1,?,?,?, ?,?)`, id, c.Principal.WorkspaceID, nullString(p.ProjectID), p.Title, p.Goal, p.Source, profile, at, at, at, c.Principal.DeviceID, c.CommandID)
+	_, err = tx.ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,project_id,title,goal,source,profile_id,status,version,created_at,updated_at,accepted_at,created_by_device_id,command_id,owner_subject_id) VALUES(?,?,?,?,?,?,?,'queued',1,?,?,?, ?,?,?)`, id, c.Principal.WorkspaceID, nullString(p.ProjectID), p.Title, p.Goal, p.Source, profile, at, at, at, c.Principal.DeviceID, c.CommandID, c.Principal.SubjectID)
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
@@ -129,6 +143,43 @@ func (s *Server) commandTaskCreate(ctx context.Context, tx *sql.Tx, c CommandCon
 		entry := contracts.TaskEntry{ID: entryID, Kind: "user_message", Content: p.InitialMessage, AuthorDeviceID: c.Principal.DeviceID, CreatedAt: c.AcceptedAt}
 		events = append(events, event("task.entry_appended", "task", id, 1, map[string]any{"task_id": id, "entry": entry}))
 	}
+	if p.Source != "user" {
+		s.mu.RLock()
+		sourceHandler := s.taskSources[p.Source]
+		s.mu.RUnlock()
+		if sourceHandler == nil {
+			return contracts.CommandResult{}, nil, apiError(403, "source_unavailable", "task source is not authorized by a registered server feature", map[string]string{"source": p.Source})
+		}
+		sourceRequest := &TaskSourceRequest{Title: p.Title, Goal: p.Goal, InitialMessage: p.InitialMessage}
+		sourceEvents, sourceErr := sourceHandler(ctx, tx, c.Principal, id, sourceRequest, p.SourceReference, c.AcceptedAt)
+		if sourceErr != nil {
+			return contracts.CommandResult{}, nil, sourceErr
+		}
+		if strings.TrimSpace(sourceRequest.Title) == "" || strings.TrimSpace(sourceRequest.Goal) == "" || len(sourceRequest.Title) > 300 || len(sourceRequest.Goal) > 20000 || len(sourceRequest.InitialMessage) > 20000 {
+			return contracts.CommandResult{}, nil, apiError(400, "invalid_source", "validated task source returned invalid task content", nil)
+		}
+		if sourceRequest.Title != p.Title || sourceRequest.Goal != p.Goal {
+			if _, sourceErr = tx.ExecContext(ctx, `UPDATE tasks SET title=?,goal=? WHERE id=? AND workspace_id=?`, sourceRequest.Title, sourceRequest.Goal, id, c.Principal.WorkspaceID); sourceErr != nil {
+				return contracts.CommandResult{}, nil, sourceErr
+			}
+		}
+		if sourceRequest.InitialMessage != p.InitialMessage {
+			if sourceRequest.InitialMessage == "" {
+				if _, sourceErr = tx.ExecContext(ctx, `DELETE FROM task_entries WHERE task_id=? AND workspace_id=? AND kind='user_message'`, id, c.Principal.WorkspaceID); sourceErr != nil {
+					return contracts.CommandResult{}, nil, sourceErr
+				}
+			} else {
+				entryID, idErr := randomID()
+				if idErr != nil {
+					return contracts.CommandResult{}, nil, idErr
+				}
+				if _, sourceErr = tx.ExecContext(ctx, `INSERT INTO task_entries(id,task_id,workspace_id,kind,content,author_device_id,created_at) VALUES(?,?,?,'user_message',?,?,?)`, entryID, id, c.Principal.WorkspaceID, sourceRequest.InitialMessage, c.Principal.DeviceID, at); sourceErr != nil {
+					return contracts.CommandResult{}, nil, sourceErr
+				}
+			}
+		}
+		events = append(events, sourceEvents...)
+	}
 	return contracts.CommandResult{ResourceType: "task", ResourceID: id, ResourceVersion: 1}, events, nil
 }
 
@@ -141,7 +192,7 @@ func (s *Server) commandTaskAppend(ctx context.Context, tx *sql.Tx, c CommandCon
 	if p.TaskID == "" || p.Content == "" || len(p.Content) > 20000 {
 		return contracts.CommandResult{}, nil, apiError(400, "invalid_request", "task_id and content are required", nil)
 	}
-	version, status, err := taskVersionStatus(ctx, tx, c.Principal.WorkspaceID, p.TaskID)
+	version, status, err := taskVersionStatus(ctx, tx, c.Principal, p.TaskID)
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
@@ -176,7 +227,7 @@ func (s *Server) commandTaskStop(ctx context.Context, tx *sql.Tx, c CommandConte
 	if err := decodePayload(req.Payload, &p); err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
-	version, status, err := taskVersionStatus(ctx, tx, c.Principal.WorkspaceID, p.TaskID)
+	version, status, err := taskVersionStatus(ctx, tx, c.Principal, p.TaskID)
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
@@ -239,7 +290,7 @@ func (s *Server) commandTaskApprove(ctx context.Context, tx *sql.Tx, c CommandCo
 	if status != "pending" {
 		return contracts.CommandResult{}, nil, apiError(409, "state_conflict", "approval is no longer pending", map[string]any{"status": status})
 	}
-	currentTaskVersion, boundStatus, err = taskVersionStatus(ctx, tx, c.Principal.WorkspaceID, p.TaskID)
+	currentTaskVersion, boundStatus, err = taskVersionStatus(ctx, tx, c.Principal, p.TaskID)
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
@@ -276,6 +327,9 @@ type acceptResultPayload struct {
 }
 
 func (s *Server) commandTaskAcceptResult(ctx context.Context, tx *sql.Tx, c CommandContext, req contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
+	if !HasScope(c.Principal, "client:command") {
+		return contracts.CommandResult{}, nil, apiError(http.StatusForbidden, "forbidden", "client:command scope is required", nil)
+	}
 	var p acceptResultPayload
 	if err := decodePayload(req.Payload, &p); err != nil {
 		return contracts.CommandResult{}, nil, err
@@ -283,7 +337,7 @@ func (s *Server) commandTaskAcceptResult(ctx context.Context, tx *sql.Tx, c Comm
 	if p.TaskID == "" || p.RunID == "" || (p.Decision != "accept" && p.Decision != "reject") {
 		return contracts.CommandResult{}, nil, apiError(400, "invalid_request", "task_id, run_id, and decision accept|reject are required", nil)
 	}
-	version, status, err := taskVersionStatus(ctx, tx, c.Principal.WorkspaceID, p.TaskID)
+	version, status, err := taskVersionStatus(ctx, tx, c.Principal, p.TaskID)
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
@@ -356,6 +410,12 @@ func validTaskTransition(from, to string) bool {
 }
 
 func (s *Server) commandDeviceApprove(ctx context.Context, tx *sql.Tx, c CommandContext, req contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
+	if !HasScope(c.Principal, "device:manage") {
+		return contracts.CommandResult{}, nil, apiError(http.StatusForbidden, "forbidden", "device management scope is required", nil)
+	}
+	if !HasScope(c.Principal, "device:manage") {
+		return contracts.CommandResult{}, nil, apiError(http.StatusForbidden, "forbidden", "device management scope is required", nil)
+	}
 	var p devicePayload
 	if err := decodePayload(req.Payload, &p); err != nil {
 		return contracts.CommandResult{}, nil, err
@@ -398,6 +458,12 @@ func (s *Server) commandDeviceApprove(ctx context.Context, tx *sql.Tx, c Command
 }
 
 func (s *Server) commandDeviceRevoke(ctx context.Context, tx *sql.Tx, c CommandContext, req contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
+	if !HasScope(c.Principal, "device:manage") {
+		return contracts.CommandResult{}, nil, apiError(http.StatusForbidden, "forbidden", "device management scope is required", nil)
+	}
+	if !HasScope(c.Principal, "device:manage") {
+		return contracts.CommandResult{}, nil, apiError(http.StatusForbidden, "forbidden", "device management scope is required", nil)
+	}
 	var p devicePayload
 	if err := decodePayload(req.Payload, &p); err != nil {
 		return contracts.CommandResult{}, nil, err
@@ -434,12 +500,21 @@ func (s *Server) commandDeviceRevoke(ctx context.Context, tx *sql.Tx, c CommandC
 	return contracts.CommandResult{ResourceType: "device", ResourceID: p.DeviceID, ResourceVersion: version}, []contracts.Event{event("device.revoked", "device", p.DeviceID, version, map[string]any{"device_id": p.DeviceID, "reason": p.Reason})}, nil
 }
 
-func taskVersionStatus(ctx context.Context, tx *sql.Tx, workspace, id string) (int64, string, error) {
+func taskVersionStatus(ctx context.Context, tx *sql.Tx, principal contracts.Principal, id string) (int64, string, error) {
 	var v int64
 	var status string
-	err := tx.QueryRowContext(ctx, `SELECT version,status FROM tasks WHERE id=? AND workspace_id=?`, id, workspace).Scan(&v, &status)
+	err := tx.QueryRowContext(ctx, `SELECT version,status FROM tasks WHERE id=? AND workspace_id=?`, id, principal.WorkspaceID).Scan(&v, &status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, "", apiError(404, "not_found", "task not found", nil)
+	}
+	if err == nil {
+		allowed, accessErr := PrincipalCanAccessTask(ctx, tx, principal, id)
+		if accessErr != nil {
+			return 0, "", accessErr
+		}
+		if !allowed {
+			return 0, "", apiError(404, "not_found", "task not found", nil)
+		}
 	}
 	return v, status, err
 }

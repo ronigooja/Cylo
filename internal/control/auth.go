@@ -69,10 +69,29 @@ func (s *Server) deviceAuth(next http.Handler) http.Handler {
 			writeError(w, apiError(http.StatusForbidden, "device_not_approved", "device is not approved", nil))
 			return
 		}
-		p.Scopes = []string{"client:read", "client:command", "device:manage"}
+		p.Scopes = append([]string(nil), s.cfg.DeviceScopes...)
+		if required := requiredCoreDeviceScope(r); required != "" && !HasScope(p, required) {
+			writeError(w, apiError(http.StatusForbidden, "forbidden", "device lacks required scope", map[string]string{"scope": required}))
+			return
+		}
 		_, _ = s.store.DB().ExecContext(r.Context(), `UPDATE devices SET last_seen_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`, p.DeviceID)
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), devicePrincipalKey{}, p)))
 	})
+}
+
+func requiredCoreDeviceScope(r *http.Request) string {
+	switch r.URL.Path {
+	case "/v1/snapshot", "/v1/events", "/v1/notifications":
+		return "client:read"
+	case "/v1/commands":
+		if r.Method == http.MethodGet {
+			return "client:read"
+		}
+		if r.Method == http.MethodPost {
+			return "client:command"
+		}
+	}
+	return ""
 }
 
 func (s *Server) runnerAuth(next http.Handler) http.Handler {
@@ -123,12 +142,21 @@ func (s *Server) runnerAuth(next http.Handler) http.Handler {
 
 // RegisterRunnerCredential stores only a digest of a deployment-provisioned bearer.
 func (s *Server) RegisterRunnerCredential(ctx context.Context, token, runnerID string, workspaceIDs, scopes []string) error {
+	return RegisterRunnerCredentialIfMissing(ctx, s.store, token, runnerID, workspaceIDs, scopes)
+}
+
+// RegisterRunnerCredentialIfMissing provisions the deployment credential once
+// and preserves a later database revocation across server restarts.
+func RegisterRunnerCredentialIfMissing(ctx context.Context, store interface{ DB() *sql.DB }, token, runnerID string, workspaceIDs, scopes []string) error {
+	if store == nil || store.DB() == nil {
+		return errors.New("open control store is required")
+	}
 	hash, err := tokenHash(token)
 	if err != nil {
 		return err
 	}
 	workspaces, _ := jsonMarshal(workspaceIDs)
 	scopeBytes, _ := jsonMarshal(scopes)
-	_, err = s.store.DB().ExecContext(ctx, `INSERT INTO runner_credentials(token_hash,runner_id,workspace_ids,scopes) VALUES(?,?,?,?)`, hash, runnerID, workspaces, scopeBytes)
+	_, err = store.DB().ExecContext(ctx, `INSERT OR IGNORE INTO runner_credentials(token_hash,runner_id,workspace_ids,scopes) VALUES(?,?,?,?)`, hash, runnerID, workspaces, scopeBytes)
 	return err
 }

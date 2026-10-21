@@ -25,11 +25,13 @@ func (s *Server) registerCoreRoutes() {
 	_ = s.RegisterCommand("task.accept_result", s.commandTaskAcceptResult)
 	_ = s.RegisterCommand("device.approve", s.commandDeviceApprove)
 	_ = s.RegisterCommand("device.revoke", s.commandDeviceRevoke)
+	_ = s.RegisterCommand("notification.mark_read", s.commandNotificationMarkRead)
 	s.device.HandleFunc("POST /v1/commands", s.handleCommand)
 	s.device.HandleFunc("GET /v1/commands/{command_id}", s.handleGetCommand)
 	s.device.HandleFunc("GET /v1/commands", s.handleGetCommandByKey)
 	s.device.HandleFunc("GET /v1/snapshot", s.handleSnapshot)
 	s.device.HandleFunc("GET /v1/events", s.handleEvents)
+	s.device.HandleFunc("GET /v1/notifications", s.handleNotifications)
 	s.runner.HandleFunc("POST /runner/v1/claims", s.handleClaims)
 	s.runner.HandleFunc("GET /runner/v1/claims/current", s.handleCurrentClaims)
 	s.runner.HandleFunc("GET /runner/v1/runs/{run_id}", s.handleRunControl)
@@ -40,6 +42,10 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 	p, ok := PrincipalFromContext(r.Context())
 	if !ok {
 		writeError(w, apiError(401, "unauthenticated", "device authentication required", nil))
+		return
+	}
+	if !HasScope(p, "client:command") {
+		writeError(w, apiError(http.StatusForbidden, "forbidden", "client:command scope is required", nil))
 		return
 	}
 	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
@@ -152,6 +158,9 @@ func (s *Server) ExecuteCommand(ctx context.Context, p contracts.Principal, key 
 		}
 		_, e = tx.ExecContext(ctx, `INSERT INTO events(event_id,workspace_id,cursor,schema_version,event_type,occurred_at,subject_id,aggregate_type,aggregate_id,aggregate_version,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, event.EventID, p.WorkspaceID, cursor, event.SchemaVersion, event.Type, event.OccurredAt.Format(time.RFC3339Nano), p.SubjectID, event.AggregateType, event.AggregateID, event.AggregateVersion, payload)
 		if e != nil {
+			return contracts.CommandReceipt{}, e
+		}
+		if e = enqueueEventNotification(ctx, tx, *event); e != nil {
 			return contracts.CommandReceipt{}, e
 		}
 	}

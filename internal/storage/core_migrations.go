@@ -6,7 +6,7 @@ import (
 )
 
 func RegisterCoreMigrations(s *Store) error {
-	return s.RegisterMigration(Migration{Version: 1, Name: "core_authority", Up: func(ctx context.Context, tx *sql.Tx) error {
+	if err := s.RegisterMigration(Migration{Version: 1, Name: "core_authority", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 CREATE TABLE workspaces (
   id TEXT PRIMARY KEY,
@@ -209,6 +209,45 @@ CREATE TABLE runner_credentials (
   scopes BLOB NOT NULL,
   revoked_at TEXT
 );
+`)
+		return err
+	}}); err != nil {
+		return err
+	}
+	return s.RegisterMigration(Migration{Version: 2, Name: "run_claim_snapshots_and_notifications", Up: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+ALTER TABLE runs ADD COLUMN task_version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE runs ADD COLUMN authorization_json BLOB NOT NULL DEFAULT '{}';
+CREATE TABLE notifications (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+  subject_id TEXT NOT NULL,
+  source_event_id TEXT NOT NULL REFERENCES events(event_id),
+  aggregate_type TEXT NOT NULL,
+  aggregate_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  read_at TEXT,
+  UNIQUE(workspace_id,subject_id,source_event_id)
+);
+CREATE INDEX notifications_inbox ON notifications(workspace_id,subject_id,created_at,id);
+ALTER TABLE projects ADD COLUMN owner_subject_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN owner_subject_id TEXT NOT NULL DEFAULT '';
+CREATE TABLE project_memberships (
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+  project_id TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('owner','member','viewer')),
+  status TEXT NOT NULL CHECK(status IN ('active','revoked')),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(workspace_id,project_id,subject_id),
+  FOREIGN KEY(workspace_id,project_id) REFERENCES projects(workspace_id,id)
+);
+CREATE INDEX project_memberships_subject ON project_memberships(workspace_id,subject_id,status);
+UPDATE projects SET owner_subject_id=coalesce((SELECT e.subject_id FROM events e WHERE e.aggregate_type='project' AND e.aggregate_id=projects.id AND e.event_type='project.created' AND e.subject_id IS NOT NULL ORDER BY e.cursor LIMIT 1),'');
+UPDATE tasks SET owner_subject_id=coalesce((SELECT d.subject_id FROM devices d WHERE d.id=tasks.created_by_device_id),'');
 `)
 		return err
 	}})

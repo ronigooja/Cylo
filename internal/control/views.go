@@ -43,7 +43,7 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (c
 		return out, err
 	}
 	out.EventCursor = strconv.FormatInt(cursor, 10)
-	projects, err := tx.QueryContext(ctx, `SELECT id,name,description,status,version,created_at,updated_at FROM projects WHERE workspace_id=? ORDER BY created_at,id`, workspace)
+	projects, err := tx.QueryContext(ctx, `SELECT id,name,description,status,version,created_at,updated_at FROM projects p WHERE workspace_id=? AND (owner_subject_id=? OR EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=p.workspace_id AND m.project_id=p.id AND m.subject_id=? AND m.status='active')) ORDER BY created_at,id`, workspace, subject, subject)
 	if err != nil {
 		return out, err
 	}
@@ -63,7 +63,7 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (c
 		return out, err
 	}
 	projects.Close()
-	tasks, err := tx.QueryContext(ctx, `SELECT id,coalesce(project_id,''),title,goal,source,profile_id,status,version,created_at,updated_at,accepted_at,started_at,finished_at,result,error FROM tasks WHERE workspace_id=? ORDER BY created_at,id`, workspace)
+	tasks, err := tx.QueryContext(ctx, `SELECT id,coalesce(project_id,''),title,goal,source,profile_id,status,version,created_at,updated_at,accepted_at,started_at,finished_at,result,error FROM tasks t WHERE workspace_id=? AND (owner_subject_id=? OR (project_id IS NOT NULL AND EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=t.workspace_id AND m.project_id=t.project_id AND m.subject_id=? AND m.status='active'))) ORDER BY created_at,id`, workspace, subject, subject)
 	if err != nil {
 		return out, err
 	}
@@ -109,7 +109,7 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (c
 		return out, err
 	}
 	tasks.Close()
-	approvals, err := tx.QueryContext(ctx, `SELECT id,task_id,task_version,status,prompt,version,created_at,expires_at,requested_action,requested_action_digest FROM approvals WHERE workspace_id=? ORDER BY created_at,id`, workspace)
+	approvals, err := tx.QueryContext(ctx, `SELECT a.id,a.task_id,a.task_version,a.status,a.prompt,a.version,a.created_at,a.expires_at,a.requested_action,a.requested_action_digest FROM approvals a JOIN tasks t ON t.id=a.task_id AND t.workspace_id=a.workspace_id WHERE a.workspace_id=? AND (t.owner_subject_id=? OR (t.project_id IS NOT NULL AND EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=t.workspace_id AND m.project_id=t.project_id AND m.subject_id=? AND m.status='active'))) ORDER BY a.created_at,a.id`, workspace, subject, subject)
 	if err != nil {
 		return out, err
 	}
@@ -165,7 +165,7 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (c
 		return out, err
 	}
 	devices.Close()
-	runs, err := tx.QueryContext(ctx, `SELECT id,task_id,attempt_id,status,desired_control,control_version,started_at,stopped_at FROM runs WHERE workspace_id=? ORDER BY started_at,id`, workspace)
+	runs, err := tx.QueryContext(ctx, `SELECT r.id,r.task_id,r.attempt_id,r.status,r.desired_control,r.control_version,r.started_at,r.stopped_at FROM runs r JOIN tasks t ON t.id=r.task_id AND t.workspace_id=r.workspace_id WHERE r.workspace_id=? AND (t.owner_subject_id=? OR (t.project_id IS NOT NULL AND EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=t.workspace_id AND m.project_id=t.project_id AND m.subject_id=? AND m.status='active'))) ORDER BY r.started_at,r.id`, workspace, subject, subject)
 	if err != nil {
 		return out, err
 	}
@@ -286,7 +286,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			_ = tx.Rollback()
 			return
 		}
-		rows, err := tx.QueryContext(r.Context(), `SELECT cursor,event_type,payload FROM events WHERE workspace_id=? AND cursor>? ORDER BY cursor LIMIT 100`, p.WorkspaceID, cursor)
+		rows, err := tx.QueryContext(r.Context(), `SELECT e.cursor,e.event_type,e.payload,(e.subject_id=? OR ?=1 OR (e.aggregate_type='project' AND EXISTS(SELECT 1 FROM projects p WHERE p.workspace_id=e.workspace_id AND p.id=e.aggregate_id AND (p.owner_subject_id=? OR EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=p.workspace_id AND m.project_id=p.id AND m.subject_id=? AND m.status='active')))) OR (e.aggregate_type='task' AND EXISTS(SELECT 1 FROM tasks t WHERE t.workspace_id=e.workspace_id AND t.id=e.aggregate_id AND (t.owner_subject_id=? OR (t.project_id IS NOT NULL AND EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=t.workspace_id AND m.project_id=t.project_id AND m.subject_id=? AND m.status='active'))))) OR (e.aggregate_type='run' AND EXISTS(SELECT 1 FROM runs r JOIN tasks t ON t.id=r.task_id AND t.workspace_id=r.workspace_id WHERE r.workspace_id=e.workspace_id AND r.id=e.aggregate_id AND (t.owner_subject_id=? OR (t.project_id IS NOT NULL AND EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=t.workspace_id AND m.project_id=t.project_id AND m.subject_id=? AND m.status='active')))))) AS visible FROM events e WHERE e.workspace_id=? AND e.cursor>? ORDER BY e.cursor LIMIT 100`, p.SubjectID, HasScope(p, "device:manage"), p.SubjectID, p.SubjectID, p.SubjectID, p.SubjectID, p.SubjectID, p.SubjectID, p.WorkspaceID, cursor)
 		if err != nil {
 			_ = tx.Rollback()
 			return
@@ -295,11 +295,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			cursor  int64
 			kind    string
 			payload []byte
+			visible bool
 		}
 		records := make([]record, 0, 100)
 		for rows.Next() {
 			var v record
-			if err = rows.Scan(&v.cursor, &v.kind, &v.payload); err != nil {
+			if err = rows.Scan(&v.cursor, &v.kind, &v.payload, &v.visible); err != nil {
 				rows.Close()
 				_ = tx.Rollback()
 				return
@@ -316,7 +317,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, v := range records {
-			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", v.cursor, v.kind, v.payload)
+			if v.visible {
+				fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", v.cursor, v.kind, v.payload)
+				flusher.Flush()
+			}
 			cursor = v.cursor
 		}
 		if len(records) > 0 {
