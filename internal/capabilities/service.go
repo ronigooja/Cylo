@@ -130,6 +130,19 @@ func (s *Service) requestDeployment(ctx context.Context, tx *sql.Tx, cmd control
 		if err := tx.QueryRowContext(ctx, `SELECT deployment_id FROM capability_deployments WHERE workspace_id=? AND service_id=?`, cmd.Principal.WorkspaceID, p.ServiceID).Scan(&deploymentID); err != nil {
 			return contracts.CommandResult{}, nil, err
 		}
+		// Never create a new external operation while an earlier operation has an
+		// unknown outcome. Pending work has not left the control plane and may be
+		// safely superseded; claimed work must be reconciled first.
+		var unresolved int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM capability_deployment_jobs WHERE deployment_id=? AND status IN ('claimed','uncertain')`, deploymentID).Scan(&unresolved); err != nil {
+			return contracts.CommandResult{}, nil, err
+		}
+		if unresolved != 0 {
+			return contracts.CommandResult{}, nil, control.NewAPIError(409, "deployment_outcome_unknown", "an earlier deployment effect must be reconciled before another operation", nil)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE capability_deployment_jobs SET status='superseded',superseded_by=?,updated_at=? WHERE deployment_id=? AND status='pending'`, id, at, deploymentID); err != nil {
+			return contracts.CommandResult{}, nil, err
+		}
 		_, err = tx.ExecContext(ctx, `UPDATE capability_deployments SET release_digest=?,requested_operation=?,desired_state='awaiting_authorization',config_ref=?,config_sha256=?,version=version+1,updated_at=? WHERE deployment_id=? AND version=?`, p.ReleaseDigest, p.Operation, p.ConfigRef, p.ConfigSHA256, cmd.AcceptedAt.UTC().Format(time.RFC3339Nano), deploymentID, oldVersion)
 		if err != nil {
 			return contracts.CommandResult{}, nil, err
@@ -235,7 +248,40 @@ func enqueue(ctx context.Context, tx *sql.Tx, workspace, deployment, op, grant, 
 		return err
 	}
 	attempt := uuid.NewString()
-	_, err := tx.ExecContext(ctx, `INSERT INTO capability_deployment_jobs(attempt_id,workspace_id,deployment_id,fence,operation,status,created_at,updated_at) VALUES(?,?,?,?,?,'pending',?,?)`, attempt, workspace, deployment, fence, op, at, at)
+	var serviceID string
+	if err := tx.QueryRowContext(ctx, `SELECT service_id FROM capability_deployments WHERE deployment_id=? AND workspace_id=?`, deployment, workspace).Scan(&serviceID); err != nil {
+		return err
+	}
+	var rawManifest, rawActions, rawBudget []byte
+	var scopeKind, scopeID, principalID, expiresAt string
+	if err := tx.QueryRowContext(ctx, `SELECT r.manifest,g.scope_kind,g.scope_id,g.principal_id,g.actions,g.budget,g.expires_at FROM capability_releases r JOIN capability_grants g ON g.release_digest=r.digest WHERE r.workspace_id=? AND r.digest=? AND g.grant_id=? AND g.deployment_id=?`, workspace, digest, grant, deployment).Scan(&rawManifest, &scopeKind, &scopeID, &principalID, &rawActions, &rawBudget, &expiresAt); err != nil {
+		return err
+	}
+	var manifest contracts.CapabilityManifest
+	var actions []string
+	var budget contracts.CapabilityResourceBudget
+	if err := json.Unmarshal(rawManifest, &manifest); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(rawActions, &actions); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(rawBudget, &budget); err != nil {
+		return err
+	}
+	expiry, err := time.Parse(time.RFC3339Nano, expiresAt)
+	if err != nil {
+		return err
+	}
+	claim := contracts.DeploymentClaim{WorkspaceID: workspace, DeploymentID: deployment, AttemptID: attempt, Fence: fence, ServiceID: serviceID, ReleaseDigest: digest, Manifest: manifest, DesiredOp: op, Grant: contracts.CapabilityGrant{GrantID: grant, ScopeKind: scopeKind, ScopeID: scopeID, PrincipalID: principalID, Actions: actions, Budget: budget, ExpiresAt: expiry}, ConfigRef: configRef, ConfigSHA256: configHash, RuntimeBackend: "docker"}
+	for _, mount := range manifest.Mounts {
+		claim.VolumeIDs = append(claim.VolumeIDs, mount.VolumeID)
+	}
+	claimJSON, err := json.Marshal(claim)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO capability_deployment_jobs(attempt_id,workspace_id,deployment_id,fence,operation,status,claim_json,created_at,updated_at) VALUES(?,?,?,?,?,'pending',?,?,?)`, attempt, workspace, deployment, fence, op, claimJSON, at, at)
 	if err != nil {
 		return err
 	}
@@ -253,19 +299,19 @@ func (s *Service) claimDeployment(w http.ResponseWriter, r *http.Request) {
 		if !runnerHasCapabilityScope(runner, "capability:deploy") {
 			return control.NewAPIError(403, "forbidden", "capability:deploy runner scope required", nil)
 		}
-		rows, err := tx.QueryContext(r.Context(), `SELECT j.attempt_id,j.fence,j.operation,j.deployment_id,j.workspace_id,d.service_id,d.release_digest,d.grant_id,d.config_ref,d.config_sha256 FROM capability_deployment_jobs j JOIN capability_deployments d ON d.deployment_id=j.deployment_id WHERE j.status='pending' ORDER BY j.created_at LIMIT 100`)
+		rows, err := tx.QueryContext(r.Context(), `SELECT j.attempt_id,j.fence,j.operation,j.deployment_id,j.workspace_id,j.claim_json FROM capability_deployment_jobs j JOIN capability_deployments d ON d.deployment_id=j.deployment_id WHERE j.status='pending' AND j.fence=d.latest_fence ORDER BY j.created_at LIMIT 100`)
 		if err != nil {
 			return err
 		}
 		type candidate struct {
-			attempt                                                                  string
-			fence                                                                    int64
-			op, deployment, workspace, service, digest, grant, configRef, configHash string
+			attempt, op, deployment, workspace string
+			fence                              int64
+			claimJSON                          []byte
 		}
 		var items []candidate
 		for rows.Next() {
 			var x candidate
-			if err := rows.Scan(&x.attempt, &x.fence, &x.op, &x.deployment, &x.workspace, &x.service, &x.digest, &x.grant, &x.configRef, &x.configHash); err != nil {
+			if err := rows.Scan(&x.attempt, &x.fence, &x.op, &x.deployment, &x.workspace, &x.claimJSON); err != nil {
 				rows.Close()
 				return err
 			}
@@ -282,26 +328,12 @@ func (s *Service) claimDeployment(w http.ResponseWriter, r *http.Request) {
 			if !control.HasRunnerScope(runner, "capability:deploy", x.workspace) {
 				continue
 			}
-			var grant contracts.CapabilityGrant
-			var actionsRaw, budgetRaw []byte
-			var exp string
-			if err := tx.QueryRowContext(r.Context(), `SELECT scope_kind,scope_id,principal_id,actions,budget,expires_at FROM capability_grants WHERE grant_id=? AND workspace_id=? AND deployment_id=?`, x.grant, x.workspace, x.deployment).Scan(&grant.ScopeKind, &grant.ScopeID, &grant.PrincipalID, &actionsRaw, &budgetRaw, &exp); err != nil {
+			var snapshot contracts.DeploymentClaim
+			if err := json.Unmarshal(x.claimJSON, &snapshot); err != nil {
 				return err
 			}
-			grant.GrantID = x.grant
-			grant.ExpiresAt, _ = time.Parse(time.RFC3339Nano, exp)
-			_ = json.Unmarshal(actionsRaw, &grant.Actions)
-			_ = json.Unmarshal(budgetRaw, &grant.Budget)
-			if !grant.ExpiresAt.After(time.Now().UTC()) {
+			if !snapshot.Grant.ExpiresAt.After(time.Now().UTC()) || !contains(snapshot.Grant.Actions, snapshot.DesiredOp) || snapshot.WorkspaceID != x.workspace || snapshot.DeploymentID != x.deployment || snapshot.AttemptID != x.attempt || snapshot.Fence != x.fence || snapshot.DesiredOp != x.op {
 				continue
-			}
-			var manifest contracts.CapabilityManifest
-			var raw []byte
-			if err := tx.QueryRowContext(r.Context(), `SELECT manifest FROM capability_releases WHERE workspace_id=? AND digest=?`, x.workspace, x.digest).Scan(&raw); err != nil {
-				return err
-			}
-			if err := json.Unmarshal(raw, &manifest); err != nil {
-				return err
 			}
 			res, err := tx.ExecContext(r.Context(), `UPDATE capability_deployment_jobs SET status='claimed',runner_id=?,claimed_at=?,updated_at=? WHERE attempt_id=? AND fence=? AND status='pending'`, runner.RunnerID, time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano), x.attempt, x.fence)
 			if err != nil {
@@ -315,11 +347,8 @@ func (s *Service) claimDeployment(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return err
 			}
-			var volumeIDs []string
-			for _, m := range manifest.Mounts {
-				volumeIDs = append(volumeIDs, m.VolumeID)
-			}
-			claim = &contracts.DeploymentClaim{WorkspaceID: x.workspace, DeploymentID: x.deployment, AttemptID: x.attempt, Fence: x.fence, ServiceID: x.service, ReleaseDigest: x.digest, Manifest: manifest, DesiredOp: x.op, Grant: grant, ConfigRef: x.configRef, ConfigSHA256: x.configHash, VolumeIDs: volumeIDs, RuntimeBackend: "docker"}
+			snapshot.VolumeIDs = uniqueSorted(snapshot.VolumeIDs)
+			claim = &snapshot
 			break
 		}
 		return nil
@@ -346,9 +375,9 @@ func (s *Service) observeDeployment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	err := s.server.RunnerTransaction(r.Context(), func(tx *sql.Tx, runner contracts.RunnerPrincipal) error {
-		var workspace, jobStatus, operation string
+		var workspace, jobStatus, operation, claimedRunner string
 		var fence int64
-		if err := tx.QueryRowContext(r.Context(), `SELECT j.workspace_id,j.status,j.operation,j.fence FROM capability_deployment_jobs j WHERE j.attempt_id=? AND j.deployment_id=?`, obs.AttemptID, obs.DeploymentID).Scan(&workspace, &jobStatus, &operation, &fence); errors.Is(err, sql.ErrNoRows) {
+		if err := tx.QueryRowContext(r.Context(), `SELECT j.workspace_id,j.status,j.operation,j.fence,j.runner_id FROM capability_deployment_jobs j WHERE j.attempt_id=? AND j.deployment_id=?`, obs.AttemptID, obs.DeploymentID).Scan(&workspace, &jobStatus, &operation, &fence, &claimedRunner); errors.Is(err, sql.ErrNoRows) {
 			return control.NewAPIError(404, "deployment_attempt_not_found", "deployment attempt not found", nil)
 		} else if err != nil {
 			return err
@@ -356,17 +385,20 @@ func (s *Service) observeDeployment(w http.ResponseWriter, r *http.Request) {
 		if !control.HasRunnerScope(runner, "capability:deploy", workspace) {
 			return control.NewAPIError(403, "forbidden", "runner cannot report this workspace", nil)
 		}
+		if runner.RunnerID != claimedRunner {
+			return control.NewAPIError(403, "runner_mismatch", "only the runner that claimed this attempt may report it", nil)
+		}
 		if fence != obs.Fence || operation != obs.Operation {
 			return control.NewAPIError(409, "stale_deployment_fence", "observation does not match active authorized attempt", nil)
 		}
-		if !validObservedState(obs.State) {
-			return control.NewAPIError(400, "invalid_observation", "observed state is unsupported", nil)
+		if !validOperationObservedState(operation, obs.State) {
+			return control.NewAPIError(400, "invalid_observation", "observed state is not valid for this operation", nil)
 		}
 		if obs.State == "running" && (obs.Health.State != "healthy" || obs.Health.CheckedAt.IsZero() || obs.Health.EvidenceRef == "") {
 			return control.NewAPIError(400, "health_evidence_required", "running state requires timestamped healthy evidence", nil)
 		}
 		if (operation == "stop" && obs.State == "stopped") || (operation == "uninstall" && obs.State == "removed") {
-			if obs.TerminationProof == nil || obs.TerminationProof.EffectRef == "" || obs.TerminationProof.TerminatedAt.IsZero() {
+			if obs.TerminationProof == nil || obs.TerminationProof.EffectRef == "" || obs.TerminationProof.TerminatedAt.IsZero() || !obs.TerminationProof.CleanupComplete || !contains(obs.ExternalEffectRef, obs.TerminationProof.EffectRef) {
 				return control.NewAPIError(400, "termination_proof_required", "stop/removal requires runner termination proof", nil)
 			}
 		}
@@ -388,12 +420,16 @@ func (s *Service) observeDeployment(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		state := mapObserved(obs.State)
-		status := "observed"
-		if state == "uncertain" {
-			status = "uncertain"
-		}
-		if state == "failed" {
-			status = "failed"
+		status := jobStatus
+		if isTerminalObservation(operation, state) {
+			switch state {
+			case "uncertain":
+				status = "uncertain"
+			case "failed":
+				status = "failed"
+			default:
+				status = "observed"
+			}
 		}
 		if _, err = tx.ExecContext(r.Context(), `UPDATE capability_deployment_jobs SET status=?,updated_at=? WHERE attempt_id=? AND fence=?`, status, obs.ObservedAt.UTC().Format(time.RFC3339Nano), obs.AttemptID, obs.Fence); err != nil {
 			return err
@@ -588,6 +624,45 @@ func validObservedState(v string) bool {
 		return true
 	}
 	return false
+}
+func validOperationObservedState(operation, state string) bool {
+	if !validObservedState(state) {
+		return false
+	}
+	if state == "pending" || state == "failed" || state == "uncertain" {
+		return true
+	}
+	switch operation {
+	case "install", "update":
+		return state == "installing" || state == "running"
+	case "start", "resume":
+		return state == "running"
+	case "stop":
+		return state == "stopped"
+	case "pause":
+		return state == "paused"
+	case "uninstall":
+		return state == "uninstalling" || state == "removed"
+	default:
+		return false
+	}
+}
+func isTerminalObservation(operation, state string) bool {
+	if state == "failed" || state == "uncertain" {
+		return true
+	}
+	switch operation {
+	case "install", "update", "start", "resume":
+		return state == "running"
+	case "stop":
+		return state == "stopped"
+	case "pause":
+		return state == "paused"
+	case "uninstall":
+		return state == "removed"
+	default:
+		return false
+	}
 }
 func runnerHasCapabilityScope(p contracts.RunnerPrincipal, want string) bool {
 	for _, scope := range p.Scopes {

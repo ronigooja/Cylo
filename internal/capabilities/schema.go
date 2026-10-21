@@ -59,8 +59,10 @@ CREATE TABLE capability_deployment_jobs (
   deployment_id TEXT NOT NULL REFERENCES capability_deployments(deployment_id),
   fence INTEGER NOT NULL,
   operation TEXT NOT NULL,
-  status TEXT NOT NULL CHECK(status IN ('pending','claimed','observed','uncertain','failed')),
+  status TEXT NOT NULL CHECK(status IN ('pending','claimed','observed','uncertain','failed','superseded')),
   runner_id TEXT NOT NULL DEFAULT '',
+  claim_json BLOB NOT NULL,
+  superseded_by TEXT NOT NULL DEFAULT '',
   claimed_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -78,6 +80,7 @@ CREATE TABLE capability_observations (
 );
 CREATE INDEX capability_jobs_ready ON capability_deployment_jobs(status,created_at);
 CREATE INDEX capability_deployments_workspace ON capability_deployments(workspace_id,updated_at);
+
 `)
 		return err
 	}})
