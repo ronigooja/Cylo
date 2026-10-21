@@ -51,12 +51,13 @@ type CapabilityRelease struct {
 }
 
 type CapabilityGrant struct {
-	GrantID   string                   `json:"grant_id"`
-	ScopeKind string                   `json:"scope_kind"`
-	ScopeID   string                   `json:"scope_id,omitempty"`
-	Actions   []string                 `json:"actions"`
-	Budget    CapabilityResourceBudget `json:"budget"`
-	ExpiresAt time.Time                `json:"expires_at"`
+	GrantID     string                   `json:"grant_id"`
+	ScopeKind   string                   `json:"scope_kind"`
+	ScopeID     string                   `json:"scope_id,omitempty"`
+	PrincipalID string                   `json:"principal_id,omitempty"`
+	Actions     []string                 `json:"actions"`
+	Budget      CapabilityResourceBudget `json:"budget"`
+	ExpiresAt   time.Time                `json:"expires_at"`
 }
 
 type DeploymentClaim struct {
