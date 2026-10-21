@@ -1,16 +1,16 @@
 # Cylo 总体实现架构与落地契约
 
-研究日期：2026-10-21。本文是实现决策稿，不代表已有运行代码。以完整阅读的[《Cylo-完整产品需求说明书.md》](../../Cylo-完整产品需求说明书.md)为最高产品依据，产品统一更名 Cylo；旧《codex-super-agent-requirements-and-architecture.md》仅保留兼容原则，旧方案中“所有请求经 Super”“Codex 是所有 Agent”不成立。本文同时补充原拟独立可靠性研究的关键设计；编排与语音具体源码证据见同目录专项报告。
+研究日期：2026-10-21。本文是实现决策稿，不代表已有运行代码。以完整阅读的[《Cylo-完整产品需求说明书.md》](../../Cylo-完整产品需求说明书.md)为最高产品依据，产品统一更名 Cylo；最新范围取消官方 Codex 桌面App支持，保留macOS/Linux CLI、客户端、后台部署及跨环境迁移；旧《codex-super-agent-requirements-and-architecture.md》仅保留兼容原则，旧方案中“所有请求经 Super”“Codex 是所有 Agent”不成立。本文同时补充原拟独立可靠性研究的关键设计；编排与语音具体源码证据见同目录专项报告。
 
 ## 1. 决策摘要
 
 | 问题 | 主决策 | 替代路线与触发条件 |
 |---|---|---|
-| 应用结构 | TypeScript 模块化单体控制服务 + 独立执行 runner；React 响应式 PWA；明确版本化 JSON Schema 契约 | 核心控制服务无吞吐证据前不拆微服务；若 CAO 有复用价值，只加 Python 侧车适配器 |
+| 应用结构 | TypeScript 模块化单体控制服务 + 独立执行 runner；React 响应式 PWA；明确版本化 JSON Schema 契约 | 核心控制服务无吞吐证据前不拆微服务；CAO可通过Python适配器接入，provider与session改造路线见[07](07-cao-cli-handoff-plan.md) |
 | 权威数据 | 单机 SQLite WAL、本地磁盘、控制服务唯一业务写入口；事务 outbox 与 durable jobs 同库 | 多节点控制平面/团队写并发需求出现后迁 PostgreSQL；不将 SQLite 放 NFS [S3] |
 | 后台运行 | macOS launchd / Linux systemd 管理守护服务，执行主机 runner 持有进程与工作目录 | 不要求 Docker 才能使用本机开发环境；多租户执行用 Linux 容器/VM 隔离 |
-| Agent 集成 | `AgentRuntime` 适配器；Codex app-server stdio 为首选深度集成实验路径，固定版本 | app-server 命令仍官方标为实验、不受生产支持 [S1]，未过门槛时 CLI 批处理只交付其实际能力，不冒充原生接续 |
-| CAO | 不作为 Cylo 权威控制平面；仅保留可选隔离 CLI fleet adapter | 专项核查发现 TUI 状态解析、默认权限与清理风险，不直接采用其默认配置 |
+| Agent 集成 | `AgentRuntime`适配CAO；先增强Codex CLI/tmux接续，固定版本 | 需要结构化事件/审批时可深入app-server adapter；该路线仍须验证实验/生产支持边界[S1] |
+| CAO | 保留为拟采用的CLI编排底座，可修改Codex provider与session管理；Cylo持有业务权威 | tmux/CLI增强与app-server adapter两路线见[07](07-cao-cli-handoff-plan.md)；默认权限与清理须改造 |
 | 客户端 | PWA 先完成 Mac/iPhone/iPad 同一业务接续，前台语音 | 若锁屏持续语音、系统通知行为、音频路由实测不达产品目标，增加 SwiftUI 原生 iOS/iPadOS 客户端，复用服务契约 |
 | 语音 | 采纳 chatgpt-web-voice 的实时语音上游、Go 网关和多账号池；VoiceSessionAdapter 桥接 Cylo command/回执 | 补齐稳定提交、业务结果注入、账号粘性/并发租约/额度状态；私有协议能力以源码及真实 POC 为准；独立 STT/TTS 仅故障降级 |
 | 记忆 | 原始证据、已确认决策、执行事实、推断分离；Memory Agent 仅产提案/索引 | FTS 起步，嵌入检索后加；向量库不是权威事实库 |
@@ -45,7 +45,7 @@ flowchart LR
 
 **最小部署**：一台常开 Mac 或 Linux；一个控制服务进程（API、调度循环、outbox、记忆作业模块）、一个 runner 进程、本地 SQLite、本地产物目录、Codex 外部进程、固定版本的 Go 语音网关与其账号存储。网关负责上游信令与账号控制，现有音频媒体直连上游；不能把 HTTP 网关当成能拦截现有媒体的 relay。可共包安装，但 runner 不与 HTTP 请求同生命周期。PWA 静态资源由控制服务供应。网络默认局域网或受认证私网；远程使用 TLS。独立服务由 OS supervisor 管理，控制进程崩溃不杀死已部署服务；runner/服务重连后回报。用户工作站睡眠不等于服务器可用，UI 显示执行主机离线与最后观测时间，不称“持续执行”。
 
-**扩展部署**：Linux 常开控制平面 + PostgreSQL + 对象存储 + 多个 Mac/Linux runner；调度器按资源租约选 host；通知/索引可拆进程；团队身份可接 OIDC。每个执行 host 只能看到获授权的项目和 secret 引用。官方 App 已支持通过 SSH 启动远端 Codex app-server 与远端项目，也有本地/远端 chat+Git state handoff。按官方步骤配置 SSH、远端安装认证和保存项目后，仍须验证 Cylo 第三方 thread 的 App 发现/daemon 协同；控制服务搬云上本身不证明这些集成已通过。无需求前不引入 Kubernetes、Redis、消息中间件或专门向量服务。
+**扩展部署**：Linux 常开控制平面 + PostgreSQL + 对象存储 + 多个 Mac/Linux runner；调度器按资源租约选 host；通知/索引可拆进程；团队身份可接 OIDC。每个执行 host 只能看到获授权的项目和 secret 引用。远端CLI可经SSH登录同一backend执行环境，沿用相同用户、CODEX_HOME、项目路径与认证；这不是官方App SSH或跨host会话搬迁。不同执行主机的数据迁移仍按§13验收。无需求前不引入 Kubernetes、Redis、消息中间件或专门向量服务。
 
 模块职责：
 
@@ -236,22 +236,23 @@ interface CapabilityRunner {
 
 ### 7.1 Codex 原生接续的门槛
 
-官方当前文档提供 `thread/list/read/resume`、历史分页、`turn/start/steer/interrupt`；`thread/list` 默认 `sourceKinds` 只有 cli/vscode，发现 Cylo发起会话必须显式包含appServer/exec等 [S1]。`thread/resume` 是保存会话恢复，不证明官方 App 在 UI 可见，也不证明可抢占活跃会话。当前文档仍写 app-server命令和WebSocket传输实验且不支持生产；优先stdio不意味着已经消除实验风险。
+官方当前文档提供 `thread/list/read/resume`、历史分页、`turn/start/steer/interrupt`；`thread/list` 默认 `sourceKinds` 只有 cli/vscode，发现 Cylo发起会话必须显式包含appServer/exec等 [S1]。`thread/resume` 是保存会话恢复，不证明可抢占活跃会话；官方桌面App发现不在当前验收范围。当前文档仍写 app-server命令和WebSocket传输实验且不支持生产；优先stdio不意味着已经消除实验风险。
 
-必须固定 Codex CLI/App版本、账号/认证域、配置目录、host、cwd和原生thread ID，验证以下矩阵后才能标“原生接续”：
+必须固定 Codex CLI版本、账号/认证域、配置目录、host、cwd和原生thread ID，验证以下矩阵后才能标“原生接续”：
 
 | 场景 | 验收证据 |
 |---|---|
 | Cylo → Linux CLI | 已通过同机隔离CODEX_HOME、fixture provider合成文字续作；真实模型/工具/审批与代码目标仍需验收 |
 | Linux CLI → Cylo | 已通过同一thread的官方交互CLI第二turn后app-server读回并完成第三turn；CLI独立创建的发现/项目关联与真实工具仍需验收 |
-| Cylo → macOS App | 真实安装App找到对应thread/workspace并追加，回Cylo可看到新turn；当前未验证 |
-| macOS App → Cylo | 能通过支持的发现/读取方式关联原生thread；当前未验证 |
+| macOS CLI ↔ Cylo | 两方向同原生会话/工作区，真实工具与审批恢复；当前未实机验证；官方桌面App不在范围 |
 | 并发与中断 | 外部活跃会话只能只读；明确交接后单写，不重复执行；外部绕过锁能检测并停止派发 |
 | 升级/迁移 | 固定版本升级后原生历史可恢复；不同host路径变化不误关联 |
 
-官方 [App 远端连接说明](https://learn.chatgpt.com/docs/remote-connections.md) 明确：App 通过 SSH 在远端用户 login shell 启动 app-server，远端须安装并认证 Codex；跨 host handoff 移动 chat 与 Git state，目标先保存相同 Git repo/subdir 的 project，运行中先 interrupt，Codex cloud 不是交接目的地。官方 [commands](https://developers.openai.com/codex/reference/commands.md) 还给本地 `codex://threads/<thread-id>` 深链；不能发明远端host参数。上述是官方功能路径，不替代 Cylo 第三方会话发现、同daemon使用及工具历史的 Mac 实测。
+远端接续优先经SSH进入同一backend执行环境运行官方CLI，核对用户、CODEX_HOME、工作区和原生session。跨环境数据迁移仍需独立的备份/路径/权限/原生恢复验收（§13）；官方App深链、App SSH及host handoff只保留在02历史资料，不是本方案依赖。
 
-交接：`prepare` 停止新turn→中断/等当前turn结束→核对工作区与外部副作用→存checkpoint和handoff包→释放lease→原生工具继续；反向先观察原生工具已停止，再claim并reconcile。Cylo lease只约束Cylo的runner，不能强制官方App尊重本地锁；无法检测外部写者时要求显式用户交接并禁止自动接管。活跃会话“无缝迁移”不在已验证承诺内。门槛失败仍可提供项目路径、git状态、原生resume指令（仅实测有效者）和带证据的handoff摘要，标识为降级接续，不等价原生历史。
+Linux三turn实验由app-server与官方CLI直接完成，尚未证明CAO已有同样能力；CAO provider/session增强与app-server adapter的改造边界见[07](07-cao-cli-handoff-plan.md)。
+
+交接：`prepare` 停止新turn→中断/等当前turn结束→核对工作区与外部副作用→存checkpoint和handoff包→释放lease→原生工具继续；反向先观察原生工具已停止，再claim并reconcile。Cylo lease只约束Cylo的runner，不能强制独立官方CLI尊重本地锁；无法检测外部写者时要求显式用户交接并禁止自动接管。活跃会话“无缝迁移”不在已验证承诺内。门槛失败仍可提供项目路径、git状态、原生resume指令（仅实测有效者）和带证据的handoff摘要，标识为降级接续，不等价原生历史。
 
 官方 [S1] 另明确 app-server认证从未允许商业或托管服务；单机本地/开源与团队SaaS不能共用未经核实的认证假设。托管扩展前独立验证 Sign in with ChatGPT/API key可用性、条款和账号隔离，不能把语音网关的 ChatGPT 账号池当作 Codex 认证池；语音上游和 Codex 使用独立凭据、授权与用量账本。
 
@@ -435,7 +436,7 @@ SQLite→PostgreSQL：从首版通过仓储接口与显式迁移脚本隔离SQL�
 |---|---|---|
 | 0 证据与协议冻结 | 完整需求ID映射；固定Codex/候选版本；JSON Schema；原生互通；上游真实语音/稳定提交/回执/两账号额度切换及真机POC | 每条原生接续路径分开给实测结果；空thread不能视作已落盘；无模型调用也能确认持久消息 |
 | 1 控制与单机可靠闭环 | SQLite schema、command/outbox/jobs、认证、任务/run状态、runner、基础PWA | 重复发送仅一command；提交后断线/重启不丢；快照与cursor无缺口；暂停/取消显示真实确认 |
-| 2 专业执行与官方互通 | AgentRuntime + Codex固定版本；一个Super按需和Worker直接调用；独立worktree；证据验收 | 关闭客户端继续；run结束不误标task完成；CLI双向恢复；Mac App按实测标能力；外部活跃写者不并发接管 |
+| 2 专业执行与官方互通 | AgentRuntime + Codex固定版本；一个Super按需和Worker直接调用；独立worktree；证据验收 | 关闭客户端继续；run结束不误标task完成；macOS/Linux CLI双向恢复、真实工具与审批；外部活跃写者不并发接管 |
 | 3 语音与跨设备 | 实时上游/Go网关、账号slot/额度观察、稳定turn与回执桥接、通知收件箱、设备游标；依赖阶段1业务契约 | iPhone/iPad/Mac同任务；打断不重复动作；耗尽换账号新媒体且任务不重派；锁屏后后端仍跑；重开恢复事件；记录后台采音限制 |
 | 4 能力创建与独立运行 | manifest/release/deployment、授权、secret、supervisor、健康、checkpoint；依赖阶段1/2 | 邮件监控在Super停用时仍运行；规则直接Worker；超时发送不重发；升级失败可核对/回滚；卸载撤权 |
 | 5 记忆与上下文 | evidence/decision版本、Memory提案、FTS/检索、context manifest；依赖权威事件稳定 | SQLite→PostgreSQL决定不混淆；推断不升格事实；撤权/删除/旧索引不泄露；任务恢复不靠摘要猜状态 |
@@ -447,8 +448,8 @@ SQLite→PostgreSQL：从首版通过仓储接口与显式迁移脚本隔离SQL�
 
 ## 15. 尚未验证与阻断条件
 
-- Codex app-server尽管有丰富接口仍实验；官方App已有本地会话和SSH远端项目/跨host交接路径，但Cylo第三方会话发现/写入/反向同步未在本报告实机证实。编排专项实测0.163.0仅`thread/start(ephemeral=false)`且无turn的会话在重启后`resume`报`no rollout found`，所以“返回thread ID”不是可恢复持久化提交点；需要真实有历史的会话验证落盘/重启。不得制造空turn来绕过验收。
-- 官方CLI出现`--remote`、Unix socket与WebSocket路径，不推导App接管或跨host持久化保证；stdio仍为最小集成选择，稳定字段与整体成熟度分别判断。
+- Codex app-server尽管有丰富接口仍实验；CLI独立创建会话的发现/反向关联、macOS CLI与真实工具/审批仍需验收。官方桌面App、深链和官方host handoff不在范围，不阻断实施。编排专项实测0.163.0仅`thread/start(ephemeral=false)`且无turn的会话在重启后`resume`报`no rollout found`，所以“返回thread ID”不是可恢复持久化提交点；需要真实有历史的会话验证落盘/重启。不得制造空turn来绕过验收。
+- 官方CLI出现`--remote`、Unix socket与WebSocket路径，不推导跨host持久化保证；stdio仍为最小集成选择，稳定字段与整体成熟度分别判断。
 - 当前官方认证文档文字需按具体鉴权表面与部署类型验证；不推出Codex全面禁止商业、也不默认ChatGPT个人登录可用于托管团队。
 - PWA音频在当前目标iPhone/iPad机型、网络和系统版本上的延迟、打断、前后台切换与通知未实测；若目标必须锁屏持续对话，原生客户端立项需先验证系统能力。
 - macOS自主程序的严格网络/文件隔离与资源限制不能照搬Linux容器语义；未提供有效隔离前只允许高信任单用户模式。
@@ -466,7 +467,7 @@ SQLite→PostgreSQL：从首版通过仓储接口与显式迁移脚本隔离SQL�
 - **[S5] WebKit Web Push for Web Apps on iOS and iPadOS**（2023-02-16）：[官方文章](https://webkit.org/blog/13878/web-push-for-web-apps-on-ios-and-ipados/)。16.4主屏Web App和用户交互授权，不证明后台持续采音。
 - **[S6] Apple Creating Launch Daemons and Agents**：[官方归档](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)。launchd作业/KeepAlive；归档文档只支持设计方向，具体OS版本安装需实测。
 - **[S7] systemd.service**：[官方手册](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html)。service类型、Restart等基础supervisor语义；durable业务任务仍由Cylo负责。
-- 候选源码及版本证据：CAO `4e990a9`（v2.5.4）由编排专岗核查；chatgpt-web-voice `6338ac478070aaa34bfe7a3c0469caf9e9174c02`由语音专岗核查，详见对应专项报告。CAO保留可选局部适配；语音候选已选为待实施主线依赖，尚未完成产品集成。
+- 候选源码及版本证据：CAO `4e990a9`（v2.5.4）由编排专岗核查；chatgpt-web-voice `6338ac478070aaa34bfe7a3c0469caf9e9174c02`由语音专岗核查，详见对应专项报告。CAO保留拟采用与改造路线（见07）；语音候选已选为待实施主线依赖，尚未完成产品集成。
 
 [S1]当前原文（`Auth endpoints`，范围限定为该页的app-server authentication）：
 

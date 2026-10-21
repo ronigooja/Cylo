@@ -1,13 +1,23 @@
 # Cylo 实现调研与架构方案
 
-调研日期：2026-10-21。产品现名 **Cylo**。本文以 [Cylo 完整产品需求说明书](Cylo-完整产品需求说明书.md) 为唯一产品基线，整合并独立复核五份专项研究。**目前完成的是需求、选型、设计与隔离实验，产品实现尚未开始。** 所有阶段、技术栈和指标均为实施建议，不修改完整需求。
+调研日期：2026-10-21。产品现名 **Cylo**。本文以 [Cylo 完整产品需求说明书](Cylo-完整产品需求说明书.md) 为唯一产品基线，整合专项研究与CLI接续改造方案。**目前完成的是需求、选型、设计与隔离实验，产品实现尚未开始。** 本轮按用户明确决定移除官方Codex桌面App支持，其他完整需求保留；阶段、技术栈和指标为实施建议。
 
-**总体推荐：建设 Cylo 自己的持久控制平面，按需调用 Super、允许服务直接调用 Worker，并独立管理普通后台程序、记忆与权限。Codex 优先验证官方 app-server 适配路径；语音采纳 chatgpt-web-voice 的 ChatGPT 实时语音上游、Go 网关与多账号池，补充额度调度和 Cylo 业务桥接。可以开始协议 POC 与隔离开发，尚不能承诺完整产品可交付。** 最大阻断是 Cylo 第三方会话在官方 Mac App 的原生双向发现/接续、真实工具/审批恢复、稳定语音提交与业务回执桥接，以及 app-server 的生产支持与适用鉴权路径；没有端到端证据时不能把摘要导入包装成原生接续。
+**总体推荐：建设 Cylo 自己的持久控制平面，按需调用 Super、允许服务直接调用 Worker，并独立管理普通后台程序、记忆与权限。保留 CAO 作为 Super/Worker 的 CLI 编排底座，先改造其 Codex provider、session 管理与 tmux 输入交接；app-server adapter 是结构化事件/审批需求下的可选深入路线。语音继续采纳 chatgpt-web-voice 的 ChatGPT 实时语音上游、Go 网关与多账号池，补充额度调度和 Cylo 业务桥接。** 可以开展隔离开发，完整产品仍须通过 CLI 同原生会话双向接续、真实工具/审批、稳定语音提交与业务回执验收。官方 Codex 桌面 App、发现/深链及官方 host handoff 已移出范围，不再阻断实施；macOS CLI、浏览器、后台部署和跨环境迁移仍保留。
 
 | 用户指定候选 | 决定 | 依据与可复用范围 |
 |---|---|---|
-| [awslabs/cli-agent-orchestrator](https://github.com/awslabs/cli-agent-orchestrator)（CAO） | **不采纳为总控制面或 Codex 主运行时；保留可选局部适配** | 当前具有数据库、工作流恢复和多 CLI 能力，不能误称无持久化；但 Codex 依赖 TUI 抓屏、默认 `--yolo`，逐工具审批受限，删除终端会强制删除 worktree 未提交内容。参考协作工具/多 CLI adapter，未来有明确需求才改造成隔离 fleet 后端，不能与另一 adapter 同时持有同一运行。详见 [02](docs/research/02-orchestration-and-codex.md)。 |
+| [awslabs/cli-agent-orchestrator](https://github.com/awslabs/cli-agent-orchestrator)（CAO） | **保留为拟采用的CLI编排底座，先走最小CLI/tmux增强路线** | 改Codex provider与session管理：区分真实PTY附着和send/read loop，持久化manual/orchestrated输入控制，增加thread映射与Codex resume，退出保留目录/原生会话；修默认`--yolo`和force清理。Cylo仍持有业务权威。结构化事件/审批要求无法满足时再走app-server adapter，不能两个adapter同时持有同一运行。源码定位与两路线见[07](docs/research/07-cao-cli-handoff-plan.md)。 |
 | [Space3044/chatgpt-web-voice](https://github.com/Space3044/chatgpt-web-voice) | **采纳实时语音上游、网关与多 ChatGPT 账号池，维护固定版本的 Cylo 适配分支** | 保留 ChatGPT Web 实时媒体与私有信令，复用账号管理、LRU 选择与会话粘性；增加原子并发租约、额度状态观察、错误分类/冷却、耗尽后新会话切换、稳定用户 final 提交及业务回执桥接。上游未提供现成 Super/function 桥；不能套用官方 Realtime 协议。实质复制遵守 MIT。详见 [03](docs/research/03-voice.md)。 |
+
+CAO与需求在执行编排层匹配，取消官方App支持后CLI路线更直接；此前将其整体排除为主运行时的结论过重。实施分三层：
+
+| 层次 | 工作范围 |
+|---|---|
+| 已有复用 | CAO的Super/Worker、多CLI provider、tmux进程、消息/收件箱、数据库与工作流恢复机制；按实际语义接入，不重做这些能力 |
+| CAO内部改造 | Codex thread/session映射与resume；manual/orchestrated输入互斥及交回；真实PTY附着入口；退出/删除时保留工作成果；默认权限和可观测状态修正 |
+| Cylo外部新增 | 统一任务/证据/授权权威、跨设备客户端、长期服务生命周期、可靠记忆、实时语音网关/账号调度和迁移恢复；这些平台职责不能只靠CAO终端状态替代 |
+
+TUI解析、真实工具审批、输入竞态、force清理和生产可靠性仍需验证或改造；取消App验收不代表这些风险消失。07给出逐文件patch边界。
 
 ## 阅读导航与需求优先级
 
@@ -18,6 +28,8 @@
 | [03 语音](docs/research/03-voice.md) | 实时上游/网关/账号池源码、Cylo桥接边界、移动限制与真机 POC |
 | [04 总体架构](docs/research/04-architecture.md) | 实体模型、状态机、API/事件、能力生命周期、记忆与迁移的详细契约 |
 | [05 可靠性与安全复核](docs/research/05-reliability-security-operations.md) | 恢复边界、授权/隔离、故障注入矩阵与生产准入条件 |
+| [06 实时语音接入复核](docs/research/06-realtime-integration-review.md) | 实时语音业务桥接与跨文档约束 |
+| [07 CAO CLI接续改造](docs/research/07-cao-cli-handoff-plan.md) | 最小CLI/tmux增强、app-server adapter可选路线及源码patch边界 |
 
 旧 [Codex Super 需求与架构讨论稿](codex-super-agent-requirements-and-architecture.md) 仅保留历史，不再与新版并列生效。新版不是“把旧 Super 系统换个名字”：所有请求经过 Super、Codex 承担所有执行、一次会话代表一个长期任务，都不满足新需求。阶段子集通过也不等于完整产品通过。
 
@@ -48,7 +60,7 @@ flowchart TB
 
 首版建议 TypeScript 模块化控制服务、React 响应式 PWA、版本化 JSON Schema、SQLite 本地磁盘和独立 runner。macOS 用 launchd、Linux 用 systemd 管理常驻进程。明确边界后可同包安装，不必先做微服务。Python Agent/普通程序通过协议接入，技术栈不决定产品范围。服务端必须是常开机器；主机睡眠/关机期间展示离线与最后观测时间，不能声称仍在执行。
 
-未来按实测需要增加 PostgreSQL、对象存储、多个 runner 与组织身份。单人版起就保留 workspace、principal、project 权限字段；未建立租户执行隔离前不能开放不可信团队共用主机。官方 Mac/Windows App 已提供 SSH 远端项目及本机/远端 chat+Git state handoff 路径，Linux 可作为实际执行端；须按官方步骤安装认证远端 Codex、建立 SSH 连接并保存项目，再验证 Cylo 第三方会话的发现与交接。部署在远端本身不证明这条集成已通过。
+未来按实测需要增加 PostgreSQL、对象存储、多个 runner 与组织身份。单人版起就保留 workspace、principal、project 权限字段；未建立租户执行隔离前不能开放不可信团队共用主机。远端CLI可通过SSH进入同一backend执行环境，使用相同用户、CODEX_HOME、项目路径及认证继续；这是CLI同环境接续。跨host迁移另按备份、路径和权限映射及原生恢复材料验收，不依赖官方App SSH/host handoff。
 
 ### 1. 控制平面负责真实状态
 
@@ -62,13 +74,15 @@ flowchart TB
 
 Super 只负责复杂目标理解、计划、依赖和异常协调，输出计划提案，由控制平面校验执行。Worker 按能力契约获得最小上下文与工具权限。确定性路由、时钟、调度、预算、健康检查和普通状态查询直接用程序。并行任务使用独立 worktree/资源锁；集成结果需单独验收，worktree 本身没有安全沙箱功能。
 
-**优先适配 app-server，不等于它已获生产准入。** 当前官方文档明确 app-server command 和 WebSocket transport 是 experimental、unsupported for production workloads；stdio 是降低接入复杂度的 POC 起点，不能据此宣称整个接口获得稳定生产支持。固定发布二进制与生成 schema，验证 thread/start/list/read/resume、turn/start/steer/interrupt、历史分页和双向审批。也可评估官方 Python Codex SDK 是否覆盖同一契约；这不会消除底层成熟度、恢复和互斥责任。Agents SDK 只可选用于 Super/非 Codex Worker，不承担 Cylo 任务权威。
+**先在CAO补CLI接续，不必为此单项改成app-server。** 最小路线保留CAO Super/Worker与tmux，改造输入控制、thread映射、Codex resume及保留/清理策略；真实PTY附着可让用户继续操作同一运行CLI，进程退出后的原生resume是另一条需新增与验收的路径。详见[07](docs/research/07-cao-cli-handoff-plan.md)。
+
+app-server adapter用于需要更可靠结构化事件和逐工具审批的深入路线，不能只替换provider名称而不解耦终端生命周期。其command和WebSocket仍被官方标记experimental、unsupported for production workloads；若采用该路线，须固定二进制/schema并验收thread/turn/审批/重启及生产支持与适用鉴权边界。Agents SDK只可选用于Super/非Codex Worker，不承担任务权威。
 
 原生交接顺序是停止新派发 → 确认当前执行/工具已停及副作用可核对 → 保存 thread、工具配置、工作区与 dirty 文件证据 → 释放写权 → 官方工具接续 → Cylo 重新读取原生历史/Git/文件并核对。数据库租约不能约束不合作的官方进程；无法证明旧写者停止或资源拒绝旧代次时禁止自动接管。
 
-02 新增隔离 Linux 合成文本实测：同 CODEX_HOME、同原生 thread，app-server 首轮 → 官方交互 CLI resume 第二轮 → app-server 读回两轮并完成第三轮，轮流接管与交回的文字历史闭环通过。provider 是本地 fixture，真实模型、工具/审批完整恢复、Mac 官方 App 发现 Cylo thread 仍待验。官方 [远端连接说明](https://learn.chatgpt.com/docs/remote-connections.md) 已给 SSH 启动远端 app-server、远端项目及跨 host chat+Git state handoff 路径；运行中先 interrupt，不能据此宣称 Cylo 与 App 的 daemon/第三方会话协同已实测。目标是同一原生会话轮流接续，不承诺同时控制。文本导入、复制摘要和新建 thread 可作为明确标注的临时重建工具，不能通过 `CY-05` 原生接续验收。接口或 App 无法满足时，继续隔离开发其他模块可以，但完整产品仍 No-Go，需评估官方接口演进或明确提请需求取舍，不能自行降级。
+02 已有隔离 Linux 合成文本实测：同 CODEX_HOME、同原生 thread，app-server 首轮 → 官方交互 CLI resume 第二轮 → app-server 读回两轮并完成第三轮。它证明这两个官方入口的文字历史闭环，**不是 CAO 已支持原生接续**；provider是本地fixture，真实模型、工具/审批、CLI独立建会话反向关联和macOS CLI仍待验。
 
-可实现的接续体验分两级推进：先做“在官方 CLI 继续 / 交回 Cylo”，展示同 thread、工作目录、未提交修改与最近观测状态，交接后只保留一个执行写者；Linux 同机文字闭环已有实验证据，工程重点在状态核对和工具/审批恢复。随后做“在 Mac App 打开 / 远端项目继续”，使用官方本地深链或 SSH 项目/handoff 路径，实测第三方 thread 可见性和配置/daemon 兼容。跨 host chat+Git state 搬迁不能只复制 Cylo 数据库，也不承诺 thread ID 不变。普通用户无需重述需求；可追溯地保留原生历史/代码/工具证据，Cylo 回来后重新核对真实状态。
+实现体验先做“进入同一CLI / 交回Cylo”，展示session/thread、工作目录、未提交修改和真实状态，只保留一个输入/执行控制方；退出后通过原生resume恢复同一会话。远端可SSH进入同一backend。摘要导入、新建thread或仅复用tmux窗格均不能单独通过同会话原生恢复验收；CLI接口无法满足时记录缺口并阻止宣称完整产品通过。跨环境数据迁移仍独立验收，官方App发现、深链和host handoff不作依赖。
 
 ### 3. 普通程序形成长期能力
 
@@ -110,8 +124,8 @@ Super 只负责复杂目标理解、计划、依赖和异常协调，输出计�
 
 | 优先级 / 门槛 | 最小实验与需要保留的证据 | 不通过时的处置 |
 |---|---|---|
-| B0 官方原生互通 | 真 Mac 与当前官方 App，Cylo/官方双方各创建含真实工具记录的 thread，互相发现、接续至少两轮；Linux CLI 同样双向测试；保留版本、同 thread/store/worktree、修改与历史证据 | 完整 `CY-05` 和场景 A 暂 No-Go；明确支持矩阵，不能用摘要恢复替代 |
-| B0 接口生产与鉴权 | 固定 app-server/SDK 版本与 schema；验证审批/steer/interrupt/分页/重启；评审官方 experimental 支持风险；按本地与托管模式分别确认许可适用的登录/API/SIWC 接入及账户可用性 | 可继续隔离 POC；未满足支持/鉴权要求不能发布对应生产或托管模式 |
+| B0 CLI原生互通 | macOS/Linux官方CLI与Cylo双方各创建含真实工具记录的会话，交接至少两轮；验证输入控制权、退出后原生resume、反向关联与真实工具/审批；保留同session/thread/store/worktree证据 | 完整 `CY-05` 和场景 A 暂 No-Go；明确支持矩阵，不能用摘要恢复替代 |
+| B0 接口生产与鉴权 | 按实际采用的CLI或app-server路径固定版本；app-server路线另固定schema、验证审批/steer/interrupt/分页/重启；评审官方 experimental 支持风险；按本地与托管模式分别确认许可适用的登录/API/SIWC 接入及账户可用性 | 可继续隔离 POC；未满足支持/鉴权要求不能发布对应生产或托管模式 |
 | B0 真实执行与恢复 | 首输入持久化；进程崩溃、旧 shell 存活、旧审批、外部成功但回执丢失；核对真实文件与副作用次数 | 完成与安全恢复闭环前不开放自主长期执行；unknown 显式阻塞 |
 | B0 实时语音及业务桥接 | 固定上游 SHA；授权账号真实建立 WebRTC/私有信令会话；用户 final 只提交一次 Cylo command；Super/Worker 真执行后回注回执并核对播报；两账号租约争用、429/耗尽/401/断线分类、切新会话后恢复业务上下文且无重复执行 | 逐项修补网关/桥接并复测；记录不支持项，保留实时语音主线；未通过不宣称完整语音能力 |
 | B1 移动语音 | 真 iPhone/iPad/Mac，中文/中英/否定词/数字、回声与双讲、VAD、插话、网络切换、锁屏恢复、通知、跨设备继续；量测 p50/p95 并留样本 | 文字路径可用；修补实时媒体 adapter，或原生客户端立项；不能宣称自然语音已验收 |

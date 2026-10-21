@@ -1,6 +1,6 @@
 # Cylo 可靠性、安全与运维专项复核
 
-研究与实际访问日期：**2026-10-21**。完整阅读[新版完整需求](../../Cylo-完整产品需求说明书.md)（取证时该工作树文件名仍为 `Rumi-完整产品需求说明书.md`，主线仅统一更名，不改需求实质）、旧架构稿，并只读复核 [04 总体架构](04-architecture.md)、[02 编排取证](02-orchestration-and-codex.md) 和 [01 稳定需求编号](01-requirements.md)。本文补充 CY-04-03、CY-05-05、CY-07、CY-08、CY-09、CY-14、CY-15、CY-16、CY-17 的实现约束，不重新选择总体技术栈，也不代表运行产品已实现。
+研究与实际访问日期：**2026-10-21**。完整阅读[新版完整需求](../../Cylo-完整产品需求说明书.md)（取证时该工作树文件名仍为 `Rumi-完整产品需求说明书.md`，主线此前统一更名；现按用户决定取消官方Codex桌面App支持，保留macOS/Linux CLI与跨环境迁移）、旧架构稿，并只读复核 [04 总体架构](04-architecture.md)、[02 编排取证](02-orchestration-and-codex.md) 和 [01 稳定需求编号](01-requirements.md)。本文补充 CY-04-03、CY-05-05、CY-07、CY-08、CY-09、CY-14、CY-15、CY-16、CY-17 的实现约束，不重新选择总体技术栈，也不代表运行产品已实现。
 
 标识约定：**事实**=已获取的一手文档/固定源码；**实验**=本报告隔离脚本实际结果；**设计**=建议实施契约；**未验证**=尚无目标环境端到端证据。官方能力不能代替 Cylo 自身验收。本文未运行生产服务、部署程序或发出外部副作用。
 
@@ -99,7 +99,7 @@ Linux可评估systemd `NoNewPrivileges`、`ProtectSystem`、`ProtectHome`、路�
 
 **CAO专项事实与处置。** 02已固定 `4e990a9d78b154ad76c6cf94c7b51e36fce69f21`（2.5.4）；本报告独立只读核对源码：Codex命令默认含 `--yolo`，并非Cylo默认应采用的授权模式；`worktree_service.remove_worktree`明确 `git worktree remove --force` 后 `git branch -d`，所以未提交/未跟踪文件被丢弃，但未合并已提交分支不是被强删 [R15]。不夸大为“所有提交都删光”。
 
-若未来复用CAO，仅在隔离fleet adapter中固定版本并验证最终命令，禁止默认yolo路径；prompt里的allowedTools不当作强制策略。删除terminal不能直接回收工作目录：先证明所有writer停止→登记tracked diff、binary patch、untracked文件清单/内容hash与必要ignored产物→原子归档并校验可读→验收/保留期→普通非force清理。ignored目录可能有secret或大依赖，应按分类处理，不盲目整目录打包。清理失败保留quarantine和容量告警；任何force销毁都是独立、可审阅、限定路径的授权动作。
+若采用CAO，按[07](07-cao-cli-handoff-plan.md)的provider/session改造路线固定版本并验证最终命令，禁止默认yolo路径；prompt里的allowedTools不当作强制策略。删除terminal不能直接回收工作目录：先证明所有writer停止→登记tracked diff、binary patch、untracked文件清单/内容hash与必要ignored产物→原子归档并校验可读→验收/保留期→普通非force清理。ignored目录可能有secret或大依赖，应按分类处理，不盲目整目录打包。清理失败保留quarantine和容量告警；任何force销毁都是独立、可审阅、限定路径的授权动作。
 
 ## 6. 审计、数据保留与成本限额
 
@@ -119,7 +119,7 @@ Linux可评估systemd `NoNewPrivileges`、`ProtectSystem`、`ProtectHome`、路�
 
 **事实。** SQLite Online Backup API对运行中的数据库创建一致性副本 [R3]；直接复制活动主db文件不能保证含WAL的提交都被复制。PostgreSQL官方区分SQL dump、文件系统备份、连续归档/PITR [R5]；需要更小RPO应评估WAL归档与base backup，而不是把“已迁Postgres”当作备份方案。
 
-**备份设计。** 一个manifest关联一致DB快照（schema版本/事件水位/备份generation）、内容寻址产物/release、项目提交和未提交/未跟踪必要文件、配置/trigger/checkpoint、原生会话可支持恢复的材料及版本、权限/凭证引用、删除tombstone、对象校验和。原生session文件仅在官方支持和权限允许范围备份；不能从恢复一份数据库推断Mac官方App同步通过。
+**备份设计。** 一个manifest关联一致DB快照（schema版本/事件水位/备份generation）、内容寻址产物/release、项目提交和未提交/未跟踪必要文件、配置/trigger/checkpoint、原生会话可支持恢复的材料及版本、权限/凭证引用、删除tombstone、对象校验和。原生session文件仅在官方支持和权限允许范围备份；不能从恢复一份数据库推断官方CLI原生会话与真实工具/审批完整恢复；官方桌面App同步不在范围。
 
 先形成DB快照与引用清单，并pin引用对象防GC；复制并逐项校验后发布完成manifest，缺对象的备份不能标成功。执行中的项目文件采用冻结写入/文件系统一致性快照或声明弱一致范围；数据库、artifact和项目目录不是天然一个事务。secret单独加密与访问控制，恢复密钥走独立安全材料或重新授权；无解密材料的加密备份不能算可恢复。至少保留一份故障域外备份；RAID、同盘副本和Git远端均不能覆盖所有故障及未提交成果。
 

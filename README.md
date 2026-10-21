@@ -2,11 +2,11 @@
 
 Cylo 是一个跨设备、可长期运行、管理真实任务与记忆，并在授权下调用 Agent 和部署普通后台服务的开放式 AI 系统。本仓库当前是**实现前研究与架构决策材料**，尚未开始产品实现。
 
-先读 [实现调研与架构方案](Cylo-实现调研与架构方案.md)：包含总体推荐、两个指定候选的取舍、关键阻断、全需求覆盖与验收路线。推荐自有持久控制平面、按需 Super/独立 Worker，并采纳 chatgpt-web-voice 的实时语音上游、网关与多 ChatGPT 账号池；Codex app-server 是优先适配与 POC 主线，生产支持、鉴权和官方 App 双向原生互通仍须过门槛。CAO 不直接承担总控。语音实施需补账号粘性、并发租约、额度观察和耗尽后新会话切换；上游语音 assistant 经 Cylo 桥接 Super/Worker，业务状态与审批由 Cylo 管理。
+先读 [实现调研与架构方案](Cylo-实现调研与架构方案.md)。推荐自有持久控制平面、按需Super/独立Worker；保留CAO作为CLI编排底座，先补Codex provider/session和tmux输入交接，app-server adapter为可选深入路线，详见[07](docs/research/07-cao-cli-handoff-plan.md)。语音继续采用Space3044/chatgpt-web-voice实时语音上游、网关与多ChatGPT账号池，补稳定turn/业务桥接、粘性、并发租约与额度耗尽换号。用户已取消官方Codex桌面App支持；macOS/Linux CLI、macOS浏览器/客户端/后台部署和跨环境迁移仍在范围。
 
 | 文档 | 作用 |
 |---|---|
-| [Cylo 完整产品需求](Cylo-完整产品需求说明书.md) | 唯一当前需求基线，原《Rumi-完整产品需求说明书》只做产品更名；完整需求未被阶段裁剪 |
+| [Cylo 完整产品需求](Cylo-完整产品需求说明书.md) | 唯一当前需求基线，当前产品基线；按用户决定取消官方Codex桌面App，其他需求保留 |
 | [旧 Codex Super 讨论稿](codex-super-agent-requirements-and-architecture.md) | 历史参考，已由新版取代；其中技术建议不是新版硬约束 |
 | [01 需求追踪](docs/research/01-requirements.md) | 全22章、稳定需求ID、场景A—E、逐项验收 |
 | [02 编排与 Codex](docs/research/02-orchestration-and-codex.md) | 固定源码、CAO取舍、官方接口、离线POC与原生交接边界 |
@@ -14,8 +14,9 @@ Cylo 是一个跨设备、可长期运行、管理真实任务与记忆，并在
 | [04 架构契约](docs/research/04-architecture.md) | 数据、任务、事件、权限、长期能力、记忆与迁移设计 |
 | [05 可靠性与安全复核](docs/research/05-reliability-security-operations.md) | 故障恢复、隔离、撤权与生产验收矩阵 |
 | [06 实时语音接入独立复核](docs/research/06-realtime-integration-review.md) | 源码边界、业务桥接门槛与最终一致性检查 |
+| [07 CAO CLI接续改造](docs/research/07-cao-cli-handoff-plan.md) | 最小CLI/tmux增强、app-server adapter与源码改造点 |
 
-研究日期为2026-10-21。源码事实使用固定SHA，官方事实来自实际获取的页面；建议、源码能力、离线实验和未验证项在各报告分别标识。Linux同机同隔离CODEX_HOME的合成文本已通过app-server→官方交互CLI→app-server三轮接续；官方另有App SSH远端项目与chat/Git state交接路径，但Cylo第三方会话的Mac官方App双向发现/接续、真实工具/审批完整恢复、iPhone/iPad音频、生产可靠性及性能成本均不能由当前材料宣称通过。
+研究日期为2026-10-21。Linux同机同隔离CODEX_HOME的合成文本已通过app-server→官方交互CLI→app-server三轮接续；这是两个官方入口的fixture实验，并非CAO已支持。macOS/Linux CLI同会话双向接续、真实工具/审批完整恢复、iPhone/iPad音频、跨环境迁移、生产可靠性及性能成本仍须验收。官方桌面App、深链及官方host handoff不再作为Go/No-Go门槛。
 
 复现证据时，先看 [02 的版本与隔离脚本](docs/research/02-orchestration-and-codex.md) 和 [03 的实时语音取证](docs/research/evidence/voice-realtime-audit.md)。上游仓库不包含在本仓库中，需按固定SHA取回；不要只clone最新main就假定复现同一结论。02 的脚本仅使用临时Git目录和临时CODEX_HOME；运行前核对路径，不能改成真实用户会话目录。离线provider实验不证明成功模型调用或完整产品恢复。同原生thread三轮交接的脚本/实际history快照见02的P5；它通过官方CLI与app-server进行合成文字读写。
 
