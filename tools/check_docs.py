@@ -66,12 +66,27 @@ def source_files(root: Path, commit: str) -> list[str]:
     return sorted(files)
 
 
-def expected_archive_path(source: str, archive_root: str) -> str:
+ROOT_ARCHIVE_NAMES = {
+    "Cylo-完整产品需求说明书.md": "product-requirements.md",
+    "Cylo-实现调研与架构方案.md": "superseded-implementation-plan.md",
+    "Cylo-开源项目选型比较.md": "project-selection-comparison.md",
+    "codex-super-agent-requirements-and-architecture.md": "codex-super-agent-requirements-and-architecture.md",
+}
+
+
+def expected_archive_path(source: str, archive_root: str) -> str | None:
+    if source == "README.md":
+        # The new root README replaces this former index; docs/archive/README.md
+        # records the original path and points to the source commit in Git.
+        return None
     if source.startswith("docs/research/evidence/"):
         return source.replace("docs/research/evidence/", f"{archive_root}/evidence/", 1)
     if source.startswith(SOURCE_RESEARCH_DIR):
         return source.replace("docs/research/", f"{archive_root}/reports/", 1)
-    return f"{archive_root}/product/{PurePosixPath(source).name}"
+    name = ROOT_ARCHIVE_NAMES.get(source)
+    if name is None:
+        raise CheckFailure(f"no archive mapping configured for source file: {source}")
+    return f"{archive_root}/{name}"
 
 
 def check_archive(root: Path, commit: str, archive_root: str) -> tuple[list[str], list[str]]:
@@ -81,15 +96,29 @@ def check_archive(root: Path, commit: str, archive_root: str) -> tuple[list[str]
         errors.append(
             f"{commit} source inventory has {len(files)} files; expected {EXPECTED_SOURCE_COUNT}"
         )
+    inventory_path = root / "docs/archive/README.md"
+    inventory = inventory_path.read_text(encoding="utf-8") if inventory_path.is_file() else ""
+    if not inventory:
+        errors.append("missing archive inventory: docs/archive/README.md")
     for source in files:
+        if f"`{source}`" not in inventory:
+            errors.append(f"archive inventory omits original source path: {source}")
         destination = expected_archive_path(source, archive_root)
+        if destination is None:
+            continue
         original = git(root, "show", f"{commit}:{source}", text=False)
         target = root / destination
         if not target.is_file():
             errors.append(f"missing archive copy: {destination} (from {source})")
             continue
-        if target.read_bytes() != original:
+        is_non_markdown_evidence = (
+            source.startswith("docs/research/evidence/")
+            and PurePosixPath(source).suffix.lower() != ".md"
+        )
+        if is_non_markdown_evidence and target.read_bytes() != original:
             errors.append(f"archive bytes differ: {destination} (from {source})")
+    if "README.md (replaced)" not in inventory:
+        errors.append("archive inventory must document the original README.md as replaced")
     return files, errors
 
 
@@ -113,6 +142,8 @@ def strip_markdown_for_scan(text: str, *, quoted: bool = False) -> str:
             continue
         # Inline code and HTML comments commonly hold source literals or paths.
         line = re.sub(r"`+[^`]*`+", "", line)
+        line = re.sub(r"\]\([^)]*\)", ")", line)
+        line = re.sub(r"[\w./-]*[\u3400-\u9fff][\w./-]*\.md\b", "", line)
         line = re.sub(r"<!--.*?-->", "", line)
         output.append(line)
     return "\n".join(output)
@@ -139,20 +170,9 @@ def markdown_files(root: Path) -> list[Path]:
     )
 
 
-def is_archive(path: Path, root: Path) -> bool:
-    try:
-        relative = path.relative_to(root).as_posix()
-    except ValueError:
-        return False
-    return relative.startswith("docs/archive/")
-
-
 def cjk_check(root: Path, prd_translation: Path | None) -> list[str]:
     errors = []
     for path in markdown_files(root):
-        if is_archive(path, root):
-            # The archive is source material and must remain verbatim.
-            continue
         cleaned = strip_markdown_for_scan(path.read_text(encoding="utf-8"), quoted=True)
         if has_cjk(cleaned):
             errors.append(f"remaining CJK narrative text: {path.relative_to(root)}")
@@ -218,10 +238,6 @@ def link_check(root: Path) -> list[str]:
     files = markdown_files(root)
     anchors_by_path = {path.resolve(): heading_anchors(path.read_text(encoding="utf-8")) for path in files}
     for source in files:
-        # Archived source documents are byte-preserved historical evidence;
-        # their old relative links naturally refer to their original locations.
-        if is_archive(source, root):
-            continue
         text = source.read_text(encoding="utf-8")
         for match in MARKDOWN_LINK_RE.finditer(text):
             destination = split_link_destination(match.group(1))
@@ -363,7 +379,9 @@ def main() -> int:
     parser.add_argument("--source-commit", default=SOURCE_COMMIT)
     parser.add_argument("--archive-root", default="docs/archive/research")
     parser.add_argument("--master-plan", default="docs/master-plan.md")
-    parser.add_argument("--prd-translation", default="docs/product-requirements.md")
+    parser.add_argument(
+        "--prd-translation", default="docs/archive/research/product-requirements.md"
+    )
     parser.add_argument(
         "--skip-prd-structure", action="store_true",
         help="skip translated full PRD structure check (useful before translation lands)",
