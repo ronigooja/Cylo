@@ -114,6 +114,19 @@ func TestMemoryWorkerLeaseFenceAndIdempotentCompletion(t *testing.T) {
 		t.Fatalf("unexpected claimed job: %#v", response.Items)
 	}
 	job := response.Items[0]
+	validated := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/jobs/"+job.ID+"/validate", map[string]any{"attempt": 1})
+	if validated.Code != http.StatusOK {
+		t.Fatalf("current lease validation status=%d body=%s", validated.Code, validated.Body.String())
+	}
+	var validation struct {
+		Allowed bool `json:"allowed"`
+	}
+	if err := json.Unmarshal(validated.Body.Bytes(), &validation); err != nil {
+		t.Fatal(err)
+	}
+	if !validation.Allowed {
+		t.Fatalf("current claimed job was not authorized for its derived effect: %s", validated.Body.String())
+	}
 	if _, err := store.DB().Exec(`UPDATE memory_jobs SET lease_until=? WHERE id=?`, time.Now().UTC().Add(-time.Second).Format(time.RFC3339Nano), job.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -132,6 +145,10 @@ func TestMemoryWorkerLeaseFenceAndIdempotentCompletion(t *testing.T) {
 	}
 	if len(reclaimed.Items) != 1 || reclaimed.Items[0].ID != job.ID || reclaimed.Items[0].Attempt != 2 {
 		t.Fatalf("lease was not fenced on reclaim: %#v", reclaimed.Items)
+	}
+	staleValidation := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/jobs/"+job.ID+"/validate", map[string]any{"attempt": 1})
+	if staleValidation.Code != http.StatusConflict {
+		t.Fatalf("stale lease validation status=%d body=%s", staleValidation.Code, staleValidation.Body.String())
 	}
 	stale := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/jobs/"+job.ID+"/complete", map[string]any{"attempt": 1})
 	if stale.Code != http.StatusConflict {
