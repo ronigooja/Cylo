@@ -631,6 +631,19 @@ func mayAccessScope(ctx context.Context, tx *sql.Tx, p contracts.Principal, scop
 	}
 }
 
+func mayWriteAccessScope(ctx context.Context, tx *sql.Tx, p contracts.Principal, scope Scope) (bool, error) {
+	switch scope.Kind {
+	case ScopePersonal, ScopeWorkspace:
+		return true, nil
+	case ScopeProject:
+		return control.PrincipalCanWriteProject(ctx, tx, p, scope.ID)
+	case ScopeTask:
+		return control.PrincipalCanWriteTask(ctx, tx, p, scope.ID)
+	default:
+		return false, nil
+	}
+}
+
 func mayWriteScope(p contracts.Principal, scope Scope) bool {
 	if p.WorkspaceID == "" || p.SubjectID == "" || !hasMemoryAction(p, "write", scope) {
 		return false

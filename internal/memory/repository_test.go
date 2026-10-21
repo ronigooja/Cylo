@@ -222,6 +222,45 @@ func TestMemoryActionGrantsAreExplicitAndScopeBound(t *testing.T) {
 	}
 }
 
+func TestProjectViewerCannotWriteMemoryDespiteExplicitMemoryGrant(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newMemoryTestRepo(t)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO projects(id,workspace_id,name,status,version,created_at,updated_at,owner_subject_id) VALUES('project-roles','default','Roles','active',1,?,?,?)`, now, now, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO project_memberships(workspace_id,project_id,subject_id,role,status,created_at) VALUES('default','project-roles','viewer','viewer','active',?),('default','project-roles','member','member','active',?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	scope := Scope{Kind: ScopeProject, ID: "project-roles"}
+	viewer := contracts.Principal{WorkspaceID: "default", SubjectID: "viewer", Scopes: []string{"memory:write:project:project-roles", "memory:delete:project:project-roles"}}
+	tx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed, err := mayWriteAccessScope(ctx, tx, viewer, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = tx.Rollback()
+	if allowed {
+		t.Fatal("project viewer with explicit memory write grant passed project write-role check")
+	}
+	member := contracts.Principal{WorkspaceID: "default", SubjectID: "member", Scopes: []string{"memory:write:project:project-roles"}}
+	tx, err = store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed, err = mayWriteAccessScope(ctx, tx, member, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = tx.Rollback()
+	if !allowed {
+		t.Fatal("project member with explicit memory write grant was denied")
+	}
+}
+
 func TestProposalApprovalRejectsDeletedEventSource(t *testing.T) {
 	ctx := context.Background()
 	store, repo := newMemoryTestRepo(t)

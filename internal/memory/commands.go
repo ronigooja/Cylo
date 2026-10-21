@@ -67,7 +67,7 @@ func (s *Service) commandRemember(ctx context.Context, tx *sql.Tx, cmd control.C
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
-	allowed, err := mayAccessScope(ctx, tx, cmd.Principal, scope)
+	allowed, err := mayWriteAccessScope(ctx, tx, cmd.Principal, scope)
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
@@ -107,7 +107,7 @@ func (s *Service) commandDelete(ctx context.Context, tx *sql.Tx, cmd control.Com
 	} else if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
-	allowed, err := mayAccessScope(ctx, tx, cmd.Principal, scope)
+	allowed, err := mayWriteAccessScope(ctx, tx, cmd.Principal, scope)
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
