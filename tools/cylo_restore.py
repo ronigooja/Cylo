@@ -14,6 +14,64 @@ import tempfile
 from data_lifecycle.common import fail, private_dir, read_key, unpack_verified
 
 
+MANAGED_ROLES = {"service_config_paths", "artifact_paths", "persistent_volume_paths"}
+
+
+def restore_managed_paths(payload: Path, staged: Path, manifest: dict) -> int:
+    roots = manifest.get("roots")
+    entries = manifest.get("managed_paths")
+    if not isinstance(roots, dict) or not isinstance(entries, list):
+        fail("manifest managed path inventory is malformed")
+    root_ids = set(roots)
+    if not all(isinstance(root_id, str) and root_id.isidentifier() for root_id in root_ids):
+        fail("manifest contains an unsafe managed root ID")
+    seen = set()
+    payload_root = payload.resolve(strict=True)
+    staged_root = staged.resolve(strict=True)
+    for item in entries:
+        if not isinstance(item, dict) or set(item) != {"role", "root_id", "path"}:
+            fail("manifest contains a malformed managed path")
+        role, root_id = item["role"], item["root_id"]
+        if role not in MANAGED_ROLES or not isinstance(root_id, str) or not root_id.isidentifier() or root_id not in root_ids:
+            fail("manifest contains an unsafe managed role or root ID")
+        rel = PurePosixPath(item["path"] if isinstance(item["path"], str) else "")
+        if rel.is_absolute() or not rel.parts or any(p in ("", ".", "..") for p in rel.parts):
+            fail("manifest contains an unsafe managed path")
+        identity = (role, root_id, rel.as_posix())
+        if identity in seen:
+            fail("manifest contains a duplicate managed path")
+        seen.add(identity)
+        source = payload_root / role / root_id / Path(*rel.parts)
+        try:
+            source = source.resolve(strict=True)
+            source.relative_to(payload_root)
+        except (OSError, ValueError):
+            fail("manifest managed source escapes the verified payload")
+        dest = staged_root / "managed" / role / root_id / Path(*rel.parts)
+        try:
+            dest.resolve(strict=False).relative_to(staged_root)
+        except ValueError:
+            fail("manifest managed destination escapes the staging directory")
+        if source.is_file():
+            dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                dest.parent.resolve(strict=True).relative_to(staged_root)
+            except ValueError:
+                fail("managed destination parent escapes the staging directory")
+            dest.write_bytes(source.read_bytes())
+            os.chmod(dest, 0o600)
+        elif source.is_dir():
+            dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                dest.parent.resolve(strict=True).relative_to(staged_root)
+            except ValueError:
+                fail("managed destination parent escapes the staging directory")
+            shutil.copytree(source, dest, dirs_exist_ok=True)
+        else:
+            fail("manifest managed path is missing from payload")
+    return len(entries)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact", type=Path, required=True)
@@ -36,22 +94,7 @@ def main() -> int:
         (staged / "data").mkdir(mode=0o700)
         shutil.copyfile(source_db, staged / "data" / "cylo.sqlite.restore-pending")
         os.chmod(staged / "data" / "cylo.sqlite.restore-pending", 0o600)
-        for item in manifest.get("managed_paths", []):
-            role, root_id = item["role"], item["root_id"]
-            rel = PurePosixPath(item["path"])
-            if role not in ("service_config_paths", "artifact_paths", "persistent_volume_paths") or rel.is_absolute() or not rel.parts or any(p in ("", ".", "..") for p in rel.parts):
-                fail("manifest contains an unsafe managed path")
-            source = payload / role / root_id / Path(*rel.parts)
-            dest = staged / "managed" / role / root_id / Path(*rel.parts)
-            if source.is_file():
-                dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                dest.write_bytes(source.read_bytes())
-                os.chmod(dest, 0o600)
-            elif source.is_dir():
-                dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                shutil.copytree(source, dest, dirs_exist_ok=True)
-            else:
-                fail("manifest managed path is missing from payload")
+        managed_count = restore_managed_paths(payload, staged, manifest)
         restored = dict(manifest)
         restored["restore_state"] = {
             "instance_id": "",
@@ -70,7 +113,7 @@ def main() -> int:
             os.close(parent_fd)
     print(f"restore staged: {target}")
     print("dispatch enabled: false (install the database with `cylo-maintenance prepare-restore` before starting a server)")
-    print(f"managed paths: {len(manifest.get('managed_paths', []))}; deletion ledger tables: {len(deletion)}")
+    print(f"managed paths: {managed_count}; deletion ledger tables: {len(deletion)}")
     return 0
 
 
