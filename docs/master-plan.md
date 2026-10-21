@@ -6,7 +6,7 @@
 
 Cylo is a private, self-hosted system that keeps authorized work alive beyond a conversation or client session. The selected baseline is a private Linux Go control server, an independent runner, SQLite in WAL mode with `synchronous=FULL`, and native SwiftUI clients for macOS, iPhone, and iPad.
 
-AO (OrchestratorInc/agent-orchestrator) owns creation and lifecycle of every runtime, including worker and curator runtimes. Cylo routes runtime creation through its authorized gateway and remains the authority for business tasks, permissions, events, and memory records. The existing remote CLIProxyAPI deployment is reused as-is and is not modified. Space3044 `chatgpt-web-voice` supplies the selected ChatGPT web real-time gateway and account pool. Mem0 is a controlled worker; Qdrant is a rebuildable retrieval index.
+AO (OrchestratorInc/agent-orchestrator) owns creation and lifecycle of every runtime, including worker and curator runtimes. Cylo routes runtime creation through its authorized gateway and remains the authority for business tasks, permissions, events, and memory records. The existing remote CLIProxyAPI deployment is reused as-is and is not modified. The local `~/.codex/config.toml` is configured with provider `cliproxyapi` using the Responses API. An authenticated, read-only `/models` check returned HTTP 200 and 13 model entries, including `gpt-6-luna`; this confirms catalog access only, not successful model execution. Never print or track credential values. Space3044 `chatgpt-web-voice` supplies the selected ChatGPT web real-time gateway and account pool; its credentials will be entered manually by the user during setup. Mem0 is a controlled worker; Qdrant is a rebuildable retrieval index.
 
 Decisions and limits:
 
@@ -100,7 +100,7 @@ Repository documents, new filenames, and routine progress updates are in English
 
 Concurrent work uses separate branches and worktrees under `$HOME/subagents` with explicit file ownership. The main agent coordinates implementation and cross-module decisions; delegated implementation and independent verification go to GPT-6 Luna at high reasoning effort. Coordinate cross-module API/data changes with affected owners before editing. Review commits before integration. Before a task or fresh-context handoff, record the branch, ownership, commit, completed and remaining work, verification, and limitations.
 
-The repository remains documentation-only until the archive stage is complete, the main agent freezes the API contract, and Phase 1 is explicitly authorized. Do not create placeholder directories. Once implementation begins, add only directories that contain tracked files. The planned core Go module is `github.com/ronigooja/Cylo` (`go.mod` and `go.sum` at repository root), targeting Go 1.26 and pure-Go SQLite through `modernc.org/sqlite`. The initial ownership tree is:
+Implementation begins after the archive stage is complete and the main agent freezes the API contract. Do not create placeholder directories. Once implementation begins, add only directories that contain tracked files. The planned core Go module is `github.com/ronigooja/Cylo` (`go.mod` and `go.sum` at repository root), targeting Go 1.26 and pure-Go SQLite through `modernc.org/sqlite`. The initial ownership tree is:
 
 ```text
 contracts/                  shared HTTP, event, runner, and extension contracts
