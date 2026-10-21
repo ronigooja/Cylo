@@ -1,0 +1,132 @@
+{
+  "observed_date": "2026-10-21",
+  "codex_version": "codex-cli 0.163.0",
+  "passed": true,
+  "thread_id": "01a15f02-4eeb-7d81-a74a-2a99331921be",
+  "completed_turns": 3,
+  "loopback_provider_requests": 4,
+  "evidence_dir": "/tmp/cylo-handoff-poc-9rq0uxgb",
+  "scope": "Linux same host/store sequential ownership, synthetic text only",
+  "actual_model_calls": 0,
+  "actual_tools_or_approvals": false,
+  "script_sha256": "23abecbbfda40e4d39c0fa1a80c92d46b73b63105290cab153ec117495779181",
+  "history": {
+    "data": [
+      {
+        "id": "01a15f02-56b9-7063-9808-9e276a388461",
+        "rootTurnId": "01a15f02-56b9-7063-9808-9e276a388461",
+        "items": [
+          {
+            "type": "userMessage",
+            "id": "01a15f02-56c1-7263-bb79-b9293058d8bb",
+            "clientId": null,
+            "content": [
+              {
+                "type": "text",
+                "text": "CYLO_THIRD_USER_MARKER",
+                "text_elements": []
+              }
+            ]
+          },
+          {
+            "type": "agentMessage",
+            "id": "msg_4",
+            "text": "FAKE_PROVIDER_REPLY_3",
+            "phase": null,
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        ],
+        "itemsView": "full",
+        "status": "completed",
+        "error": null,
+        "startedAt": 1792595351,
+        "completedAt": 1792595351,
+        "durationMs": 20
+      },
+      {
+        "id": "01a15f02-51f3-7e83-a3a4-2dce44373ee5",
+        "rootTurnId": "01a15f02-51f3-7e83-a3a4-2dce44373ee5",
+        "items": [
+          {
+            "type": "userMessage",
+            "id": "01a15f02-51ff-7ba1-ad8f-00c7eaa889af",
+            "clientId": "3f4c3be6-5e6b-4bbd-b433-b5da12982ffa",
+            "content": [
+              {
+                "type": "text",
+                "text": "CLI_SECOND_USER_MARKER",
+                "text_elements": []
+              }
+            ]
+          },
+          {
+            "type": "agentMessage",
+            "id": "msg_2",
+            "text": "FAKE_PROVIDER_REPLY_2",
+            "phase": null,
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        ],
+        "itemsView": "full",
+        "status": "completed",
+        "error": null,
+        "startedAt": 1792595350,
+        "completedAt": 1792595350,
+        "durationMs": 23
+      },
+      {
+        "id": "01a15f02-4ef4-7032-9868-caeefc07056e",
+        "rootTurnId": "01a15f02-4ef4-7032-9868-caeefc07056e",
+        "items": [
+          {
+            "type": "userMessage",
+            "id": "01a15f02-4f05-7c81-a5f2-a5751b2a121a",
+            "clientId": null,
+            "content": [
+              {
+                "type": "text",
+                "text": "CYLO_FIRST_USER_MARKER",
+                "text_elements": []
+              }
+            ]
+          },
+          {
+            "type": "agentMessage",
+            "id": "msg_1",
+            "text": "FAKE_PROVIDER_REPLY_1",
+            "phase": null,
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        ],
+        "itemsView": "full",
+        "status": "completed",
+        "error": null,
+        "startedAt": 1792595349,
+        "completedAt": 1792595349,
+        "durationMs": 26
+      }
+    ],
+    "nextCursor": null,
+    "backwardsCursor": "{\"requestedThreadId\":\"01a15f02-4eeb-7d81-a74a-2a99331921be\",\"rolloutOrdinal\":28,\"includeAnchor\":true,\"scope\":{\"kind\":\"turns\"}}"
+  },
+  "official_documents": [
+    {
+      "url": "https://developers.openai.com/codex/cli/reference.md",
+      "sha256_of_fetched_markdown": "1347b0eb55a085c4d6bdb53b5825935e6479fe368518a23a914d08c7235a3567"
+    },
+    {
+      "url": "https://developers.openai.com/codex/reference/commands.md",
+      "sha256_of_fetched_markdown": "03e14392312eb606bbe9df8a6202a4aeafc66758938cf8c135aec36b3bcd987a"
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/remote-connections.md",
+      "sha256_of_fetched_markdown": "c3f151748b855a0301fda938acd6a1af57bd0d8c7599a1ca294b8649f742e527"
+    }
+  ]
+}

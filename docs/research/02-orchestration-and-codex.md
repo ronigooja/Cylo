@@ -1,6 +1,6 @@
 # Cylo 编排与 Codex 原生接续调研
 
-访问/实测日期：2026-10-21。输入：旧 `codex-super-agent-requirements-and-architecture.md`、新版 `Rumi-完整产品需求说明书.md`（产品统一称 Cylo）。本文是选型证据，不是运行时实现或生产就绪声明。需求编号沿用需求报告 `CY-05-01…06`、`CY-06-*`、`CY-08-*`、`CY-14-*`、`CY-15-*`。
+访问/实测日期：2026-10-21。输入：旧 `codex-super-agent-requirements-and-architecture.md`、新版 `Cylo-完整产品需求说明书.md`。本文是选型证据，不是运行时实现或生产就绪声明。需求编号沿用需求报告 `CY-05-01…06`、`CY-06-*`、`CY-08-*`、`CY-14-*`、`CY-15-*`。
 
 ## 1. 决策
 
@@ -8,7 +8,7 @@
 
 CAO 当前版本已远超过“tmux + 简单 supervisor”原型，包含数据库、工作流恢复、计划审批、Web UI、多后端与记忆，不能称其没有持久化。但 Codex adapter 仍依赖 TUI 抓屏/正则，默认 `--yolo`，交互审批存在明确限制，终端删除会强制清理 worktree。重用其整套控制面会制造两套 Super、工作流和任务权威。仅当将来确实需要其他 CLI provider 时，再把经过限权与生命周期改造的 CAO 当成可选 fleet adapter，且单个运行实例只允许一种会话持有者。
 
-**原生接续结论必须分层：** Linux 同主机、同 CODEX_HOME 的“app-server 创建带首条输入的持久会话 → 官方 CLI resume 显示原始历史”已隔离实测；app-server 自身重启恢复也已实测。macOS 官方 App 的发现/双向接续、真实工具与审批完整性、跨主机 App 接管均未实测，不能宣称第 5 章全部满足。官方 CLI `--remote` 现在确有文档与本机 help 支持；它是连接同一个远端执行环境，不是将代码、进程和会话任意同步到另一台主机。
+**原生接续结论必须分层：** Linux 同主机、同 CODEX_HOME 的“app-server 首轮 → 官方交互 CLI 同 thread 新一轮 → app-server 收回并继续第三轮”已通过隔离假 provider 实测（三轮文本均 completed）；app-server 自身重启恢复也已实测。macOS 官方 App 有同会话入口、SSH 远端项目和跨主机 handoff 的明确官方文档，不能再说官方没有方案；但 Cylo 创建会话被 App 发现/接管、真实模型工具审批、跨主机迁移均未实测。CLI `--remote` 是访问同一远端执行环境；官方 App 的 host handoff 则另行转移 chat 与 Git state，两者必须区分。
 
 ## 2. 获取方式、版本与证据分级
 
@@ -105,13 +105,13 @@ Codex SDK源码证据：[TS exec封装](https://github.com/openai/codex/blob/d13
 | 审批 | command/fileChange/permissions requestApproval、tool requestUserInput、serverRequest/resolved | 当前源码同进程resume会replay pending server requests；未证明进程死亡后审批可原样恢复 | 业务决定持久存；原生requestId绑定连接/turn，重连核验未解决请求，旧批准不得跨新turn复用 |
 | 工具记录 | commandExecution/fileChange/MCP等items持久历史分页读取；工具定义/配置因版本与环境而异 | 未跑真实命令/MCP/图片/审批；历史记录不等于工具进程存活或外部副作用可重放 | 明确recorded/active/result-unknown，保留原始证据，工具凭据和端点另验 |
 | 文件/代码 | cwd/gitInfo是身份线索，worktree是实际文件资源；原生resume不撤销/复制文件 | worktree清理丢未提交成果实测；未做文件工具恢复 | 校验repo、branch、HEAD、dirty manifest和实际worktree路径，运行期间禁止移除；保存patch/未跟踪文件后才可移交 |
-| Mac官方App→Cylo及反向 | 官方App文档已读；旧app入口目前重定向到ChatGPT desktop app，不能以旧名/旧截图当现有承诺 | 无macOS硬件/App，**双向均未验证**；共享本地CODEX_HOME是候选条件，不是官方端到端保证 | 真实App版本、source过滤、相同账户/store、App管理worktree/项目注册及恢复工具依赖必须实测 |
-| Linux官方CLI→Cylo及反向 | 官方CLI resume与app-server原生store API存在 | app-server→CLI显示原消息已验证；CLI新turn再回Cylo未跑，不把协议存在标为双向全通过 | 增补CLI写新turn→Cylo发现/读取/继续，验证工具与审批策略继承 |
-| 跨主机 | 官方CLI可`--remote`连接远端app-server；应配置WS认证+TLS，localhost/SSH转发有文档 | 本次仅help/官方文档，未实际远程连接；Mac App远端接续未证实 | 首选同远端执行环境访问，避免复制正在运行的SQLite/WAL/store；迁移需停写、一致备份、路径/文件/依赖验证，不承诺任意主机无缝迁移 |
+| Mac官方App→Cylo及反向 | 当前官方CLI `/app`明确打开same saved chat；App支持`codex://threads/<thread-id>`本地深链，名称现为ChatGPT desktop app | 无macOS硬件/App，**第三方会话双向均未验证**；共享本地store是候选条件，不是端到端通过 | 验证App版本、source过滤、同账户/store、项目/worktree注册、daemon与权限；不能将新建thread深链当resume |
+| Linux官方CLI→Cylo及反向 | 官方CLI resume与app-server原生store API存在 | **P5已通过同thread三轮文字闭环**：app-server→交互CLI新turn→app-server新turn；loopback模拟Responses，无真实模型/tools/审批 | 实现互斥与状态回收；真实工具、审批策略和断线副作用仍需单独验收 |
+| 跨主机 | 官方CLI `--remote`；App SSH projects访问远端文件/命令；官方host handoff转chat+Git state，目的地须匹配saved project | 官方文档确认；本次未做远程连接、App发现Cylo thread或host handoff实测 | 首选留在Linux原host远程访问；迁移采用经验证官方路径，核对身份映射/产物，不手拷活跃SQLite/WAL或承诺活进程迁移 |
 
 官方实现证据：[loaded thread resume](https://github.com/openai/codex/blob/d138398cef7d49e46fe33f1d0ddbd2ca0ed16aa4/codex-rs/app-server/src/request_processors/thread_lifecycle.rs#L719)、[pending request replay](https://github.com/openai/codex/blob/d138398cef7d49e46fe33f1d0ddbd2ca0ed16aa4/codex-rs/app-server/src/request_processors/thread_lifecycle.rs#L939)、[thread resume与store读取](https://github.com/openai/codex/blob/d138398cef7d49e46fe33f1d0ddbd2ca0ed16aa4/codex-rs/app-server/src/request_processors/thread_processor.rs#L3894)。当前还有针对指定远程mobile client的[MCP/image响应redaction](https://github.com/openai/codex/blob/d138398cef7d49e46fe33f1d0ddbd2ca0ed16aa4/codex-rs/app-server/src/request_processors/thread_resume_redaction.rs)，说明“同thread”也不能笼统等同各客户端显示字节完全一致。
 
-官方 [worktrees](https://developers.openai.com/codex/app/worktrees) 描述的worktree/环境能力不能替代Cylo自身资源保留策略。项目文件通过Git同步、把摘要贴入新会话、导入JSON文本或复制聊天消息，均只能标“上下文重建/导入”，**不是同一原生thread接续**。复制会话store的实验也不能擅自升级为受支持跨主机同步。
+官方 [worktrees](https://developers.openai.com/codex/app/worktrees) 描述的worktree/环境能力不能替代Cylo自身资源保留策略。项目文件通过Git同步、把摘要贴入新会话、导入JSON文本或复制聊天消息，均只能标“上下文重建/导入”，**不是同一原生thread接续**。官方 App 的 host handoff 是另一个明确文档化的迁移机制（见5.3）；复制会话store的实验不能冒充该机制或升级为受支持同步。
 
 ### 5.2 可审查的原生交接协议（设计建议，尚未实现）
 
@@ -120,6 +120,39 @@ Codex SDK源码证据：[TS exec封装](https://github.com/openai/codex/blob/d13
 3. `openNative`：提供可复制的官方CLI resume命令；Mac App只有实测通过的发现/深链方式才显示为可用。允许用户自己使用官方工具；Cylo停止写入。
 4. `reconcileExternal`：Cylo重新list/read/paginate，读取更新turn/items、Git与文件变化、原生状态；验证仍同thread与worktree后收回写租约。官方工具中新增工作记为外部执行记录；Cylo业务任务是否完成仍需验收。
 5. 发现原thread丢失、目录已删、工具不可用或并发写入，进入`needs_reconciliation`；只能提供明确标记的重建选项，不悄悄新建thread伪装接续。
+
+### 5.3 用户具体能用成什么样，做到哪一级
+
+**接续可以实现。优先做“同一个执行环境、轮流接管”：Cylo 先做，人随时转入官方 Codex继续，退出后交回Cylo。** 同机Linux文字闭环已有P5证据；可靠产品还需围绕原生接口实现少量但关键的交接控制。难度不在复制聊天，而在明确谁能写、如何保住工作目录、如何核对未知工具结果。
+
+| 级别与用户体验 | 当前证据等级 | 可交付形态及条件 | 有条件的难度判断 |
+|---|---|---|---|
+| **A：Linux原生CLI轮流接管**。Cylo任务页点“交给Codex”，出现同thread的`codex resume <id>`命令；继续追问后退出，再点“交回Cylo”，原记录和后续工作接上 | **已实测**P5：本机官方交互CLI+app-server，假provider三轮文字闭环 | 可先做可靠基础版；同host/store/worktree、无同时写入；新输入落盘后才显示“可恢复” | 基础路径较低；加异常恢复、进程互斥、真实工具验收后中等。原生resume已有，无需重做会话引擎 |
+| **B：Mac本地官方App同会话打开**。任务页点“在Codex中打开”，官方App打开原chat；完成后交回 | **官方入口明确，需Mac真机**：`/app`与`codex://threads/<id>` | App已安装/运行；Cylo与App实际访问相同会话store/执行环境且该source可发现；按钮仅在兼容版本验证后开放 | 条件成立则是入口与回收适配；若App隔离第三方store/daemon，则需调整集成部署，不能承诺仅加深链即可 |
+| **C：Mac App远程继续Linux后台任务**。Mac App先添加Linux SSH host和远端项目，然后在该host打开原会话；文件和命令继续留在Linux | **官方SSH路径明确；Cylo会话互通需Mac真机** | Mac可SSH；Linux已安装/认证Codex且login-shell PATH可找到；App通过SSH管理远端app-server。须验同远端用户/store、source与daemon协同；无需搬迁代码/聊天来远程访问原host | 官方连接设置较直接；Cylo后台与App共享/交替使用运行端、发现原thread及控制权核验是中等集成工作；不能假定App会连接任意Cylo WS监听器 |
+| **D：Mac终端远程CLI作为直接入口**。Mac终端用`codex resume <id> --remote <endpoint>`接到Linux同会话 | **官方文档+本机help；未实测远程** | Linux app-server，SSH转发或认证/TLS，匹配版本；执行继续在Linux，非官方App专用入口 | 在A基础上增加传输/认证与连接恢复；比跨机迁移少一层文件与环境转移 |
+| **E：把执行位置从Linux搬回Mac，之后再搬回**。官方App chat footer选择run location→目的host→Hand off | **官方host handoff明确；未实测** | 两端已连接、保存同repo project（同子目录），App转chat+Git state并建/复用worktree；Cylo需验迁移后thread/host映射、未跟踪产物与工具依赖 | 高于远程访问；应复用官方流程，先验完整性再纳入Cylo。文档未保证技术threadId恒定、任意非Git产物或工具进程迁移 |
+| **F：两端同时写、不断工具进程跨机瞬移、任意账号/任意store自动同步** | **不能承诺** | 当前方案不提供此语义；需要独立且尚未建立的并发/迁移保证 | 不列为“加一个按钮”的后续小功能 |
+
+A的第一版完整操作应是：
+
+1. 用户在Cylo点“交给Codex”。Cylo停止派发新turn，等待当前turn结束或interrupt完成，核对后台工具；显示会话已暂停、执行host和工作目录。
+2. 控制服务封存checkpoint：原生thread/turn/history游标、任务验收目标、权限配置、Git HEAD/分支/dirty patch、未跟踪文件和附件引用。checkpoint不是内存/进程快照；有未知副作用须显示待核对。
+3. 用户通过原生入口继续。基础版给精确CLI命令；Mac版验收后提供App深链。Cylo显示“由Codex接管”，不再发turn/自动重试，任务资源与worktree继续保留。
+4. 用户退出原生工具并点“交回Cylo”。运行端确认无另一写进程，重新读原生turn/items与文件变化；Cylo展示新增执行/产物，随后恢复调度。用户不必重贴聊天，任务验收仍由Cylo判断。
+5. App自行修改了权限、项目路径或迁移host时，先做配置差异核对；原请求的批准不能自动复用。pending审批要保持原绑定且确认仍有效，进程已退出时不得假装审批/工具仍活着。
+
+Cylo数据库租约约束不了用户绕过Cylo启动的独立官方CLI。基础产品应采用明确“退出再收回”的流程，并由执行端锁/进程核验合作；发现无法排除并发时阻止恢复派发。不能用UI上一个“已交接”标签充当强制互斥。
+
+### 5.4 最新官方App/SSH/迁移入口证据（2026-10-21实际读取）
+
+- [CLI reference：`/app`](https://developers.openai.com/codex/cli/reference#continue-in-the-desktop-app-with-app)：原文“On macOS and Windows, type `/app` to open the current session…”及“Expected: The desktop app opens the same saved chat so you can continue there.” App须安装或运行；这是同chat接续的官方声明，并非Cylo第三方source实测。
+- [App commands/deep links](https://developers.openai.com/codex/reference/commands#deep-links)：原文“keeps the `codex://` URL scheme for compatibility”；`codex://threads/<thread-id>`明确为**local chat**。`codex app <path>`及`codex://threads/new?...`打开项目/新chat，不能替代同thread深链。官方有`codex://settings/connections/ssh/add?name=<ssh-config-host>`，未在该页给远端thread深链参数，不编造`hostId`参数。
+- [Remote connections：SSH](https://learn.chatgpt.com/docs/remote-connections#connect-to-an-ssh-host)：原文“The app starts the remote Codex app server through SSH, using the remote user's login shell.” 设置顺序：本机`~/.ssh/config`具体host alias→确认`ssh devbox`→远端安装认证Codex且PATH可发现→App **Settings > Connections**添加/启用SSH host并选远端project。官方说remote project chats在远端文件系统/shell执行；因此“Mac客户操作Linux任务”有官方路径，**无需先迁移会话到Mac**。但官方文档未确认任意Cylo stdio进程可被App直接接管，仍须验证同store发现与运行端单一控制。
+- [Remote connections：host handoff](https://learn.chatgpt.com/docs/remote-connections#hand-off-a-chat-between-hosts)：原文“Handoff moves an existing chat and its Git state between your local computer and a connected remote host.” 两端保存匹配repo project（项目是子目录则相同子目录），chat footer选择当前run location→destination→review destination/branch→**Hand off**。App建/复用目的worktree，转移chat+Git state；“If the chat is running, handoff interrupts the current response before transferring it.” 不能以此承诺运行中子进程、所有未跟踪文件、MCP凭据或技术threadId不变；目的地Codex cloud不支持。
+- [Remote connections：移动端与官方relay](https://learn.chatgpt.com/docs/remote-connections)：官方移动端host设置要求macOS/Windows desktop App，同账号/workspace及rollout/admin权限，配对从App开始；SSH远端项目是另一节。CLI `remote-control`/`pair`文档明确其服务managed clients与SSH workflows，**不替代第三方app-server协议客户端**。因此不能把“Linux CLI能remote-control”推成Cylo可借用官方relay/用户云权限，更不能把Cloud task/文本导入称为原生同thread。
+
+这些页面通过官方入口的Markdown版本实际获取（`.../cli/reference.md`、`.../reference/commands.md`、`https://learn.chatgpt.com/docs/remote-connections.md`）。官方已提供能力、源码存在机制、Cylo已端到端实测是三种证据，表中不混用。App实际名称当前为ChatGPT desktop app，产品入口文案可继续称“官方Codex”。
 
 ## 6. 集成接口与持久化边界
 
@@ -170,7 +203,7 @@ OpenAI Codex (v0.163.0)
 ■ Conversation interrupted - use /feedback if something went wrong
 ```
 
-`history_visible=True`。首次PTY未设winsize导致每字一行，字符串检查False；修正winsize后重跑通过。这只证明app-server→Linux CLI的原生会话读取，反向CLI新turn→Cylo、多工具/审批、MacApp未由此通过。
+`history_visible=True`。首次PTY未设winsize导致每字一行，字符串检查False；修正winsize后重跑通过。这次P3只证明app-server→Linux CLI原生读取；后续P5另行验证反向新turn文字闭环，多工具/审批、MacApp仍未通过。
 
 ### P4 CAO worktree teardown
 
@@ -253,3 +286,13 @@ print("interrupted_visible=", b"Conversation interrupted" in output)
 4. **跨主机/托管承诺（No-Go，直到专门验证）**：区分remote attach和迁移；认证、传输支持风险、凭据隔离、host路由与任务权限均通过。官方CLI remote不自动给官方App远程互通保证。
 
 本选型不缩减新版完整需求，也不把未验证能力降为文本摘要“接续”。它明确目前能证明什么、缺哪些真实环境证据，以及哪一层应承担补足责任。
+
+### P5 同thread双向交接三轮文字闭环（新增）
+
+可复现脚本：[`evidence/handoff-poc.py`](evidence/handoff-poc.py)，执行`python3 docs/research/evidence/handoff-poc.py`。无需上游源码clone或额外Python依赖，仅需本机官方Codex二进制。每次新建临时CODEX_HOME/repo、清除继承OpenAI/Codex凭据与覆盖，只用`127.0.0.1`的fake Responses SSE provider；没有登录用户真实账号，没有真实模型、工具或审批调用。
+
+实际步骤：app-server建立thread→发`CYLO_FIRST_USER_MARKER`完成第一轮→终止并wait→PTY启动**官方交互CLI** `codex resume <id> CLI_SECOND_USER_MARKER --no-daemon --no-alt-screen -C <repo>`→CLI显示第一轮原记录并完成第二轮→退出CLI→新app-server同ID resume/read两轮→发`CYLO_THIRD_USER_MARKER`完成第三轮→读取历史，断言三轮均completed、三个用户标记与三条fake回复全在。每次所有权交替，未同时控制同一thread。
+
+最终结果与历史快照：[`evidence/handoff-poc-result.json`](evidence/handoff-poc-result.json)。最终复跑thread `01a15f02-4eeb-7d81-a74a-2a99331921be`，运行端保留证据`/tmp/cylo-handoff-poc-9rq0uxgb`（可随环境清理消失）；3 completed turns、4次loopback provider请求（含CLI辅助请求，不能写成3次真实模型调用）。结果快照存三轮items/status及实际版本，脚本保留完整events/requests/PTY日志在各次临时目录。
+
+第一次新脚本运行因假设第N个HTTP请求必是第N轮而断言第三条fake回复失败；CLI辅助请求使编号偏移。已修正为按用户标记选择fake回复，并验证真实原生history，随后上述完整运行通过；未重写旧P1/P2/P3证据。之后只加三轮completed显式断言及异常进程清理，最终复跑结果见快照。此PoC验证**原生会话持久化/读写与顺序交接**，不验证真实推理、shell/MCP、图片附件、权限批准、工具未知结果恢复、MacApp或远程连接。
