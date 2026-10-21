@@ -1,4 +1,5 @@
 import Combine
+import CryptoKit
 import CyloKit
 import Foundation
 import WebRTC
@@ -48,6 +49,8 @@ public final class CyloAppModel: ObservableObject {
     private var lastRegisteredAPNSTokenHex: String?
     private var tokenRegistrationInFlight: String?
     private var registeredPushTokenID: String?
+    private var pushIdentityFingerprint: String?
+    private var pushPreferenceEpoch: UInt64 = 0
     private var canRegisterPushToken = false
 
     public init(defaults: UserDefaults = .standard) {
@@ -58,7 +61,8 @@ public final class CyloAppModel: ObservableObject {
            let device = try? DeviceIdentityStore(serverURL: url).loadOrCreate(),
            let cache = try? SnapshotCache(serverURL: url, deviceToken: device.deviceToken), let cached = try? cache.load() {
             configuredServerURL = url
-            registeredPushTokenID = defaults.string(forKey: pushRegistrationKey(for: url))
+            pushIdentityFingerprint = Self.pushIdentityFingerprint(deviceToken: device.deviceToken)
+            registeredPushTokenID = defaults.string(forKey: pushRegistrationKey(for: url, identityFingerprint: pushIdentityFingerprint ?? ""))
             snapshotCache = cache
             snapshot = cached
             freshness = .stale(reason: "Showing the last saved server snapshot.", cursor: cached.eventCursor)
@@ -224,11 +228,14 @@ public final class CyloAppModel: ObservableObject {
     }
 
     public func enablePushNotifications() async {
+        pushPreferenceEpoch &+= 1
+        let preferenceEpoch = pushPreferenceEpoch
         do {
             guard try await NativeNotificationDelivery.shared.requestPermission() else {
                 notice = "System notification permission is disabled. The Cylo inbox remains available."
                 return
             }
+            guard preferenceEpoch == pushPreferenceEpoch else { return }
             pushNotificationsEnabled = true
             defaults.set(true, forKey: "cylo.apns.optIn")
             NativeNotificationDelivery.shared.registerForRemoteNotifications()
@@ -244,11 +251,15 @@ public final class CyloAppModel: ObservableObject {
     }
 
     public func disablePushNotifications() async {
+        pushPreferenceEpoch &+= 1
         pushNotificationsEnabled = false
         defaults.set(false, forKey: "cylo.apns.optIn")
         NativeNotificationDelivery.shared.unregisterFromRemoteNotifications()
         pendingAPNSTokenHex = nil
         lastRegisteredAPNSTokenHex = nil
+        if registeredPushTokenID != nil || tokenRegistrationInFlight != nil {
+            defaults.set(true, forKey: pushRevocationPendingKey)
+        }
         guard registeredPushTokenID != nil else {
             notice = "Push wakeups are disabled on this device."
             return
@@ -694,7 +705,6 @@ public final class CyloAppModel: ObservableObject {
             capabilityDeployments = []
             hasLoadedNotificationInbox = false
             canRegisterPushToken = false
-            registeredPushTokenID = defaults.string(forKey: pushRegistrationKey(for: url))
             lastRegisteredAPNSTokenHex = nil
             voiceConfig = nil
             voicePoolStatus = nil
@@ -708,6 +718,11 @@ public final class CyloAppModel: ObservableObject {
         let identity = DeviceIdentityStore(serverURL: url)
         let api = try APIClient(serverURL: url, credentials: identity)
         let deviceIdentity = try identity.loadOrCreate()
+        let identityFingerprint = Self.pushIdentityFingerprint(deviceToken: deviceIdentity.deviceToken)
+        pushIdentityFingerprint = identityFingerprint
+        if configuredServerURL == url {
+            registeredPushTokenID = defaults.string(forKey: pushRegistrationKey(for: url, identityFingerprint: identityFingerprint))
+        }
         let journal = try CommandJournal(serverURL: url, deviceToken: deviceIdentity.deviceToken)
         let cache = try SnapshotCache(serverURL: url, deviceToken: deviceIdentity.deviceToken)
         snapshotCache = cache
@@ -763,11 +778,51 @@ public final class CyloAppModel: ObservableObject {
         else { await revokePendingPushToken() }
     }
 
-    private var pushRegistrationKey: String { pushRegistrationKey(for: configuredServerURL ?? URL(string: serverAddress) ?? URL(fileURLWithPath: "/")) }
+    private var pushRegistrationKey: String {
+        pushRegistrationKey(for: configuredServerURL ?? URL(string: serverAddress) ?? URL(fileURLWithPath: "/"), identityFingerprint: pushIdentityFingerprint ?? "")
+    }
 
-    private func pushRegistrationKey(for url: URL) -> String { "cylo.apns.tokenRegistrationID.\(url.absoluteString)" }
+    private func pushRegistrationKey(for url: URL, identityFingerprint: String) -> String {
+        "cylo.apns.tokenRegistrationID.\(url.absoluteString).\(identityFingerprint)"
+    }
 
-    private var pushRevocationPendingKey: String { "cylo.apns.tokenRevocationPending.\(configuredServerURL?.absoluteString ?? serverAddress)" }
+    private var pushRevocationPendingKey: String {
+        pushRevocationPendingKey(for: configuredServerURL ?? URL(string: serverAddress) ?? URL(fileURLWithPath: "/"), identityFingerprint: pushIdentityFingerprint ?? "")
+    }
+
+    private func pushRevocationPendingKey(for url: URL, identityFingerprint: String) -> String {
+        "cylo.apns.tokenRevocationPending.\(url.absoluteString).\(identityFingerprint)"
+    }
+
+    private func pushRegistrationOperationKey(for url: URL, identityFingerprint: String) -> String {
+        "cylo.apns.tokenRegistrationOperation.\(url.absoluteString).\(identityFingerprint)"
+    }
+
+    private func pushRegistrationTokenDigestKey(for url: URL, identityFingerprint: String) -> String {
+        "cylo.apns.tokenRegistrationDigest.\(url.absoluteString).\(identityFingerprint)"
+    }
+
+    private func pushRegisteredTokenDigestKey(for url: URL, identityFingerprint: String) -> String {
+        "cylo.apns.registeredTokenDigest.\(url.absoluteString).\(identityFingerprint)"
+    }
+
+    private func pushRevocationOperationKey(for url: URL, identityFingerprint: String, tokenID: String) -> String {
+        let tokenIDDigest = SHA256.hash(data: Data(tokenID.utf8)).map { String(format: "%02x", $0) }.joined()
+        return "cylo.apns.tokenRevocationOperation.\(url.absoluteString).\(identityFingerprint).\(tokenIDDigest)"
+    }
+
+    private func pushRevocationQueueKey(for url: URL, identityFingerprint: String) -> String {
+        "cylo.apns.tokenRevocationQueue.\(url.absoluteString).\(identityFingerprint)"
+    }
+
+    private static func pushIdentityFingerprint(deviceToken: String) -> String {
+        SHA256.hash(data: Data(deviceToken.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func pushIdempotencyKey(operation: String, origin: URL, identityFingerprint: String, binding: String, operationID: String = UUID().uuidString) -> String {
+        let material = "cylo.apns.\(operation)\u{0}\(origin.absoluteString)\u{0}\(identityFingerprint)\u{0}\(binding)\u{0}\(operationID)"
+        return SHA256.hash(data: Data(material.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
 
     private func receiveAPNSToken(_ data: Data) {
         guard pushNotificationsEnabled else { return }
@@ -780,39 +835,164 @@ public final class CyloAppModel: ObservableObject {
               let tokenHex = pendingAPNSTokenHex, tokenHex.count == 64,
               tokenHex != lastRegisteredAPNSTokenHex,
               tokenHex != tokenRegistrationInFlight, let api else { return }
+        let origin = api.serverURL
+        let identityFingerprint = pushIdentityFingerprint ?? ""
+        let tokenDigest = SHA256.hash(data: Data(tokenHex.utf8)).map { String(format: "%02x", $0) }.joined()
+        if defaults.string(forKey: pushRegisteredTokenDigestKey(for: origin, identityFingerprint: identityFingerprint)) == tokenDigest {
+            lastRegisteredAPNSTokenHex = tokenHex
+            return
+        }
         let generation = connectionGeneration.value
+        let preferenceEpoch = pushPreferenceEpoch
+        let registrationAPI = api
+        let registrationOrigin = api.serverURL
+        let operationKey = pushRegistrationOperationKey(for: registrationOrigin, identityFingerprint: identityFingerprint)
+        let tokenDigestKey = pushRegistrationTokenDigestKey(for: registrationOrigin, identityFingerprint: identityFingerprint)
         tokenRegistrationInFlight = tokenHex
         defer { if tokenRegistrationInFlight == tokenHex { tokenRegistrationInFlight = nil } }
+        if defaults.string(forKey: operationKey) != nil {
+            switch await recoverPendingAPNSRegistration(api: registrationAPI, origin: registrationOrigin, identityFingerprint: identityFingerprint) {
+            case .completed: return
+            case .retryLater: return
+            case .none: break
+            }
+        }
+        let idempotencyKey = defaults.string(forKey: operationKey) ?? pushIdempotencyKey(operation: "register", origin: registrationOrigin, identityFingerprint: identityFingerprint, binding: tokenHex)
+        defaults.set(idempotencyKey, forKey: operationKey)
+        defaults.set(SHA256.hash(data: Data(tokenHex.utf8)).map { String(format: "%02x", $0) }.joined(), forKey: tokenDigestKey)
         do {
-            let receipt = try await api.registerPushToken(platform: "\(pushPlatform)", tokenHex: tokenHex)
-            guard generation == connectionGeneration.value, api === self.api else { return }
+            let receipt = try await registrationAPI.registerPushToken(platform: "\(pushPlatform)", tokenHex: tokenHex, idempotencyKey: idempotencyKey)
+            guard preferenceEpoch == pushPreferenceEpoch, pushNotificationsEnabled,
+                  generation == connectionGeneration.value, registrationAPI === self.api else {
+                if let resourceID = receipt.resourceId {
+                    await revokeAcceptedPushToken(resourceID, api: registrationAPI, origin: registrationOrigin, identityFingerprint: identityFingerprint)
+                }
+                if pushNotificationsEnabled { Task { await self.registerPendingAPNSToken() } }
+                return
+            }
             if let resourceID = receipt.resourceId {
                 registeredPushTokenID = resourceID
                 defaults.set(resourceID, forKey: pushRegistrationKey)
             }
-            if receipt.resourceId != nil { lastRegisteredAPNSTokenHex = tokenHex }
+            if receipt.resourceId != nil {
+                defaults.removeObject(forKey: operationKey)
+                defaults.set(defaults.string(forKey: tokenDigestKey) ?? tokenDigest, forKey: pushRegisteredTokenDigestKey(for: registrationOrigin, identityFingerprint: identityFingerprint))
+                defaults.removeObject(forKey: tokenDigestKey)
+                defaults.removeObject(forKey: pushRevocationPendingKey(for: registrationOrigin, identityFingerprint: identityFingerprint))
+                lastRegisteredAPNSTokenHex = tokenHex
+            }
         } catch {
-            if generation == connectionGeneration.value { notice = "The device could not register for push wakeups: \(userMessage(error))" }
+            if preferenceEpoch != pushPreferenceEpoch || !pushNotificationsEnabled {
+                // The server may have accepted the request before the connection failed. Retry with
+                // the same scoped idempotency key to recover its receipt, then revoke that resource.
+                do {
+                    let receipt = try await registrationAPI.registerPushToken(platform: "\(pushPlatform)", tokenHex: tokenHex, idempotencyKey: idempotencyKey)
+                    if let resourceID = receipt.resourceId {
+                        await revokeAcceptedPushToken(resourceID, api: registrationAPI, origin: registrationOrigin, identityFingerprint: identityFingerprint)
+                    }
+                } catch {
+                    defaults.set(true, forKey: pushRevocationPendingKey(for: registrationOrigin, identityFingerprint: identityFingerprint))
+                }
+            } else if generation == connectionGeneration.value {
+                notice = "The device could not register for push wakeups: \(userMessage(error))"
+            }
+        }
+    }
+
+    private func revokeAcceptedPushToken(_ tokenID: String, api: APIClient, origin: URL, identityFingerprint: String) async {
+        let registrationKey = pushRegistrationKey(for: origin, identityFingerprint: identityFingerprint)
+        let pendingKey = pushRevocationPendingKey(for: origin, identityFingerprint: identityFingerprint)
+        let queueKey = pushRevocationQueueKey(for: origin, identityFingerprint: identityFingerprint)
+        var queue = (defaults.string(forKey: queueKey).flatMap { try? JSONDecoder().decode([String].self, from: Data($0.utf8)) }) ?? []
+        if !queue.contains(tokenID) { queue.append(tokenID) }
+        defaults.set(String(data: (try? JSONEncoder().encode(queue)) ?? Data("[]".utf8), encoding: .utf8) ?? "[]", forKey: queueKey)
+        defaults.removeObject(forKey: pushRegistrationOperationKey(for: origin, identityFingerprint: identityFingerprint))
+        defaults.removeObject(forKey: pushRegistrationTokenDigestKey(for: origin, identityFingerprint: identityFingerprint))
+        defaults.set(true, forKey: pendingKey)
+        let operationKey = pushRevocationOperationKey(for: origin, identityFingerprint: identityFingerprint, tokenID: tokenID)
+        let idempotencyKey = defaults.string(forKey: operationKey) ?? pushIdempotencyKey(operation: "revoke", origin: origin, identityFingerprint: identityFingerprint, binding: tokenID)
+        defaults.set(idempotencyKey, forKey: operationKey)
+        do {
+            _ = try await api.revokePushToken(tokenID: tokenID, idempotencyKey: idempotencyKey)
+            defaults.removeObject(forKey: operationKey)
+            queue.removeAll { $0 == tokenID }
+            if queue.isEmpty { defaults.removeObject(forKey: queueKey) }
+            else { defaults.set(String(data: (try? JSONEncoder().encode(queue)) ?? Data("[]".utf8), encoding: .utf8) ?? "[]", forKey: queueKey) }
+            if defaults.string(forKey: registrationKey) == tokenID {
+                defaults.removeObject(forKey: registrationKey)
+                defaults.removeObject(forKey: pushRegisteredTokenDigestKey(for: origin, identityFingerprint: identityFingerprint))
+            }
+            if queue.isEmpty { defaults.removeObject(forKey: pendingKey) }
+            if configuredServerURL == origin, pushIdentityFingerprint == identityFingerprint {
+                if registeredPushTokenID == tokenID { registeredPushTokenID = nil }
+                if queue.isEmpty { lastRegisteredAPNSTokenHex = nil }
+                if !pushNotificationsEnabled { notice = "Push wakeups are disabled on this device." }
+            }
+        } catch {
+            if configuredServerURL == origin, pushIdentityFingerprint == identityFingerprint {
+                notice = "Push wakeups are disabled locally, but the server could not confirm token revocation: \(userMessage(error))"
+            }
         }
     }
 
     private func revokePendingPushToken() async {
-        guard !pushNotificationsEnabled, canRegisterPushToken,
-              defaults.bool(forKey: pushRevocationPendingKey),
-              let tokenID = registeredPushTokenID, let api else { return }
-        let generation = connectionGeneration.value
-        do {
-            _ = try await api.revokePushToken(tokenID: tokenID)
-            guard generation == connectionGeneration.value, api === self.api else { return }
-            defaults.removeObject(forKey: pushRegistrationKey)
+        guard !pushNotificationsEnabled, canRegisterPushToken, let api else { return }
+        if defaults.string(forKey: pushRegistrationOperationKey(for: api.serverURL, identityFingerprint: pushIdentityFingerprint ?? "")) != nil {
+            _ = await recoverPendingAPNSRegistration(api: api, origin: api.serverURL, identityFingerprint: pushIdentityFingerprint ?? "")
+        }
+        guard defaults.bool(forKey: pushRevocationPendingKey) else { return }
+        let origin = api.serverURL
+        let identityFingerprint = pushIdentityFingerprint ?? ""
+        var tokenIDs = (defaults.string(forKey: pushRevocationQueueKey(for: origin, identityFingerprint: identityFingerprint)).flatMap { try? JSONDecoder().decode([String].self, from: Data($0.utf8)) }) ?? []
+        if let tokenID = registeredPushTokenID, !tokenIDs.contains(tokenID) { tokenIDs.append(tokenID) }
+        if tokenIDs.isEmpty {
             defaults.removeObject(forKey: pushRevocationPendingKey)
-            registeredPushTokenID = nil
-            lastRegisteredAPNSTokenHex = nil
-            notice = "Push wakeups are disabled on this device."
-        } catch {
-            if generation == connectionGeneration.value {
-                notice = "Push wakeups are disabled locally, but the server could not confirm token revocation: \(userMessage(error))"
+            return
+        }
+        for tokenID in tokenIDs {
+            await revokeAcceptedPushToken(tokenID, api: api, origin: origin, identityFingerprint: identityFingerprint)
+        }
+        guard defaults.bool(forKey: pushRevocationPendingKey) else { return }
+        let generation = connectionGeneration.value
+        guard generation == connectionGeneration.value, api === self.api else { return }
+    }
+
+    private enum PendingRegistrationRecovery {
+        case none
+        case completed
+        case retryLater
+    }
+
+    private func recoverPendingAPNSRegistration(api: APIClient, origin: URL, identityFingerprint: String) async -> PendingRegistrationRecovery {
+        let operationKey = pushRegistrationOperationKey(for: origin, identityFingerprint: identityFingerprint)
+        let tokenDigestKey = pushRegistrationTokenDigestKey(for: origin, identityFingerprint: identityFingerprint)
+        guard let idempotencyKey = defaults.string(forKey: operationKey) else { return .none }
+        do {
+            let receipt = try await api.receipt(idempotencyKey: idempotencyKey)
+            defaults.removeObject(forKey: operationKey)
+            let registeredDigest = defaults.string(forKey: tokenDigestKey)
+            defaults.removeObject(forKey: tokenDigestKey)
+            guard let resourceID = receipt.resourceId else { return .completed }
+            let currentTokenDigest = pendingAPNSTokenHex.map { SHA256.hash(data: Data($0.utf8)).map { String(format: "%02x", $0) }.joined() }
+            if pushNotificationsEnabled, registeredDigest != nil, registeredDigest == currentTokenDigest {
+                registeredPushTokenID = resourceID
+                defaults.set(resourceID, forKey: pushRegistrationKey(for: origin, identityFingerprint: identityFingerprint))
+                defaults.set(registeredDigest!, forKey: pushRegisteredTokenDigestKey(for: origin, identityFingerprint: identityFingerprint))
+                lastRegisteredAPNSTokenHex = pendingAPNSTokenHex
+                defaults.removeObject(forKey: pushRevocationPendingKey(for: origin, identityFingerprint: identityFingerprint))
+                return .completed
             }
+            await revokeAcceptedPushToken(resourceID, api: api, origin: origin, identityFingerprint: identityFingerprint)
+            return .none
+        } catch let CyloError.http(status, _, _, _) where status == 404 {
+            defaults.removeObject(forKey: operationKey)
+            defaults.removeObject(forKey: tokenDigestKey)
+            if !pushNotificationsEnabled, registeredPushTokenID == nil {
+                defaults.removeObject(forKey: pushRevocationPendingKey(for: origin, identityFingerprint: identityFingerprint))
+            }
+            return .none
+        } catch {
+            return .retryLater
         }
     }
 

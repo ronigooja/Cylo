@@ -143,12 +143,12 @@ public final class APIClient: @unchecked Sendable {
         return try await perform(request)
     }
 
-    public func registerPushToken(platform: String, tokenHex: String) async throws -> CommandReceipt {
-        try await submit(kind: "device.push_token.register", payload: PushTokenRegistration(platform: platform, token: tokenHex), idempotencyKey: UUID().uuidString)
+    public func registerPushToken(platform: String, tokenHex: String, idempotencyKey: String = UUID().uuidString) async throws -> CommandReceipt {
+        try await submit(kind: "device.push_token.register", payload: PushTokenRegistration(platform: platform, token: tokenHex), idempotencyKey: idempotencyKey)
     }
 
-    public func revokePushToken(tokenID: String) async throws -> CommandReceipt {
-        try await submit(kind: "device.push_token.revoke", payload: PushTokenRevocation(tokenId: tokenID), idempotencyKey: UUID().uuidString)
+    public func revokePushToken(tokenID: String, idempotencyKey: String = UUID().uuidString) async throws -> CommandReceipt {
+        try await submit(kind: "device.push_token.revoke", payload: PushTokenRevocation(tokenId: tokenID), idempotencyKey: idempotencyKey)
     }
 
     public func events(after cursor: String?) async throws -> URLSession.AsyncBytes {
