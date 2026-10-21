@@ -88,12 +88,13 @@ func TestMemoryWorkerGoPythonMem0QdrantEndToEnd(t *testing.T) {
 	}
 
 	qdrantURL := startEphemeralMemoryE2EQdrant(t)
-	store, handler, runnerToken := memoryWorkerHarness(t,
+	store, handler, runnerToken := memoryWorkerHarnessWithLease(t,
 		[]string{"memory:jobs:claim", "memory:jobs:complete", "memory:propose"},
 		[]string{"default", "e2e-other"},
+		2*time.Minute,
 	)
-	seedMemoryWorkerE2EClaim(t, store.DB(), "default", "claim-e2e-target", "event-e2e-target", "device juniper-731 is stored in cabinet amber-47")
-	seedMemoryWorkerE2EClaim(t, store.DB(), "e2e-other", "claim-e2e-other", "event-e2e-other", "device orchid-284 is stored in cabinet violet-19")
+	seedMemoryWorkerE2EClaim(t, store.DB(), "default", "claim-e2e-target", "event-e2e-target", "User decision: remember the durable preference that device juniper-731 is stored in cabinet amber-47.")
+	seedMemoryWorkerE2EClaim(t, store.DB(), "e2e-other", "claim-e2e-other", "event-e2e-other", "User decision: remember the durable preference that device orchid-284 is stored in cabinet violet-19.")
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
@@ -130,6 +131,13 @@ func TestMemoryWorkerGoPythonMem0QdrantEndToEnd(t *testing.T) {
 	initial := process.send(t, map[string]any{"action": "process", "limit": 100})
 	if initial["event"] != "processed" || initial["claimed"] != float64(4) {
 		t.Fatalf("initial worker pass did not claim both workspace index/extraction jobs: %#v", initial)
+	}
+	var proposalCount int
+	if err := store.DB().QueryRow(`SELECT count(*) FROM memory_proposals WHERE source_id IN ('source-event-e2e-target','source-event-e2e-other')`).Scan(&proposalCount); err != nil {
+		t.Fatal(err)
+	}
+	if proposalCount == 0 {
+		t.Fatalf("worker completed extraction without a candidate proposal: diagnostics=%#v extract_jobs=%s", initial, memoryWorkerE2EExtractJobStates(t, store.DB()))
 	}
 	assertMemoryWorkerE2EProposal(t, store.DB(), "default", "source-event-e2e-target")
 	assertMemoryWorkerE2EProposal(t, store.DB(), "e2e-other", "source-event-e2e-other")
@@ -217,6 +225,27 @@ func TestMemoryWorkerGoPythonMem0QdrantEndToEnd(t *testing.T) {
 		}
 	}
 	process.stop(t)
+}
+
+func memoryWorkerE2EExtractJobStates(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+	rows, err := db.Query(`SELECT workspace_id,status,last_error_code FROM memory_jobs WHERE kind='extract' ORDER BY workspace_id,target`)
+	if err != nil {
+		t.Fatalf("read synthetic extraction job states: %v", err)
+	}
+	defer rows.Close()
+	var states []string
+	for rows.Next() {
+		var workspace, status, lastError string
+		if err := rows.Scan(&workspace, &status, &lastError); err != nil {
+			t.Fatalf("read synthetic extraction job state: %v", err)
+		}
+		states = append(states, fmt.Sprintf("%s:%s:%s", workspace, status, lastError))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate synthetic extraction job states: %v", err)
+	}
+	return states
 }
 
 func memoryE2EResponsesStub(w http.ResponseWriter, r *http.Request) {

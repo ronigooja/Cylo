@@ -13,6 +13,20 @@ from .stores import QdrantIndex
 LOG = logging.getLogger("cylo.memory.worker")
 
 
+class Mem0ContentLogFilter(logging.Filter):
+    """Mem0 2.2 logs memory contents at INFO and can echo them on failures."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not record.name.startswith("mem0")
+
+
+def configure_logging() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    for handler in logging.getLogger().handlers:
+        if not any(isinstance(item, Mem0ContentLogFilter) for item in handler.filters):
+            handler.addFilter(Mem0ContentLogFilter())
+
+
 class MemoryWorker:
     def __init__(self, config: WorkerConfig):
         self.config = config
@@ -83,8 +97,11 @@ class MemoryWorker:
                 return
             self.api.fail(job, "control_unavailable" if exc.status >= 500 else "control_rejected")
             return
-        except Exception:
-            LOG.exception("memory job failed: kind=%s target=%s", job.get("kind"), job.get("target"))
+        except Exception as exc:
+            LOG.error(
+                "memory job failed: kind=%s target=%s error_type=%s",
+                job.get("kind"), job.get("target"), type(exc).__name__,
+            )
             self.api.fail(job, "derived_store_error")
             return
         self.api.complete(job)
@@ -109,7 +126,7 @@ class PermanentJobError(RuntimeError):
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    configure_logging()
     MemoryWorker(WorkerConfig.from_env()).run_forever()
 
 

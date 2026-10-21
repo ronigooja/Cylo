@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 import json
+from contextvars import ContextVar, Token
 from typing import Any
 
 from mem0.configs.llms.openai import OpenAIConfig
 from mem0.llms.openai import OpenAILLM
+
+_request_timeout_seconds: ContextVar[float | None] = ContextVar("cylo_memory_llm_timeout", default=None)
+
+
+def set_request_timeout(seconds: float) -> Token[float | None]:
+    return _request_timeout_seconds.set(seconds)
+
+
+def reset_request_timeout(token: Token[float | None]) -> None:
+    _request_timeout_seconds.reset(token)
 
 
 class ResponsesLLM(OpenAILLM):
@@ -62,6 +73,9 @@ class ResponsesLLM(OpenAILLM):
             "input": messages,
             "max_output_tokens": self.config.max_tokens,
         }
+        timeout_seconds = _request_timeout_seconds.get()
+        if timeout_seconds is not None:
+            request["timeout"] = timeout_seconds
         model_name = str(self.config.model).lower().rsplit("/", 1)[-1]
         reasoning_model = model_name.startswith(("gpt-6", "gpt-5.6", "o1", "o3"))
         if not reasoning_model:

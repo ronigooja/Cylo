@@ -6,6 +6,8 @@ import json
 import os
 import sys
 import threading
+import traceback
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +34,57 @@ def run() -> int:
     except Exception as exc:
         write_message({"event": "error", "error_type": type(exc).__name__}, output_lock)
         return 1
+    diagnostics: dict[str, list[dict[str, Any]]] = {
+        "llm_responses": [],
+        "extract_results": [],
+        "proposal_results": [],
+    }
+    original_generate = worker.mem0.memory.llm.generate_response
+
+    def inspect_response(*args: Any, **kwargs: Any) -> Any:
+        result = original_generate(*args, **kwargs)
+        info: dict[str, Any] = {"type": type(result).__name__, "nonempty": bool(result)}
+        if isinstance(result, str):
+            try:
+                decoded = json.loads(result)
+                memories = decoded.get("memory") if isinstance(decoded, dict) else None
+                info["json_valid"] = isinstance(decoded, dict)
+                info["memory_items"] = len(memories) if isinstance(memories, list) else None
+            except (TypeError, ValueError):
+                info["json_valid"] = False
+                info["memory_items"] = None
+        diagnostics["llm_responses"].append(info)
+        return result
+
+    worker.mem0.memory.llm.generate_response = inspect_response
+    original_extract: Callable[[dict[str, Any]], list[dict[str, str]]] = worker.mem0.extract
+
+    def inspect_extract(job: dict[str, Any]) -> list[dict[str, str]]:
+        try:
+            candidates = original_extract(job)
+        except Exception as exc:
+            diagnostics["extract_results"].append({
+                "error_type": type(exc).__name__,
+                "frames": [frame.name for frame in traceback.extract_tb(exc.__traceback__)],
+                "attribute": getattr(exc, "name", None),
+            })
+            raise
+        diagnostics["extract_results"].append({"candidate_count": len(candidates)})
+        return candidates
+
+    worker.mem0.extract = inspect_extract
+    original_propose = worker.api.propose
+
+    def inspect_propose(proposal: dict[str, Any]) -> dict[str, Any]:
+        try:
+            result = original_propose(proposal)
+        except Exception as exc:
+            diagnostics["proposal_results"].append({"result": "error", "error_type": type(exc).__name__})
+            raise
+        diagnostics["proposal_results"].append({"result": "accepted"})
+        return result
+
+    worker.api.propose = inspect_propose
     tracked_memory_ids: dict[tuple[str, str], set[str]] = {}
     race_release = threading.Event()
     race_thread: threading.Thread | None = None
@@ -48,7 +101,13 @@ def run() -> int:
                 uid = mem0_user_id(*key)
                 memories = worker.mem0.memory.vector_store.list(filters={"user_id": uid}, top_k=1000)[0]
                 tracked_memory_ids.setdefault(key, set()).update(str(item.id) for item in memories)
-        return {"claimed": len(jobs), "kinds": kinds}
+        return {
+            "claimed": len(jobs),
+            "kinds": kinds,
+            "llm_responses": diagnostics["llm_responses"],
+            "extract_results": diagnostics["extract_results"],
+            "proposal_results": diagnostics["proposal_results"],
+        }
 
     def state(workspace: str, claim_id: str) -> dict[str, int]:
         key = (workspace, claim_id)

@@ -20,6 +20,10 @@ import (
 )
 
 func memoryWorkerHarness(t *testing.T, scopes, workspaces []string) (*storage.Store, http.Handler, string) {
+	return memoryWorkerHarnessWithLease(t, scopes, workspaces, time.Second)
+}
+
+func memoryWorkerHarnessWithLease(t *testing.T, scopes, workspaces []string, leaseDuration time.Duration) (*storage.Store, http.Handler, string) {
 	t.Helper()
 	ctx := context.Background()
 	store, err := storage.Open(ctx, storage.Config{Path: filepath.Join(t.TempDir(), "memory-worker.db")})
@@ -42,7 +46,7 @@ func memoryWorkerHarness(t *testing.T, scopes, workspaces []string) (*storage.St
 	if err := memory.Register(server, store); err != nil {
 		t.Fatal(err)
 	}
-	if err := memory.RegisterDerived(server, store, memory.DerivedConfig{LeaseDuration: time.Second, MaxAttempts: 3, MaxBatch: 10}); err != nil {
+	if err := memory.RegisterDerived(server, store, memory.DerivedConfig{LeaseDuration: leaseDuration, MaxAttempts: 3, MaxBatch: 10}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Migrate(ctx); err != nil {

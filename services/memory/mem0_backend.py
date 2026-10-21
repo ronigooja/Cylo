@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from pathlib import Path
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 from typing import Any
 
@@ -15,12 +16,37 @@ from mem0 import Memory
 from .config import WorkerConfig
 from .embedding import LocalEmbedder
 from .mem0_embedder import register_pinned_embedder
-from .responses_llm import register_responses_provider
+from .responses_llm import register_responses_provider, reset_request_timeout, set_request_timeout
 from .stores import mem0_user_id
+
+MAX_LLM_REQUEST_SECONDS = 60.0
+LLM_FINALIZATION_RESERVE_SECONDS = 45.0
+
+
+class LeaseBudgetError(RuntimeError):
+    pass
+
+
+def llm_timeout_for_job(job: dict[str, Any], now: datetime | None = None) -> float:
+    lease_value = str(job.get("lease_until", "")).strip()
+    if not lease_value:
+        return MAX_LLM_REQUEST_SECONDS
+    try:
+        deadline = datetime.fromisoformat(lease_value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise LeaseBudgetError("invalid memory job lease deadline") from exc
+    if deadline.tzinfo is None:
+        raise LeaseBudgetError("memory job lease deadline has no timezone")
+    current = now or datetime.now(timezone.utc)
+    request_seconds = min(MAX_LLM_REQUEST_SECONDS, (deadline - current).total_seconds() - LLM_FINALIZATION_RESERVE_SECONDS)
+    if request_seconds <= 0:
+        raise LeaseBudgetError("memory job lease is too short for a bounded LLM request")
+    return request_seconds
 
 
 class ControlledMem0:
     def __init__(self, config: WorkerConfig, embedder: LocalEmbedder | None = None):
+        self.config = config
         if embedder is None:
             embedder = LocalEmbedder(config.embedder_model, config.embedder_revision, config.embedding_dimensions)
         register_pinned_embedder(embedder)
@@ -146,26 +172,32 @@ class ControlledMem0:
         source_text = str(source.get("extractor_input", "")).strip()
         if not source_text:
             return []
+        request_timeout = llm_timeout_for_job(job)
+        timeout_token = set_request_timeout(request_timeout) if self.config.llm_provider != "ollama" else None
         # Explicit recall keeps Mem0's retrieval path exercised. The add call
         # also uses Mem0's own retrieval and update workflow for the same user.
         self.memory.search(source_text, filters={"user_id": user_id}, top_k=5)
-        result = self.memory.add(
-            source_text,
-            user_id=user_id,
-            metadata={
-                "workspace_id": workspace,
-                "claim_id": str(job["entity_id"]),
-                "claim_revision": int(job["entity_version"]),
-                "source_id": str(source.get("id", "")),
-                "source_version": int(source.get("version", 0)),
-            },
-            infer=True,
-            prompt=(
-                "Extract only concise facts that the CURRENT SOURCE text supports. "
-                "Use recalled memories only to recognize duplicates or updates; never use them as evidence. "
-                "Return facts as short declarative statements.\nCURRENT SOURCE:\n" + source_text
-            ),
-        )
+        try:
+            result = self.memory.add(
+                source_text,
+                user_id=user_id,
+                metadata={
+                    "workspace_id": workspace,
+                    "claim_id": str(job["entity_id"]),
+                    "claim_revision": int(job["entity_version"]),
+                    "source_id": str(source.get("id", "")),
+                    "source_version": int(source.get("version", 0)),
+                },
+                infer=True,
+                prompt=(
+                    "Extract only concise facts that the CURRENT SOURCE text supports. "
+                    "Use recalled memories only to recognize duplicates or updates; never use them as evidence. "
+                    "Return facts as short declarative statements.\nCURRENT SOURCE:\n" + source_text
+                ),
+            )
+        finally:
+            if timeout_token is not None:
+                reset_request_timeout(timeout_token)
         candidates: list[dict[str, str]] = []
         for item in result.get("results", []):
             if not isinstance(item, dict) or item.get("event") not in {"ADD", "UPDATE"}:

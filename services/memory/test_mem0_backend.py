@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import unittest
 import tempfile
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from pathlib import Path
 
 from mem0.memory.storage import SQLiteManager
 from mem0.configs.embeddings.base import BaseEmbedderConfig
 
-from .mem0_backend import ControlledMem0
+from .mem0_backend import ControlledMem0, LeaseBudgetError, llm_timeout_for_job
 from .mem0_embedder import PinnedFastEmbedEmbedding, register_pinned_embedder
 from .stores import mem0_user_id
 
@@ -120,6 +121,19 @@ class PinnedEmbedderTests(unittest.TestCase):
         )
         self.assertIs(adapter.embedder, encoder)
         self.assertEqual(adapter.embed("abc", "add"), [3.0] * 384)
+
+
+class LeaseBudgetTests(unittest.TestCase):
+    def test_llm_timeout_is_bounded_by_remaining_lease(self) -> None:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        job = {"lease_until": (now + timedelta(seconds=50)).isoformat()}
+        self.assertEqual(llm_timeout_for_job(job, now), 5.0)
+
+    def test_llm_request_is_not_started_without_finalization_budget(self) -> None:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        job = {"lease_until": (now + timedelta(seconds=40)).isoformat()}
+        with self.assertRaises(LeaseBudgetError):
+            llm_timeout_for_job(job, now)
 
 
 if __name__ == "__main__":
