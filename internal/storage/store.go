@@ -182,9 +182,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 	type appliedMigration struct {
-		version   int
-		namespace string
-		name      string
+		version       int
+		namespace     string
+		name          string
+		needsBackfill bool
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT version,name,namespace FROM schema_migrations ORDER BY version`)
 	if err != nil {
@@ -211,6 +212,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return fmt.Errorf("migration %d namespace mismatch: database=%q binary=%q", record.version, record.namespace, migration.Namespace)
 		}
 		if record.namespace == "" {
+			record.needsBackfill = true
 			record.namespace = migration.Namespace
 		}
 		applied[record.version] = record
@@ -221,17 +223,6 @@ func (s *Store) Migrate(ctx context.Context) error {
 	}
 	if err = rows.Close(); err != nil {
 		return err
-	}
-	for version, record := range applied {
-		var stored string
-		if err = s.db.QueryRowContext(ctx, `SELECT namespace FROM schema_migrations WHERE version=?`, version).Scan(&stored); err != nil {
-			return fmt.Errorf("read migration namespace: %w", err)
-		}
-		if stored == "" {
-			if _, err = s.db.ExecContext(ctx, `UPDATE schema_migrations SET namespace=? WHERE version=? AND namespace=''`, record.namespace, version); err != nil {
-				return fmt.Errorf("backfill migration namespace: %w", err)
-			}
-		}
 	}
 	maxApplied := make(map[string]int)
 	for _, record := range applied {
@@ -244,6 +235,31 @@ func (s *Store) Migrate(ctx context.Context) error {
 			if _, ok := applied[version]; !ok {
 				return fmt.Errorf("database migration history has a gap in namespace %q at version %d", migration.Namespace, version)
 			}
+		}
+	}
+	needsBackfill := false
+	for _, record := range applied {
+		if record.needsBackfill {
+			needsBackfill = true
+			break
+		}
+	}
+	if needsBackfill {
+		tx, txErr := s.db.BeginTx(ctx, nil)
+		if txErr != nil {
+			return fmt.Errorf("begin migration namespace backfill: %w", txErr)
+		}
+		for version, record := range applied {
+			if !record.needsBackfill {
+				continue
+			}
+			if _, txErr = tx.ExecContext(ctx, `UPDATE schema_migrations SET namespace=? WHERE version=? AND namespace=''`, record.namespace, version); txErr != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("backfill migration namespace: %w", txErr)
+			}
+		}
+		if txErr = tx.Commit(); txErr != nil {
+			return fmt.Errorf("commit migration namespace backfill: %w", txErr)
 		}
 	}
 	sort.Ints(versions)

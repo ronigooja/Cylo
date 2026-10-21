@@ -178,6 +178,13 @@ func TestReviewLateCoreMigrationAfterFeatureHistory(t *testing.T) {
 	if featureRows != 3 {
 		t.Fatalf("feature migrations were lost or rerun: %d records", featureRows)
 	}
+	var blankNamespaces int
+	if err := s.DB().QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE namespace=''`).Scan(&blankNamespaces); err != nil {
+		t.Fatal(err)
+	}
+	if blankNamespaces != 0 {
+		t.Fatalf("valid legacy migration history was not backfilled: %d rows remain blank", blankNamespaces)
+	}
 }
 
 func TestReviewMigrationHistoryRequiresKnownNamespaceSequence(t *testing.T) {
@@ -205,5 +212,44 @@ func TestReviewMigrationHistoryRequiresKnownNamespaceSequence(t *testing.T) {
 				t.Fatalf("migration history should fail with %q, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+func TestReviewLegacyNamespaceBackfillRollsBackOnHistoryGap(t *testing.T) {
+	s := openStore(t, filepath.Join(t.TempDir(), "legacy-gap.db"))
+	ctx := context.Background()
+	if err := storage.RegisterCoreMigrations(s); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `CREATE TABLE schema_migrations_legacy (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `INSERT INTO schema_migrations_legacy(version,name,applied_at) SELECT version,name,applied_at FROM schema_migrations`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `DROP TABLE schema_migrations`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `ALTER TABLE schema_migrations_legacy RENAME TO schema_migrations`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Migrate(ctx); err == nil || !strings.Contains(err.Error(), `gap in namespace "core" at version 2`) {
+		t.Fatalf("migration should reject the legacy gap, got %v", err)
+	}
+	var blank, named int
+	if err := s.DB().QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE namespace=''`).Scan(&blank); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB().QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE namespace<>''`).Scan(&named); err != nil {
+		t.Fatal(err)
+	}
+	if blank != 2 || named != 0 {
+		t.Fatalf("failed validation partially backfilled legacy history: blank=%d named=%d", blank, named)
 	}
 }
