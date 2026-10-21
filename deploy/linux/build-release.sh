@@ -12,6 +12,8 @@ if [[ ! -d "$repo_root/cmd/cylo-runner" ]]; then
   exit 1
 fi
 
+cd "$repo_root"
+
 build_root="${CYLO_BUILD_ROOT:-/var/cache/cylo/builds}"
 release_root="${CYLO_RELEASE_ROOT:-/opt/cylo/releases}"
 docker_bin="${CYLO_DOCKER_BINARY:-docker}"

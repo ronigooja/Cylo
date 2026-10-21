@@ -10,7 +10,7 @@ User=cylo-runner
 Group=cylo-runner
 SupplementaryGroups=docker
 EnvironmentFile=/etc/cylo/cylo-runner.env
-Environment=CYLO_SECRET_FILE_MAP=CYLO_RUNNER_TOKEN=/etc/cylo/secrets/runner-token,CYLO_AO_TOKEN=/etc/cylo/secrets/ao-token
+Environment=CYLO_SECRET_FILE_MAP=CYLO_RUNNER_TOKEN=/etc/cylo/runner-secrets/runner-token,CYLO_AO_TOKEN=/etc/cylo/runner-secrets/ao-token
 ExecStart=/opt/cylo/releases/current/bin/cylo-secret-entrypoint /opt/cylo/releases/current/bin/cylo-runner
 Restart=on-failure
 RestartSec=5s
@@ -27,7 +27,7 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictSUIDSGID=true
 SystemCallArchitectures=native
 ReadWritePaths=/var/lib/cylo/runner /var/lib/cylo/runner-authority /run/lock/cylo-runner-deployments.lock
-ReadOnlyPaths=/etc/cylo/secrets
+ReadOnlyPaths=/etc/cylo/runner-secrets
 TimeoutStopSec=30s
 
 [Install]

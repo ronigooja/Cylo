@@ -26,6 +26,7 @@ install -d -o 65532 -g 65532 -m 0700 /var/lib/cylo/memory
 install -d -o cylo-runner -g cylo-runner -m 0700 /var/lib/cylo/runner
 install -d -o cylo-runner -g cylo-runner -m 0700 /var/lib/cylo/runner-authority
 install -d -o root -g root -m 0700 /etc/cylo/secrets
+install -d -o root -g cylo-runner -m 0750 /etc/cylo/runner-secrets
 
 authority=/var/lib/cylo/runner-authority/runner-deployment-authority.db
 if [[ -L "$authority" ]]; then
@@ -47,8 +48,9 @@ systemd-tmpfiles --create /etc/tmpfiles.d/cylo-runner.conf
 systemctl daemon-reload
 
 cat <<'EOF'
-Host layout prepared. Supply secret files under /etc/cylo/secrets with mode 0400
-and owner 65532:65532 for Compose services; runner token and AO token must also
-be readable by cylo-runner. Copy the example environment files and set
-deployment-specific paths, profiles, model routes, and existing external URLs.
+Host layout prepared. Supply Compose secret files under /etc/cylo/secrets with
+mode 0400 and owner 65532:65532. Supply runner-token and ao-token under
+/etc/cylo/runner-secrets with mode 0440 and owner root:cylo-runner. Copy the
+example environment files and set deployment-specific paths, profiles, model
+routes, and existing external URLs.
 EOF
