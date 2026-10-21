@@ -52,14 +52,17 @@ type IsolationProof struct {
 }
 
 type isolationProofPayload struct {
-	SchemaVersion  int             `json:"schema_version"`
-	OldInstanceID  string          `json:"old_instance_id"`
-	OldEpoch       int64           `json:"old_epoch"`
-	SourceHost     string          `json:"source_host"`
-	Units          []isolationUnit `json:"units"`
-	ActiveRuns     int             `json:"active_runs"`
-	UnknownEffects int             `json:"unknown_effects"`
-	VerifiedAt     time.Time       `json:"verified_at"`
+	SchemaVersion        int             `json:"schema_version"`
+	OldInstanceID        string          `json:"old_instance_id"`
+	OldEpoch             int64           `json:"old_epoch"`
+	SourceHost           string          `json:"source_host"`
+	Units                []isolationUnit `json:"units"`
+	ActiveRuns           int             `json:"active_runs"`
+	UnknownEffects       int             `json:"unknown_effects"`
+	ActiveDeploymentJobs int             `json:"active_deployment_jobs"`
+	LiveDeployments      int             `json:"live_deployments"`
+	OpenVoiceSessions    int             `json:"open_voice_sessions"`
+	VerifiedAt           time.Time       `json:"verified_at"`
 }
 
 type isolationUnit struct {
@@ -179,7 +182,7 @@ func FenceInstance(ctx context.Context, store *storage.Store, reason string, exp
 		return InstanceState{}, errors.New("instance epoch changed; reload state before fencing")
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err = tx.ExecContext(ctx, `UPDATE cylo_instance_state SET epoch=epoch+1,dispatch_enabled=0,fence_reason=?,fenced_at=?,updated_at=? WHERE singleton=1 AND epoch=?`, reason, now, now, expectedEpoch); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE cylo_instance_state SET epoch=epoch+1,dispatch_enabled=0,derived_retrieval_enabled=0,fence_reason=?,fenced_at=?,updated_at=? WHERE singleton=1 AND epoch=?`, reason, now, now, expectedEpoch); err != nil {
 		return InstanceState{}, err
 	}
 	state, err := GetInstanceState(ctx, tx)
@@ -302,7 +305,7 @@ func VerifyIsolationProof(document, key []byte) (IsolationProof, error) {
 	if err = json.Unmarshal(raw, &proof); err != nil {
 		return verified, errors.New("isolation proof payload is invalid")
 	}
-	if proof.SchemaVersion != 1 || proof.OldInstanceID == "" || proof.OldEpoch < 1 || strings.TrimSpace(proof.SourceHost) == "" || len(proof.Units) == 0 || proof.ActiveRuns != 0 || proof.UnknownEffects != 0 || proof.VerifiedAt.IsZero() || time.Since(proof.VerifiedAt) > 24*time.Hour || proof.VerifiedAt.After(time.Now().Add(5*time.Minute)) {
+	if proof.SchemaVersion != 1 || proof.OldInstanceID == "" || proof.OldEpoch < 1 || strings.TrimSpace(proof.SourceHost) == "" || len(proof.Units) == 0 || proof.ActiveRuns != 0 || proof.UnknownEffects != 0 || proof.ActiveDeploymentJobs != 0 || proof.LiveDeployments != 0 || proof.OpenVoiceSessions != 0 || proof.VerifiedAt.IsZero() || time.Since(proof.VerifiedAt) > 24*time.Hour || proof.VerifiedAt.After(time.Now().Add(5*time.Minute)) {
 		return verified, errors.New("isolation proof lacks current, quiescent source evidence")
 	}
 	for _, unit := range proof.Units {

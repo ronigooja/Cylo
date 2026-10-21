@@ -89,6 +89,21 @@ func TestIsolationProofRejectsUnverifiedAndActiveSource(t *testing.T) {
 	if _, err := VerifyIsolationProof(doc, key); err == nil {
 		t.Fatal("active systemd unit proof was accepted")
 	}
+
+	readiness := map[string]any{
+		"schema_version": 1, "old_instance_id": "source", "old_epoch": 4,
+		"source_host": "source.example", "units": []map[string]string{{"name": "cylo.service", "active_state": "inactive", "unit_file_state": "masked"}},
+		"active_runs": 0, "unknown_effects": 0, "active_deployment_jobs": 1,
+		"live_deployments": 0, "open_voice_sessions": 0, "verified_at": time.Now().UTC(),
+	}
+	raw, _ = json.Marshal(readiness)
+	mac = hmac.New(sha256.New, key)
+	_, _ = mac.Write(raw)
+	blocked := isolationProofEnvelope{Payload: base64.RawURLEncoding.EncodeToString(raw), HMAC: hex.EncodeToString(mac.Sum(nil))}
+	doc, _ = json.Marshal(blocked)
+	if _, err := VerifyIsolationProof(doc, key); err == nil {
+		t.Fatal("proof with active deployment work was accepted")
+	}
 }
 
 func instanceStatus(t *testing.T, store *storage.Store) (InstanceState, error) {
