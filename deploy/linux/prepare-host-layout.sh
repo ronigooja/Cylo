@@ -50,7 +50,8 @@ systemctl daemon-reload
 cat <<'EOF'
 Host layout prepared. Supply Compose secret files under /etc/cylo/secrets with
 mode 0400 and owner 65532:65532. Supply runner-token and ao-token under
-/etc/cylo/runner-secrets with mode 0440 and owner root:cylo-runner. Copy the
-example environment files and set deployment-specific paths, profiles, model
-routes, and existing external URLs.
+/etc/cylo/runner-secrets with mode 0400 and owner cylo-runner:cylo-runner. The
+secret entrypoint rejects group- or world-readable files. Copy the example
+environment files and set deployment-specific paths, profiles, model routes,
+and existing external URLs.
 EOF
