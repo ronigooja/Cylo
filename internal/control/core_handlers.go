@@ -84,141 +84,16 @@ func (s *Server) commandTaskCreate(ctx context.Context, tx *sql.Tx, c CommandCon
 	if err := decodePayload(req.Payload, &p); err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
-	p.Title = strings.TrimSpace(p.Title)
-	p.Goal = strings.TrimSpace(p.Goal)
-	if p.Title == "" || p.Goal == "" || len(p.Title) > 300 || len(p.Goal) > 20000 || len(p.InitialMessage) > 20000 {
-		return contracts.CommandResult{}, nil, apiError(400, "invalid_request", "task title and goal are required and must fit limits", nil)
-	}
-	switch p.Source {
-	case "user":
-		if len(p.SourceReference) != 0 {
-			return contracts.CommandResult{}, nil, apiError(400, "invalid_request", "user task source cannot include a source reference", nil)
-		}
-	case "voice", "service", "system":
-		if p.Source == "service" {
-			return contracts.CommandResult{}, nil, apiError(403, "source_unavailable", "service task source is available only to trusted server features", nil)
-		}
-		if len(p.SourceReference) == 0 || !json.Valid(p.SourceReference) {
-			return contracts.CommandResult{}, nil, apiError(400, "invalid_request", "non-user task source requires a server-validated source reference", nil)
-		}
-		s.mu.RLock()
-		_, registered := s.taskSources[p.Source]
-		s.mu.RUnlock()
-		if !registered {
-			return contracts.CommandResult{}, nil, apiError(403, "source_unavailable", "task source is not authorized by a registered server feature", map[string]string{"source": p.Source})
-		}
-	default:
-		return contracts.CommandResult{}, nil, apiError(400, "invalid_request", "source is invalid", nil)
-	}
-	if p.ProjectID != "" {
-		allowed, accessErr := PrincipalCanWriteProject(ctx, tx, c.Principal, p.ProjectID)
-		if accessErr != nil {
-			return contracts.CommandResult{}, nil, accessErr
-		}
-		if !allowed {
-			return contracts.CommandResult{}, nil, apiError(404, "not_found", "project not found", nil)
-		}
-	}
-	profile := p.ProfileID
-	if profile == "" {
-		profile = s.cfg.DefaultProfileID
-	}
-	if _, ok := s.cfg.Profiles[profile]; !ok {
-		return contracts.CommandResult{}, nil, apiError(409, "profile_unavailable", "requested execution profile is not configured and authorized", map[string]any{"profile_id": profile})
-	}
-	id, err := randomID()
+	result, err := s.AdmitTaskTx(ctx, tx, AdmissionContext{Principal: c.Principal, Source: p.Source, SourceRef: p.SourceReference, IdempotencyKey: c.CommandID, ProfileID: p.ProfileID, ProjectID: p.ProjectID, Title: p.Title, Goal: p.Goal, InitialMessage: p.InitialMessage, AcceptedAt: c.AcceptedAt})
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
-	at := c.AcceptedAt.Format(time.RFC3339Nano)
-	_, err = tx.ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,project_id,title,goal,source,profile_id,status,version,created_at,updated_at,accepted_at,created_by_device_id,command_id,owner_subject_id) VALUES(?,?,?,?,?,?,?,'queued',1,?,?,?, ?,?,?)`, id, c.Principal.WorkspaceID, nullString(p.ProjectID), p.Title, p.Goal, p.Source, profile, at, at, at, c.Principal.DeviceID, c.CommandID, c.Principal.SubjectID)
-	if err != nil {
-		return contracts.CommandResult{}, nil, err
-	}
-	var sourceEvents []contracts.Event
-	if p.Source != "user" {
-		s.mu.RLock()
-		sourceHandler := s.taskSources[p.Source]
-		s.mu.RUnlock()
-		if sourceHandler == nil {
-			return contracts.CommandResult{}, nil, apiError(403, "source_unavailable", "task source is not authorized by a registered server feature", map[string]string{"source": p.Source})
-		}
-		sourceRequest := &TaskSourceRequest{Title: p.Title, Goal: p.Goal, InitialMessage: p.InitialMessage}
-		admittedEvents, sourceErr := sourceHandler(ctx, tx, c.Principal, id, sourceRequest, p.SourceReference, c.AcceptedAt)
-		if sourceErr != nil {
-			return contracts.CommandResult{}, nil, sourceErr
-		}
-		if strings.TrimSpace(sourceRequest.Title) == "" || strings.TrimSpace(sourceRequest.Goal) == "" || len(sourceRequest.Title) > 300 || len(sourceRequest.Goal) > 20000 || len(sourceRequest.InitialMessage) > 20000 {
-			return contracts.CommandResult{}, nil, apiError(400, "invalid_source", "validated task source returned invalid task content", nil)
-		}
-		if sourceRequest.Title != p.Title || sourceRequest.Goal != p.Goal {
-			if _, sourceErr = tx.ExecContext(ctx, `UPDATE tasks SET title=?,goal=? WHERE id=? AND workspace_id=?`, sourceRequest.Title, sourceRequest.Goal, id, c.Principal.WorkspaceID); sourceErr != nil {
-				return contracts.CommandResult{}, nil, sourceErr
-			}
-		}
-		p.Title = sourceRequest.Title
-		p.Goal = sourceRequest.Goal
-		p.InitialMessage = sourceRequest.InitialMessage
-		sourceEvents = admittedEvents
-	}
-	task := contracts.Task{ID: id, ProjectID: p.ProjectID, Title: p.Title, Goal: p.Goal, Source: p.Source, ProfileID: profile, Status: "queued", Version: 1, CreatedAt: c.AcceptedAt, UpdatedAt: c.AcceptedAt, AcceptedAt: &c.AcceptedAt, Evidence: []contracts.Evidence{}}
-	events := []contracts.Event{event("task.created", "task", id, 1, map[string]any{"task": task})}
-	if p.InitialMessage != "" {
-		entryID, idErr := randomID()
-		if idErr != nil {
-			return contracts.CommandResult{}, nil, idErr
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO task_entries(id,task_id,workspace_id,kind,content,author_device_id,created_at) VALUES(?,?,?,'user_message',?,?,?)`, entryID, id, c.Principal.WorkspaceID, p.InitialMessage, c.Principal.DeviceID, at); err != nil {
-			return contracts.CommandResult{}, nil, err
-		}
-		entry := contracts.TaskEntry{ID: entryID, Kind: "user_message", Content: p.InitialMessage, AuthorDeviceID: c.Principal.DeviceID, CreatedAt: c.AcceptedAt}
-		events = append(events, event("task.entry_appended", "task", id, 1, map[string]any{"task_id": id, "entry": entry}))
-	}
-	events = append(events, sourceEvents...)
-	return contracts.CommandResult{ResourceType: "task", ResourceID: id, ResourceVersion: 1}, events, nil
+	return contracts.CommandResult{ResourceType: "task", ResourceID: result.Task.ID, ResourceVersion: result.Task.Version}, result.Events, nil
 }
 
-func (s *Server) AppendEventsTx(ctx context.Context, tx *sql.Tx, p contracts.Principal, events []contracts.Event) error {
-	if tx == nil || p.WorkspaceID == "" || p.SubjectID == "" {
-		return errors.New("transaction and trusted event principal are required")
-	}
-	for i := range events {
-		e := &events[i]
-		if e.AggregateType == "" || e.AggregateID == "" {
-			return apiError(500, "invalid_event", "event is missing aggregate identity", nil)
-		}
-		if e.EventID == "" {
-			id, err := randomID()
-			if err != nil {
-				return err
-			}
-			e.EventID = id
-		}
-		e.SchemaVersion = 1
-		e.WorkspaceID = p.WorkspaceID
-		e.SubjectID = p.SubjectID
-		if e.OccurredAt.IsZero() {
-			e.OccurredAt = time.Now().UTC()
-		}
-		var cursor int64
-		if err := tx.QueryRowContext(ctx, `UPDATE event_counters SET current_cursor=current_cursor+1 WHERE workspace_id=? RETURNING current_cursor`, p.WorkspaceID).Scan(&cursor); err != nil {
-			return err
-		}
-		e.Cursor = fmt.Sprint(cursor)
-		payload, err := json.Marshal(e)
-		if err != nil {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO events(event_id,workspace_id,cursor,schema_version,event_type,occurred_at,subject_id,aggregate_type,aggregate_id,aggregate_version,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, e.EventID, p.WorkspaceID, cursor, e.SchemaVersion, e.Type, e.OccurredAt.Format(time.RFC3339Nano), p.SubjectID, e.AggregateType, e.AggregateID, e.AggregateVersion, payload); err != nil {
-			return err
-		}
-		if err = enqueueEventNotification(ctx, tx, *e); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
+// AdmitTaskTx creates a task using the same policy, project ACL, source-hook,
+// lineage snapshot, and initial-entry rules as the user command path. The
+// caller owns tx and must append result.Events before committing it.
 func (s *Server) AdmitTaskTx(ctx context.Context, tx *sql.Tx, in AdmissionContext) (TaskAdmissionResult, error) {
 	if tx == nil || in.IdempotencyKey == "" || in.Principal.WorkspaceID == "" || in.Principal.SubjectID == "" || in.Principal.DeviceID == "" {
 		return TaskAdmissionResult{}, apiError(400, "invalid_admission", "transaction, stable idempotency key, and trusted principal are required", nil)
@@ -237,9 +112,6 @@ func (s *Server) AdmitTaskTx(ctx context.Context, tx *sql.Tx, in AdmissionContex
 			return TaskAdmissionResult{}, apiError(400, "invalid_request", "user task source cannot include a source reference", nil)
 		}
 	case "voice", "service", "system":
-		if in.Source == "service" && !in.TrustedSource {
-			return TaskAdmissionResult{}, apiError(403, "source_unavailable", "service task source is available only to trusted server features", nil)
-		}
 		if len(in.SourceRef) == 0 || !json.Valid(in.SourceRef) {
 			return TaskAdmissionResult{}, apiError(400, "invalid_request", "non-user task source requires a server-validated source reference", nil)
 		}
@@ -265,7 +137,7 @@ func (s *Server) AdmitTaskTx(ctx context.Context, tx *sql.Tx, in AdmissionContex
 	if profileID == "" {
 		profileID = s.cfg.DefaultProfileID
 	}
-	_, ok := s.cfg.Profiles[profileID]
+	profile, ok := s.cfg.Profiles[profileID]
 	if !ok {
 		return TaskAdmissionResult{}, apiError(409, "profile_unavailable", "requested execution profile is not configured and authorized", map[string]any{"profile_id": profileID})
 	}
@@ -277,8 +149,16 @@ func (s *Server) AdmitTaskTx(ctx context.Context, tx *sql.Tx, in AdmissionContex
 	if !in.AcceptedAt.IsZero() {
 		at = in.AcceptedAt.UTC()
 	}
+	policyJSON, err := json.Marshal(profile.ChildPolicy)
+	if err != nil {
+		return TaskAdmissionResult{}, err
+	}
+	childLimit := 0
+	if len(profile.ChildPolicy.AllowedProfileIDs) > 0 {
+		childLimit = profile.ChildPolicy.MaxChildRuns
+	}
 	stamp := at.Format(time.RFC3339Nano)
-	_, err = tx.ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,project_id,title,goal,source,profile_id,status,version,created_at,updated_at,accepted_at,created_by_device_id,command_id,owner_subject_id) VALUES(?,?,?,?,?,?,?,'queued',1,?,?,?,?,?,?)`, id, in.Principal.WorkspaceID, nullString(in.ProjectID), in.Title, in.Goal, in.Source, profileID, stamp, stamp, stamp, in.Principal.DeviceID, in.IdempotencyKey, in.Principal.SubjectID)
+	_, err = tx.ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,project_id,title,goal,source,profile_id,status,version,created_at,updated_at,accepted_at,created_by_device_id,command_id,owner_subject_id,lineage_root_task_id,lineage_depth,child_policy_json,root_child_limit) VALUES(?,?,?,?,?,?,?,'queued',1,?,?,?,?,?,?,?,0,?,?)`, id, in.Principal.WorkspaceID, nullString(in.ProjectID), in.Title, in.Goal, in.Source, profileID, stamp, stamp, stamp, in.Principal.DeviceID, in.IdempotencyKey, in.Principal.SubjectID, id, policyJSON, childLimit)
 	if err != nil {
 		return TaskAdmissionResult{}, err
 	}
@@ -290,7 +170,7 @@ func (s *Server) AdmitTaskTx(ctx context.Context, tx *sql.Tx, in AdmissionContex
 		if handler == nil {
 			return TaskAdmissionResult{}, apiError(403, "source_unavailable", "task source is not authorized by a registered server feature", map[string]string{"source": in.Source})
 		}
-		sourceRequest := &TaskSourceRequest{Title: in.Title, Goal: in.Goal, InitialMessage: in.InitialMessage, TrustedSource: in.TrustedSource, GrantSnapshot: append(json.RawMessage(nil), in.GrantSnapshot...)}
+		sourceRequest := &TaskSourceRequest{Title: in.Title, Goal: in.Goal, InitialMessage: in.InitialMessage, GrantSnapshot: append(json.RawMessage(nil), in.GrantSnapshot...)}
 		events, err := handler(ctx, tx, in.Principal, id, sourceRequest, in.SourceRef, at)
 		if err != nil {
 			return TaskAdmissionResult{}, err
@@ -380,6 +260,12 @@ func (s *Server) commandTaskStop(ctx context.Context, tx *sql.Tx, c CommandConte
 		version++
 		_, err = tx.ExecContext(ctx, `UPDATE tasks SET status='canceled',version=?,updated_at=?,finished_at=? WHERE id=? AND workspace_id=?`, version, at, at, p.TaskID, c.Principal.WorkspaceID)
 		if err != nil {
+			return contracts.CommandResult{}, nil, err
+		}
+		if err = settleDependentChildren(ctx, tx, p.TaskID, "canceled", c.AcceptedAt); err != nil {
+			return contracts.CommandResult{}, nil, err
+		}
+		if err = cancelPendingChildProposals(ctx, tx, p.TaskID, c.AcceptedAt); err != nil {
 			return contracts.CommandResult{}, nil, err
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE approvals SET status='canceled',version=version+1 WHERE task_id=? AND workspace_id=? AND status='pending'`, p.TaskID, c.Principal.WorkspaceID); err != nil {
@@ -523,6 +409,12 @@ func (s *Server) commandTaskAcceptResult(ctx context.Context, tx *sql.Tx, c Comm
 		if err != nil {
 			return contracts.CommandResult{}, nil, err
 		}
+		if err = settleDependentChildren(ctx, tx, p.TaskID, "complete", c.AcceptedAt); err != nil {
+			return contracts.CommandResult{}, nil, err
+		}
+		if err = cancelPendingChildProposals(ctx, tx, p.TaskID, c.AcceptedAt); err != nil {
+			return contracts.CommandResult{}, nil, err
+		}
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE approvals SET status='canceled',version=version+1 WHERE task_id=? AND workspace_id=? AND status='pending'`, p.TaskID, c.Principal.WorkspaceID)
 	if err != nil {
@@ -625,12 +517,6 @@ func (s *Server) commandDeviceRevoke(ctx context.Context, tx *sql.Tx, c CommandC
 	version++
 	_, err = tx.ExecContext(ctx, `UPDATE devices SET status='revoked',version=?,revoked_at=? WHERE id=?`, version, at, p.DeviceID)
 	if err != nil {
-		return contracts.CommandResult{}, nil, err
-	}
-	if _, err = tx.ExecContext(ctx, `UPDATE device_push_tokens SET status='disabled',disabled_at=?,updated_at=? WHERE device_id=? AND status='active'`, at, at, p.DeviceID); err != nil {
-		return contracts.CommandResult{}, nil, err
-	}
-	if _, err = tx.ExecContext(ctx, `UPDATE push_deliveries SET status='disabled',updated_at=? WHERE push_token_id IN (SELECT id FROM device_push_tokens WHERE device_id=?) AND status='pending'`, at, p.DeviceID); err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE tasks SET status=CASE WHEN status='queued' THEN 'canceled' ELSE status END,version=version+1,updated_at=?,finished_at=CASE WHEN status='queued' THEN ? ELSE finished_at END WHERE created_by_device_id=? AND workspace_id=? AND status IN ('queued','active','waiting','awaiting_user','paused')`, at, at, p.DeviceID, c.Principal.WorkspaceID)

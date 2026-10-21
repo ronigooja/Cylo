@@ -259,41 +259,57 @@ UPDATE tasks SET owner_subject_id=coalesce((SELECT d.subject_id FROM devices d W
 	}}); err != nil {
 		return err
 	}
-	return s.RegisterMigration(Migration{Namespace: "core", Version: 4, Name: "device_push_tokens_and_delivery", Up: func(ctx context.Context, tx *sql.Tx) error {
+	return s.RegisterMigration(Migration{Namespace: "core", Version: 4, Name: "child_task_lineage_and_proposals", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
-CREATE TABLE device_push_tokens (
+ALTER TABLE tasks ADD COLUMN lineage_root_task_id TEXT REFERENCES tasks(id);
+ALTER TABLE tasks ADD COLUMN lineage_parent_task_id TEXT REFERENCES tasks(id);
+ALTER TABLE tasks ADD COLUMN lineage_depth INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN child_policy_json BLOB NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN root_child_limit INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN pregrant_capabilities_json BLOB NOT NULL DEFAULT '[]';
+ALTER TABLE runs ADD COLUMN child_policy_json BLOB NOT NULL DEFAULT '';
+ALTER TABLE runs ADD COLUMN lineage_root_task_id TEXT REFERENCES tasks(id);
+ALTER TABLE runs ADD COLUMN lineage_parent_task_id TEXT REFERENCES tasks(id);
+ALTER TABLE runs ADD COLUMN lineage_depth INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX tasks_lineage_root ON tasks(lineage_root_task_id,lineage_depth,status);
+CREATE TABLE child_proposals (
   id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  attempt_id TEXT NOT NULL,
+  proposal_id TEXT NOT NULL,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id),
   subject_id TEXT NOT NULL,
-  device_id TEXT NOT NULL REFERENCES devices(id),
-  platform TEXT NOT NULL CHECK(platform IN ('ios','macos')),
-  token_hex TEXT NOT NULL,
-  token_hash BLOB NOT NULL UNIQUE,
-  status TEXT NOT NULL CHECK(status IN ('active','disabled')),
+  parent_task_id TEXT NOT NULL REFERENCES tasks(id),
+  root_task_id TEXT NOT NULL REFERENCES tasks(id),
+  status TEXT NOT NULL CHECK(status IN ('admitted','pending','approved','rejected','canceled')),
+  version INTEGER NOT NULL DEFAULT 1,
+  request_hash BLOB NOT NULL,
+  request_json BLOB NOT NULL,
+  response_json BLOB NOT NULL,
+  child_task_id TEXT REFERENCES tasks(id),
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  disabled_at TEXT
+  decided_at TEXT,
+  decided_by_device_id TEXT REFERENCES devices(id),
+  UNIQUE(run_id,attempt_id,proposal_id),
+  UNIQUE(workspace_id,subject_id,proposal_id)
 );
-CREATE UNIQUE INDEX device_push_tokens_active_device_platform ON device_push_tokens(device_id,platform) WHERE status='active';
-CREATE INDEX device_push_tokens_subject ON device_push_tokens(workspace_id,subject_id,status);
-CREATE TABLE push_deliveries (
-  id TEXT PRIMARY KEY,
-  notification_id TEXT NOT NULL REFERENCES notifications(id),
-  push_token_id TEXT NOT NULL REFERENCES device_push_tokens(id),
-  status TEXT NOT NULL CHECK(status IN ('pending','delivered','failed','disabled')),
-  attempts INTEGER NOT NULL DEFAULT 0,
-  next_attempt_at TEXT NOT NULL,
-  apns_id TEXT NOT NULL UNIQUE,
-  collapse_id TEXT NOT NULL,
-  inbox_cursor TEXT NOT NULL DEFAULT '',
-  last_status_code INTEGER NOT NULL DEFAULT 0,
-  last_error_code TEXT NOT NULL DEFAULT '',
+CREATE INDEX child_proposals_inbox ON child_proposals(workspace_id,subject_id,status,created_at);
+CREATE TABLE task_dependencies (
+  task_id TEXT NOT NULL REFERENCES tasks(id),
+  dependency_task_id TEXT NOT NULL REFERENCES tasks(id),
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+  status TEXT NOT NULL CHECK(status IN ('waiting','satisfied','failed')),
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  UNIQUE(notification_id,push_token_id)
+  PRIMARY KEY(task_id,dependency_task_id),
+  CHECK(task_id<>dependency_task_id)
 );
-CREATE INDEX push_deliveries_due ON push_deliveries(status,next_attempt_at,created_at);
-CREATE INDEX push_deliveries_token ON push_deliveries(push_token_id,status);
+CREATE INDEX task_dependencies_dependency ON task_dependencies(dependency_task_id,status);
+CREATE TABLE child_budget_reservations (
+	  scope_task_id TEXT NOT NULL REFERENCES tasks(id),
+  proposal_id TEXT NOT NULL REFERENCES child_proposals(id),
+  reserved_at TEXT NOT NULL,
+	  PRIMARY KEY(scope_task_id,proposal_id)
+);
 `)
 		return err
 	}})

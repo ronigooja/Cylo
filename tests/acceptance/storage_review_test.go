@@ -10,9 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/internal/memory"
 	"github.com/ronigooja/Cylo/internal/storage"
-	"github.com/ronigooja/Cylo/internal/voice"
 )
 
 func openStore(t *testing.T, path string) *storage.Store {
@@ -133,26 +131,35 @@ func TestReviewRejectFutureSchema(t *testing.T) {
 func TestReviewLateCoreMigrationAfterFeatureHistory(t *testing.T) {
 	s := openStore(t, filepath.Join(t.TempDir(), "feature-history.db"))
 	ctx := context.Background()
-	for _, register := range []func(*storage.Store) error{storage.RegisterCoreMigrations, memory.RegisterMigrations, voice.RegisterMigrations} {
-		if err := register(s); err != nil {
+	if err := storage.RegisterCoreMigrations(s); err != nil {
+		t.Fatal(err)
+	}
+	for _, migration := range []storage.Migration{
+		{Namespace: "feature", Version: 100, Name: "feature_one", Up: func(context.Context, *sql.Tx) error { return nil }},
+		{Namespace: "feature", Version: 200, Name: "feature_two", Up: func(context.Context, *sql.Tx) error { return nil }},
+		{Namespace: "feature", Version: 201, Name: "feature_three", Up: func(context.Context, *sql.Tx) error { return nil }},
+	} {
+		if err := s.RegisterMigration(migration); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := s.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// Recreate the valid pre-v3 database history: core 1/2 and feature 100/200/201
-	// have already run, but the newly added core isolation snapshot has not.
-	if _, err := s.DB().ExecContext(ctx, `ALTER TABLE runs DROP COLUMN isolation_policy`); err != nil {
-		t.Fatal(err)
-	}
-	for _, stmt := range []string{`DROP INDEX push_deliveries_token`, `DROP INDEX push_deliveries_due`, `DROP INDEX device_push_tokens_subject`, `DROP INDEX device_push_tokens_active_device_platform`, `DROP TABLE push_deliveries`, `DROP TABLE device_push_tokens`} {
+	// Recreate the valid pre-v4 database history: core 1/2/3 and feature
+	// 100/200/201 have run, but the newly added child lineage migration has not.
+	for _, stmt := range []string{
+		`DROP INDEX tasks_lineage_root`,
+		`DROP TABLE child_budget_reservations`, `DROP TABLE task_dependencies`, `DROP TABLE child_proposals`,
+		`ALTER TABLE tasks DROP COLUMN lineage_root_task_id`, `ALTER TABLE tasks DROP COLUMN lineage_parent_task_id`,
+		`ALTER TABLE tasks DROP COLUMN lineage_depth`, `ALTER TABLE tasks DROP COLUMN child_policy_json`,
+		`ALTER TABLE tasks DROP COLUMN root_child_limit`, `ALTER TABLE tasks DROP COLUMN pregrant_capabilities_json`,
+		`ALTER TABLE runs DROP COLUMN child_policy_json`, `ALTER TABLE runs DROP COLUMN lineage_root_task_id`,
+		`ALTER TABLE runs DROP COLUMN lineage_parent_task_id`, `ALTER TABLE runs DROP COLUMN lineage_depth`,
+	} {
 		if _, err := s.DB().ExecContext(ctx, stmt); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if _, err := s.DB().ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=3`); err != nil {
-		t.Fatal(err)
 	}
 	if _, err := s.DB().ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=4`); err != nil {
 		t.Fatal(err)
@@ -173,10 +180,10 @@ func TestReviewLateCoreMigrationAfterFeatureHistory(t *testing.T) {
 		t.Fatalf("new core migration was blocked by applied feature migrations: %v", err)
 	}
 	var name, namespace string
-	if err := s.DB().QueryRowContext(ctx, `SELECT name,namespace FROM schema_migrations WHERE version=3`).Scan(&name, &namespace); err != nil {
+	if err := s.DB().QueryRowContext(ctx, `SELECT name,namespace FROM schema_migrations WHERE version=4`).Scan(&name, &namespace); err != nil {
 		t.Fatal(err)
 	}
-	if name != "run_isolation_policy_snapshot" || namespace != "core" {
+	if name != "child_task_lineage_and_proposals" || namespace != "core" {
 		t.Fatalf("late migration identity=%q/%q", namespace, name)
 	}
 	var featureRows int

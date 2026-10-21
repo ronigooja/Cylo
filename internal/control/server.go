@@ -24,13 +24,11 @@ type Config struct {
 	RunnerScopes       []string
 	DeviceScopes       []string
 	DefaultProfileID   string
-	RoleProfiles       map[string]string
 	RuntimeRouteID     string
 	ModelRouteID       string
 	Profiles           map[string]RuntimeProfile
 	PairingTTL         time.Duration
 	MaxRequestBytes    int64
-	PushSender         PushSender
 }
 
 type RuntimeProfile struct {
@@ -46,6 +44,9 @@ type RuntimeProfile struct {
 	ChildPolicy     ChildPolicy `json:"child_policy,omitempty"`
 }
 
+// ChildPolicy is a profile's bounded authority to request descendants. A task
+// receives a serialized snapshot at admission, so later config changes cannot
+// enlarge an existing lineage.
 type ChildPolicy struct {
 	AllowedProfileIDs []string `json:"allowed_profile_ids"`
 	CapabilityIDs     []string `json:"capability_ids"`
@@ -66,10 +67,12 @@ type TaskSourceRequest struct {
 	Title          string
 	Goal           string
 	InitialMessage string
-	TrustedSource  bool `json:"-"`
 	GrantSnapshot  json.RawMessage
 }
 
+// AdmissionContext is supplied by trusted server-side features to admit a task
+// inside their existing transaction. Principal must come from a stored grant,
+// never from request JSON. IdempotencyKey should be a stable, server-derived ID.
 type AdmissionContext struct {
 	Principal      contracts.Principal
 	Source         string
@@ -82,12 +85,54 @@ type AdmissionContext struct {
 	Goal           string
 	InitialMessage string
 	AcceptedAt     time.Time
-	TrustedSource  bool `json:"-"`
 }
 
 type TaskAdmissionResult struct {
 	Task   contracts.Task
 	Events []contracts.Event
+}
+
+// AppendEventsTx persists feature-produced events and their notifications in
+// the caller's transaction. It is intended to pair with AdmitTaskTx.
+func (s *Server) AppendEventsTx(ctx context.Context, tx *sql.Tx, p contracts.Principal, events []contracts.Event) error {
+	if tx == nil || p.WorkspaceID == "" || p.SubjectID == "" {
+		return errors.New("transaction and trusted event principal are required")
+	}
+	for i := range events {
+		e := &events[i]
+		if e.AggregateType == "" || e.AggregateID == "" {
+			return apiError(500, "invalid_event", "event is missing aggregate identity", nil)
+		}
+		if e.EventID == "" {
+			id, err := randomID()
+			if err != nil {
+				return err
+			}
+			e.EventID = id
+		}
+		e.SchemaVersion = 1
+		e.WorkspaceID = p.WorkspaceID
+		e.SubjectID = p.SubjectID
+		if e.OccurredAt.IsZero() {
+			e.OccurredAt = time.Now().UTC()
+		}
+		var cursor int64
+		if err := tx.QueryRowContext(ctx, `UPDATE event_counters SET current_cursor=current_cursor+1 WHERE workspace_id=? RETURNING current_cursor`, p.WorkspaceID).Scan(&cursor); err != nil {
+			return err
+		}
+		e.Cursor = fmt.Sprint(cursor)
+		payload, err := json.Marshal(e)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO events(event_id,workspace_id,cursor,schema_version,event_type,occurred_at,subject_id,aggregate_type,aggregate_id,aggregate_version,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, e.EventID, p.WorkspaceID, cursor, e.SchemaVersion, e.Type, e.OccurredAt.Format(time.RFC3339Nano), p.SubjectID, e.AggregateType, e.AggregateID, e.AggregateVersion, payload); err != nil {
+			return err
+		}
+		if err = enqueueEventNotification(ctx, tx, *e); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type TaskSourceAdmissionHandler func(context.Context, *sql.Tx, contracts.Principal, string, *TaskSourceRequest, json.RawMessage, time.Time) ([]contracts.Event, error)
@@ -152,17 +197,13 @@ type Server struct {
 	runner      *http.ServeMux
 	mu          sync.RWMutex
 	sealed      bool
-	pushSender  PushSender
 }
 
 func DefaultOwnerScopes() []string {
 	return []string{
 		"client:read", "client:command", "device:manage",
-		"device:push",
 		"memory:read:personal", "memory:write:personal", "memory:delete:personal",
 		"memory:read:workspace", "memory:write:workspace", "memory:delete:workspace",
-		"capability:read", "capability:release:submit",
-		"capability:deployment:request", "capability:deployment:authorize",
 	}
 }
 
@@ -185,19 +226,6 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 		profiles[id] = profile
 	}
 	cfg.Profiles = profiles
-	roleProfiles := make(map[string]string, len(cfg.RoleProfiles))
-	for role, profileID := range cfg.RoleProfiles {
-		role, profileID = strings.TrimSpace(role), strings.TrimSpace(profileID)
-		profile, ok := cfg.Profiles[profileID]
-		if role == "" || !ok || profile.Role != role || profile.AOAgentKind != "worker" {
-			return nil, fmt.Errorf("role profile mapping %q -> %q must reference a configured worker profile with the same role", role, profileID)
-		}
-		if _, exists := roleProfiles[role]; exists {
-			return nil, fmt.Errorf("role profile mapping for normalized role %q is defined more than once", role)
-		}
-		roleProfiles[role] = profileID
-	}
-	cfg.RoleProfiles = roleProfiles
 	if cfg.DeviceScopes == nil {
 		cfg.DeviceScopes = DefaultOwnerScopes()
 	} else {
@@ -242,56 +270,9 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 			return nil, errors.New("default profile is not present in configured profiles")
 		}
 	}
-	s := &Server{store: store, cfg: cfg, commands: make(map[string]CommandHandler), taskSources: make(map[string]TaskSourceAdmissionHandler), public: http.NewServeMux(), device: http.NewServeMux(), runner: http.NewServeMux(), pushSender: cfg.PushSender}
+	s := &Server{store: store, cfg: cfg, commands: make(map[string]CommandHandler), taskSources: make(map[string]TaskSourceAdmissionHandler), public: http.NewServeMux(), device: http.NewServeMux(), runner: http.NewServeMux()}
 	s.registerCoreRoutes()
 	return s, nil
-}
-
-func (s *Server) ProfileForRole(role string) (string, bool) {
-	role = strings.TrimSpace(role)
-	if role == "" {
-		return "", false
-	}
-	if profileID, ok := s.cfg.RoleProfiles[role]; ok {
-		return profileID, true
-	}
-	profileID := ""
-	for id, profile := range s.cfg.Profiles {
-		if profile.Role != role || profile.AOAgentKind != "worker" {
-			continue
-		}
-		if profileID != "" {
-			return "", false
-		}
-		profileID = id
-	}
-	return profileID, profileID != ""
-}
-
-func uniqueNonEmpty(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		result = append(result, value)
-	}
-	return result
-}
-
-func containsString(values []string, expected string) bool {
-	for _, value := range values {
-		if value == expected {
-			return true
-		}
-	}
-	return false
 }
 
 // RegisterTaskSourceHandler admits non-user task sources inside the same SQL
@@ -360,6 +341,32 @@ func (s *Server) RegisterRunnerRoutes(register func(*http.ServeMux)) error {
 func HasScope(p contracts.Principal, scope string) bool {
 	for _, value := range p.Scopes {
 		if value == scope || value == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+func uniqueNonEmpty(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
 			return true
 		}
 	}

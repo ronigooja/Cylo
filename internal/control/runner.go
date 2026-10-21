@@ -61,19 +61,22 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	rows, err := tx.QueryContext(r.Context(), `SELECT id,workspace_id,title,goal,profile_id,version,created_by_device_id,command_id FROM tasks WHERE status='queued' ORDER BY created_at,id`)
+	rows, err := tx.QueryContext(r.Context(), `SELECT id,workspace_id,title,goal,profile_id,version,created_by_device_id,command_id,coalesce(lineage_root_task_id,id),coalesce(lineage_parent_task_id,''),lineage_depth,child_policy_json,pregrant_capabilities_json FROM tasks WHERE status='queued' AND NOT EXISTS (SELECT 1 FROM task_dependencies d WHERE d.task_id=tasks.id AND d.status<>'satisfied') ORDER BY created_at,id`)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	type candidate struct {
 		id, workspace, title, goal, profile, device, command string
+		root, parent                                         string
+		depth                                                int
+		childPolicyJSON, pregrantJSON                        []byte
 		version                                              int64
 	}
 	var chosen *candidate
 	for rows.Next() {
 		var c candidate
-		if err = rows.Scan(&c.id, &c.workspace, &c.title, &c.goal, &c.profile, &c.version, &c.device, &c.command); err != nil {
+		if err = rows.Scan(&c.id, &c.workspace, &c.title, &c.goal, &c.profile, &c.version, &c.device, &c.command, &c.root, &c.parent, &c.depth, &c.childPolicyJSON, &c.pregrantJSON); err != nil {
 			rows.Close()
 			writeError(w, err)
 			return
@@ -120,13 +123,26 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	newVersion := chosen.version + 1
-	authorization := contracts.JobAuthorization{CapabilityIDs: append([]string{}, profile.CapabilityIDs...), Scopes: append([]string{}, profile.Scopes...)}
+	policyBytes := chosen.childPolicyJSON
+	if len(policyBytes) == 0 {
+		policyBytes = []byte(`{}`)
+	}
+	pregrant := []string{}
+	if err = json.Unmarshal(chosen.pregrantJSON, &pregrant); err != nil {
+		writeError(w, apiError(500, "internal", "persisted child pregrant is invalid", nil))
+		return
+	}
+	capabilityIDs := profile.CapabilityIDs
+	if chosen.parent != "" {
+		capabilityIDs = intersectStrings(capabilityIDs, pregrant)
+	}
+	authorization := contracts.JobAuthorization{CapabilityIDs: append([]string{}, capabilityIDs...), Scopes: append([]string{}, profile.Scopes...)}
 	authorizationJSON, err := json.Marshal(authorization)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	_, err = tx.ExecContext(r.Context(), `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,control_version,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,isolation_policy,ao_project_id,started_at,task_version,authorization_json) VALUES(?,?,?,?,'dispatching','run',1,?,?,?,?,?,?,?,?,?,?,?, ?, ?,?)`, runID, chosen.workspace, chosen.id, attemptID, fence, p.RunnerID, chosen.device, chosen.command, chosen.goal, profile.ID, profile.RuntimeRouteID, profile.ModelRouteID, profile.Role, profile.IsolationPolicy, profile.AOProjectID, now, newVersion, authorizationJSON)
+	_, err = tx.ExecContext(r.Context(), `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,control_version,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,isolation_policy,ao_project_id,started_at,task_version,authorization_json,child_policy_json,lineage_root_task_id,lineage_parent_task_id,lineage_depth) VALUES(?,?,?,?,'dispatching','run',1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, runID, chosen.workspace, chosen.id, attemptID, fence, p.RunnerID, chosen.device, chosen.command, chosen.goal, profile.ID, profile.RuntimeRouteID, profile.ModelRouteID, profile.Role, profile.IsolationPolicy, profile.AOProjectID, now, newVersion, authorizationJSON, policyBytes, chosen.root, nullString(chosen.parent), chosen.depth)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -140,7 +156,7 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	claim := contracts.JobClaim{RunID: runID, TaskID: chosen.id, AttemptID: attemptID, WorkspaceID: chosen.workspace, TaskVersion: newVersion, Goal: chosen.goal, ProfileID: profile.ID, RuntimeRouteID: profile.RuntimeRouteID, ModelRouteID: profile.ModelRouteID, IsolationPolicy: profile.IsolationPolicy, Role: profile.Role, AOProjectID: profile.AOProjectID, Authorization: contracts.JobAuthorization{CapabilityIDs: append([]string{}, profile.CapabilityIDs...), Scopes: append([]string{}, profile.Scopes...)}, Fence: fence}
+	claim := contracts.JobClaim{RunID: runID, TaskID: chosen.id, AttemptID: attemptID, WorkspaceID: chosen.workspace, TaskVersion: newVersion, Goal: chosen.goal, ProfileID: profile.ID, RuntimeRouteID: profile.RuntimeRouteID, ModelRouteID: profile.ModelRouteID, IsolationPolicy: profile.IsolationPolicy, Role: profile.Role, AOProjectID: profile.AOProjectID, Authorization: authorization, Fence: fence, LineageRootTaskID: chosen.root, LineageParentTaskID: chosen.parent, LineageDepth: chosen.depth, PregrantCapabilityIDs: append([]string{}, pregrant...)}
 	if err = tx.Commit(); err != nil {
 		writeError(w, err)
 		return
@@ -159,13 +175,24 @@ func runnerHasAnyWorkspaceScope(p contracts.RunnerPrincipal, scope string) bool 
 	}
 	return false
 }
+
+func intersectStrings(granted, requested []string) []string {
+	out := make([]string, 0, len(requested))
+	for _, value := range requested {
+		if containsString(granted, value) && !containsString(out, value) {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
 func loadClaim(ctx context.Context, tx *sql.Tx, runID string, cfg Config) (contracts.JobClaim, error) {
 	_ = cfg
 	var c contracts.JobClaim
 	var fence uint64
 	var aoProject, aoSession string
 	var authJSON []byte
-	err := tx.QueryRowContext(ctx, `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json FROM runs r WHERE r.id=?`, runID).Scan(&c.RunID, &c.TaskID, &c.AttemptID, &c.WorkspaceID, &c.TaskVersion, &c.Goal, &c.ProfileID, &c.RuntimeRouteID, &c.ModelRouteID, &c.Role, &c.IsolationPolicy, &aoProject, &aoSession, &fence, &authJSON)
+	err := tx.QueryRowContext(ctx, `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json,coalesce(r.lineage_root_task_id,''),coalesce(r.lineage_parent_task_id,''),r.lineage_depth FROM runs r WHERE r.id=?`, runID).Scan(&c.RunID, &c.TaskID, &c.AttemptID, &c.WorkspaceID, &c.TaskVersion, &c.Goal, &c.ProfileID, &c.RuntimeRouteID, &c.ModelRouteID, &c.Role, &c.IsolationPolicy, &aoProject, &aoSession, &fence, &authJSON, &c.LineageRootTaskID, &c.LineageParentTaskID, &c.LineageDepth)
 	if err != nil {
 		return c, err
 	}
@@ -174,6 +201,11 @@ func loadClaim(ctx context.Context, tx *sql.Tx, runID string, cfg Config) (contr
 	c.Fence = fence
 	if err := json.Unmarshal(authJSON, &c.Authorization); err != nil {
 		return c, fmt.Errorf("decode persisted run authorization: %w", err)
+	}
+	if c.LineageParentTaskID != "" {
+		c.PregrantCapabilityIDs = append([]string{}, c.Authorization.CapabilityIDs...)
+	} else {
+		c.PregrantCapabilityIDs = []string{}
 	}
 	return c, nil
 }
@@ -212,7 +244,7 @@ func (s *Server) handleCurrentClaims(w http.ResponseWriter, r *http.Request) {
 	for _, id := range ids {
 		var claim contracts.JobClaim
 		var authJSON []byte
-		err = s.store.DB().QueryRowContext(r.Context(), `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json FROM runs r WHERE r.id=?`, id).Scan(&claim.RunID, &claim.TaskID, &claim.AttemptID, &claim.WorkspaceID, &claim.TaskVersion, &claim.Goal, &claim.ProfileID, &claim.RuntimeRouteID, &claim.ModelRouteID, &claim.Role, &claim.IsolationPolicy, &claim.AOProjectID, &claim.AOSessionID, &claim.Fence, &authJSON)
+		err = s.store.DB().QueryRowContext(r.Context(), `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json,coalesce(r.lineage_root_task_id,''),coalesce(r.lineage_parent_task_id,''),r.lineage_depth FROM runs r WHERE r.id=?`, id).Scan(&claim.RunID, &claim.TaskID, &claim.AttemptID, &claim.WorkspaceID, &claim.TaskVersion, &claim.Goal, &claim.ProfileID, &claim.RuntimeRouteID, &claim.ModelRouteID, &claim.Role, &claim.IsolationPolicy, &claim.AOProjectID, &claim.AOSessionID, &claim.Fence, &authJSON, &claim.LineageRootTaskID, &claim.LineageParentTaskID, &claim.LineageDepth)
 		if err != nil {
 			writeError(w, err)
 			return
@@ -220,6 +252,11 @@ func (s *Server) handleCurrentClaims(w http.ResponseWriter, r *http.Request) {
 		if err = json.Unmarshal(authJSON, &claim.Authorization); err != nil {
 			writeError(w, apiError(500, "internal", "persisted run authorization is invalid", nil))
 			return
+		}
+		if claim.LineageParentTaskID != "" {
+			claim.PregrantCapabilityIDs = append([]string{}, claim.Authorization.CapabilityIDs...)
+		} else {
+			claim.PregrantCapabilityIDs = []string{}
 		}
 		recovery.Claims = append(recovery.Claims, claim)
 	}
@@ -488,6 +525,14 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		}
 		_, err = tx.ExecContext(r.Context(), `UPDATE tasks SET status=?,version=?,updated_at=?,finished_at=coalesce(?,finished_at) WHERE id=? AND workspace_id=?`, nextTaskStatus, taskVersion, now.Format(time.RFC3339Nano), finished, taskID, workspace)
 		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if err = settleDependentChildren(r.Context(), tx, taskID, nextTaskStatus, now); err != nil {
+			writeError(w, err)
+			return
+		}
+		if err = cancelPendingChildProposals(r.Context(), tx, taskID, now); err != nil {
 			writeError(w, err)
 			return
 		}

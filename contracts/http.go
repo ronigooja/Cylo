@@ -205,21 +205,50 @@ type JobAuthorization struct {
 }
 
 type JobClaim struct {
-	RunID           string           `json:"run_id"`
-	TaskID          string           `json:"task_id"`
-	AttemptID       string           `json:"attempt_id"`
-	WorkspaceID     string           `json:"workspace_id"`
-	TaskVersion     int64            `json:"task_version"`
-	Goal            string           `json:"goal"`
-	ProfileID       string           `json:"profile_id"`
-	RuntimeRouteID  string           `json:"runtime_route_id"`
-	ModelRouteID    string           `json:"model_route_id"`
-	IsolationPolicy string           `json:"isolation_policy"`
-	Role            string           `json:"role"`
-	AOProjectID     string           `json:"ao_project_id,omitempty"`
-	AOSessionID     string           `json:"ao_session_id,omitempty"`
-	Authorization   JobAuthorization `json:"authorization"`
-	Fence           uint64           `json:"fence"`
+	RunID                 string           `json:"run_id"`
+	TaskID                string           `json:"task_id"`
+	AttemptID             string           `json:"attempt_id"`
+	WorkspaceID           string           `json:"workspace_id"`
+	TaskVersion           int64            `json:"task_version"`
+	Goal                  string           `json:"goal"`
+	ProfileID             string           `json:"profile_id"`
+	RuntimeRouteID        string           `json:"runtime_route_id"`
+	ModelRouteID          string           `json:"model_route_id"`
+	IsolationPolicy       string           `json:"isolation_policy"`
+	Role                  string           `json:"role"`
+	AOProjectID           string           `json:"ao_project_id,omitempty"`
+	AOSessionID           string           `json:"ao_session_id,omitempty"`
+	Authorization         JobAuthorization `json:"authorization"`
+	Fence                 uint64           `json:"fence"`
+	LineageRootTaskID     string           `json:"lineage_root_task_id,omitempty"`
+	LineageParentTaskID   string           `json:"lineage_parent_task_id,omitempty"`
+	LineageDepth          int              `json:"lineage_depth"`
+	PregrantCapabilityIDs []string         `json:"pregrant_capability_ids"`
+}
+
+type ChildTaskBudget struct {
+	MaxChildRuns int `json:"max_child_runs"`
+	MaxDepth     int `json:"max_depth"`
+}
+
+type ChildTaskProposalRequest struct {
+	ProposalID             string          `json:"proposal_id"`
+	Attempt                string          `json:"attempt"`
+	Fence                  uint64          `json:"fence"`
+	Kind                   string          `json:"kind"`
+	Title                  string          `json:"title"`
+	Goal                   string          `json:"goal"`
+	ProfileID              string          `json:"profile_id"`
+	DependencyTaskIDs      []string        `json:"dependency_task_ids"`
+	RequestedCapabilityIDs []string        `json:"requested_capability_ids"`
+	Budget                 ChildTaskBudget `json:"budget"`
+}
+
+type ChildTaskProposalReceipt struct {
+	ProposalID string `json:"proposal_id"`
+	Status     string `json:"status"`
+	Version    int64  `json:"version"`
+	TaskID     string `json:"task_id,omitempty"`
 }
 
 type ClaimRecovery struct {

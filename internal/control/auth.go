@@ -126,7 +126,7 @@ func (s *Server) runnerAuth(next http.Handler) http.Handler {
 					p.RunnerID = "configured-runner"
 				}
 				if len(p.Scopes) == 0 {
-					p.Scopes = []string{"runner:claim", "runner:observe", "runner:control:read"}
+					p.Scopes = []string{"runner:claim", "runner:observe", "runner:control:read", "runner:propose"}
 				}
 			} else {
 				writeError(w, apiError(http.StatusUnauthorized, "unauthenticated", "runner credential is not recognized", nil))
