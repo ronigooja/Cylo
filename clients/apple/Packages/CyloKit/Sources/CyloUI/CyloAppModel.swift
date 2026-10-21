@@ -856,6 +856,12 @@ public final class CyloAppModel: ObservableObject {
             case .retryLater: return
             case .none: break
             }
+            guard generation == connectionGeneration.value,
+                  registrationAPI === self.api,
+                  registrationOrigin == configuredServerURL,
+                  identityFingerprint == pushIdentityFingerprint else {
+                return
+            }
         }
         let idempotencyKey = defaults.string(forKey: operationKey) ?? pushIdempotencyKey(operation: "register", origin: registrationOrigin, identityFingerprint: identityFingerprint, binding: tokenHex)
         defaults.set(idempotencyKey, forKey: operationKey)
@@ -967,14 +973,21 @@ public final class CyloAppModel: ObservableObject {
         let operationKey = pushRegistrationOperationKey(for: origin, identityFingerprint: identityFingerprint)
         let tokenDigestKey = pushRegistrationTokenDigestKey(for: origin, identityFingerprint: identityFingerprint)
         guard let idempotencyKey = defaults.string(forKey: operationKey) else { return .none }
+        let generation = connectionGeneration.value
+        let preferenceEpoch = pushPreferenceEpoch
         do {
             let receipt = try await api.receipt(idempotencyKey: idempotencyKey)
             defaults.removeObject(forKey: operationKey)
             let registeredDigest = defaults.string(forKey: tokenDigestKey)
             defaults.removeObject(forKey: tokenDigestKey)
             guard let resourceID = receipt.resourceId else { return .completed }
+            let contextIsCurrent = generation == connectionGeneration.value
+                && api === self.api
+                && origin == configuredServerURL
+                && identityFingerprint == pushIdentityFingerprint
+                && preferenceEpoch == pushPreferenceEpoch
             let currentTokenDigest = pendingAPNSTokenHex.map { SHA256.hash(data: Data($0.utf8)).map { String(format: "%02x", $0) }.joined() }
-            if pushNotificationsEnabled, registeredDigest != nil, registeredDigest == currentTokenDigest {
+            if contextIsCurrent, pushNotificationsEnabled, registeredDigest != nil, registeredDigest == currentTokenDigest {
                 registeredPushTokenID = resourceID
                 defaults.set(resourceID, forKey: pushRegistrationKey(for: origin, identityFingerprint: identityFingerprint))
                 defaults.set(registeredDigest!, forKey: pushRegisteredTokenDigestKey(for: origin, identityFingerprint: identityFingerprint))
@@ -987,7 +1000,10 @@ public final class CyloAppModel: ObservableObject {
         } catch let CyloError.http(status, _, _, _) where status == 404 {
             defaults.removeObject(forKey: operationKey)
             defaults.removeObject(forKey: tokenDigestKey)
-            if !pushNotificationsEnabled, registeredPushTokenID == nil {
+            let queueKey = pushRevocationQueueKey(for: origin, identityFingerprint: identityFingerprint)
+            let registrationKey = pushRegistrationKey(for: origin, identityFingerprint: identityFingerprint)
+            if defaults.string(forKey: queueKey) == nil,
+               defaults.string(forKey: registrationKey) == nil {
                 defaults.removeObject(forKey: pushRevocationPendingKey(for: origin, identityFingerprint: identityFingerprint))
             }
             return .none
