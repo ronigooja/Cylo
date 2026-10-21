@@ -38,6 +38,8 @@ NUMBERED_HEADING_RE = re.compile(r"^#{1,6}\s+(.*)$")
 SECTION_NUMBER_RE = re.compile(r"(?<!\d)(\d+(?:\.\d+)+)(?!\d)")
 CHAPTER_NUMBER_RE = re.compile(r"(?:^|\s)(?:第\s*)?(\d{1,2})(?:\s*章|[.、])")
 MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\((<[^>]*>|[^)]*)\)")
+REFERENCE_LINK_RE = re.compile(r"!?\[([^\]]+)\](?:\[([^\]]*)\])")
+REFERENCE_DEFINITION_RE = re.compile(r"^\s{0,3}\[([^\]]+)\]:\s*(<[^>]+>|\S+)", re.M)
 HTML_ID_RE = re.compile(r"\bid\s*=\s*[\"']([^\"']+)[\"']", re.I)
 FENCE_RE = re.compile(r"^\s{0,3}(```+|~~~+)")
 
@@ -251,45 +253,69 @@ def split_link_destination(value: str) -> str:
     return value.split(None, 1)[0] if value else ""
 
 
+def normalize_reference_id(value: str) -> str:
+    return " ".join(value.split()).casefold()
+
+
+def check_destination(
+    root: Path,
+    source: Path,
+    destination: str,
+    anchors_by_path: dict[Path, set[str]],
+    errors: list[str],
+) -> None:
+    destination = split_link_destination(destination)
+    if not destination:
+        return
+    decoded = unquote(destination)
+    parsed = urlsplit(decoded)
+    if parsed.scheme or parsed.netloc:
+        return
+    target_text = parsed.path
+    fragment = parsed.fragment
+    if target_text:
+        target = (source.parent / target_text).resolve()
+        if not target.exists():
+            errors.append(
+                f"broken local link in {source.relative_to(root)}: {destination}"
+            )
+            return
+    else:
+        target = source.resolve()
+    if fragment and not target.is_dir() and target.suffix.lower() == ".md":
+        anchors = anchors_by_path.get(target)
+        if anchors is None:
+            try:
+                anchors = heading_anchors(target.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError):
+                anchors = set()
+        if fragment not in anchors:
+            errors.append(
+                f"broken Markdown heading link in {source.relative_to(root)}: {destination}"
+            )
+
+
 def link_check(root: Path) -> list[str]:
     errors: list[str] = []
     files = markdown_files(root)
     anchors_by_path = {path.resolve(): heading_anchors(path.read_text(encoding="utf-8")) for path in files}
     for source in files:
         text = source.read_text(encoding="utf-8")
+        definitions = {
+            normalize_reference_id(identifier): destination
+            for identifier, destination in REFERENCE_DEFINITION_RE.findall(text)
+        }
         for match in MARKDOWN_LINK_RE.finditer(text):
-            destination = split_link_destination(match.group(1))
-            if not destination:
-                continue
-            decoded = unquote(destination)
-            parsed = urlsplit(decoded)
-            if parsed.scheme or parsed.netloc:
-                continue
-            target_text = parsed.path
-            fragment = parsed.fragment
-            if target_text:
-                target = (source.parent / target_text).resolve()
-                if not target.exists():
-                    errors.append(
-                        f"broken local link in {source.relative_to(root)}: {destination}"
-                    )
-                    continue
+            check_destination(root, source, match.group(1), anchors_by_path, errors)
+        for match in REFERENCE_LINK_RE.finditer(text):
+            identifier = match.group(2) or match.group(1)
+            destination = definitions.get(normalize_reference_id(identifier))
+            if destination is None:
+                errors.append(
+                    f"unresolved Markdown link reference in {source.relative_to(root)}: [{identifier}]"
+                )
             else:
-                target = source.resolve()
-            if fragment:
-                if target.is_dir():
-                    continue
-                if target.suffix.lower() == ".md":
-                    anchors = anchors_by_path.get(target)
-                    if anchors is None:
-                        try:
-                            anchors = heading_anchors(target.read_text(encoding="utf-8"))
-                        except (OSError, UnicodeError):
-                            anchors = set()
-                    if fragment not in anchors:
-                        errors.append(
-                            f"broken Markdown heading link in {source.relative_to(root)}: {destination}"
-                        )
+                check_destination(root, source, destination, anchors_by_path, errors)
     return errors
 
 
