@@ -37,6 +37,14 @@ final class ClientContractTests: XCTestCase {
         XCTAssertEqual(inventory.items.first?.latestFence, 3)
     }
 
+    func testCapabilityRequestBindsExistingServiceToCurrentDeploymentVersion() throws {
+        let data = Data(#"{"items":[{"deployment_id":"deploy-1","workspace_id":"workspace-1","service_id":"service-1","release_digest":"sha256:release","requested_operation":"start","desired_state":"running","observed_state":"pending","grant_id":"grant-1","config_ref":"","config_sha256":"","version":7,"created_by":"device-1","created_at":"2026-10-21T12:00:00Z","updated_at":"2026-10-21T12:01:00Z","latest_attempt_id":"attempt-1","latest_fence":3,"last_error_code":""}]}"#.utf8)
+        let deployments = try CyloJSON.decoder.decode(CapabilityDeploymentList.self, from: data).items
+
+        XCTAssertEqual(deployments.version(forServiceID: "service-1"), 7)
+        XCTAssertNil(deployments.version(forServiceID: "new-service"))
+    }
+
     func testSSEParserCombinesDataLinesAndPreservesDecimalCursor() throws {
         let payload = #"{"schema_version":1,"event_id":"ev-7","cursor":"9007199254740993","type":"task.updated","occurred_at":"2026-10-20T12:00:00Z","workspace_id":"workspace","aggregate_type":"task","aggregate_id":"task-1","aggregate_version":5,"payload":{"status":"active"}}"#
         var parser = SSEParser()

@@ -18,6 +18,7 @@ public final class CyloAppModel: ObservableObject {
     @Published public private(set) var notifications: [NotificationRecord] = []
     @Published public private(set) var capabilityReleases: [CapabilityRelease] = []
     @Published public private(set) var capabilityDeployments: [CapabilityDeployment] = []
+    @Published public private(set) var connectionEpoch: UInt64 = 0
     @Published public private(set) var voiceConfig: VoiceConfig?
     @Published public private(set) var voicePoolStatus: VoicePoolStatus?
     @Published public private(set) var voiceStatus: VoiceIntegrationStatus = .idle
@@ -101,6 +102,9 @@ public final class CyloAppModel: ObservableObject {
         await endVoiceSession()
         if let url = URL(string: serverAddress), url.host != nil { connectionGeneration.switchOrigin(to: url) }
         else { connectionGeneration.advance() }
+        connectionEpoch = connectionGeneration.value
+        capabilityReleases = []
+        capabilityDeployments = []
         defaults.set(serverAddress.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "cylo.serverAddress")
         eventTask?.cancel()
         eventTask = nil
@@ -251,7 +255,7 @@ public final class CyloAppModel: ObservableObject {
         }
     }
 
-    public func submitCapabilityRelease(artifactRef: String, artifactDigest: String, entrypoint: String, capabilities: String, cpuMillis: Int64, memoryBytes: Int64, diskBytes: Int64, timeoutSeconds: Int64, concurrency: Int) async {
+    public func submitCapabilityRelease(artifactRef: String, artifactDigest: String, entrypoint: String, capabilities: String, cpuMillis: Int64, memoryBytes: Int64, diskBytes: Int64, timeoutSeconds: Int64, concurrency: Int) async -> Bool {
         let manifest: JSONValue = .object([
             "schema_version": .integer(1),
             "artifact_ref": .string(artifactRef),
@@ -267,21 +271,24 @@ public final class CyloAppModel: ObservableObject {
             ]),
             "network": .object(["mode": .string("none")])
         ])
-        await send(kind: "capability.release.submit", payload: .object(["manifest": manifest]))
+        guard await send(kind: "capability.release.submit", payload: .object(["manifest": manifest])) else { return false }
         await refreshCapabilities()
+        return true
     }
 
-    public func requestCapabilityDeployment(serviceID: String, releaseDigest: String, operation: String) async {
+    public func requestCapabilityDeployment(serviceID: String, releaseDigest: String, operation: String) async -> Bool {
         let payload: JSONValue = .object([
             "service_id": .string(serviceID),
             "release_digest": .string(releaseDigest),
             "operation": .string(operation)
         ])
-        await send(kind: "capability.deployment.request", payload: payload)
+        let expectedVersion = capabilityDeployments.version(forServiceID: serviceID)
+        guard await send(kind: "capability.deployment.request", expectedVersion: expectedVersion, payload: payload) else { return false }
         await refreshCapabilities()
+        return true
     }
 
-    public func authorizeCapabilityDeployment(_ deployment: CapabilityDeployment, release: CapabilityRelease, scopeKind: String = "workspace", scopeID: String? = nil, expiresAt: Date) async {
+    public func authorizeCapabilityDeployment(_ deployment: CapabilityDeployment, release: CapabilityRelease, scopeKind: String = "workspace", scopeID: String? = nil, expiresAt: Date) async -> Bool {
         var payload: [String: JSONValue] = [
             "deployment_id": .string(deployment.deploymentId),
             "scope_kind": .string(scopeKind),
@@ -296,8 +303,9 @@ public final class CyloAppModel: ObservableObject {
             "expires_at": .string(ISO8601DateFormatter().string(from: expiresAt))
         ]
         if let scopeID, !scopeID.isEmpty { payload["scope_id"] = .string(scopeID) }
-        await send(kind: "capability.deployment.authorize", expectedVersion: deployment.version, payload: .object(payload))
+        guard await send(kind: "capability.deployment.authorize", expectedVersion: deployment.version, payload: .object(payload)) else { return false }
         await refreshCapabilities()
+        return true
     }
 
     public func refreshVoiceReadiness() async {
@@ -602,6 +610,8 @@ public final class CyloAppModel: ObservableObject {
             memoryMissing = []
             memoryConflicts = []
             notifications = []
+            capabilityReleases = []
+            capabilityDeployments = []
             hasLoadedNotificationInbox = false
             voiceConfig = nil
             voicePoolStatus = nil
@@ -609,6 +619,7 @@ public final class CyloAppModel: ObservableObject {
             voiceDraftRevision = 0
             voiceTurnID = nil
             voiceProviderMessageID = nil
+            connectionEpoch = connectionGeneration.value
         }
         eventTask?.cancel()
         let identity = DeviceIdentityStore(serverURL: url)
@@ -629,14 +640,17 @@ public final class CyloAppModel: ObservableObject {
         return api
     }
 
-    private func send(kind: String, expectedVersion: Int64? = nil, payload: JSONValue) async {
-        guard let coordinator else { notice = "Connect to a Cylo server first."; return }
+    @discardableResult
+    private func send(kind: String, expectedVersion: Int64? = nil, payload: JSONValue) async -> Bool {
+        do { _ = try configure() }
+        catch { notice = userMessage(error); return false }
+        guard let coordinator else { notice = "Connect to a Cylo server first."; return false }
         let generation = connectionGeneration.value
         isBusy = true
         defer { isBusy = false }
         do {
             let outcome = try await coordinator.submit(kind: kind, expectedVersion: expectedVersion, payload: payload, workspaceID: snapshot?.devices.first?.workspaceId)
-            guard generation == connectionGeneration.value else { return }
+            guard generation == connectionGeneration.value else { return false }
             if kind == "task.stop" {
                 notice = "Stop intent recorded (receipt \(outcome.receipt.commandId)). Awaiting server confirmation that the runtime terminated."
             } else {
@@ -644,7 +658,11 @@ public final class CyloAppModel: ObservableObject {
             }
             do { try await refreshSnapshot() }
             catch { setStale("The command was accepted, but the latest snapshot could not be loaded: \(userMessage(error))") }
-        } catch { if generation == connectionGeneration.value { notice = userMessage(error) } }
+            return true
+        } catch {
+            if generation == connectionGeneration.value { notice = userMessage(error) }
+            return false
+        }
     }
 
     private func refreshSnapshot() async throws {

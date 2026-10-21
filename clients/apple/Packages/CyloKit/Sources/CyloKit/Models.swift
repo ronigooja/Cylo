@@ -245,6 +245,14 @@ public struct CapabilityDeployment: Codable, Equatable, Identifiable, Sendable {
     public var lastErrorCode: String
 }
 
+public extension Array where Element == CapabilityDeployment {
+    /// Returns the version bound to an existing service request, if the current
+    /// inventory contains that service. The server uses it to reject stale UI intent.
+    func version(forServiceID serviceID: String) -> Int64? {
+        first(where: { $0.serviceId == serviceID })?.version
+    }
+}
+
 public struct VoiceConfig: Codable, Equatable, Sendable {
     public var version: String
     public var defaults: VoiceDefaults

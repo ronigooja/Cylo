@@ -729,6 +729,11 @@ private struct CapabilitiesView: View {
                 AuthorizeCapabilityDeploymentSheet(model: model, deployment: deployment, release: release)
             }
         }
+        .onChange(of: model.connectionEpoch) { _, _ in
+            showingReleaseForm = false
+            showingDeploymentForm = false
+            authorizationTarget = nil
+        }
     }
 }
 
@@ -744,6 +749,7 @@ private struct CreateCapabilityReleaseSheet: View {
     @State private var diskMiB: Int64 = 1024
     @State private var timeoutSeconds: Int64 = 300
     @State private var concurrency = 1
+    @State private var errorMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -793,6 +799,11 @@ private struct CreateCapabilityReleaseSheet: View {
                     Text("Network access defaults to none. The server validates and canonicalizes this manifest before admission.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                if let errorMessage {
+                    Section("Submission failed") {
+                        Text(errorMessage).foregroundStyle(.red).textSelection(.enabled)
+                    }
+                }
             }
             .navigationTitle("Submit release")
             .toolbar {
@@ -800,8 +811,12 @@ private struct CreateCapabilityReleaseSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Submit") {
                         Task {
-                            await model.submitCapabilityRelease(artifactRef: artifactRef, artifactDigest: artifactDigest, entrypoint: entrypoint, capabilities: capabilities, cpuMillis: cpuMillis, memoryBytes: memoryMiB * 1_048_576, diskBytes: diskMiB * 1_048_576, timeoutSeconds: timeoutSeconds, concurrency: concurrency)
-                            dismiss()
+                            errorMessage = nil
+                            if await model.submitCapabilityRelease(artifactRef: artifactRef, artifactDigest: artifactDigest, entrypoint: entrypoint, capabilities: capabilities, cpuMillis: cpuMillis, memoryBytes: memoryMiB * 1_048_576, diskBytes: diskMiB * 1_048_576, timeoutSeconds: timeoutSeconds, concurrency: concurrency) {
+                                dismiss()
+                            } else {
+                                errorMessage = model.notice ?? "The server did not accept this release. Your entries are still here."
+                            }
                         }
                     }
                     .disabled(model.isBusy || artifactRef.isEmpty || artifactDigest.isEmpty || entrypoint.isEmpty || capabilities.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || cpuMillis < 1 || memoryMiB < 1 || memoryMiB > Int64.max / 1_048_576 || diskMiB < 1 || diskMiB > Int64.max / 1_048_576 || timeoutSeconds < 1 || concurrency < 1)
@@ -818,6 +833,7 @@ private struct RequestCapabilityDeploymentSheet: View {
     @State private var serviceID = ""
     @State private var releaseDigest = ""
     @State private var operation = "install"
+    @State private var errorMessage: String?
     private let operations = ["install", "start", "stop", "pause", "resume", "update", "uninstall"]
 
     var body: some View {
@@ -834,13 +850,27 @@ private struct RequestCapabilityDeploymentSheet: View {
                 }
                 Text("This records desired work as awaiting authorization. The runner has not acted yet.")
                     .font(.caption).foregroundStyle(.secondary)
+                if let current = model.capabilityDeployments.first(where: { $0.serviceId == serviceID }) {
+                    Text("Current deployment version: \(current.version). The request will use this version and be rejected if it has changed on the server.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if let errorMessage {
+                    Text(errorMessage).foregroundStyle(.red).textSelection(.enabled)
+                }
             }
             .navigationTitle("Request deployment")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Request") {
-                        Task { await model.requestCapabilityDeployment(serviceID: serviceID, releaseDigest: releaseDigest, operation: operation); dismiss() }
+                        Task {
+                            errorMessage = nil
+                            if await model.requestCapabilityDeployment(serviceID: serviceID, releaseDigest: releaseDigest, operation: operation) {
+                                dismiss()
+                            } else {
+                                errorMessage = model.notice ?? "The server did not accept this deployment request. Your entries are still here."
+                            }
+                        }
                     }
                     .disabled(model.isBusy || serviceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || releaseDigest.isEmpty)
                 }
@@ -857,6 +887,7 @@ private struct AuthorizeCapabilityDeploymentSheet: View {
     let deployment: CapabilityDeployment
     let release: CapabilityRelease
     @State private var expiresAt = Calendar.current.date(byAdding: .day, value: 7, to: .now) ?? .now
+    @State private var errorMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -869,13 +900,23 @@ private struct AuthorizeCapabilityDeploymentSheet: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 DatePicker("Grant expires", selection: $expiresAt, in: Date.now.addingTimeInterval(60)..., displayedComponents: [.date, .hourAndMinute])
+                if let errorMessage {
+                    Text(errorMessage).foregroundStyle(.red).textSelection(.enabled)
+                }
             }
             .navigationTitle("Authorize deployment")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Authorize & queue", role: .destructive) {
-                        Task { await model.authorizeCapabilityDeployment(deployment, release: release, expiresAt: expiresAt); dismiss() }
+                        Task {
+                            errorMessage = nil
+                            if await model.authorizeCapabilityDeployment(deployment, release: release, expiresAt: expiresAt) {
+                                dismiss()
+                            } else {
+                                errorMessage = model.notice ?? "The server did not accept this authorization. Your selection is still here."
+                            }
+                        }
                     }
                     .disabled(model.isBusy || expiresAt <= .now)
                 }
