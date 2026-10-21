@@ -1,0 +1,62 @@
+{
+  "date": "2026-10-21",
+  "scope": "Pinned source review and stdlib-only Mem0 SQLiteManager checks. No model/API credentials or paid calls.",
+  "repositories": {
+    "mem0": {
+      "sha": "2c81af3bbe27d9bccb09c772d583df9e9be72ee5",
+      "files": {
+        "LICENSE": "0bbcbe931c353293a2fafce08326181dfeea0e568c566afd4ce8337a70f5e219",
+        "pyproject.toml": "d4bc078a05cc7b9d677bbf4d0b262cfc532495b5aadeded053ac84fd90b6e974",
+        "mem0/memory/main.py": "f329ca4a17af1fbefb32ac10d4cc7ae7ddbdb7435a87eb74c30915cff98b8b7c",
+        "mem0/memory/storage.py": "5f5ecdadd2b260fd14f36a0f338336eb760275465dd1056a99a47e1ef07702bd",
+        "mem0/configs/base.py": "8bc0431f599c13ab2aff887e7b6eecc2688f8f4d070d76f029b3b55e37169b33",
+        "mem0/llms/openai.py": "37e6d3c22b55df0731740f4e0868b95bd480ce44363227fe53461db328c5f67e",
+        "mem0/embeddings/openai.py": "bd8c0cfeaa1ac89511350d51c5042a3b01f90530e18259ed5b0c3e019595e1e1"
+      }
+    },
+    "graphiti": {
+      "sha": "8e320f880e7d169a907dbf2a7ac4188586c03b55",
+      "files": {
+        "LICENSE": "2825300b20d7b951209835a4a331f29e24725a39d65168e4b831df53aa372650",
+        "pyproject.toml": "fa842260cb2724ef5142ebee50395149dee51d224372bccfeb084a63655563ba",
+        "graphiti_core/graphiti.py": "4e456b2255196d13466e31d13d0f5790e85d611731cbdfa733abfb3091f24040",
+        "graphiti_core/nodes.py": "491c5c86a30184e6630188635ac81865908dda05d9e872d5d26269189eea6de3",
+        "graphiti_core/edges.py": "637732ae4291ca0e5b53e43dd92be6f46a91e352719cb7ea1570ebab7d5d0e33"
+      }
+    },
+    "letta": {
+      "sha": "8816d3a8516893bfdc0fa14bfb1235226012e295",
+      "files": {
+        "LICENSE": "984c6db99fc6609803108dfc196762118662cd94b82a456dd9217583f18f3612",
+        "README.md": "67ec50661bb95db1839101863f08eaaa3cae3f2cc804adb2250a058393e56417"
+      }
+    },
+    "letta-code": {
+      "sha": "f1627b01605780872677cd6af8d4b3a8d13b1cdb",
+      "files": {
+        "LICENSE": "036e78b9d7dd33ae5b378fdda973b4aad7901c8d8371a0ae40fae1f6659a89d0",
+        "README.md": "7543b5df7349bb8fbdbf7f377a161c3163b6ff062a9c6f7b7430a5ca9a3d0abe",
+        "package.json": "80ff2d59f09aca706a73477b283838c447eddee1372053c2d703ed98f21259ef",
+        "src/cli/subcommands/shared-memory.ts": "bc6141cf05ee2b99f2a3ff7ca0f84e7894c4dcf7cc41cb8e402e0c0e5154740a",
+        "src/cli/subcommands/memory.ts": "0c13328ddeadc0a104faa4e2f55110d1d626868fea85d28f29dfa05acc5e5cca",
+        "src/cli/commands/memory-repository.ts": "205066448618b491af76ae3aa096bee2e2075f4bca102ca433452f8a55ade377",
+        "src/memory-confinement.ts": "86ee70df3a9b8f6c4bc0e8bd03e0f5a8ba37a6aad40a0710f7bd64de7d1ae780"
+      }
+    },
+    "ao": {
+      "sha": "7c83bd68c1e60c85b6a90e3ffa1340c859e4a3ff",
+      "files": {
+        "backend/internal/domain/handoff_note.go": "97926eb60bc5219249027a1566881d4358516d0bd7db656f2f80c906b4cded99",
+        "backend/internal/service/chat/side_context.go": "91dcae6f4c0688db5d7b7efe0e195c26cfe89af7b1d7d5b511817e2ecf060c7d",
+        "backend/internal/httpd/router.go": "b669bc27fb24220a3da11962f6e65aaa4bc03e5de806daee0fbecf8302413a13"
+      }
+    }
+  },
+  "checks": {
+    "history_add_update_delete": "passed; deleted text persists in history",
+    "same_instance_concurrent_history_writes": "100 writes, 8 threads, passed; not cross-process or vector-store atomicity",
+    "full_platform_runtime": "not run",
+    "semantic_retrieval_quality": "not run",
+    "reviewed_python_ast_parse": "passed"
+  }
+}
