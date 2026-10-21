@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -293,5 +294,81 @@ func TestReviewLateCommitFailureRollsBackReceiptWorkAndOutbox(t *testing.T) {
 	}
 	if cursor != 0 {
 		t.Error("event cursor increment survived rollback")
+	}
+}
+
+func TestReviewProtectedRoutesAndReceiptIsolation(t *testing.T) {
+	code, token, runnerToken := reviewToken(t), reviewToken(t), reviewToken(t)
+	s, h := reviewServer(t, control.Config{BootstrapCode: code, RunnerToken: runnerToken}, func(srv *control.Server) {
+		srv.RegisterAuthenticatedRoutes(func(mux *http.ServeMux) {
+			mux.HandleFunc("GET /v1/review", func(w http.ResponseWriter, r *http.Request) {
+				p, ok := control.PrincipalFromContext(r.Context())
+				if !ok || p.DeviceID == "" {
+					t.Error("missing trusted principal")
+				}
+				w.WriteHeader(204)
+			})
+		})
+		srv.RegisterRunnerRoutes(func(mux *http.ServeMux) {
+			mux.HandleFunc("GET /runner/v1/review", func(w http.ResponseWriter, r *http.Request) {
+				if _, ok := control.RunnerPrincipalFromContext(r.Context()); !ok {
+					t.Error("missing runner principal")
+				}
+				w.WriteHeader(204)
+			})
+		})
+	})
+	reviewBootstrap(t, h, code, token)
+	for _, test := range []struct {
+		path, token string
+		status      int
+	}{{"/v1/review", "", 401}, {"/v1/review", runnerToken, 401}, {"/v1/review", token, 204}, {"/runner/v1/review", token, 401}, {"/runner/v1/review", runnerToken, 204}, {"/review", token, 404}} {
+		if w := reviewRequest(h, "GET", test.path, test.token, "", nil); w.Code != test.status {
+			t.Errorf("%s got=%d want=%d", test.path, w.Code, test.status)
+		}
+	}
+	req := contracts.CommandRequest{Kind: "project.create", Payload: json.RawMessage(`{"name":"private workspace"}`)}
+	w := reviewRequest(h, "POST", "/v1/commands", token, "shared-key", req)
+	if w.Code != 200 {
+		t.Fatal("command failed")
+	}
+	var receipt contracts.CommandReceipt
+	if e := json.Unmarshal(w.Body.Bytes(), &receipt); e != nil {
+		t.Fatal(e)
+	}
+	otherToken := reviewToken(t)
+	raw, e := base64.RawURLEncoding.DecodeString(otherToken)
+	if e != nil {
+		t.Fatal(e)
+	}
+	hash := sha256.Sum256(raw)
+	if _, e = s.DB().Exec("INSERT INTO workspaces VALUES('other','Other','now'); INSERT INTO event_counters VALUES('other',0)"); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.DB().Exec("INSERT INTO devices(id,workspace_id,subject_id,name,status,token_hash,version,created_at) VALUES('other-device','other','other-subject','other','approved',?,1,'2026-10-21T00:00:00Z')", hash[:]); e != nil {
+		t.Fatal(e)
+	}
+	for _, path := range []string{"/v1/commands/" + receipt.CommandID, "/v1/commands?key=shared-key"} {
+		if w := reviewRequest(h, "GET", path, otherToken, "", nil); w.Code != 404 {
+			t.Errorf("cross-scope receipt status=%d", w.Code)
+		}
+	}
+	w = reviewRequest(h, "GET", "/v1/snapshot", otherToken, "", nil)
+	if w.Code != 200 {
+		t.Fatalf("other snapshot=%d", w.Code)
+	}
+	var snapshot contracts.Snapshot
+	if e := json.Unmarshal(w.Body.Bytes(), &snapshot); e != nil {
+		t.Fatal(e)
+	}
+	if len(snapshot.Projects) != 0 {
+		t.Error("cross-workspace project disclosed")
+	}
+	payload, _ := json.Marshal(map[string]string{"project_id": receipt.ResourceID, "title": "cross", "goal": "cross", "source": "user"})
+	if w := reviewRequest(h, "POST", "/v1/commands", otherToken, "cross-project", contracts.CommandRequest{Kind: "task.create", Payload: payload}); w.Code != 404 {
+		t.Errorf("cross-workspace project reference=%d", w.Code)
+	}
+	if w := reviewRequest(h, "POST", "/v1/commands", otherToken, "shared-key", req); w.Code != 200 {
+		t.Errorf("independent principal key rejected=%d", w.Code)
 	}
 }
