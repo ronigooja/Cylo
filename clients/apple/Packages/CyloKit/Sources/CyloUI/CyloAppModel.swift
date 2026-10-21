@@ -99,12 +99,14 @@ public final class CyloAppModel: ObservableObject {
     public func reconnect() async { await start() }
 
     public func updateServerAddress() async {
+        connectionGeneration.advance()
+        connectionEpoch = connectionGeneration.value
+        capabilityReleases = []
+        capabilityDeployments = []
         await endVoiceSession()
         if let url = URL(string: serverAddress), url.host != nil { connectionGeneration.switchOrigin(to: url) }
         else { connectionGeneration.advance() }
         connectionEpoch = connectionGeneration.value
-        capabilityReleases = []
-        capabilityDeployments = []
         defaults.set(serverAddress.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "cylo.serverAddress")
         eventTask?.cancel()
         eventTask = nil
@@ -255,7 +257,11 @@ public final class CyloAppModel: ObservableObject {
         }
     }
 
-    public func submitCapabilityRelease(artifactRef: String, artifactDigest: String, entrypoint: String, capabilities: String, cpuMillis: Int64, memoryBytes: Int64, diskBytes: Int64, timeoutSeconds: Int64, concurrency: Int) async -> Bool {
+    public func submitCapabilityRelease(artifactRef: String, artifactDigest: String, entrypoint: String, capabilities: String, cpuMillis: Int64, memoryBytes: Int64, diskBytes: Int64, timeoutSeconds: Int64, concurrency: Int, expectedConnectionEpoch: UInt64) async -> Bool {
+        guard expectedConnectionEpoch == connectionEpoch else {
+            notice = "The server connection changed. Reopen this form and review its values before submitting."
+            return false
+        }
         let manifest: JSONValue = .object([
             "schema_version": .integer(1),
             "artifact_ref": .string(artifactRef),
@@ -276,7 +282,12 @@ public final class CyloAppModel: ObservableObject {
         return true
     }
 
-    public func requestCapabilityDeployment(serviceID: String, releaseDigest: String, operation: String) async -> Bool {
+    public func requestCapabilityDeployment(serviceID: String, releaseDigest: String, operation: String, expectedConnectionEpoch: UInt64) async -> Bool {
+        guard expectedConnectionEpoch == connectionEpoch,
+              capabilityReleases.contains(where: { $0.digest == releaseDigest }) else {
+            notice = "The server connection or release selection changed. Reopen this form and review the current inventory."
+            return false
+        }
         let payload: JSONValue = .object([
             "service_id": .string(serviceID),
             "release_digest": .string(releaseDigest),
@@ -288,7 +299,13 @@ public final class CyloAppModel: ObservableObject {
         return true
     }
 
-    public func authorizeCapabilityDeployment(_ deployment: CapabilityDeployment, release: CapabilityRelease, scopeKind: String = "workspace", scopeID: String? = nil, expiresAt: Date) async -> Bool {
+    public func authorizeCapabilityDeployment(_ deployment: CapabilityDeployment, release: CapabilityRelease, scopeKind: String = "workspace", scopeID: String? = nil, expiresAt: Date, expectedConnectionEpoch: UInt64) async -> Bool {
+        guard expectedConnectionEpoch == connectionEpoch,
+              capabilityDeployments.contains(where: { $0.deploymentId == deployment.deploymentId && $0.version == deployment.version }),
+              capabilityReleases.contains(where: { $0.digest == release.digest && $0.digest == deployment.releaseDigest }) else {
+            notice = "The server connection or deployment version changed. Reopen this request and review the current inventory."
+            return false
+        }
         var payload: [String: JSONValue] = [
             "deployment_id": .string(deployment.deploymentId),
             "scope_kind": .string(scopeKind),
@@ -642,8 +659,6 @@ public final class CyloAppModel: ObservableObject {
 
     @discardableResult
     private func send(kind: String, expectedVersion: Int64? = nil, payload: JSONValue) async -> Bool {
-        do { _ = try configure() }
-        catch { notice = userMessage(error); return false }
         guard let coordinator else { notice = "Connect to a Cylo server first."; return false }
         let generation = connectionGeneration.value
         isBusy = true

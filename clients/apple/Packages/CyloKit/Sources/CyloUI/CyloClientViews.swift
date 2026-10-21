@@ -658,6 +658,9 @@ private struct CapabilitiesView: View {
     @State private var showingReleaseForm = false
     @State private var showingDeploymentForm = false
     @State private var authorizationTarget: CapabilityDeployment?
+    @State private var releaseFormEpoch: UInt64 = 0
+    @State private var deploymentFormEpoch: UInt64 = 0
+    @State private var authorizationEpoch: UInt64 = 0
 
     var body: some View {
         List {
@@ -686,7 +689,10 @@ private struct CapabilitiesView: View {
                         Text("Updated \(deployment.updatedAt)").font(.caption2).foregroundStyle(.tertiary)
                         if deployment.desiredState == "awaiting_authorization",
                            let release = model.capabilityReleases.first(where: { $0.digest == deployment.releaseDigest }) {
-                            Button("Review authorization") { authorizationTarget = deployment }
+                            Button("Review authorization") {
+                                authorizationEpoch = model.connectionEpoch
+                                authorizationTarget = deployment
+                            }
                                 .disabled(model.isBusy || release.digest.isEmpty)
                         }
                     }
@@ -714,19 +720,25 @@ private struct CapabilitiesView: View {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refreshCapabilities() } }
                 Menu {
-                    Button("Submit release…", systemImage: "plus.square") { showingReleaseForm = true }
-                    Button("Request deployment…", systemImage: "shippingbox") { showingDeploymentForm = true }
+                    Button("Submit release…", systemImage: "plus.square") {
+                        releaseFormEpoch = model.connectionEpoch
+                        showingReleaseForm = true
+                    }
+                    Button("Request deployment…", systemImage: "shippingbox") {
+                        deploymentFormEpoch = model.connectionEpoch
+                        showingDeploymentForm = true
+                    }
                         .disabled(model.capabilityReleases.isEmpty)
                 } label: { Label("Actions", systemImage: "ellipsis.circle") }
             }
         }
         .task { await model.refreshCapabilities() }
         .refreshable { await model.refreshCapabilities() }
-        .sheet(isPresented: $showingReleaseForm) { CreateCapabilityReleaseSheet(model: model) }
-        .sheet(isPresented: $showingDeploymentForm) { RequestCapabilityDeploymentSheet(model: model) }
+        .sheet(isPresented: $showingReleaseForm) { CreateCapabilityReleaseSheet(model: model, connectionEpoch: releaseFormEpoch) }
+        .sheet(isPresented: $showingDeploymentForm) { RequestCapabilityDeploymentSheet(model: model, connectionEpoch: deploymentFormEpoch) }
         .sheet(item: $authorizationTarget) { deployment in
             if let release = model.capabilityReleases.first(where: { $0.digest == deployment.releaseDigest }) {
-                AuthorizeCapabilityDeploymentSheet(model: model, deployment: deployment, release: release)
+                AuthorizeCapabilityDeploymentSheet(model: model, deployment: deployment, release: release, connectionEpoch: authorizationEpoch)
             }
         }
         .onChange(of: model.connectionEpoch) { _, _ in
@@ -740,6 +752,7 @@ private struct CapabilitiesView: View {
 private struct CreateCapabilityReleaseSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var model: CyloAppModel
+    let connectionEpoch: UInt64
     @State private var artifactRef = "oci://registry.example/service:1"
     @State private var artifactDigest = "sha256:"
     @State private var entrypoint = "/app/service"
@@ -812,7 +825,7 @@ private struct CreateCapabilityReleaseSheet: View {
                     Button("Submit") {
                         Task {
                             errorMessage = nil
-                            if await model.submitCapabilityRelease(artifactRef: artifactRef, artifactDigest: artifactDigest, entrypoint: entrypoint, capabilities: capabilities, cpuMillis: cpuMillis, memoryBytes: memoryMiB * 1_048_576, diskBytes: diskMiB * 1_048_576, timeoutSeconds: timeoutSeconds, concurrency: concurrency) {
+                            if await model.submitCapabilityRelease(artifactRef: artifactRef, artifactDigest: artifactDigest, entrypoint: entrypoint, capabilities: capabilities, cpuMillis: cpuMillis, memoryBytes: memoryMiB * 1_048_576, diskBytes: diskMiB * 1_048_576, timeoutSeconds: timeoutSeconds, concurrency: concurrency, expectedConnectionEpoch: connectionEpoch) {
                                 dismiss()
                             } else {
                                 errorMessage = model.notice ?? "The server did not accept this release. Your entries are still here."
@@ -830,6 +843,7 @@ private struct CreateCapabilityReleaseSheet: View {
 private struct RequestCapabilityDeploymentSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var model: CyloAppModel
+    let connectionEpoch: UInt64
     @State private var serviceID = ""
     @State private var releaseDigest = ""
     @State private var operation = "install"
@@ -865,7 +879,7 @@ private struct RequestCapabilityDeploymentSheet: View {
                     Button("Request") {
                         Task {
                             errorMessage = nil
-                            if await model.requestCapabilityDeployment(serviceID: serviceID, releaseDigest: releaseDigest, operation: operation) {
+                            if await model.requestCapabilityDeployment(serviceID: serviceID, releaseDigest: releaseDigest, operation: operation, expectedConnectionEpoch: connectionEpoch) {
                                 dismiss()
                             } else {
                                 errorMessage = model.notice ?? "The server did not accept this deployment request. Your entries are still here."
@@ -886,6 +900,7 @@ private struct AuthorizeCapabilityDeploymentSheet: View {
     @ObservedObject var model: CyloAppModel
     let deployment: CapabilityDeployment
     let release: CapabilityRelease
+    let connectionEpoch: UInt64
     @State private var expiresAt = Calendar.current.date(byAdding: .day, value: 7, to: .now) ?? .now
     @State private var errorMessage: String?
 
@@ -911,7 +926,7 @@ private struct AuthorizeCapabilityDeploymentSheet: View {
                     Button("Authorize & queue", role: .destructive) {
                         Task {
                             errorMessage = nil
-                            if await model.authorizeCapabilityDeployment(deployment, release: release, expiresAt: expiresAt) {
+                            if await model.authorizeCapabilityDeployment(deployment, release: release, expiresAt: expiresAt, expectedConnectionEpoch: connectionEpoch) {
                                 dismiss()
                             } else {
                                 errorMessage = model.notice ?? "The server did not accept this authorization. Your selection is still here."
