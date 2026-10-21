@@ -160,7 +160,7 @@ func run() error {
 		RunnerID:           env("CYLO_RUNNER_ID", "configured-runner"),
 		RunnerWorkspaceIDs: splitEnv("CYLO_RUNNER_WORKSPACES", "default"),
 		RunnerScopes:       splitEnv("CYLO_RUNNER_SCOPES", "runner:claim,runner:observe,runner:control:read"),
-		DeviceScopes:       splitEnv("CYLO_OWNER_SCOPES", ""),
+		DeviceScopes:       optionalSplitEnv("CYLO_OWNER_SCOPES"),
 		DefaultProfileID:   strings.TrimSpace(os.Getenv("CYLO_DEFAULT_PROFILE_ID")),
 		Profiles:           profiles,
 	}
@@ -229,6 +229,21 @@ func env(name, fallback string) string {
 
 func splitEnv(name, fallback string) []string {
 	value := env(name, fallback)
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func optionalSplitEnv(name string) []string {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return nil
+	}
 	parts := strings.Split(value, ",")
 	out := make([]string, 0, len(parts))
 	for _, part := range parts {
