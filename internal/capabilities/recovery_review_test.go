@@ -44,9 +44,10 @@ func capabilityRecoveryFixture(t *testing.T) (*storage.Store, http.Handler, stri
 	if e = store.Migrate(ctx); e != nil {
 		t.Fatal(e)
 	}
+	insertCapabilityTestDevice(t, store, "device", "owner")
 	svc := &Service{db: store.DB(), server: server, availableCapabilityIDs: map[string]struct{}{"mail.read": {}}, runtimeBackend: "fixture"}
 	manifest := contracts.CapabilityManifest{SchemaVersion: 1, ArtifactRef: "oci://registry.example/app@sha256:" + strings.Repeat("a", 64), ArtifactDigest: "sha256:" + strings.Repeat("a", 64), Entrypoint: "/app/run", Capabilities: []string{"mail.read"}, Budget: contracts.CapabilityResourceBudget{CPUMillis: 50, MemoryBytes: 100, DiskBytes: 100, TimeoutSeconds: 10, Concurrency: 1}, Network: contracts.CapabilityNetworkPolicy{Mode: "none"}, HealthCheck: &contracts.CapabilityHealthCheck{Kind: "http", Target: "/health", Port: 8080, IntervalSeconds: 10, TimeoutSeconds: 2, FailureThreshold: 2}}
-	cmd := control.CommandContext{CommandID: "fixture", Principal: contracts.Principal{WorkspaceID: "default", SubjectID: "owner", Scopes: []string{"capability:release:submit", "capability:deployment:request", "capability:deployment:authorize"}}, AcceptedAt: time.Now().UTC()}
+	cmd := control.CommandContext{CommandID: "fixture", Principal: contracts.Principal{WorkspaceID: "default", SubjectID: "owner", DeviceID: "device", Scopes: []string{"capability:release:submit", "capability:deployment:request", "capability:deployment:authorize"}}, AcceptedAt: time.Now().UTC()}
 	tx := begin(t, store.DB())
 	release, _, e := svc.submitRelease(ctx, tx, cmd, contracts.CommandRequest{Payload: marshal(submitReleasePayload{Manifest: manifest})})
 	if e != nil {
@@ -143,5 +144,77 @@ func TestReviewCapabilityRecoveredUncertainClaimAcceptsReconciliation(t *testing
 	body, _ = json.Marshal(obs)
 	if w := capabilityReviewHTTP(h, "POST", path, token, string(body)); w.Code != 202 {
 		t.Errorf("same owned attempt cannot reconcile unknown result: status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestReviewUncertainDeploymentsDoNotBlockIndependentClaimsOrCurrentRecovery(t *testing.T) {
+	ctx := context.Background()
+	store, h, token, first := capabilityRecoveryFixture(t)
+	postUncertain := func(claim contracts.DeploymentClaim, observationID string) {
+		t.Helper()
+		observation := contracts.DeploymentObservation{DeploymentID: claim.DeploymentID, AttemptID: claim.AttemptID, Fence: claim.Fence, ObservationID: observationID, Operation: claim.DesiredOp, State: "uncertain", ObservedAt: time.Now().UTC()}
+		body, _ := json.Marshal(observation)
+		path := "/runner/v1/deployments/" + claim.DeploymentID + "/observations"
+		if response := capabilityReviewHTTP(h, http.MethodPost, path, token, string(body)); response.Code != http.StatusAccepted {
+			t.Fatalf("uncertain observation status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	postUncertain(first, "uncertain-first")
+
+	cmd := control.CommandContext{CommandID: "second-deployment", Principal: contracts.Principal{WorkspaceID: "default", SubjectID: "owner", DeviceID: "device", Scopes: []string{"capability:deployment:request", "capability:deployment:authorize"}}, AcceptedAt: time.Now().UTC()}
+	tx := begin(t, store.DB())
+	requested, _, err := (&Service{db: store.DB()}).requestDeployment(ctx, tx, cmd, contracts.CommandRequest{Payload: marshal(deploymentRequestPayload{ServiceID: "independent", ReleaseDigest: first.ReleaseDigest, Operation: "install"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	version := requested.ResourceVersion
+	tx = begin(t, store.DB())
+	_, _, err = (&Service{db: store.DB()}).authorizeDeployment(ctx, tx, cmd, contracts.CommandRequest{ExpectedVersion: &version, Payload: marshal(authorizePayload{DeploymentID: requested.ResourceID, ScopeKind: "workspace", Actions: []string{"install"}, Budget: first.Manifest.Budget, ExpiresAt: time.Now().UTC().Add(time.Hour)})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	claimResponse := capabilityReviewHTTP(h, http.MethodPost, "/runner/v1/deployments/claims", token, "")
+	if claimResponse.Code != http.StatusOK {
+		t.Fatalf("independent pending claim blocked by uncertain deployment: %d %s", claimResponse.Code, claimResponse.Body.String())
+	}
+	var second contracts.DeploymentClaim
+	if err := json.Unmarshal(claimResponse.Body.Bytes(), &second); err != nil {
+		t.Fatal(err)
+	}
+	if second.DeploymentID == first.DeploymentID {
+		t.Fatalf("claim endpoint returned uncertain deployment %q instead of independent pending work", first.DeploymentID)
+	}
+	postUncertain(second, "uncertain-second")
+	listResponse := capabilityReviewHTTP(h, http.MethodGet, "/runner/v1/deployments/claims/unresolved", token, "")
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("unresolved claim list=%d %s", listResponse.Code, listResponse.Body.String())
+	}
+	var unresolved []contracts.DeploymentClaim
+	if err := json.Unmarshal(listResponse.Body.Bytes(), &unresolved); err != nil {
+		t.Fatal(err)
+	}
+	if len(unresolved) != 2 {
+		t.Fatalf("unresolved claim count=%d, want both claims", len(unresolved))
+	}
+	currentResponse := capabilityReviewHTTP(h, http.MethodGet, "/runner/v1/deployments/claims/current", token, "")
+	if currentResponse.Code != http.StatusOK {
+		t.Fatalf("multiple uncertain deployments returned %d: %s", currentResponse.Code, currentResponse.Body.String())
+	}
+	var current contracts.DeploymentClaim
+	if err := json.Unmarshal(currentResponse.Body.Bytes(), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.ClaimState != "uncertain" {
+		t.Fatalf("current recovery state=%q", current.ClaimState)
+	}
+	claimResponse = capabilityReviewHTTP(h, http.MethodPost, "/runner/v1/deployments/claims", token, "")
+	if claimResponse.Code != http.StatusNoContent {
+		t.Fatalf("no pending work with multiple uncertain effects status=%d body=%s", claimResponse.Code, claimResponse.Body.String())
 	}
 }

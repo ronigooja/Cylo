@@ -8,7 +8,7 @@ import (
 )
 
 func RegisterMigrations(store *storage.Store) error {
-	return store.RegisterMigration(storage.Migration{Namespace: "capabilities", Version: 300, Name: "capability_releases_and_deployments_v1", Up: func(ctx context.Context, tx *sql.Tx) error {
+	if err := store.RegisterMigration(storage.Migration{Namespace: "capabilities", Version: 300, Name: "capability_releases_and_deployments_v1", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 CREATE TABLE capability_releases (
   release_id TEXT PRIMARY KEY,
@@ -82,6 +82,88 @@ CREATE INDEX capability_jobs_ready ON capability_deployment_jobs(status,created_
 CREATE INDEX capability_deployments_workspace ON capability_deployments(workspace_id,updated_at);
 
 `)
+		return err
+	}}); err != nil {
+		return err
+	}
+	if err := store.RegisterMigration(storage.Migration{Namespace: "capabilities", Version: 301, Name: "capability_triggers_v1", Up: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+CREATE TABLE capability_trigger_definitions (
+  trigger_id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+  deployment_id TEXT NOT NULL REFERENCES capability_deployments(deployment_id),
+  release_digest TEXT NOT NULL,
+  grant_id TEXT NOT NULL REFERENCES capability_grants(grant_id),
+  trigger_key TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('event','schedule')),
+  source TEXT NOT NULL,
+  mode TEXT NOT NULL CHECK(mode IN ('program','worker','super')),
+  scopes BLOB NOT NULL,
+  filters BLOB NOT NULL,
+  interval_seconds INTEGER NOT NULL DEFAULT 0,
+  missed_run_policy TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+  fence_counter INTEGER NOT NULL DEFAULT 0,
+  next_run_at TEXT,
+  last_run_at TEXT,
+  last_run_id TEXT NOT NULL DEFAULT '',
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(deployment_id,release_digest,grant_id,trigger_key)
+);
+CREATE INDEX capability_triggers_due ON capability_trigger_definitions(enabled,kind,next_run_at);
+CREATE TABLE capability_trigger_runs (
+  trigger_run_id TEXT PRIMARY KEY,
+  trigger_id TEXT NOT NULL REFERENCES capability_trigger_definitions(trigger_id),
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+  deployment_id TEXT NOT NULL REFERENCES capability_deployments(deployment_id),
+  trigger_key TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL,
+  event_id TEXT NOT NULL DEFAULT '',
+  scheduled_for TEXT NOT NULL DEFAULT '',
+  event_payload BLOB NOT NULL DEFAULT '{}',
+  mode TEXT NOT NULL CHECK(mode IN ('program','worker','super')),
+  state TEXT NOT NULL CHECK(state IN ('queued','claimed','running','waiting','completed','failed','uncertain','canceled')),
+  task_id TEXT NOT NULL DEFAULT '',
+  run_id TEXT NOT NULL DEFAULT '',
+  attempt_id TEXT NOT NULL DEFAULT '',
+  fence INTEGER NOT NULL DEFAULT 0,
+  runner_id TEXT NOT NULL DEFAULT '',
+  claim_json BLOB,
+  observation_id TEXT NOT NULL DEFAULT '',
+  observation_json BLOB,
+  last_error_code TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(trigger_id,dedupe_key)
+);
+CREATE INDEX capability_trigger_runs_claim ON capability_trigger_runs(state,created_at);
+CREATE INDEX capability_trigger_runs_history ON capability_trigger_runs(workspace_id,deployment_id,created_at);
+CREATE TABLE capability_trigger_cursors (
+  workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id),
+  cursor INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE capability_trigger_runner_cursors (
+  runner_id TEXT PRIMARY KEY,
+  workspace_index INTEGER NOT NULL DEFAULT 0
+);
+`)
+		return err
+	}}); err != nil {
+		return err
+	}
+	if err := store.RegisterMigration(storage.Migration{Namespace: "capabilities", Version: 302, Name: "capability_trigger_deployment_snapshot_v1", Up: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `ALTER TABLE capability_trigger_definitions ADD COLUMN expected_deployment_version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE capability_trigger_definitions ADD COLUMN config_ref TEXT NOT NULL DEFAULT '';
+ALTER TABLE capability_trigger_definitions ADD COLUMN config_sha256 TEXT NOT NULL DEFAULT '';
+UPDATE capability_trigger_definitions SET enabled=0;`)
+		return err
+	}}); err != nil {
+		return err
+	}
+	return store.RegisterMigration(storage.Migration{Namespace: "capabilities", Version: 303, Name: "capability_grant_authorizing_device_v1", Up: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `ALTER TABLE capability_grants ADD COLUMN authorized_by_device_id TEXT REFERENCES devices(id);`)
 		return err
 	}})
 }

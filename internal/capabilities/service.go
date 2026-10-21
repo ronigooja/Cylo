@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -68,6 +69,9 @@ func Register(server *control.Server, store *storage.Store, cfg Config) error {
 		return err
 	}
 	svc := &Service{db: store.DB(), server: server, availableCapabilityIDs: available, runtimeBackend: strings.TrimSpace(cfg.RuntimeBackend)}
+	if err := svc.registerTaskSource(); err != nil {
+		return err
+	}
 	for kind, handler := range map[string]control.CommandHandler{
 		"capability.release.submit":       svc.submitRelease,
 		"capability.deployment.request":   svc.requestDeployment,
@@ -87,7 +91,11 @@ func Register(server *control.Server, store *storage.Store, cfg Config) error {
 	return server.RegisterRunnerRoutes(func(mux *http.ServeMux) {
 		mux.HandleFunc("POST /runner/v1/deployments/claims", svc.claimDeployment)
 		mux.HandleFunc("GET /runner/v1/deployments/claims/current", svc.currentDeploymentClaim)
+		mux.HandleFunc("GET /runner/v1/deployments/claims/unresolved", svc.unresolvedDeploymentClaims)
 		mux.HandleFunc("POST /runner/v1/deployments/{deployment_id}/observations", svc.observeDeployment)
+		mux.HandleFunc("POST /runner/v1/capability-triggers/claims", svc.claimTrigger)
+		mux.HandleFunc("GET /runner/v1/capability-triggers/claims/current", svc.currentTriggerClaim)
+		mux.HandleFunc("POST /runner/v1/capability-triggers/{trigger_run_id}/observations", svc.observeTrigger)
 	})
 }
 
@@ -242,6 +250,9 @@ func (s *Service) authorizeDeployment(ctx context.Context, tx *sql.Tx, cmd contr
 			return contracts.CommandResult{}, nil, control.NewAPIError(403, "grant_scope_forbidden", "principal cannot authorize this task scope", nil)
 		}
 	}
+	if cmd.Principal.DeviceID == "" {
+		return contracts.CommandResult{}, nil, control.NewAPIError(403, "device_required", "grant authorization requires an authenticated device", nil)
+	}
 	grantID := uuid.NewString()
 	at := cmd.AcceptedAt.UTC().Format(time.RFC3339Nano)
 	actions, _ := json.Marshal(uniqueSorted(p.Actions))
@@ -250,8 +261,17 @@ func (s *Service) authorizeDeployment(ctx context.Context, tx *sql.Tx, cmd contr
 	if p.ScopeKind == "personal" {
 		principalID = cmd.Principal.SubjectID
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO capability_grants(grant_id,workspace_id,deployment_id,release_digest,scope_kind,scope_id,principal_id,actions,budget,expires_at,authorized_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, grantID, workspace, p.DeploymentID, digest, p.ScopeKind, p.ScopeID, principalID, actions, budget, p.ExpiresAt.UTC().Format(time.RFC3339Nano), cmd.Principal.SubjectID, at)
+	_, err = tx.ExecContext(ctx, `INSERT INTO capability_grants(grant_id,workspace_id,deployment_id,release_digest,scope_kind,scope_id,principal_id,actions,budget,expires_at,authorized_by,authorized_by_device_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, grantID, workspace, p.DeploymentID, digest, p.ScopeKind, p.ScopeID, principalID, actions, budget, p.ExpiresAt.UTC().Format(time.RFC3339Nano), cmd.Principal.SubjectID, cmd.Principal.DeviceID, at)
 	if err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE capability_trigger_definitions SET enabled=0,updated_at=? WHERE deployment_id=? AND enabled=1`, at, p.DeploymentID); err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE capability_trigger_runs SET state='canceled',updated_at=? WHERE deployment_id=? AND state='queued'`, at, p.DeploymentID); err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if err = insertTriggerDefinitions(ctx, tx, workspace, p.DeploymentID, digest, grantID, version+1, configRef, configHash, manifest.Triggers, cmd.AcceptedAt.UTC()); err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
 	if err = s.enqueue(ctx, tx, workspace, p.DeploymentID, op, grantID, digest, configRef, configHash, at); err != nil {
@@ -331,7 +351,7 @@ func (s *Service) claimDeployment(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		if current != nil {
+		if current != nil && current.ClaimState != "uncertain" {
 			claim = current
 			return nil
 		}
@@ -430,8 +450,38 @@ func (s *Service) currentDeploymentClaim(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, claim)
 }
 
+func (s *Service) unresolvedDeploymentClaims(w http.ResponseWriter, r *http.Request) {
+	runner, ok := control.RunnerPrincipalFromContext(r.Context())
+	if !ok || !runnerHasCapabilityScope(runner, "capability:deploy") {
+		control.WriteError(w, control.NewAPIError(401, "unauthenticated", "capability:deploy runner authentication required", nil))
+		return
+	}
+	var claims []contracts.DeploymentClaim
+	err := s.server.RunnerTransaction(r.Context(), func(tx *sql.Tx, runner contracts.RunnerPrincipal) error {
+		var err error
+		claims, err = unresolvedDeploymentClaims(r.Context(), tx, runner)
+		return err
+	})
+	if err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	if claims == nil {
+		claims = []contracts.DeploymentClaim{}
+	}
+	writeJSON(w, http.StatusOK, claims)
+}
+
 func activeDeploymentClaim(ctx context.Context, tx *sql.Tx, runner contracts.RunnerPrincipal) (*contracts.DeploymentClaim, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT j.claim_json,j.status,d.desired_state,j.workspace_id FROM capability_deployment_jobs j JOIN capability_deployments d ON d.deployment_id=j.deployment_id WHERE j.runner_id=? AND j.status IN ('claimed','uncertain') ORDER BY j.claimed_at DESC LIMIT 2`, runner.RunnerID)
+	claims, err := unresolvedDeploymentClaims(ctx, tx, runner)
+	if err != nil || len(claims) == 0 {
+		return nil, err
+	}
+	return &claims[0], nil
+}
+
+func unresolvedDeploymentClaims(ctx context.Context, tx *sql.Tx, runner contracts.RunnerPrincipal) ([]contracts.DeploymentClaim, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT j.claim_json,j.status,d.desired_state,j.workspace_id FROM capability_deployment_jobs j JOIN capability_deployments d ON d.deployment_id=j.deployment_id WHERE j.runner_id=? AND j.status IN ('claimed','uncertain') ORDER BY j.claimed_at ASC`, runner.RunnerID)
 	if err != nil {
 		return nil, err
 	}
@@ -439,14 +489,28 @@ func activeDeploymentClaim(ctx context.Context, tx *sql.Tx, runner contracts.Run
 		body                      []byte
 		state, desired, workspace string
 	}
-	var claims []active
+	var claims []contracts.DeploymentClaim
 	for rows.Next() {
 		var item active
 		if err := rows.Scan(&item.body, &item.state, &item.desired, &item.workspace); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		claims = append(claims, item)
+		if !control.HasRunnerScope(runner, "capability:deploy", item.workspace) {
+			continue
+		}
+		var claim contracts.DeploymentClaim
+		if err := json.Unmarshal(item.body, &claim); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if err := validateManifest(&claim.Manifest); err != nil {
+			rows.Close()
+			return nil, control.NewAPIError(500, "invalid_claim_snapshot", "deployment claim manifest failed immutable validation", nil)
+		}
+		claim.ClaimState = item.state
+		claim.DesiredControl = item.desired
+		claims = append(claims, claim)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -455,26 +519,7 @@ func activeDeploymentClaim(ctx context.Context, tx *sql.Tx, runner contracts.Run
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	if len(claims) > 1 {
-		return nil, control.NewAPIError(409, "multiple_active_deployments", "runner has multiple unresolved deployment effects; reconcile them individually", nil)
-	}
-	if len(claims) == 0 {
-		return nil, nil
-	}
-	current := claims[0]
-	if !control.HasRunnerScope(runner, "capability:deploy", current.workspace) {
-		return nil, control.NewAPIError(403, "forbidden", "runner cannot access the current deployment claim", nil)
-	}
-	var claim contracts.DeploymentClaim
-	if err := json.Unmarshal(current.body, &claim); err != nil {
-		return nil, err
-	}
-	if err := validateManifest(&claim.Manifest); err != nil {
-		return nil, control.NewAPIError(500, "invalid_claim_snapshot", "deployment claim manifest failed immutable validation", nil)
-	}
-	claim.ClaimState = current.state
-	claim.DesiredControl = current.desired
-	return &claim, nil
+	return claims, nil
 }
 
 func (s *Service) observeDeployment(w http.ResponseWriter, r *http.Request) {
@@ -548,7 +593,19 @@ func (s *Service) observeDeployment(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		_, err = tx.ExecContext(r.Context(), `UPDATE capability_deployments SET observed_state=?,last_error_code=?,updated_at=? WHERE deployment_id=? AND latest_fence=?`, state, obs.ErrorCode, obs.ObservedAt.UTC().Format(time.RFC3339Nano), obs.DeploymentID, obs.Fence)
-		return err
+		if err != nil {
+			return err
+		}
+		if isTerminalObservation(operation, state) {
+			desired := desiredStateForObservation(state)
+			if desired != "" {
+				if _, err := tx.ExecContext(r.Context(), `UPDATE capability_deployments SET desired_state=? WHERE deployment_id=? AND latest_fence=?`, desired, obs.DeploymentID, obs.Fence); err != nil {
+					return err
+				}
+			}
+			return s.enableDeploymentTriggers(r.Context(), tx, obs.DeploymentID, state == "running", obs.ObservedAt)
+		}
+		return nil
 	})
 	if err != nil {
 		control.WriteError(w, err)
@@ -635,8 +692,13 @@ func scanDeployment(row scanner) (map[string]any, error) {
 }
 
 func validateManifest(m *contracts.CapabilityManifest) error {
-	if m.SchemaVersion != 1 || !strings.HasPrefix(m.ArtifactRef, "oci://") && !strings.HasPrefix(m.ArtifactRef, "https://") || !validDigest(m.ArtifactDigest) || !strings.Contains(m.ArtifactRef, "@"+m.ArtifactDigest) || strings.TrimSpace(m.Entrypoint) == "" || len(m.Entrypoint) > 500 || len(m.Capabilities) == 0 || !budgetPositive(m.Budget) {
+	if m.SchemaVersion != 1 || !strings.HasPrefix(m.ArtifactRef, "oci://") && !strings.HasPrefix(m.ArtifactRef, "https://") || !validDigest(m.ArtifactDigest) || !strings.Contains(m.ArtifactRef, "@"+m.ArtifactDigest) || strings.TrimSpace(m.Entrypoint) == "" || len(m.Entrypoint) > 500 || len(m.Args) > 128 || len(m.Capabilities) == 0 || len(m.Capabilities) > 64 || len(m.Mounts) > 64 || len(m.Triggers) > 32 || !budgetPositive(m.Budget) {
 		return errors.New("schema version, content-addressed artifact, entrypoint, capability IDs, and positive resource budget are required")
+	}
+	for _, arg := range m.Args {
+		if len(arg) > 4096 || strings.ContainsAny(arg, "\x00\r\n") {
+			return errors.New("entrypoint arguments exceed server limits")
+		}
 	}
 	if m.Network.Mode != "none" && m.Network.Mode != "egress_allowlist" {
 		return errors.New("network mode must be none or egress_allowlist")
@@ -668,11 +730,8 @@ func validateManifest(m *contracts.CapabilityManifest) error {
 		}
 	}
 	for _, trigger := range m.Triggers {
-		if trigger.Kind != "event" && trigger.Kind != "schedule" && trigger.Kind != "webhook" {
-			return errors.New("trigger kind must be event, schedule, or webhook")
-		}
-		if trigger.Source == "" || len(trigger.Source) > 200 || len(trigger.FilterJSON) > 4000 {
-			return errors.New("trigger source or filter exceeds limits")
+		if err := validateTrigger(trigger, m.Capabilities); err != nil {
+			return err
 		}
 	}
 	for _, id := range m.Capabilities {
@@ -685,6 +744,10 @@ func validateManifest(m *contracts.CapabilityManifest) error {
 	sort.Slice(m.Triggers, func(i, j int) bool {
 		return m.Triggers[i].Kind+"\x00"+m.Triggers[i].Source < m.Triggers[j].Kind+"\x00"+m.Triggers[j].Source
 	})
+	canonical, err := json.Marshal(m)
+	if err != nil || len(canonical) > 256*1024 {
+		return errors.New("manifest exceeds the 256 KiB admission limit")
+	}
 	return nil
 }
 
@@ -727,6 +790,66 @@ func validExecutableName(value string) bool {
 	}
 	return true
 }
+
+func validateTrigger(trigger contracts.CapabilityTrigger, capabilityIDs []string) error {
+	switch trigger.Mode {
+	case "program", "worker", "super":
+	default:
+		return errors.New("trigger mode must be program, worker, or super")
+	}
+	if trigger.FilterJSON != "" {
+		return errors.New("untyped trigger filters are not accepted")
+	}
+	if len(trigger.Scopes) > 32 {
+		return errors.New("trigger scope list exceeds limits")
+	}
+	if len(trigger.Filters) > 32 {
+		return errors.New("trigger filter list exceeds limits")
+	}
+	for _, scope := range trigger.Scopes {
+		if !contains(capabilityIDs, scope) {
+			return fmt.Errorf("trigger scope %q is not granted by the manifest", scope)
+		}
+	}
+	for _, filter := range trigger.Filters {
+		if !validTriggerFilter(filter) {
+			return fmt.Errorf("trigger filter %q/%q is unsupported", filter.Field, filter.Operator)
+		}
+	}
+	switch trigger.Kind {
+	case "event":
+		if _, ok := supportedEventTypes[trigger.Source]; !ok || trigger.IntervalSeconds != 0 || trigger.MissedRunPolicy != "" {
+			return errors.New("event trigger source or schedule fields are unsupported")
+		}
+	case "schedule":
+		if trigger.Source != "schedule.interval" || trigger.IntervalSeconds < 60 || trigger.IntervalSeconds > 7*24*60*60 || (trigger.MissedRunPolicy != "coalesce" && trigger.MissedRunPolicy != "skip") || len(trigger.Filters) != 0 {
+			return errors.New("schedule trigger requires an interval from 60 seconds to seven days and a coalesce or skip missed-run policy")
+		}
+	default:
+		return errors.New("trigger kind must be event or schedule")
+	}
+	return nil
+}
+
+var supportedEventTypes = map[string]struct{}{
+	"task.created": {}, "task.updated": {}, "task.completed": {}, "task.failed": {},
+	"capability.health.changed": {}, "capability.run.completed": {}, "capability.run.failed": {},
+}
+
+func validTriggerFilter(filter contracts.CapabilityTriggerFilter) bool {
+	fields := map[string]struct{}{"event_type": {}, "aggregate_type": {}, "aggregate_id": {}, "subject_id": {}, "status": {}, "project_id": {}, "task_id": {}}
+	if _, ok := fields[filter.Field]; !ok {
+		return false
+	}
+	if filter.Operator != "eq" && filter.Operator != "neq" && filter.Operator != "exists" {
+		return false
+	}
+	if filter.Operator == "exists" {
+		return filter.Value == "" || filter.Value == "true" || filter.Value == "false"
+	}
+	return len(filter.Value) <= 256 && !strings.ContainsAny(filter.Value, "\x00\r\n")
+}
+
 func decode(raw json.RawMessage, dst any) error {
 	d := json.NewDecoder(strings.NewReader(string(raw)))
 	d.DisallowUnknownFields()
@@ -776,6 +899,18 @@ func mapObserved(v string) string {
 	}
 	return "uncertain"
 }
+
+func desiredStateForObservation(state string) string {
+	switch state {
+	case "running", "stopped", "paused":
+		return state
+	case "removed":
+		return "removing"
+	default:
+		return ""
+	}
+}
+
 func validObservedState(v string) bool {
 	switch v {
 	case "pending", "installing", "running", "stopped", "paused", "failed", "uninstalling", "removed", "uncertain":
