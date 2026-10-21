@@ -110,7 +110,7 @@ def sqlite_snapshot(source: Path, destination: Path) -> dict[str, Any]:
 
 def load_inventory(path: Path | None) -> dict[str, Any]:
     if path is None:
-        return {"service_config_paths": [], "artifact_paths": [], "persistent_volume_paths": [], "secret_refs": []}
+        return {"roots": {}, "service_config_paths": [], "artifact_paths": [], "persistent_volume_paths": [], "secret_refs": []}
     raw = json.loads(path.read_text(encoding="utf-8"))
     allowed = {"schema_version", "roots", "service_config_paths", "artifact_paths", "persistent_volume_paths", "secret_refs"}
     if set(raw) - allowed or raw.get("schema_version", 1) != 1:

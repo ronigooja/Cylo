@@ -36,7 +36,10 @@ def private_key(path: Path) -> bytes:
 
 def maintenance_status(binary: Path, database: Path) -> dict:
     result = subprocess.run([str(binary), "status", "--database", str(database)], check=True, capture_output=True, text=True)
-    data = json.loads(result.stdout)
+    return json.loads(result.stdout)
+
+
+def require_migration_ready(data: dict) -> dict:
     if data.get("dispatch_enabled") or not data.get("migration_ready"):
         fail("source instance must be fenced and migration readiness must be clear")
     readiness = data
@@ -61,9 +64,18 @@ def main() -> int:
     parser.add_argument("--proof-key-file", type=Path, required=True)
     parser.add_argument("--proof-output", type=Path, required=True)
     parser.add_argument("--unit", action="append", required=True, help="source systemd unit; every unit must be inactive and masked")
+    parser.add_argument("--stop-mask-and-fence", action="store_true", help="stop and mask each unit, then persist the source fence before proving isolation")
+    parser.add_argument("--fence-reason", default="migration", help="recorded reason when --stop-mask-and-fence is used")
     args = parser.parse_args()
 
+    if args.stop_mask_and_fence:
+        for name in sorted(set(args.unit)):
+            subprocess.run(["systemctl", "mask", "--now", name], check=True, capture_output=True, text=True)
     state = maintenance_status(args.maintenance.absolute(), args.database.absolute())
+    if args.stop_mask_and_fence and state.get("dispatch_enabled"):
+        subprocess.run([str(args.maintenance.absolute()), "fence", "--database", str(args.database.absolute()), "--reason", args.fence_reason, "--expected-epoch", str(state["epoch"])], check=True, capture_output=True, text=True)
+        state = maintenance_status(args.maintenance.absolute(), args.database.absolute())
+    state = require_migration_ready(state)
     units = [unit_state(name) for name in sorted(set(args.unit))]
     payload = {
         "schema_version": 1,
