@@ -69,6 +69,7 @@ func RegisterDerived(s *control.Server, store *storage.Store, config DerivedConf
 	svc := &derivedService{db: store.DB(), cfg: cfg}
 	return s.RegisterRunnerRoutes(func(mux *http.ServeMux) {
 		mux.HandleFunc("POST /runner/v1/memory/jobs/claim", svc.handleClaim)
+		mux.HandleFunc("POST /runner/v1/memory/jobs/{job_id}/validate", svc.handleValidate)
 		mux.HandleFunc("POST /runner/v1/memory/jobs/{job_id}/complete", svc.handleComplete)
 		mux.HandleFunc("POST /runner/v1/memory/jobs/{job_id}/fail", svc.handleFail)
 	})
@@ -130,6 +131,12 @@ type derivedSource struct {
 
 type derivedLeaseRequest struct {
 	Attempt int `json:"attempt"`
+}
+
+type derivedValidation struct {
+	ID          string `json:"id"`
+	Allowed     bool   `json:"allowed"`
+	Disposition string `json:"disposition,omitempty"`
 }
 
 type derivedFailRequest struct {
@@ -429,7 +436,9 @@ WHERE rs.workspace_id=? AND rs.claim_id=? AND rs.revision=? AND rs.source_id=? A
 func (s *derivedService) reconcileTx(ctx context.Context, tx *sql.Tx, workspace string, now time.Time) error {
 	nowText := now.Format(time.RFC3339Nano)
 	rows, err := tx.QueryContext(ctx, `SELECT c.id,c.revision FROM memory_claims c
-WHERE c.workspace_id=? AND c.deleted_at IS NULL AND c.status IN ('active','conflicted') ORDER BY c.updated_at DESC LIMIT 500`, workspace)
+WHERE c.workspace_id=? AND c.deleted_at IS NULL AND c.status IN ('active','conflicted')
+AND NOT EXISTS (SELECT 1 FROM memory_jobs j WHERE j.workspace_id=c.workspace_id AND j.kind='index' AND j.entity_id=c.id AND j.entity_version=c.revision AND j.target='qdrant')
+ORDER BY c.updated_at DESC,c.id LIMIT 500`, workspace)
 	if err != nil {
 		return err
 	}
@@ -456,7 +465,9 @@ WHERE c.workspace_id=? AND c.deleted_at IS NULL AND c.status IN ('active','confl
 			return err
 		}
 		refs, err := tx.QueryContext(ctx, `SELECT rs.source_id,rs.source_version,s.kind FROM memory_revision_sources rs JOIN memory_sources s ON s.workspace_id=rs.workspace_id AND s.id=rs.source_id AND s.version=rs.source_version
-WHERE rs.workspace_id=? AND rs.claim_id=? AND rs.revision=? AND s.deleted_at IS NULL AND s.kind IN ('task_entry','event','evidence') ORDER BY rs.source_id LIMIT 100`, workspace, claim.id, claim.revision)
+WHERE rs.workspace_id=? AND rs.claim_id=? AND rs.revision=? AND s.deleted_at IS NULL AND s.kind IN ('task_entry','event','evidence')
+AND NOT EXISTS (SELECT 1 FROM memory_jobs j WHERE j.workspace_id=rs.workspace_id AND j.kind='extract' AND j.entity_id=rs.claim_id AND j.entity_version=rs.revision AND j.target=rs.source_id)
+ORDER BY rs.source_id LIMIT 100`, workspace, claim.id, claim.revision)
 		if err != nil {
 			return err
 		}
@@ -517,6 +528,74 @@ func (s *derivedService) handleComplete(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *derivedService) handleValidate(w http.ResponseWriter, r *http.Request) {
+	p, ok := control.RunnerPrincipalFromContext(r.Context())
+	if !ok || p.RunnerID == "" || !exactRunnerHasScope(p, derivedClaimScope) {
+		control.WriteError(w, control.NewAPIError(http.StatusForbidden, "forbidden", "runner memory job validation scope required", nil))
+		return
+	}
+	var req derivedLeaseRequest
+	if err := decodeJSON(r, &req); err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	result, err := s.validate(r.Context(), p, r.PathValue("job_id"), req.Attempt)
+	if err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *derivedService) validate(ctx context.Context, p contracts.RunnerPrincipal, id string, attempt int) (derivedValidation, error) {
+	if id == "" || attempt < 1 {
+		return derivedValidation{}, control.NewAPIError(http.StatusBadRequest, "invalid_request", "job ID and positive lease attempt are required", nil)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return derivedValidation{}, err
+	}
+	defer tx.Rollback()
+	var job derivedJob
+	var status, owner string
+	var leaseUntil sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT id,workspace_id,kind,entity_id,entity_version,target,payload,attempts,status,lease_owner,lease_until FROM memory_jobs WHERE id=?`, id).Scan(&job.ID, &job.WorkspaceID, &job.Kind, &job.EntityID, &job.EntityVersion, &job.Target, &job.Payload, &job.Attempt, &status, &owner, &leaseUntil)
+	if errors.Is(err, sql.ErrNoRows) {
+		return derivedValidation{}, control.NewAPIError(http.StatusNotFound, "not_found", "memory job not found", nil)
+	}
+	if err != nil {
+		return derivedValidation{}, err
+	}
+	if !exactRunnerHasWorkspace(p, job.WorkspaceID) || !exactRunnerHasScope(p, derivedClaimScope) {
+		return derivedValidation{}, control.NewAPIError(http.StatusForbidden, "forbidden", "runner cannot validate this workspace job", nil)
+	}
+	if status != "leased" || owner != p.RunnerID || job.Attempt != attempt || !leaseUntil.Valid {
+		return derivedValidation{}, control.NewAPIError(http.StatusConflict, "lease_lost", "memory job lease is no longer current", nil)
+	}
+	deadline, parseErr := time.Parse(time.RFC3339Nano, leaseUntil.String)
+	if parseErr != nil || !deadline.After(time.Now().UTC()) {
+		return derivedValidation{}, control.NewAPIError(http.StatusConflict, "lease_expired", "memory job lease expired", nil)
+	}
+	_, disposition, err := s.materializeTx(ctx, tx, &job)
+	if err != nil {
+		return derivedValidation{}, err
+	}
+	if disposition == "deletion_tombstone_missing" {
+		_, err = tx.ExecContext(ctx, `UPDATE memory_jobs SET status='blocked',last_error_code=?,updated_at=? WHERE id=? AND status='leased' AND lease_owner=? AND attempts=?`, disposition, time.Now().UTC().Format(time.RFC3339Nano), id, p.RunnerID, attempt)
+		if err != nil {
+			return derivedValidation{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return derivedValidation{}, err
+		}
+		return derivedValidation{ID: id, Allowed: false, Disposition: disposition}, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return derivedValidation{}, err
+	}
+	return derivedValidation{ID: id, Allowed: disposition == "", Disposition: disposition}, nil
+}
+
 func (s *derivedService) handleFail(w http.ResponseWriter, r *http.Request) {
 	p, ok := control.RunnerPrincipalFromContext(r.Context())
 	if !ok || p.RunnerID == "" || !exactRunnerHasScope(p, derivedCompleteScope) {
@@ -549,10 +628,12 @@ func (s *derivedService) finish(ctx context.Context, p contracts.RunnerPrincipal
 		return derivedJobResult{}, err
 	}
 	defer tx.Rollback()
-	var workspace, status, owner, lastCode string
+	var workspace, status, owner, lastCode, kind, entityID, target string
+	var entityVersion int64
+	var payload []byte
 	var attempts int
 	var leaseUntil sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT workspace_id,status,lease_owner,lease_until,attempts,last_error_code FROM memory_jobs WHERE id=?`, id).Scan(&workspace, &status, &owner, &leaseUntil, &attempts, &lastCode)
+	err = tx.QueryRowContext(ctx, `SELECT workspace_id,status,lease_owner,lease_until,attempts,last_error_code,kind,entity_id,entity_version,target,payload FROM memory_jobs WHERE id=?`, id).Scan(&workspace, &status, &owner, &leaseUntil, &attempts, &lastCode, &kind, &entityID, &entityVersion, &target, &payload)
 	if errors.Is(err, sql.ErrNoRows) {
 		return derivedJobResult{}, control.NewAPIError(http.StatusNotFound, "not_found", "memory job not found", nil)
 	}
@@ -563,7 +644,7 @@ func (s *derivedService) finish(ctx context.Context, p contracts.RunnerPrincipal
 		return derivedJobResult{}, control.NewAPIError(http.StatusForbidden, "forbidden", "runner cannot complete this workspace job", nil)
 	}
 	if status == "done" && attempts == attempt && owner == p.RunnerID && complete {
-		return derivedJobResult{ID: id, Status: "done"}, nil
+		return derivedJobResult{ID: id, Status: "done", Disposition: lastCode}, nil
 	}
 	if attempts != attempt || owner != p.RunnerID || status != "leased" || !leaseUntil.Valid {
 		return derivedJobResult{}, control.NewAPIError(http.StatusConflict, "lease_lost", "memory job lease is no longer current", nil)
@@ -575,14 +656,23 @@ func (s *derivedService) finish(ctx context.Context, p contracts.RunnerPrincipal
 	now := time.Now().UTC()
 	nowText := now.Format(time.RFC3339Nano)
 	if complete {
-		_, err = tx.ExecContext(ctx, `UPDATE memory_jobs SET status='done',last_error_code='',updated_at=? WHERE id=? AND status='leased' AND lease_owner=? AND attempts=?`, nowText, id, p.RunnerID, attempt)
+		job := derivedJob{ID: id, WorkspaceID: workspace, Kind: kind, EntityID: entityID, EntityVersion: entityVersion, Target: target, Payload: payload, Attempt: attempt}
+		_, disposition, err := s.materializeTx(ctx, tx, &job)
+		if err != nil {
+			return derivedJobResult{}, err
+		}
+		state := "done"
+		if disposition == "deletion_tombstone_missing" {
+			state = "blocked"
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE memory_jobs SET status=?,last_error_code=?,updated_at=? WHERE id=? AND status='leased' AND lease_owner=? AND attempts=?`, state, disposition, nowText, id, p.RunnerID, attempt)
 		if err != nil {
 			return derivedJobResult{}, err
 		}
 		if err = tx.Commit(); err != nil {
 			return derivedJobResult{}, err
 		}
-		return derivedJobResult{ID: id, Status: "done"}, nil
+		return derivedJobResult{ID: id, Status: state, Disposition: disposition}, nil
 	}
 	state := "retry"
 	available := now.Add(retryDelay(s.cfg, attempt))

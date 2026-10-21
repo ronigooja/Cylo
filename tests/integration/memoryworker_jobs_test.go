@@ -176,3 +176,46 @@ func TestMemoryWorkerRequiresExactScopeAndWorkspace(t *testing.T) {
 		}
 	}
 }
+
+func TestMemoryWorkerCompletionRechecksTombstoneGeneration(t *testing.T) {
+	store, handler, token := memoryWorkerHarness(t, []string{"memory:jobs:claim", "memory:jobs:complete"}, []string{"default"})
+	seedMemoryWorkerClaim(t, store.DB(), "default", "claim-delete-race")
+	claim := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/jobs/claim", map[string]any{"limit": 1})
+	var response struct {
+		Items []struct {
+			ID      string `json:"id"`
+			Attempt int    `json:"attempt"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(claim.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Items) != 1 {
+		t.Fatalf("expected one index job, got %s", claim.Body.String())
+	}
+	job := response.Items[0]
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := store.DB().Exec(`UPDATE memory_claims SET status='tombstoned',revision=2,deleted_at=?,updated_at=? WHERE id=?`, now, now, "claim-delete-race"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().Exec(`INSERT INTO memory_revisions(claim_id,revision,content,authority_kind,status,recorded_at,actor_id) VALUES(?,2,'','user_confirmed','tombstoned',?,'user')`, "claim-delete-race", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().Exec(`INSERT INTO memory_tombstones(claim_id,workspace_id,revision,actor_id,reason,deleted_at) VALUES(?, 'default', 2, 'user', 'user_requested', ?)`, "claim-delete-race", now); err != nil {
+		t.Fatal(err)
+	}
+	completed := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/jobs/"+job.ID+"/complete", map[string]any{"attempt": job.Attempt})
+	if completed.Code != http.StatusOK {
+		t.Fatalf("completion status=%d body=%s", completed.Code, completed.Body.String())
+	}
+	var result struct {
+		Status      string `json:"status"`
+		Disposition string `json:"disposition"`
+	}
+	if err := json.Unmarshal(completed.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "done" || result.Disposition != "stale_generation" {
+		t.Fatalf("stale index job was acknowledged without a generation result: %#v", result)
+	}
+}
