@@ -36,7 +36,7 @@ func TestCapabilityReleaseRequiresExplicitGrantAndAuthorizationBeforeJob(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := &Service{db: store.DB(), server: server}
+	svc := &Service{db: store.DB(), server: server, availableCapabilityIDs: map[string]struct{}{"mail.read": {}}}
 	manifest := contracts.CapabilityManifest{SchemaVersion: 1, ArtifactRef: "oci://registry.example/cylo/mail@sha256:" + strings.Repeat("a", 64), ArtifactDigest: "sha256:" + strings.Repeat("a", 64), Entrypoint: "/app/run", Capabilities: []string{"mail.read"}, Budget: contracts.CapabilityResourceBudget{CPUMillis: 500, MemoryBytes: 1 << 20, DiskBytes: 1 << 20, TimeoutSeconds: 60, Concurrency: 1}, Network: contracts.CapabilityNetworkPolicy{Mode: "none"}}
 	principal := contracts.Principal{WorkspaceID: "default", SubjectID: "owner", DeviceID: "device", Scopes: []string{"client:command"}}
 	command := control.CommandContext{CommandID: "cmd", Principal: principal, AcceptedAt: time.Now().UTC()}
@@ -58,6 +58,15 @@ func TestCapabilityReleaseRequiresExplicitGrantAndAuthorizationBeforeJob(t *test
 	}
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
+	}
+	unregistered := manifest
+	unregistered.Capabilities = []string{"mail.send"}
+	tx = begin(t, store.DB())
+	_, _, err = svc.submitRelease(ctx, tx, command, contracts.CommandRequest{Payload: marshal(submitReleasePayload{Manifest: unregistered})})
+	_ = tx.Rollback()
+	var registryErr *control.APIError
+	if !asAPI(err, &registryErr) || registryErr.Code != "capability_not_registered" {
+		t.Fatalf("unregistered capability ID was accepted: %v", err)
 	}
 	var digest string
 	if err = store.DB().QueryRowContext(ctx, `SELECT digest FROM capability_releases WHERE release_id=?`, result.ResourceID).Scan(&digest); err != nil {
@@ -123,14 +132,14 @@ func TestRunnerDeploymentClaimAndFencedObservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = Register(server, store); err != nil {
+	if err = Register(server, store, Config{AvailableCapabilityIDs: []string{"mail.read"}, RuntimeBackend: "test"}); err != nil {
 		t.Fatal(err)
 	}
 	if err = store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
 	handler := server.Handler()
-	svc := &Service{db: store.DB(), server: server}
+	svc := &Service{db: store.DB(), server: server, availableCapabilityIDs: map[string]struct{}{"mail.read": {}}, runtimeBackend: "test"}
 	manifest := contracts.CapabilityManifest{SchemaVersion: 1, ArtifactRef: "oci://registry.example/app@sha256:" + strings.Repeat("c", 64), ArtifactDigest: "sha256:" + strings.Repeat("c", 64), Entrypoint: "/app/run", Capabilities: []string{"mail.read"}, Budget: contracts.CapabilityResourceBudget{CPUMillis: 50, MemoryBytes: 100, DiskBytes: 100, TimeoutSeconds: 10, Concurrency: 1}, Network: contracts.CapabilityNetworkPolicy{Mode: "none"}}
 	principal := contracts.Principal{WorkspaceID: "default", SubjectID: "owner", Scopes: []string{"capability:release:submit", "capability:deployment:request", "capability:deployment:authorize"}}
 	command := control.CommandContext{CommandID: "cmd", Principal: principal, AcceptedAt: time.Now().UTC()}

@@ -127,6 +127,8 @@ func DefaultOwnerScopes() []string {
 		"client:read", "client:command", "device:manage",
 		"memory:read:personal", "memory:write:personal", "memory:delete:personal",
 		"memory:read:workspace", "memory:write:workspace", "memory:delete:workspace",
+		"capability:read", "capability:release:submit",
+		"capability:deployment:request", "capability:deployment:authorize",
 	}
 }
 

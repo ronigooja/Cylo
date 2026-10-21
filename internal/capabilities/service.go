@@ -19,8 +19,18 @@ import (
 )
 
 type Service struct {
-	db     *sql.DB
-	server *control.Server
+	db                     *sql.DB
+	server                 *control.Server
+	availableCapabilityIDs map[string]struct{}
+	runtimeBackend         string
+}
+
+// Config is deployment-provided capability policy. An empty capability
+// registry rejects every manifest capability. RuntimeBackend stays empty
+// unless an independently configured runner adapter is available.
+type Config struct {
+	AvailableCapabilityIDs []string
+	RuntimeBackend         string
 }
 
 type submitReleasePayload struct {
@@ -42,14 +52,22 @@ type authorizePayload struct {
 	ExpiresAt    time.Time                          `json:"expires_at"`
 }
 
-func Register(server *control.Server, store *storage.Store) error {
+func Register(server *control.Server, store *storage.Store, cfg Config) error {
 	if server == nil || store == nil || store.DB() == nil {
 		return errors.New("capability registration requires control server and storage")
+	}
+	available := make(map[string]struct{}, len(cfg.AvailableCapabilityIDs))
+	for _, capabilityID := range cfg.AvailableCapabilityIDs {
+		capabilityID = strings.TrimSpace(capabilityID)
+		if capabilityID == "" || strings.ContainsAny(capabilityID, "/\\*") {
+			return errors.New("available capability IDs must be explicit opaque identifiers")
+		}
+		available[capabilityID] = struct{}{}
 	}
 	if err := RegisterMigrations(store); err != nil {
 		return err
 	}
-	svc := &Service{db: store.DB(), server: server}
+	svc := &Service{db: store.DB(), server: server, availableCapabilityIDs: available, runtimeBackend: strings.TrimSpace(cfg.RuntimeBackend)}
 	for kind, handler := range map[string]control.CommandHandler{
 		"capability.release.submit":       svc.submitRelease,
 		"capability.deployment.request":   svc.requestDeployment,
@@ -82,6 +100,11 @@ func (s *Service) submitRelease(ctx context.Context, tx *sql.Tx, cmd control.Com
 	}
 	if err := validateManifest(&p.Manifest); err != nil {
 		return contracts.CommandResult{}, nil, control.NewAPIError(400, "invalid_manifest", err.Error(), nil)
+	}
+	for _, capabilityID := range p.Manifest.Capabilities {
+		if _, ok := s.availableCapabilityIDs[capabilityID]; !ok {
+			return contracts.CommandResult{}, nil, control.NewAPIError(400, "capability_not_registered", "manifest requests a capability that is not enabled by the server registry", map[string]string{"capability_id": capabilityID})
+		}
 	}
 	body, _ := json.Marshal(p.Manifest)
 	sum := sha256.Sum256(body)
@@ -230,7 +253,7 @@ func (s *Service) authorizeDeployment(ctx context.Context, tx *sql.Tx, cmd contr
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
-	if err = enqueue(ctx, tx, workspace, p.DeploymentID, op, grantID, digest, configRef, configHash, at); err != nil {
+	if err = s.enqueue(ctx, tx, workspace, p.DeploymentID, op, grantID, digest, configRef, configHash, at); err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE capability_deployments SET grant_id=?,desired_state=?,version=version+1,updated_at=? WHERE deployment_id=? AND version=?`, grantID, desiredFor(op), at, p.DeploymentID, version)
@@ -242,7 +265,7 @@ func (s *Service) authorizeDeployment(ctx context.Context, tx *sql.Tx, cmd contr
 	return contracts.CommandResult{ResourceType: "capability_deployment", ResourceID: p.DeploymentID, ResourceVersion: version + 1}, []contracts.Event{event}, nil
 }
 
-func enqueue(ctx context.Context, tx *sql.Tx, workspace, deployment, op, grant, digest, configRef, configHash, at string) error {
+func (s *Service) enqueue(ctx context.Context, tx *sql.Tx, workspace, deployment, op, grant, digest, configRef, configHash, at string) error {
 	var fence int64
 	if err := tx.QueryRowContext(ctx, `SELECT coalesce(max(fence),0)+1 FROM capability_deployment_jobs WHERE deployment_id=?`, deployment).Scan(&fence); err != nil {
 		return err
@@ -273,7 +296,7 @@ func enqueue(ctx context.Context, tx *sql.Tx, workspace, deployment, op, grant, 
 	if err != nil {
 		return err
 	}
-	claim := contracts.DeploymentClaim{WorkspaceID: workspace, DeploymentID: deployment, AttemptID: attempt, Fence: fence, ServiceID: serviceID, ReleaseDigest: digest, Manifest: manifest, DesiredOp: op, Grant: contracts.CapabilityGrant{GrantID: grant, ScopeKind: scopeKind, ScopeID: scopeID, PrincipalID: principalID, Actions: actions, Budget: budget, ExpiresAt: expiry}, ConfigRef: configRef, ConfigSHA256: configHash, RuntimeBackend: "docker"}
+	claim := contracts.DeploymentClaim{WorkspaceID: workspace, DeploymentID: deployment, AttemptID: attempt, Fence: fence, ServiceID: serviceID, ReleaseDigest: digest, Manifest: manifest, DesiredOp: op, Grant: contracts.CapabilityGrant{GrantID: grant, ScopeKind: scopeKind, ScopeID: scopeID, PrincipalID: principalID, Actions: actions, Budget: budget, ExpiresAt: expiry}, ConfigRef: configRef, ConfigSHA256: configHash, RuntimeBackend: s.runtimeBackend}
 	for _, mount := range manifest.Mounts {
 		claim.VolumeIDs = append(claim.VolumeIDs, mount.VolumeID)
 	}
@@ -290,6 +313,10 @@ func enqueue(ctx context.Context, tx *sql.Tx, workspace, deployment, op, grant, 
 }
 
 func (s *Service) claimDeployment(w http.ResponseWriter, r *http.Request) {
+	if s.runtimeBackend == "" {
+		control.WriteError(w, control.NewAPIError(503, "capability_runner_unavailable", "no capability runtime adapter is configured", nil))
+		return
+	}
 	if _, ok := control.RunnerPrincipalFromContext(r.Context()); !ok {
 		control.WriteError(w, control.NewAPIError(401, "unauthenticated", "runner authentication required", nil))
 		return

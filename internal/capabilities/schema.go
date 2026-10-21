@@ -8,7 +8,7 @@ import (
 )
 
 func RegisterMigrations(store *storage.Store) error {
-	return store.RegisterMigration(storage.Migration{Version: 300, Name: "capability_releases_and_deployments_v1", Up: func(ctx context.Context, tx *sql.Tx) error {
+	return store.RegisterMigration(storage.Migration{Namespace: "capabilities", Version: 300, Name: "capability_releases_and_deployments_v1", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 CREATE TABLE capability_releases (
   release_id TEXT PRIMARY KEY,

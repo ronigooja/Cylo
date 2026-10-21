@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ronigooja/Cylo/internal/capabilities"
 	"github.com/ronigooja/Cylo/internal/control"
 	"github.com/ronigooja/Cylo/internal/memory"
 	"github.com/ronigooja/Cylo/internal/storage"
@@ -65,6 +66,9 @@ func recoverBootstrap(args []string) error {
 		return err
 	}
 	if err = voice.RegisterMigrations(store); err != nil {
+		return err
+	}
+	if err = capabilities.RegisterMigrations(store); err != nil {
 		return err
 	}
 	if err = store.Migrate(ctx); err != nil {
@@ -172,6 +176,12 @@ func run() error {
 		return err
 	}
 	if err = voice.Register(server, store, voice.Config{GatewayURL: os.Getenv("CYLO_VOICE_GATEWAY_URL"), GatewayAPIKey: os.Getenv("CYLO_VOICE_GATEWAY_API_KEY")}); err != nil {
+		return err
+	}
+	if err = capabilities.Register(server, store, capabilities.Config{
+		AvailableCapabilityIDs: splitEnv("CYLO_AVAILABLE_CAPABILITY_IDS", ""),
+		RuntimeBackend:         strings.TrimSpace(os.Getenv("CYLO_CAPABILITY_RUNTIME_BACKEND")),
+	}); err != nil {
 		return err
 	}
 	if err = store.Migrate(ctx); err != nil {

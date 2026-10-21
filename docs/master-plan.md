@@ -30,7 +30,7 @@ Current implementation status:
 | Memory | Source-linked, versioned authority with typed scopes, ownership checks, tombstones, and synchronous command/search paths; wired into server startup. | Mem0 worker integration, Qdrant rebuild/index path, encrypted backup and restore/deletion evidence. |
 | Voice | Space3044 signaling and stable turn bridge source is wired into server startup; confirmed transcript task admission writes canonical task data and event payloads atomically. A missing gateway returns an unavailable response. | Live gateway/account-pool behavior, media lifecycle, interruption and device tests, and end-to-end task completion. |
 | Native Apple clients | Shared Swift client, native macOS/iOS app source, server-backed task and inbox flows, WebRTC client source, and Mac build plus iOS SDK compilation evidence are present. Capability notification UI source has compiled with the app; this does not establish live delivery. | Signing, device installation, live notification delivery, and real-device voice acceptance. |
-| Capabilities | Deployment contract DTOs exist. | Capability registry, approval/deployment lifecycle, runner execution, and external action acceptance. |
+| Capabilities | Versioned release, grant, and deployment control APIs are source-wired with fenced claim/report routes. Release manifests are checked against the explicit `CYLO_AVAILABLE_CAPABILITY_IDS` registry; an unset runtime backend returns an unavailable response. | A real capability runtime adapter, external action execution, trigger evaluation/admission, and production deployment acceptance. |
 - Daily backups retained for 30 days, RPO of 24 hours, and RTO of two hours are planning targets, not measured guarantees.
 
 ## 2. Requirements and scope
