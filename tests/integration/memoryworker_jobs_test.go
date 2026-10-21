@@ -20,6 +20,10 @@ import (
 )
 
 func memoryWorkerHarness(t *testing.T, scopes, workspaces []string) (*storage.Store, http.Handler, string) {
+	return memoryWorkerHarnessWithLease(t, scopes, workspaces, time.Second)
+}
+
+func memoryWorkerHarnessWithLease(t *testing.T, scopes, workspaces []string, leaseDuration time.Duration) (*storage.Store, http.Handler, string) {
 	t.Helper()
 	ctx := context.Background()
 	store, err := storage.Open(ctx, storage.Config{Path: filepath.Join(t.TempDir(), "memory-worker.db")})
@@ -42,7 +46,7 @@ func memoryWorkerHarness(t *testing.T, scopes, workspaces []string) (*storage.St
 	if err := memory.Register(server, store); err != nil {
 		t.Fatal(err)
 	}
-	if err := memory.RegisterDerived(server, store, memory.DerivedConfig{LeaseDuration: time.Second, MaxAttempts: 3, MaxBatch: 10}); err != nil {
+	if err := memory.RegisterDerived(server, store, memory.DerivedConfig{LeaseDuration: leaseDuration, MaxAttempts: 3, MaxBatch: 10}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Migrate(ctx); err != nil {
@@ -114,6 +118,19 @@ func TestMemoryWorkerLeaseFenceAndIdempotentCompletion(t *testing.T) {
 		t.Fatalf("unexpected claimed job: %#v", response.Items)
 	}
 	job := response.Items[0]
+	validated := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/jobs/"+job.ID+"/validate", map[string]any{"attempt": 1})
+	if validated.Code != http.StatusOK {
+		t.Fatalf("current lease validation status=%d body=%s", validated.Code, validated.Body.String())
+	}
+	var validation struct {
+		Allowed bool `json:"allowed"`
+	}
+	if err := json.Unmarshal(validated.Body.Bytes(), &validation); err != nil {
+		t.Fatal(err)
+	}
+	if !validation.Allowed {
+		t.Fatalf("current claimed job was not authorized for its derived effect: %s", validated.Body.String())
+	}
 	if _, err := store.DB().Exec(`UPDATE memory_jobs SET lease_until=? WHERE id=?`, time.Now().UTC().Add(-time.Second).Format(time.RFC3339Nano), job.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -132,6 +149,10 @@ func TestMemoryWorkerLeaseFenceAndIdempotentCompletion(t *testing.T) {
 	}
 	if len(reclaimed.Items) != 1 || reclaimed.Items[0].ID != job.ID || reclaimed.Items[0].Attempt != 2 {
 		t.Fatalf("lease was not fenced on reclaim: %#v", reclaimed.Items)
+	}
+	staleValidation := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/jobs/"+job.ID+"/validate", map[string]any{"attempt": 1})
+	if staleValidation.Code != http.StatusConflict {
+		t.Fatalf("stale lease validation status=%d body=%s", staleValidation.Code, staleValidation.Body.String())
 	}
 	stale := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/jobs/"+job.ID+"/complete", map[string]any{"attempt": 1})
 	if stale.Code != http.StatusConflict {
@@ -175,6 +196,41 @@ func TestMemoryWorkerRequiresExactScopeAndWorkspace(t *testing.T) {
 		if item.WorkspaceID != "default" {
 			t.Fatalf("job escaped workspace allowlist: %#v", item)
 		}
+	}
+}
+
+func TestMemoryWorkerProposalRemainsPendingForUserReview(t *testing.T) {
+	store, handler, token := memoryWorkerHarness(t, []string{"memory:propose"}, []string{"default"})
+	seedMemoryWorkerClaim(t, store.DB(), "default", "claim-proposal")
+	response := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/proposals", map[string]any{
+		"workspace_id":      "default",
+		"source_id":         "source-claim-proposal",
+		"source_version":    1,
+		"extractor_version": "mem0-controlled-v1",
+		"scope":             map[string]any{"kind": "workspace"},
+		"subject":           "project",
+		"key":               "derived_fact",
+		"content":           "A candidate extracted from the source",
+	})
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("proposal status=%d body=%s", response.Code, response.Body.String())
+	}
+	var proposal struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &proposal); err != nil {
+		t.Fatal(err)
+	}
+	if proposal.ID == "" || proposal.Status != "pending" {
+		t.Fatalf("worker proposal was not left pending: %#v", proposal)
+	}
+	var count int
+	if err := store.DB().QueryRow(`SELECT count(*) FROM memory_claims WHERE id='claim-proposal' AND revision=1 AND status='active'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("candidate proposal changed authoritative claims: count=%d", count)
 	}
 }
 
