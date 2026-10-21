@@ -1,6 +1,6 @@
 # Cylo master plan
 
-**Status:** planning baseline; no product implementation has started. This document is the current decision and delivery plan. Source requirements and research are preserved under `docs/archive/`; archived proposals are evidence, not current decisions.
+**Status:** documentation Stage 0 is complete; product implementation has not started. This document is the current decision and delivery plan. Source requirements and research are preserved under `docs/archive/`; archived proposals are evidence, not current decisions.
 
 ## 1. Status and decisions
 
