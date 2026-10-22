@@ -117,9 +117,13 @@ final class ClientContractTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let gate = AsyncTestGate()
         var producedURL: URL?
+        var shouldPause = true
         model.exportDownloadOverrideForTesting = { scope in
             XCTAssertEqual(scope, "personal")
-            await gate.pause()
+            if shouldPause {
+                shouldPause = false
+                await gate.pause()
+            }
             let url = directory.appendingPathComponent("late.json")
             try Data("{}".utf8).write(to: url)
             producedURL = url
@@ -133,7 +137,12 @@ final class ClientContractTests: XCTestCase {
         await gate.resume()
         await task.value
         XCTAssertNil(model.exportArtifact)
+        XCTAssertNil(model.exportStatus, "switching connections should clear the stale Preparing status")
         XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(producedURL).path))
+
+        await model.prepareExport(scope: "personal", expectedConnectionEpoch: model.connectionEpoch)
+        XCTAssertEqual(model.exportArtifact?.filename, "cylo-export-late.json", "a later request on the new epoch should be allowed")
+        model.cancelExport()
     }
 
     @MainActor

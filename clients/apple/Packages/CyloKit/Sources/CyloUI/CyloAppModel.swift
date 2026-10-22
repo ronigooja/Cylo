@@ -768,6 +768,12 @@ public final class CyloAppModel: ObservableObject {
             return try await capturedAPI.downloadExport(scope: scope)
         }
         exportDownloadTask = task
+        defer {
+            if requestID == exportRequestID {
+                exportDownloadTask = nil
+                exportRequestID = nil
+            }
+        }
         do {
             let artifact = try await task.value
             guard !Task.isCancelled, requestID == exportRequestID,
@@ -781,10 +787,6 @@ public final class CyloAppModel: ObservableObject {
         } catch {
             guard requestID == exportRequestID, generation == connectionGeneration.value else { return }
             exportStatus = error.localizedDescription
-        }
-        if requestID == exportRequestID {
-            exportDownloadTask = nil
-            exportRequestID = nil
         }
     }
 
@@ -802,7 +804,7 @@ public final class CyloAppModel: ObservableObject {
         exportDownloadTask?.cancel()
         exportDownloadTask = nil
         discardExportArtifact()
-        if let status { exportStatus = status }
+        exportStatus = status
     }
 
     private func discardExportArtifact() {
