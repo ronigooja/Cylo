@@ -6,7 +6,10 @@ RUN apt-get update \
 
 COPY package.json package-lock.json /opt/opencode/
 RUN npm ci --prefix /opt/opencode --omit=dev --ignore-scripts \
+    && cd /opt/opencode \
+    && npm_config_offline=true node node_modules/opencode-ai/postinstall.mjs \
     && ln -s /opt/opencode/node_modules/.bin/opencode /usr/local/bin/opencode \
+    && opencode --version \
     && npm cache clean --force
 
 COPY proxy_bridge.py /usr/local/bin/cylo-opencode-proxy-bridge
