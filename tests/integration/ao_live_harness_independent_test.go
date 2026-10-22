@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -49,4 +50,63 @@ func TestIndependentLiveDefiniteCreateFailureDoesNotReplayInCleanup(t *testing.T
 	if posts.Load() != 1 {
 		t.Fatalf("actual fatal/deferred cleanup path made %d create POSTs after definite refusal, want 1 (child output bytes=%d)", posts.Load(), len(output))
 	}
+}
+
+type independentBoundaryDocker struct{ body []byte }
+
+func (d independentBoundaryDocker) Run(context.Context, ...string) ([]byte, error) {
+	return d.body, nil
+}
+
+func TestIndependentLiveBoundaryRejectsSymlinkEscape(t *testing.T) {
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"inside", "symlink-escape"} {
+		child := exec.Command(binary, "-test.run=^TestIndependentLiveBoundaryChild$")
+		child.Env = append(os.Environ(), "CYLO_INDEPENDENT_BOUNDARY_MODE="+mode)
+		output, runErr := child.CombinedOutput()
+		if (mode == "inside") != (runErr == nil) {
+			t.Fatalf("boundary mode=%s accepted=%t output_bytes=%d", mode, runErr == nil, len(output))
+		}
+	}
+}
+
+func TestIndependentLiveBoundaryChild(t *testing.T) {
+	mode := os.Getenv("CYLO_INDEPENDENT_BOUNDARY_MODE")
+	if mode == "" {
+		t.Skip("synthetic child only")
+	}
+	root := t.TempDir()
+	data := filepath.Join(root, "data")
+	managed := filepath.Join(data, "worktrees")
+	workspace := filepath.Join(managed, "owned")
+	if err := os.MkdirAll(workspace, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if mode == "symlink-escape" {
+		outside := filepath.Join(root, "outside")
+		if err := os.Mkdir(outside, 0700); err != nil {
+			t.Fatal(err)
+		}
+		workspace = filepath.Join(managed, "link")
+		if err := os.Symlink(outside, workspace); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body, err := json.Marshal(map[string]any{
+		"Id":         "exact-container",
+		"Config":     map[string]any{"Env": []string{}, "Labels": map[string]string{"io.cylo.managed": "true", "io.cylo.runtime": "ao-codex-chat", "io.cylo.ao.session": "owned-session"}},
+		"HostConfig": map[string]any{"NetworkMode": "none", "ReadonlyRootfs": true, "CapDrop": []string{"ALL"}, "SecurityOpt": []string{"no-new-privileges"}, "PidsLimit": 256},
+		"Mounts": []map[string]any{
+			{"Type": "bind", "Source": workspace, "Destination": workspace, "RW": true},
+			{"Type": "bind", "Source": filepath.Join(root, "private-home"), "Destination": "/codex-home", "RW": true},
+			{"Type": "bind", "Source": filepath.Join(root, "provider.sock"), "Destination": "/run/cylo/provider.sock", "RW": false},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLiveContainerBoundary(t, context.Background(), independentBoundaryDocker{body: body}, "exact-container", data, managed, "owned-session")
 }
