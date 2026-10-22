@@ -17,6 +17,6 @@ let package = Package(
     targets: [
         .target(name: "CyloKit"),
         .target(name: "CyloUI", dependencies: ["CyloKit", .product(name: "WebRTC", package: "WebRTC")]),
-        .testTarget(name: "CyloKitTests", dependencies: ["CyloKit"])
+        .testTarget(name: "CyloKitTests", dependencies: ["CyloKit", "CyloUI"])
     ]
 )

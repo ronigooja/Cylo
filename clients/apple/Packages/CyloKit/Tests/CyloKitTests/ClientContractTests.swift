@@ -1,5 +1,31 @@
 import XCTest
 @testable import CyloKit
+@testable import CyloUI
+
+private actor AsyncTestGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var startWaiter: CheckedContinuation<Void, Never>?
+    private var hasStarted = false
+
+    func pause() async {
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            hasStarted = true
+            startWaiter?.resume()
+            startWaiter = nil
+        }
+    }
+
+    func waitUntilStarted() async {
+        guard !hasStarted else { return }
+        await withCheckedContinuation { startWaiter = $0 }
+    }
+
+    func resume() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
 
 final class ClientContractTests: XCTestCase {
     func testConnectionGenerationRejectsResponsesAfterOriginOrCredentialSwitch() throws {
@@ -38,7 +64,7 @@ final class ClientContractTests: XCTestCase {
     }
 
     func testCapabilityRevocationKeepsRunnerCleanupOutcomeSeparate() throws {
-        func deployment(revokedAt: Any, revokedBy: Any, desired: String, observed: String) throws -> CapabilityDeployment {
+        func deployment(revokedAt: Any, revokedBy: Any, cleanup: Any = NSNull(), desired: String, observed: String) throws -> CapabilityDeployment {
             let item: [String: Any] = [
                 "deployment_id": "deploy-1",
                 "workspace_id": "workspace-1",
@@ -58,7 +84,8 @@ final class ClientContractTests: XCTestCase {
                 "latest_fence": 4,
                 "last_error_code": "",
                 "revoked_at": revokedAt,
-                "revoked_by": revokedBy
+                "revoked_by": revokedBy,
+                "revocation_cleanup_state": cleanup
             ]
             let data = try JSONSerialization.data(withJSONObject: ["items": [item]])
             return try XCTUnwrap(CyloJSON.decoder.decode(CapabilityDeploymentList.self, from: data).items.first)
@@ -69,22 +96,82 @@ final class ClientContractTests: XCTestCase {
         XCTAssertNil(active.revokedBy)
         XCTAssertNil(active.revocationCleanupStatus)
 
-        let cleanupPending = try deployment(revokedAt: "2026-10-21T12:02:00Z", revokedBy: "owner-1", desired: "stopped", observed: "running")
+        let cleanupPending = try deployment(revokedAt: "2026-10-21T12:02:00Z", revokedBy: "owner-1", cleanup: "pending", desired: "stopped", observed: "running")
         XCTAssertEqual(cleanupPending.revokedAt, "2026-10-21T12:02:00Z")
         XCTAssertEqual(cleanupPending.revokedBy, "owner-1")
         XCTAssertEqual(cleanupPending.revocationCleanupStatus, .pending(observedState: "running"))
 
-        let cleanupUncertain = try deployment(revokedAt: "2026-10-21T12:02:00Z", revokedBy: "owner-1", desired: "stopped", observed: "uncertain")
+        let cleanupUncertain = try deployment(revokedAt: "2026-10-21T12:02:00Z", revokedBy: "owner-1", cleanup: "uncertain", desired: "stopped", observed: "uncertain")
         XCTAssertEqual(cleanupUncertain.revocationCleanupStatus, .uncertain)
 
-        let cleanupFailed = try deployment(revokedAt: "2026-10-21T12:02:00Z", revokedBy: "owner-1", desired: "stopped", observed: "failed")
-        XCTAssertEqual(cleanupFailed.revocationCleanupStatus, .failed)
-
         let cleanupUnknown = try deployment(revokedAt: "2026-10-21T12:02:00Z", revokedBy: "owner-1", desired: "stopped", observed: "unknown")
-        XCTAssertEqual(cleanupUnknown.revocationCleanupStatus, .unknown)
+        XCTAssertEqual(cleanupUnknown.revocationCleanupStatus, .unknown(observedState: "unknown"))
+        let futureCleanupState = try deployment(revokedAt: "2026-10-21T12:02:00Z", revokedBy: "owner-1", cleanup: "future_state", desired: "stopped", observed: "stopped")
+        XCTAssertEqual(futureCleanupState.revocationCleanupStatus, .unknown(observedState: "stopped"))
 
-        let stopped = try deployment(revokedAt: "2026-10-21T12:02:00Z", revokedBy: "owner-1", desired: "stopped", observed: "stopped")
-        XCTAssertEqual(stopped.revocationCleanupStatus, .stopped)
+        let previouslyStopped = try deployment(revokedAt: "2026-10-21T12:02:00Z", revokedBy: "owner-1", desired: "stopped", observed: "stopped")
+        XCTAssertEqual(previouslyStopped.revocationCleanupStatus, .unknown(observedState: "stopped"), "A stopped observation without cleanup proof may predate revocation.")
+
+        let cleanupConfirmed = try deployment(revokedAt: "2026-10-21T12:02:00Z", revokedBy: "owner-1", cleanup: "confirmed", desired: "stopped", observed: "stopped")
+        XCTAssertEqual(cleanupConfirmed.revocationCleanupStatus, .confirmed)
+    }
+
+    @MainActor
+    func testRevocationReturnsFalseWhenConnectionChangesWhileCommandIsSuspended() async throws {
+        let deployment = try makeRevocationDeployment(observed: "stopped")
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        model.setCapabilityDeploymentsForTesting([deployment])
+        let submitGate = AsyncTestGate()
+        var didRefresh = false
+        model.capabilityRevocationSubmitOverrideForTesting = { version, payload in
+            XCTAssertEqual(version, 8)
+            XCTAssertEqual(payload, .object(["deployment_id": .string("deploy-1")]))
+            await submitGate.pause()
+            return true
+        }
+        model.capabilityRevocationRefreshOverrideForTesting = { didRefresh = true }
+
+        let epoch = model.connectionEpoch
+        let task = Task { await model.revokeCapabilityDeployment(deployment, expectedConnectionEpoch: epoch) }
+        await submitGate.waitUntilStarted()
+        model.serverAddress = ""
+        await model.updateServerAddress()
+        await submitGate.resume()
+
+        let result = await task.value
+        XCTAssertFalse(result)
+        XCTAssertFalse(model.notice?.contains("Authorization revoked") ?? false)
+        XCTAssertFalse(didRefresh)
+    }
+
+    @MainActor
+    func testRevocationReturnsFalseWhenConnectionChangesDuringInventoryRefresh() async throws {
+        let deployment = try makeRevocationDeployment(observed: "stopped")
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        model.setCapabilityDeploymentsForTesting([deployment])
+        model.capabilityRevocationSubmitOverrideForTesting = { version, _ in
+            XCTAssertEqual(version, 8)
+            return true
+        }
+        let refreshGate = AsyncTestGate()
+        model.capabilityRevocationRefreshOverrideForTesting = { await refreshGate.pause() }
+
+        let epoch = model.connectionEpoch
+        let task = Task { await model.revokeCapabilityDeployment(deployment, expectedConnectionEpoch: epoch) }
+        await refreshGate.waitUntilStarted()
+        model.serverAddress = ""
+        await model.updateServerAddress()
+        await refreshGate.resume()
+
+        let result = await task.value
+        XCTAssertFalse(result)
+        XCTAssertFalse(model.notice?.contains("Authorization revoked") ?? false)
+    }
+
+    @MainActor
+    private func makeRevocationDeployment(observed: String) throws -> CapabilityDeployment {
+        let data = Data(#"{"items":[{"deployment_id":"deploy-1","workspace_id":"workspace-1","service_id":"service-1","release_digest":"sha256:release","requested_operation":"start","desired_state":"stopped","observed_state":"# + "\(observed)" + #","grant_id":"grant-1","config_ref":"","config_sha256":"","version":8,"created_by":"owner-1","created_at":"2026-10-21T12:00:00Z","updated_at":"2026-10-21T12:01:00Z","latest_attempt_id":"attempt-1","latest_fence":4,"last_error_code":"","revoked_at":null,"revoked_by":null,"revocation_cleanup_state":null}]}"#.utf8)
+        return try XCTUnwrap(CyloJSON.decoder.decode(CapabilityDeploymentList.self, from: data).items.first)
     }
 
     func testCapabilityRequestBindsExistingServiceToCurrentDeploymentVersion() throws {

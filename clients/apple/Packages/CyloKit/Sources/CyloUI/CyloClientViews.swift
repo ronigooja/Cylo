@@ -705,17 +705,14 @@ private struct CapabilitiesView: View {
                                     case let .pending(observedState):
                                         Label("Stop cleanup pending · runner last observed \(observedState)", systemImage: "clock")
                                             .foregroundStyle(.orange)
-                                    case .stopped:
-                                        Label("Runner confirmed stopped after revocation", systemImage: "checkmark.circle")
+                                    case .confirmed:
+                                        Label("Runner stop cleanup confirmed", systemImage: "checkmark.circle")
                                             .foregroundStyle(.green)
-                                    case .unknown:
-                                        Label("Stop cleanup not confirmed · runner state unknown", systemImage: "exclamationmark.triangle")
+                                    case let .unknown(observedState):
+                                        Label("Stop cleanup status unknown · runner last observed \(observedState)", systemImage: "exclamationmark.triangle")
                                             .foregroundStyle(.red)
                                     case .uncertain:
                                         Label("Stop cleanup outcome is uncertain", systemImage: "exclamationmark.triangle")
-                                            .foregroundStyle(.red)
-                                    case .failed:
-                                        Label("Stop cleanup failed · runner reported failure", systemImage: "xmark.octagon")
                                             .foregroundStyle(.red)
                                     }
                                 }

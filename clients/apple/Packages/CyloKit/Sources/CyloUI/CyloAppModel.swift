@@ -36,6 +36,14 @@ public final class CyloAppModel: ObservableObject {
     private var snapshotCache: SnapshotCache?
     private var streamBackoff: UInt64 = 1
     private var connectionGeneration = ConnectionGeneration()
+#if DEBUG
+    var capabilityRevocationSubmitOverrideForTesting: ((Int64, JSONValue) async -> Bool)?
+    var capabilityRevocationRefreshOverrideForTesting: (() async -> Void)?
+
+    func setCapabilityDeploymentsForTesting(_ deployments: [CapabilityDeployment]) {
+        capabilityDeployments = deployments
+    }
+#endif
     private var configuredServerURL: URL?
     private var voiceTransport: LibWebRTCTransport?
     private var voiceAudioSession: VoiceAudioSessionAdapter?
@@ -374,23 +382,32 @@ public final class CyloAppModel: ObservableObject {
     }
 
     public func revokeCapabilityDeployment(_ deployment: CapabilityDeployment, expectedConnectionEpoch: UInt64) async -> Bool {
-        guard expectedConnectionEpoch == connectionEpoch else {
-            notice = "The server connection changed. Reopen the capability inventory and review the current deployment before revoking it."
-            return false
-        }
+        guard expectedConnectionEpoch == connectionEpoch else { return false }
         guard let current = capabilityDeployments.first(where: { $0.deploymentId == deployment.deploymentId }),
               current.version == deployment.version,
               current.revokedAt == nil,
               !current.grantId.isEmpty else {
+            await refreshRevocationInventory()
+            guard expectedConnectionEpoch == connectionEpoch else { return false }
             notice = "This deployment changed or its authorization is already revoked. The latest capability inventory is being loaded."
-            await refreshCapabilities()
             return false
         }
 
         let payload: JSONValue = .object(["deployment_id": .string(deployment.deploymentId)])
-        guard await send(kind: "capability.deployment.revoke", expectedVersion: deployment.version, payload: payload) else {
+        let accepted: Bool
+#if DEBUG
+        if let submit = capabilityRevocationSubmitOverrideForTesting {
+            accepted = await submit(deployment.version, payload)
+        } else {
+            accepted = await send(kind: "capability.deployment.revoke", expectedVersion: deployment.version, payload: payload)
+        }
+#else
+        accepted = await send(kind: "capability.deployment.revoke", expectedVersion: deployment.version, payload: payload)
+#endif
+        guard expectedConnectionEpoch == connectionEpoch else { return false }
+        guard accepted else {
+            await refreshRevocationInventory()
             guard expectedConnectionEpoch == connectionEpoch else { return false }
-            await refreshCapabilities()
             if let refreshed = capabilityDeployments.first(where: { $0.deploymentId == deployment.deploymentId }),
                refreshed.version != deployment.version {
                 notice = "The deployment version changed. The latest capability inventory has been loaded; review it before trying again."
@@ -398,9 +415,20 @@ public final class CyloAppModel: ObservableObject {
             return false
         }
 
-        await refreshCapabilities()
-        notice = "Authorization revoked. Stop cleanup was queued; the observed state must confirm shutdown."
+        await refreshRevocationInventory()
+        guard expectedConnectionEpoch == connectionEpoch else { return false }
+        notice = "Authorization revoked. Stop cleanup status is shown in the capability inventory."
         return true
+    }
+
+    private func refreshRevocationInventory() async {
+#if DEBUG
+        if let refresh = capabilityRevocationRefreshOverrideForTesting {
+            await refresh()
+            return
+        }
+#endif
+        await refreshCapabilities()
     }
 
     public func authorizeCapabilityDeployment(_ deployment: CapabilityDeployment, release: CapabilityRelease, scopeKind: String = "workspace", scopeID: String? = nil, expiresAt: Date, expectedConnectionEpoch: UInt64) async -> Bool {
@@ -777,13 +805,17 @@ public final class CyloAppModel: ObservableObject {
         do {
             let outcome = try await coordinator.submit(kind: kind, expectedVersion: expectedVersion, payload: payload, workspaceID: snapshot?.devices.first?.workspaceId)
             guard generation == connectionGeneration.value else { return false }
+            do { try await refreshSnapshot() }
+            catch {
+                guard generation == connectionGeneration.value else { return false }
+                setStale("The command was accepted, but the latest snapshot could not be loaded: \(userMessage(error))")
+            }
+            guard generation == connectionGeneration.value else { return false }
             if kind == "task.stop" {
                 notice = "Stop intent recorded (receipt \(outcome.receipt.commandId)). Awaiting server confirmation that the runtime terminated."
             } else {
                 notice = "\(outcome.receipt.kind) accepted by the server (receipt \(outcome.receipt.commandId))."
             }
-            do { try await refreshSnapshot() }
-            catch { setStale("The command was accepted, but the latest snapshot could not be loaded: \(userMessage(error))") }
             return true
         } catch {
             if generation == connectionGeneration.value { notice = userMessage(error) }
