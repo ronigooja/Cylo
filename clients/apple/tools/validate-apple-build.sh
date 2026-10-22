@@ -125,7 +125,7 @@ run_logged() {
     else
         step_status=$?
         tail -n 60 "$log_path"
-        record "FAIL $step_name (exit $step_status; log: $log_path)"
+        record "COMMAND_EXIT_NONZERO $step_name (exit $step_status; log: $log_path)"
         return "$step_status"
     fi
 }
@@ -161,6 +161,7 @@ if ! run_logged "swift package tests" "$OUTPUT_ROOT/swift-test.log" \
     --config-path "$OUTPUT_ROOT/swift-config" \
     --security-path "$OUTPUT_ROOT/swift-security" \
     --manifest-cache local; then
+    record "FAIL swift package tests"
     exit 1
 fi
 
@@ -176,6 +177,7 @@ if ! run_logged "unsigned universal macOS app build" "$OUTPUT_ROOT/macos-xcodebu
     -clonedSourcePackagesDirPath "$XCODE_PACKAGE_ROOT" \
     -packageCachePath "$OUTPUT_ROOT/package-cache" \
     CODE_SIGNING_ALLOWED=NO build; then
+    record "FAIL unsigned universal macOS app build"
     exit 1
 fi
 
@@ -189,6 +191,7 @@ if ! run_logged "direct iOS SDK package source build" "$OUTPUT_ROOT/ios-sdk-buil
     --config-path "$OUTPUT_ROOT/ios-config" \
     --security-path "$OUTPUT_ROOT/ios-security" \
     --manifest-cache local; then
+    record "FAIL direct iOS SDK package source build"
     exit 1
 fi
 record "PASS iOS shared-package source compile (manual SDK build; not an Xcode app-target build)"
@@ -208,10 +211,12 @@ if ! run_logged "direct iOS app entry-point source compile" "$OUTPUT_ROOT/ios-ap
     -F "$IOS_WEBRTC_FRAMEWORK" \
     -emit-object "$SOURCE_APPLE_ROOT/Apps/iOS/CyloMobileApp.swift" \
     -o "$OUTPUT_ROOT/CyloMobileApp.o"; then
+    record "FAIL direct iOS app entry-point source compile"
     exit 1
 fi
 record "PASS iOS app entry-point source compile (manual swiftc object compile; not an Xcode app-target build)"
 
+IOS_APP_TARGET_STATUS=NOT_ATTEMPTED
 if [ "$INCLUDE_IOS_XCODE_APP_TARGET" -eq 1 ]; then
     IOS_RESULT_BUNDLE="$OUTPUT_ROOT/ios-app-target.xcresult"
     IOS_TARGET_LOG="$OUTPUT_ROOT/ios-app-target-xcodebuild.log"
@@ -226,10 +231,13 @@ if [ "$INCLUDE_IOS_XCODE_APP_TARGET" -eq 1 ]; then
         -packageCachePath "$OUTPUT_ROOT/package-cache" \
         -resultBundlePath "$IOS_RESULT_BUNDLE" \
         CODE_SIGNING_ALLOWED=NO build; then
+        IOS_APP_TARGET_STATUS=PASS
         record "PASS iOS Xcode app-target build"
     elif grep -Eiq 'no destinations|eligible destinations|not installed|unable to find a destination' "$IOS_TARGET_LOG"; then
+        IOS_APP_TARGET_STATUS=BLOCKED_NO_ELIGIBLE_DESTINATION
         record "BLOCKED_NO_ELIGIBLE_DESTINATION Xcode did not compile the CyloMobile app target"
     else
+        IOS_APP_TARGET_STATUS=FAIL
         record "FAIL iOS Xcode app-target build (see $IOS_TARGET_LOG)"
         exit 1
     fi
@@ -238,5 +246,5 @@ else
 fi
 
 record "COMPLETE shared tests, macOS app build, and direct iOS SDK source checks passed"
-record "IOS_APP_TARGET_BUILD=$(if [ "$INCLUDE_IOS_XCODE_APP_TARGET" -eq 1 ]; then grep -q '^PASS iOS Xcode app-target build$' "$REPORT" && echo PASS || echo BLOCKED_OR_FAILED; else echo NOT_ATTEMPTED; fi)"
+record "IOS_APP_TARGET_BUILD=$IOS_APP_TARGET_STATUS"
 record "REPORT=$REPORT"
