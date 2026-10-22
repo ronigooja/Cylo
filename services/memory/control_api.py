@@ -67,3 +67,48 @@ class ControlAPI:
 
     def propose(self, proposal: dict[str, Any]) -> dict[str, Any]:
         return self._post("/runner/v1/memory/proposals", proposal)
+
+    def reserve_model_call(
+        self,
+        job_id: str,
+        attempt: int,
+        request_key: str,
+        provider: str,
+        model: str,
+        estimated_input_tokens: int,
+        max_output_tokens: int,
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/runner/v1/memory/jobs/{job_id}/model-calls/reserve",
+            {
+                "attempt": attempt,
+                "request_key": request_key,
+                "provider": provider,
+                "model": model,
+                "estimated_input_tokens": estimated_input_tokens,
+                "max_output_tokens": max_output_tokens,
+            },
+        )
+
+    def finalize_model_call(
+        self,
+        job_id: str,
+        call_id: str,
+        attempt: int,
+        outcome: str,
+        usage_status: str,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        provider_request_id: str = "",
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/runner/v1/memory/jobs/{job_id}/model-calls/{call_id}/finalize",
+            {
+                "attempt": attempt,
+                "outcome": outcome,
+                "usage_status": usage_status,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "provider_request_id": provider_request_id,
+            },
+        )

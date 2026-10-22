@@ -29,12 +29,14 @@ const (
 // conservative defaults. Runner identity and authority are always taken from
 // authenticated request context, never from the request body.
 type DerivedConfig struct {
-	LeaseDuration time.Duration
-	MaxAttempts   int
-	MaxBatch      int
-	RetryBase     time.Duration
-	RetryMax      time.Duration
-	ExtractorID   string
+	LeaseDuration    time.Duration
+	MaxAttempts      int
+	MaxBatch         int
+	RetryBase        time.Duration
+	RetryMax         time.Duration
+	ExtractorID      string
+	ModelCallLimit   int
+	ModelTokenBudget int
 }
 
 func (c DerivedConfig) withDefaults() DerivedConfig {
@@ -56,6 +58,12 @@ func (c DerivedConfig) withDefaults() DerivedConfig {
 	if strings.TrimSpace(c.ExtractorID) == "" {
 		c.ExtractorID = "mem0-controlled-v1"
 	}
+	if c.ModelCallLimit < 1 || c.ModelCallLimit > 100 {
+		c.ModelCallLimit = 4
+	}
+	if c.ModelTokenBudget < 1 || c.ModelTokenBudget > 1_000_000 {
+		c.ModelTokenBudget = 192_000
+	}
 	return c
 }
 
@@ -72,6 +80,8 @@ func RegisterDerived(s *control.Server, store *storage.Store, config DerivedConf
 		mux.HandleFunc("POST /runner/v1/memory/jobs/{job_id}/validate", svc.handleValidate)
 		mux.HandleFunc("POST /runner/v1/memory/jobs/{job_id}/complete", svc.handleComplete)
 		mux.HandleFunc("POST /runner/v1/memory/jobs/{job_id}/fail", svc.handleFail)
+		mux.HandleFunc("POST /runner/v1/memory/jobs/{job_id}/model-calls/reserve", svc.handleModelCallReserve)
+		mux.HandleFunc("POST /runner/v1/memory/jobs/{job_id}/model-calls/{call_id}/finalize", svc.handleModelCallFinalize)
 	})
 }
 

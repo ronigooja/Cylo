@@ -139,6 +139,14 @@ func TestMemoryWorkerGoPythonMem0QdrantEndToEnd(t *testing.T) {
 	if proposalCount == 0 {
 		t.Fatalf("worker completed extraction without a candidate proposal: diagnostics=%#v extract_jobs=%s", initial, memoryWorkerE2EExtractJobStates(t, store.DB()))
 	}
+	var modelCallCount, unfinishedCalls, nonUnknownUsage int
+	if err := store.DB().QueryRow(`SELECT count(*),sum(CASE WHEN status!='finalized' THEN 1 ELSE 0 END),sum(CASE WHEN usage_status!='unknown' THEN 1 ELSE 0 END)
+FROM memory_model_calls WHERE job_id IN (SELECT id FROM memory_jobs WHERE kind='extract' AND workspace_id IN ('default','e2e-other'))`).Scan(&modelCallCount, &unfinishedCalls, &nonUnknownUsage); err != nil {
+		t.Fatal(err)
+	}
+	if modelCallCount < 2 || unfinishedCalls != 0 || nonUnknownUsage != 0 {
+		t.Fatalf("stub-backed extraction did not finalize unknown usage safely: calls=%d unfinished=%d non_unknown=%d", modelCallCount, unfinishedCalls, nonUnknownUsage)
+	}
 	assertMemoryWorkerE2EProposal(t, store.DB(), "default", "source-event-e2e-target")
 	assertMemoryWorkerE2EProposal(t, store.DB(), "e2e-other", "source-event-e2e-other")
 	assertMemoryWorkerE2EAuthority(t, store.DB(), "default", "claim-e2e-target", "active", 1)

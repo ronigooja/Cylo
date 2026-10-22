@@ -16,7 +16,13 @@ from mem0 import Memory
 from .config import WorkerConfig
 from .embedding import LocalEmbedder
 from .mem0_embedder import register_pinned_embedder
-from .responses_llm import register_responses_provider, reset_request_timeout, set_request_timeout
+from .responses_llm import (
+    register_responses_provider,
+    reset_model_call_context,
+    reset_request_timeout,
+    set_model_call_context,
+    set_request_timeout,
+)
 from .stores import mem0_user_id
 
 MAX_LLM_REQUEST_SECONDS = 60.0
@@ -45,8 +51,9 @@ def llm_timeout_for_job(job: dict[str, Any], now: datetime | None = None) -> flo
 
 
 class ControlledMem0:
-    def __init__(self, config: WorkerConfig, embedder: LocalEmbedder | None = None):
+    def __init__(self, config: WorkerConfig, embedder: LocalEmbedder | None = None, control_api: Any = None):
         self.config = config
+        self._control_api = control_api
         if embedder is None:
             embedder = LocalEmbedder(config.embedder_model, config.embedder_revision, config.embedding_dimensions)
         register_pinned_embedder(embedder)
@@ -69,27 +76,16 @@ class ControlledMem0:
                 "embedding_dims": config.embedding_dimensions,
             },
         }
-        llm_config: dict[str, Any]
-        if config.llm_provider == "ollama":
-            llm_config = {
-                "provider": "ollama",
-                "config": {
-                    "model": config.llm_model,
-                    "ollama_base_url": config.llm_base_url or "http://127.0.0.1:11434",
-                    "temperature": 0.1,
-                },
-            }
-        else:
-            register_responses_provider()
-            llm_config = {
-                "provider": "openai",
-                "config": {
-                    "model": config.llm_model,
-                    "openai_base_url": config.llm_base_url,
-                    "api_key": config.llm_api_key,
-                    "temperature": 0.1,
-                },
-            }
+        register_responses_provider()
+        llm_config: dict[str, Any] = {
+            "provider": "openai",
+            "config": {
+                "model": config.llm_model,
+                "openai_base_url": config.llm_base_url,
+                "api_key": config.llm_api_key,
+                "temperature": 0.1,
+            },
+        }
         history_path = Path(os.environ.get("CYLO_MEM0_HISTORY_DB", "/var/lib/cylo/memory/mem0-history.sqlite"))
         history_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.memory = Memory.from_config(
@@ -165,6 +161,8 @@ class ControlledMem0:
         self.memory._delete_memory = tracked_delete
 
     def extract(self, job: dict[str, Any]) -> list[dict[str, str]]:
+        if self._control_api is None:
+            raise RuntimeError("memory model-call accounting API is required")
         claim = job.get("claim") or {}
         source = job.get("source") or {}
         workspace = str(job["workspace_id"])
@@ -173,11 +171,12 @@ class ControlledMem0:
         if not source_text:
             return []
         request_timeout = llm_timeout_for_job(job)
-        timeout_token = set_request_timeout(request_timeout) if self.config.llm_provider != "ollama" else None
+        timeout_token = set_request_timeout(request_timeout)
+        call_token = set_model_call_context(self._control_api, job)
         # Explicit recall keeps Mem0's retrieval path exercised. The add call
         # also uses Mem0's own retrieval and update workflow for the same user.
-        self.memory.search(source_text, filters={"user_id": user_id}, top_k=5)
         try:
+            self.memory.search(source_text, filters={"user_id": user_id}, top_k=5)
             result = self.memory.add(
                 source_text,
                 user_id=user_id,
@@ -196,8 +195,8 @@ class ControlledMem0:
                 ),
             )
         finally:
-            if timeout_token is not None:
-                reset_request_timeout(timeout_token)
+            reset_model_call_context(call_token)
+            reset_request_timeout(timeout_token)
         candidates: list[dict[str, str]] = []
         for item in result.get("results", []):
             if not isinstance(item, dict) or item.get("event") not in {"ADD", "UPDATE"}:

@@ -75,6 +75,8 @@ class DeleteClaimTests(unittest.TestCase):
                 (target_user, workspace, claim_id, "target-inferred-delete"),
             )
             db.connection.commit()
+            # Simulate pre-ledger history without surviving vector metadata;
+            # its claim cannot be proven, so scoped deletion must retain it.
             db.add_history("unknown-scope-memory", None, "retain unknown history", "ADD")
             db.save_messages([{"role": "user", "content": "other claim source"}], f"user_id={other_claim_user}")
             db.save_messages([{"role": "user", "content": "other workspace source"}], f"user_id={other_workspace_user}")

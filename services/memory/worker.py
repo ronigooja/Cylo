@@ -35,7 +35,7 @@ class MemoryWorker:
         self.qdrant = QdrantIndex(
             config.qdrant_url, config.qdrant_api_key, config.qdrant_collection, config.embedding_dimensions
         )
-        self.mem0 = ControlledMem0(config, self.embedder)
+        self.mem0 = ControlledMem0(config, self.embedder, self.api)
 
     def _validate(self, job: dict[str, Any]) -> bool:
         validation = self.api.validate(job)

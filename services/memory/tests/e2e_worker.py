@@ -16,6 +16,7 @@ from qdrant_client import models
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from services.memory.config import WorkerConfig
+from services.memory.control_api import ControlAPIError
 from services.memory.stores import mem0_user_id
 from services.memory.worker import MemoryWorker
 
@@ -38,7 +39,20 @@ def run() -> int:
         "llm_responses": [],
         "extract_results": [],
         "proposal_results": [],
+        "model_call_reservations": [],
     }
+    original_reserve = worker.api.reserve_model_call
+
+    def inspect_reserve(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        diagnostics["model_call_reservations"].append({
+            "provider": str(args[3]),
+            "model": str(args[4]),
+            "estimated_input_tokens": int(args[5]),
+            "max_output_tokens": int(args[6]),
+        })
+        return original_reserve(*args, **kwargs)
+
+    worker.api.reserve_model_call = inspect_reserve
     original_generate = worker.mem0.memory.llm.generate_response
 
     def inspect_response(*args: Any, **kwargs: Any) -> Any:
@@ -67,6 +81,7 @@ def run() -> int:
                 "error_type": type(exc).__name__,
                 "frames": [frame.name for frame in traceback.extract_tb(exc.__traceback__)],
                 "attribute": getattr(exc, "name", None),
+                "control_error": _safe_control_error(exc),
             })
             raise
         diagnostics["extract_results"].append({"candidate_count": len(candidates)})
@@ -107,6 +122,7 @@ def run() -> int:
             "llm_responses": diagnostics["llm_responses"],
             "extract_results": diagnostics["extract_results"],
             "proposal_results": diagnostics["proposal_results"],
+            "model_call_reservations": diagnostics["model_call_reservations"],
         }
 
     def state(workspace: str, claim_id: str) -> dict[str, int]:
@@ -205,6 +221,17 @@ def run() -> int:
         except Exception as exc:  # Never echo request values, endpoint, or credentials on errors.
             write_message({"event": "error", "error_type": type(exc).__name__}, output_lock)
     return 0
+
+
+def _safe_control_error(exc: BaseException) -> dict[str, Any] | None:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ControlAPIError):
+            return {"status": current.status, "code": current.code}
+        current = current.__cause__
+    return None
 
 
 if __name__ == "__main__":

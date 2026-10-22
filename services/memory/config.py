@@ -43,8 +43,8 @@ class WorkerConfig:
             os.environ.get("CYLO_MEMORY_MODEL_CACHE", "/var/lib/cylo/memory/models"),
         )
         provider = os.environ.get("CYLO_MEM0_LLM_PROVIDER", "openai").strip().lower()
-        if provider not in {"openai", "ollama"}:
-            raise ValueError("CYLO_MEM0_LLM_PROVIDER must be openai or ollama")
+        if provider != "openai":
+            raise ValueError("CYLO_MEM0_LLM_PROVIDER must be openai; other providers are not yet accounted")
         return cls(
             control_url=_required("CYLO_CONTROL_URL").rstrip("/"),
             runner_token=_required("CYLO_RUNNER_TOKEN"),

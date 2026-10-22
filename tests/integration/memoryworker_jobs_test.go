@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -20,10 +21,14 @@ import (
 )
 
 func memoryWorkerHarness(t *testing.T, scopes, workspaces []string) (*storage.Store, http.Handler, string) {
-	return memoryWorkerHarnessWithLease(t, scopes, workspaces, time.Second)
+	return memoryWorkerHarnessWithModelBudget(t, scopes, workspaces, time.Second, 4, 192_000)
 }
 
 func memoryWorkerHarnessWithLease(t *testing.T, scopes, workspaces []string, leaseDuration time.Duration) (*storage.Store, http.Handler, string) {
+	return memoryWorkerHarnessWithModelBudget(t, scopes, workspaces, leaseDuration, 4, 192_000)
+}
+
+func memoryWorkerHarnessWithModelBudget(t *testing.T, scopes, workspaces []string, leaseDuration time.Duration, callLimit, tokenBudget int) (*storage.Store, http.Handler, string) {
 	t.Helper()
 	ctx := context.Background()
 	store, err := storage.Open(ctx, storage.Config{Path: filepath.Join(t.TempDir(), "memory-worker.db")})
@@ -46,13 +51,30 @@ func memoryWorkerHarnessWithLease(t *testing.T, scopes, workspaces []string, lea
 	if err := memory.Register(server, store); err != nil {
 		t.Fatal(err)
 	}
-	if err := memory.RegisterDerived(server, store, memory.DerivedConfig{LeaseDuration: leaseDuration, MaxAttempts: 3, MaxBatch: 10}); err != nil {
+	if err := memory.RegisterDerived(server, store, memory.DerivedConfig{LeaseDuration: leaseDuration, MaxAttempts: 3, MaxBatch: 10, ModelCallLimit: callLimit, ModelTokenBudget: tokenBudget}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
 	return store, server.Handler(), token
+}
+
+func seedLeasedMemoryExtractJob(t *testing.T, db *sql.DB, claimID, jobID string) {
+	t.Helper()
+	now := time.Now().UTC()
+	nowText := now.Format(time.RFC3339Nano)
+	payload := []byte(`{"source":"synthetic event fixture"}`)
+	hash := fmt.Sprintf("%x", sha256.Sum256(payload))
+	if _, err := db.Exec(`INSERT INTO events(event_id,workspace_id,cursor,schema_version,event_type,occurred_at,aggregate_type,aggregate_id,aggregate_version,payload) VALUES('event-`+claimID+`','default',1,1,'fixture',?,'claim',?,1,?)`, nowText, claimID, payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE memory_sources SET kind='event',reference=?,content_hash=? WHERE workspace_id='default' AND id=?`, "event:event-"+claimID, hash, "source-"+claimID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO memory_jobs(id,workspace_id,kind,entity_id,entity_version,target,payload,status,attempts,available_at,lease_owner,lease_until,created_at,updated_at) VALUES(?,'default','extract',?,1,?,?,'leased',1,?,'memory-worker',?,?,?)`, jobID, claimID, "source-"+claimID, []byte(`{}`), nowText, now.Add(time.Minute).Format(time.RFC3339Nano), nowText, nowText); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func memoryWorkerRequest(t *testing.T, handler http.Handler, token, path string, body any) *httptest.ResponseRecorder {
@@ -165,6 +187,179 @@ func TestMemoryWorkerLeaseFenceAndIdempotentCompletion(t *testing.T) {
 	duplicate := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/jobs/"+job.ID+"/complete", map[string]any{"attempt": 2})
 	if duplicate.Code != http.StatusOK {
 		t.Fatalf("idempotent completion status=%d body=%s", duplicate.Code, duplicate.Body.String())
+	}
+}
+
+func TestMemoryWorkerModelCallLedgerReservesBeforeDispatchAndAccountsUnknownSafely(t *testing.T) {
+	store, handler, token := memoryWorkerHarnessWithModelBudget(t, []string{"memory:jobs:complete"}, []string{"default"}, time.Minute, 1, 500)
+	seedMemoryWorkerClaim(t, store.DB(), "default", "claim-model-ledger")
+	seedLeasedMemoryExtractJob(t, store.DB(), "claim-model-ledger", "job-model-ledger")
+	reservePath := "/runner/v1/memory/jobs/job-model-ledger/model-calls/reserve"
+	reserveBody := map[string]any{
+		"attempt": 1, "request_key": "144c5d13-84d4-4e08-a15b-78785f4c21c1",
+		"provider": "openai_responses", "model": "gpt-6-luna",
+		"estimated_input_tokens": 150, "max_output_tokens": 150,
+	}
+	first := memoryWorkerRequest(t, handler, token, reservePath, reserveBody)
+	if first.Code != http.StatusOK {
+		t.Fatalf("model call reserve status=%d body=%s", first.Code, first.Body.String())
+	}
+	var reservation struct {
+		CallID          string `json:"call_id"`
+		DispatchAllowed bool   `json:"dispatch_allowed"`
+		ReservedTokens  int    `json:"reserved_tokens"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &reservation); err != nil {
+		t.Fatal(err)
+	}
+	if reservation.CallID == "" || !reservation.DispatchAllowed || reservation.ReservedTokens != 300 {
+		t.Fatalf("unexpected first model call reservation: %#v", reservation)
+	}
+	// A lost reserve response can be retried by key, but only the first
+	// response grants permission to dispatch a physical provider request.
+	replay := memoryWorkerRequest(t, handler, token, reservePath, reserveBody)
+	if replay.Code != http.StatusOK {
+		t.Fatalf("model call reserve replay status=%d body=%s", replay.Code, replay.Body.String())
+	}
+	var replayed struct {
+		CallID          string `json:"call_id"`
+		DispatchAllowed bool   `json:"dispatch_allowed"`
+	}
+	if err := json.Unmarshal(replay.Body.Bytes(), &replayed); err != nil {
+		t.Fatal(err)
+	}
+	if replayed.CallID != reservation.CallID || replayed.DispatchAllowed {
+		t.Fatalf("reserve replay authorized duplicate dispatch: %#v", replayed)
+	}
+	conflictingReplay := map[string]any{}
+	for key, value := range reserveBody {
+		conflictingReplay[key] = value
+	}
+	conflictingReplay["model"] = "different-model"
+	conflict := memoryWorkerRequest(t, handler, token, reservePath, conflictingReplay)
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("conflicting reserve replay status=%d body=%s", conflict.Code, conflict.Body.String())
+	}
+	secondBody := map[string]any{
+		"attempt": 1, "request_key": "72c7e4a9-426c-46dd-8d74-94222999f4db",
+		"provider": "openai_responses", "model": "gpt-6-luna",
+		"estimated_input_tokens": 100, "max_output_tokens": 100,
+	}
+	second := memoryWorkerRequest(t, handler, token, reservePath, secondBody)
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second physical call escaped job call budget: status=%d body=%s", second.Code, second.Body.String())
+	}
+	var calls, reserved int
+	if err := store.DB().QueryRow(`SELECT count(*),coalesce(sum(reserved_tokens),0) FROM memory_model_calls WHERE job_id='job-model-ledger'`).Scan(&calls, &reserved); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || reserved != 300 {
+		t.Fatalf("reservation accounting changed after replay or denied call: calls=%d reserved=%d", calls, reserved)
+	}
+	if _, err := store.DB().Exec(`UPDATE memory_jobs SET attempts=2,lease_until=? WHERE id='job-model-ledger'`, time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	retryReservation := map[string]any{
+		"attempt": 2, "request_key": "b311dc73-d21d-4745-99d1-4e165ebdf233",
+		"provider": "openai_responses", "model": "gpt-6-luna",
+		"estimated_input_tokens": 100, "max_output_tokens": 100,
+	}
+	retryCall := memoryWorkerRequest(t, handler, token, reservePath, retryReservation)
+	if retryCall.Code != http.StatusConflict {
+		t.Fatalf("job retry escaped the durable call budget: status=%d body=%s", retryCall.Code, retryCall.Body.String())
+	}
+	if _, err := store.DB().Exec(`UPDATE memory_sources SET deleted_at=? WHERE workspace_id='default' AND id=?`, time.Now().UTC().Format(time.RFC3339Nano), "source-claim-model-ledger"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().Exec(`UPDATE memory_jobs SET attempts=3,lease_until=? WHERE id='job-model-ledger'`, time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	staleSource := map[string]any{
+		"attempt": 3, "request_key": "9f8f2c84-5684-4454-97d6-19dc7bd0fa2e",
+		"provider": "openai_responses", "model": "gpt-6-luna",
+		"estimated_input_tokens": 20, "max_output_tokens": 20,
+	}
+	staleSourceCall := memoryWorkerRequest(t, handler, token, reservePath, staleSource)
+	if staleSourceCall.Code != http.StatusConflict {
+		t.Fatalf("model call reserved from a deleted source: status=%d body=%s", staleSourceCall.Code, staleSourceCall.Body.String())
+	}
+
+	// Finalization is accounting-only and can land after lease expiry or a
+	// source tombstone; it cannot grant another dispatch.
+	if _, err := store.DB().Exec(`UPDATE memory_jobs SET lease_until=? WHERE id='job-model-ledger'`, time.Now().UTC().Add(-time.Second).Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().Exec(`UPDATE memory_sources SET deleted_at=? WHERE workspace_id='default' AND id=?`, time.Now().UTC().Format(time.RFC3339Nano), "source-claim-model-ledger"); err != nil {
+		t.Fatal(err)
+	}
+	finalizePath := "/runner/v1/memory/jobs/job-model-ledger/model-calls/" + reservation.CallID + "/finalize"
+	finalizeBody := map[string]any{"attempt": 1, "outcome": "succeeded", "usage_status": "unknown", "input_tokens": nil, "output_tokens": nil}
+	finalized := memoryWorkerRequest(t, handler, token, finalizePath, finalizeBody)
+	if finalized.Code != http.StatusOK {
+		t.Fatalf("unknown usage finalization status=%d body=%s", finalized.Code, finalized.Body.String())
+	}
+	duplicateFinalize := memoryWorkerRequest(t, handler, token, finalizePath, finalizeBody)
+	if duplicateFinalize.Code != http.StatusOK {
+		t.Fatalf("idempotent finalization status=%d body=%s", duplicateFinalize.Code, duplicateFinalize.Body.String())
+	}
+	conflictingFinalizeBody := map[string]any{"attempt": 1, "outcome": "succeeded", "usage_status": "measured", "input_tokens": 0, "output_tokens": 0}
+	conflictingFinalize := memoryWorkerRequest(t, handler, token, finalizePath, conflictingFinalizeBody)
+	if conflictingFinalize.Code != http.StatusConflict {
+		t.Fatalf("conflicting finalization status=%d body=%s", conflictingFinalize.Code, conflictingFinalize.Body.String())
+	}
+	var usageStatus string
+	var inputTokens, outputTokens sql.NullInt64
+	if err := store.DB().QueryRow(`SELECT usage_status,input_tokens,output_tokens FROM memory_model_calls WHERE id=?`, reservation.CallID).Scan(&usageStatus, &inputTokens, &outputTokens); err != nil {
+		t.Fatal(err)
+	}
+	if usageStatus != "unknown" || inputTokens.Valid || outputTokens.Valid {
+		t.Fatalf("missing provider usage was represented as measured zero: status=%q input=%v output=%v", usageStatus, inputTokens, outputTokens)
+	}
+}
+
+func TestMemoryWorkerModelCallMeasuredUsageAdjustsLaterBudget(t *testing.T) {
+	store, handler, token := memoryWorkerHarnessWithModelBudget(t, []string{"memory:jobs:complete"}, []string{"default"}, time.Minute, 4, 500)
+	seedMemoryWorkerClaim(t, store.DB(), "default", "claim-model-measured")
+	seedLeasedMemoryExtractJob(t, store.DB(), "claim-model-measured", "job-model-measured")
+	reservePath := "/runner/v1/memory/jobs/job-model-measured/model-calls/reserve"
+	reserved := memoryWorkerRequest(t, handler, token, reservePath, map[string]any{
+		"attempt": 1, "request_key": "22c9a11a-9f1c-4f05-8452-ea79d00d9a41",
+		"provider": "openai_responses", "model": "gpt-6-luna",
+		"estimated_input_tokens": 100, "max_output_tokens": 100,
+	})
+	if reserved.Code != http.StatusOK {
+		t.Fatalf("reserve status=%d body=%s", reserved.Code, reserved.Body.String())
+	}
+	var call struct {
+		CallID string `json:"call_id"`
+	}
+	if err := json.Unmarshal(reserved.Body.Bytes(), &call); err != nil {
+		t.Fatal(err)
+	}
+	finalized := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/jobs/job-model-measured/model-calls/"+call.CallID+"/finalize", map[string]any{
+		"attempt": 1, "outcome": "succeeded", "usage_status": "measured",
+		"input_tokens": 400, "output_tokens": 200, "provider_request_id": "resp_synthetic",
+	})
+	if finalized.Code != http.StatusOK {
+		t.Fatalf("finalize status=%d body=%s", finalized.Code, finalized.Body.String())
+	}
+	if _, err := store.DB().Exec(`UPDATE memory_jobs SET attempts=2,lease_until=? WHERE id='job-model-measured'`, time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	blocked := memoryWorkerRequest(t, handler, token, reservePath, map[string]any{
+		"attempt": 2, "request_key": "783f3885-e860-429a-865d-d10bf6e7cce4",
+		"provider": "openai_responses", "model": "gpt-6-luna",
+		"estimated_input_tokens": 1, "max_output_tokens": 1,
+	})
+	if blocked.Code != http.StatusConflict {
+		t.Fatalf("actual usage above reservation did not consume later budget: status=%d body=%s", blocked.Code, blocked.Body.String())
+	}
+	var storedInput, storedOutput int
+	if err := store.DB().QueryRow(`SELECT input_tokens,output_tokens FROM memory_model_calls WHERE id=?`, call.CallID).Scan(&storedInput, &storedOutput); err != nil {
+		t.Fatal(err)
+	}
+	if storedInput != 400 || storedOutput != 200 {
+		t.Fatalf("measured usage was not retained: input=%d output=%d", storedInput, storedOutput)
 	}
 }
 

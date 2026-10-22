@@ -9,7 +9,7 @@ import (
 
 // RegisterMigrations keeps a separately ordered migration stream for memory.
 func RegisterMigrations(store *storage.Store) error {
-	return store.RegisterMigration(storage.Migration{
+	if err := store.RegisterMigration(storage.Migration{
 		Namespace: "memory",
 		Version:   100,
 		Name:      "memory_authority_v1",
@@ -149,5 +149,43 @@ CREATE INDEX memory_context_workspace ON memory_context_manifests(workspace_id,c
 `)
 			return err
 		},
-	})
+	}); err != nil {
+		return err
+	}
+	if err := store.RegisterMigration(storage.Migration{
+		Namespace: "memory",
+		Version:   101,
+		Name:      "memory_model_call_ledger_v1",
+		Up: func(ctx context.Context, tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, `
+CREATE TABLE memory_model_calls (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+  job_id TEXT NOT NULL REFERENCES memory_jobs(id),
+  attempt INTEGER NOT NULL CHECK(attempt > 0),
+  request_key TEXT NOT NULL,
+  runner_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  estimated_input_tokens INTEGER NOT NULL CHECK(estimated_input_tokens > 0),
+  max_output_tokens INTEGER NOT NULL CHECK(max_output_tokens > 0),
+  reserved_tokens INTEGER NOT NULL CHECK(reserved_tokens > 0),
+  status TEXT NOT NULL CHECK(status IN ('reserved','finalized')),
+  outcome TEXT NOT NULL DEFAULT '',
+  usage_status TEXT NOT NULL DEFAULT '',
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  provider_request_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  finalized_at TEXT,
+  UNIQUE(workspace_id,job_id,request_key)
+);
+CREATE INDEX memory_model_calls_job ON memory_model_calls(workspace_id,job_id,created_at,id);
+`)
+			return err
+		},
+	}); err != nil {
+		return err
+	}
+	return nil
 }
