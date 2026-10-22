@@ -18,13 +18,13 @@ struct ValidatedExportArchive {
         guard manifestLength <= Self.maximumManifestBytes else { throw CyloError.invalidResponse }
         let manifestBytes = try Self.read(file, offset: manifestOffset, count: manifestLength)
         guard Self.hex(SHA256.hash(data: manifestBytes)) == manifestSHA256?.lowercased(),
-              Self.crc32(file, offset: manifestOffset, count: manifestLength) == manifestCRC,
-              Self.crc32(file, offset: dataOffset, count: dataLength) == dataCRC else {
+              try Self.crc32(file, offset: manifestOffset, count: manifestLength) == manifestCRC,
+              try Self.crc32(file, offset: dataOffset, count: dataLength) == dataCRC else {
             throw CyloError.invalidResponse
         }
         let parsed = try decoder.decode(ExportManifest.self, from: manifestBytes)
         guard parsed.integrity.dataBytes >= 0, UInt64(parsed.integrity.dataBytes) == dataLength,
-              Self.hex(Self.digest(file, offset: dataOffset, count: dataLength)) == parsed.integrity.dataSha256.lowercased() else {
+              Self.hex(try Self.digest(file, offset: dataOffset, count: dataLength)) == parsed.integrity.dataSha256.lowercased() else {
             throw CyloError.invalidResponse
         }
         manifest = parsed
