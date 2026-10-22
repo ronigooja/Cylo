@@ -1563,7 +1563,8 @@ public final class CyloAppModel: ObservableObject {
         let currentWorkspaceID = snapshot?.devices.first?.workspaceId
         var summaries = commands.map { command in
             let state: PendingCommandSummary.State
-            if command.workspaceID == nil || currentWorkspaceID == nil || command.workspaceID != currentWorkspaceID { state = .differentWorkspace }
+            if currentWorkspaceID == nil { state = .workspaceUnavailable }
+            else if command.workspaceID == nil || command.workspaceID != currentWorkspaceID { state = .differentWorkspace }
             else { state = commandStatusByKey[command.idempotencyKey] ?? .waitingForConfirmation }
             let title = commandTitleByKey[command.idempotencyKey] ?? pendingCommandTitle(kind: command.kind, payload: command.payload)
             return PendingCommandSummary(id: command.idempotencyKey, title: title, state: state)

@@ -223,6 +223,7 @@ private struct PendingCommandRows: View {
         case .acceptedAwaitingSnapshot: "The server accepted this action; the latest task state is still loading."
         case .needsReview: "The server state changed. Review it before choosing a new action."
         case .differentWorkspace: "This saved action belongs to a different workspace and was not retried."
+        case .workspaceUnavailable: "The current workspace could not be confirmed. Refresh the server state before checking or retrying this action."
         }
     }
 }

@@ -95,6 +95,7 @@ public struct PendingCommandSummary: Identifiable, Equatable, Sendable {
         case acceptedAwaitingSnapshot
         case needsReview
         case differentWorkspace
+        case workspaceUnavailable
     }
 
     /// Local row identity only; the UI must not render this value as user-facing text.
