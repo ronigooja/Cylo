@@ -380,7 +380,7 @@ func (j *Journal) SaveClaim(ctx context.Context, claim contracts.JobClaim, spec 
 	var epoch int64
 	err = tx.QueryRowContext(ctx, `SELECT attempt_id,fence,claim_json,ao_spec_json,ao_session_id,ao_container_id,instance_id,instance_epoch,phase,updated_at FROM journal_runs WHERE run_id=?`, claim.RunID).Scan(&existingAttempt, &existingFence, &existingClaim, &existingSpec, &session, &container, &instanceID, &epoch, &persistedPhase, &updated)
 	if err == nil {
-		claimMatches := bytes.Equal(existingClaim, claimJSON) || legacyCodexHarnessClaimMatches(existingClaim, existingSpec, claim, spec, claimJSON)
+		claimMatches := bytes.Equal(existingClaim, claimJSON) || compatibleJournalClaimUpdate(existingClaim, existingSpec, claim, spec, session, claimJSON)
 		if existingAttempt != claim.AttemptID || uint64(existingFence) != claim.Fence || !claimMatches || !bytes.Equal(existingSpec, specJSON) {
 			return JournalEntry{}, errors.New("runner journal run identity or request changed under the same run id")
 		}
@@ -401,20 +401,31 @@ func (j *Journal) SaveClaim(ctx context.Context, claim contracts.JobClaim, spec 
 	return JournalEntry{Claim: claim, Spec: spec, Session: session, Container: container, InstanceID: instanceID, Epoch: epoch, Phase: phase, Updated: now}, nil
 }
 
-// legacyCodexHarnessClaimMatches narrowly upgrades a journal written before
-// JobClaim carried the server-selected harness. The old claim is accepted only
-// when the persisted AO request already pins Codex and every other claim field
-// matches byte-for-byte after that one field is filled in.
-func legacyCodexHarnessClaimMatches(existingClaim, existingSpec []byte, claim contracts.JobClaim, spec ao.WorkerSpec, currentClaimJSON []byte) bool {
-	if claim.Harness != "codex" || spec.Harness != "codex" {
+// compatibleJournalClaimUpdate allows only two narrowly bounded updates to a
+// journal claim: filling the legacy empty harness with Codex when the exact AO
+// spec already pins Codex, and filling an initially empty session ID with the
+// identical session ID recorded in this journal row.
+func compatibleJournalClaimUpdate(existingClaim, existingSpec []byte, claim contracts.JobClaim, spec ao.WorkerSpec, journalSession string, currentClaimJSON []byte) bool {
+	if spec.Harness != "codex" && spec.Harness != "opencode" {
 		return false
 	}
 	var oldClaim contracts.JobClaim
 	var oldSpec ao.WorkerSpec
-	if json.Unmarshal(existingClaim, &oldClaim) != nil || json.Unmarshal(existingSpec, &oldSpec) != nil || oldClaim.Harness != "" || oldSpec.Harness != "codex" {
+	if json.Unmarshal(existingClaim, &oldClaim) != nil || json.Unmarshal(existingSpec, &oldSpec) != nil || oldSpec.Harness != spec.Harness || oldClaim.Harness != "" && oldClaim.Harness != claim.Harness {
 		return false
 	}
-	oldClaim.Harness = "codex"
+	if oldClaim.Harness == "" {
+		if claim.Harness != "codex" || oldSpec.Harness != "codex" {
+			return false
+		}
+		oldClaim.Harness = "codex"
+	}
+	if oldClaim.AOSessionID != claim.AOSessionID {
+		if oldClaim.AOSessionID != "" || claim.AOSessionID == "" || claim.AOSessionID != journalSession {
+			return false
+		}
+		oldClaim.AOSessionID = claim.AOSessionID
+	}
 	upgradedClaim, err := json.Marshal(oldClaim)
 	return err == nil && bytes.Equal(upgradedClaim, currentClaimJSON)
 }

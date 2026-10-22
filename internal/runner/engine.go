@@ -92,7 +92,7 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 	if hasPersisted {
 		// Recovery must preserve the exact original AO request even if the
 		// currently configured route has since changed or been removed.
-		if !sameRecoveredClaim(persisted.Claim, claim) || persisted.Spec.ClientRequestID != "" && persisted.Spec.Harness != effectiveHarness(claim.Harness) {
+		if !sameRecoveredClaim(persisted.Claim, claim, persisted.Session) || persisted.Spec.ClientRequestID != "" && persisted.Spec.Harness != effectiveHarness(claim.Harness) {
 			return errors.New("runner journal claim and AO request harness do not match the server claim")
 		}
 		spec = persisted.Spec
@@ -212,7 +212,7 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 	return e.monitor(ctx, claim, entry.Session, effectiveHarness(spec.Harness))
 }
 
-func sameRecoveredClaim(persisted, current contracts.JobClaim) bool {
+func sameRecoveredClaim(persisted, current contracts.JobClaim, journalSession string) bool {
 	if persisted.Harness == "" {
 		// Older server claims did not serialize harness. The journaled AO request
 		// separately binds the legacy claim to Codex, checked by the caller.
@@ -224,7 +224,11 @@ func sameRecoveredClaim(persisted, current contracts.JobClaim) bool {
 	persisted.Harness = effectiveHarness(persisted.Harness)
 	current.Harness = effectiveHarness(current.Harness)
 	// A recovered current claim may include the AO session assigned after the
-	// local claim was first journaled. All other claim fields stay immutable.
+	// local claim was first journaled. Accept only the same session durably
+	// recorded with this run; foreign or missing session bindings fail closed.
+	if current.AOSessionID != journalSession || persisted.AOSessionID != "" && persisted.AOSessionID != current.AOSessionID {
+		return false
+	}
 	persisted.AOSessionID = ""
 	current.AOSessionID = ""
 	return reflect.DeepEqual(persisted, current)

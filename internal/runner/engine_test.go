@@ -131,7 +131,7 @@ func makeEngine(t *testing.T, claim contracts.JobClaim, control contracts.RunCon
 }
 
 func validClaim() contracts.JobClaim {
-	return contracts.JobClaim{RunID: "run-1", TaskID: "task-1", AttemptID: "attempt-1", WorkspaceID: "workspace-1", TaskVersion: 2, Goal: "Inspect a local fixture.", ProfileID: "worker-safe", RuntimeRouteID: "codex", ModelRouteID: "sol", IsolationPolicy: CodexWorkspaceWritePolicy, Role: "worker", AOProjectID: "fixture-project", Authorization: contracts.JobAuthorization{Scopes: []string{"workspace:read", "workspace:write"}}, Fence: 7}
+	return contracts.JobClaim{RunID: "run-1", TaskID: "task-1", AttemptID: "attempt-1", WorkspaceID: "workspace-1", TaskVersion: 2, Goal: "Inspect a local fixture.", ProfileID: "worker-safe", Harness: "codex", RuntimeRouteID: "codex", ModelRouteID: "sol", IsolationPolicy: CodexWorkspaceWritePolicy, Role: "worker", AOProjectID: "fixture-project", Authorization: contracts.JobAuthorization{Scopes: []string{"workspace:read", "workspace:write"}}, Fence: 7}
 }
 
 func TestProcessJournalsDispatchBeforeAOAndReportsUnverifiedTermination(t *testing.T) {
@@ -258,6 +258,7 @@ func TestOpenCodeACPProofIsAcceptedAndNativeProofIsRejected(t *testing.T) {
 func TestLegacyCodexJournalClaimRecoversWithExplicitServerHarness(t *testing.T) {
 	ctx := context.Background()
 	claim := validClaim() // Simulates a pre-harness server claim serialized in an old journal.
+	claim.Harness = ""
 	agent := &fakeAO{session: ao.Session{Status: "terminated"}, stopSuccess: true}
 	engine, _ := makeEngine(t, claim, contracts.RunControl{DesiredControl: "run"}, agent, permitIsolation{}, nil)
 	spec := ao.WorkerSpec{ClientRequestID: claim.RunID, ProjectID: claim.AOProjectID, Harness: "codex", Model: "gpt-6.1-sol", ApprovalMode: "auto", DisplayName: "worker", Prompt: "fixture"}
@@ -287,6 +288,27 @@ func TestJournaledAOHarnessMustMatchCurrentClaim(t *testing.T) {
 	}
 	if agent.createN != 0 {
 		t.Fatal("AO create ran with a mismatched persisted harness")
+	}
+}
+
+func TestRecoveredClaimSessionMustMatchJournalSession(t *testing.T) {
+	ctx := context.Background()
+	claim := validClaim()
+	agent := &fakeAO{}
+	engine, _ := makeEngine(t, claim, contracts.RunControl{DesiredControl: "run"}, agent, permitIsolation{}, nil)
+	spec := ao.WorkerSpec{ClientRequestID: claim.RunID, ProjectID: claim.AOProjectID, Harness: "codex", Model: "gpt-6.1-sol", ApprovalMode: "auto", DisplayName: "worker", Prompt: "fixture"}
+	if _, err := engine.Journal.SaveClaim(ctx, claim, spec, "claimed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Journal.SetSession(ctx, claim.RunID, claim.AttemptID, claim.Fence, "journal-session", "bound"); err != nil {
+		t.Fatal(err)
+	}
+	claim.AOSessionID = "foreign-session"
+	if err := engine.Process(ctx, claim); err == nil {
+		t.Fatal("server claim with a foreign AO session matched the journal")
+	}
+	if agent.createN != 0 {
+		t.Fatal("AO create ran after a foreign session claim")
 	}
 }
 
@@ -371,6 +393,7 @@ func TestUncertainKillIsNotRepeatedAcrossRunnerRestart(t *testing.T) {
 	if err != nil || !ok || entry.Session != "ao-1" {
 		t.Fatalf("missing persisted AO session: %+v %v", entry, err)
 	}
+	claim.AOSessionID = entry.Session
 	if err := engine.Process(context.Background(), claim); !errors.Is(err, ErrOutcomePending) {
 		t.Fatalf("replaying the unresolved stop should remain fenced: %v", err)
 	}
@@ -394,6 +417,7 @@ func TestCleanupPendingKillRemainsFencedAcrossRestart(t *testing.T) {
 	if err != nil || !ok || entry.Phase != "stop_uncertain" {
 		t.Fatalf("cleanup pending phase=%q exists=%v err=%v", entry.Phase, ok, err)
 	}
+	claim.AOSessionID = entry.Session
 	if err := engine.Process(context.Background(), claim); err == nil {
 		t.Fatal("cleanup pending was incorrectly resolved by reading terminated status")
 	}
