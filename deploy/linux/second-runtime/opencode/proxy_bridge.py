@@ -57,6 +57,7 @@ class Handler(BaseHTTPRequestHandler):
         }
         headers["Connection"] = "close"
         conn = UnixHTTPConnection(SOCKET_PATH)
+        response_started = False
         try:
             conn.request(self.command, self.path, body=body, headers=headers)
             response = conn.getresponse()
@@ -66,14 +67,17 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_header(key, value)
             self.send_header("Connection", "close")
             self.end_headers()
+            response_started = True
             while True:
-                chunk = response.read(64 * 1024)
+                # read1 returns bytes available from the current socket read;
+                # read(amt) can wait for the entire buffer on a live SSE stream.
+                chunk = response.read1(64 * 1024)
                 if not chunk:
                     break
                 self.wfile.write(chunk)
                 self.wfile.flush()
         except (OSError, http.client.HTTPException):
-            if not self.wfile.closed:
+            if not response_started and not self.wfile.closed:
                 try:
                     self.send_error(502)
                 except OSError:
