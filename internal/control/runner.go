@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Cylo/internal/agents/ao"
 )
 
 func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
@@ -449,11 +450,11 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 	}
 	if observation.Kind == "create_rejected" {
 		proof := observation.CreateRejection
-		if status != "active" || proof == nil || proof.HTTPStatus < 400 || proof.HTTPStatus >= 500 || proof.ErrorCode == "" || observation.AOProjectID != boundProject || boundSession != "" || observation.AOSessionID != "" || len(observation.ExternalEffects) != 0 || observation.NoEffectProof != nil || observation.TerminationProof != nil {
+		if status != "active" || proof == nil || proof.HTTPStatus < 400 || proof.HTTPStatus >= 500 || proof.ErrorCode == "" || observation.AOProjectID != boundProject || boundSession != "" || observation.AOSessionID != "" || len(observation.ExternalEffects) != 0 || observation.NoEffectProof != nil || observation.TerminationProof != nil || observation.BudgetReservationID != "" && observation.BudgetReservationID != "ao-initial-prompt" {
 			writeError(w, apiError(409, "create_rejection_unproven", "AO create rejection requires an active unbound run and sanitized rejection proof", nil))
 			return
 		}
-		if !allowedAOCreateRejection(proof.ErrorCode) {
+		if !ao.IsDefiniteCreateRejection(proof.HTTPStatus, proof.ErrorCode) {
 			writeError(w, apiError(409, "create_rejection_unproven", "AO create rejection code is not allowlisted", nil))
 			return
 		}
@@ -473,6 +474,16 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		if started == 0 || bound != 0 || effects != 0 {
 			writeError(w, apiError(409, "create_rejection_unproven", "run history contains no dispatch start or contains a binding or external effect", nil))
 			return
+		}
+		// This trusted, same-fence rejection is proof that the initial prompt
+		// never reached AO. Release only its reserved call; unknown session work
+		// and every other usage reservation remain charged conservatively.
+		if observation.BudgetReservationID != "" {
+			_, err = tx.ExecContext(r.Context(), `UPDATE run_budget_reservations SET status='settled',actual_json='{}',settlement_id=?,settlement_hash=?,updated_at=? WHERE run_id=? AND reservation_id=? AND attempt_id=? AND fence=? AND status IN ('reserved','unknown')`, "ao-create-rejected:"+observation.ObservationID, bodyHash[:], time.Now().UTC().Format(time.RFC3339Nano), runID, observation.BudgetReservationID, attempt, fence)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
 		}
 	}
 	now := time.Now().UTC()
@@ -706,14 +717,6 @@ func validObservationKind(k string) bool {
 		return true
 	}
 	return false
-}
-func allowedAOCreateRejection(code string) bool {
-	switch code {
-	case "INVALID_REQUEST", "PROJECT_NOT_FOUND", "PROJECT_ACCESS_DENIED", "UNSUPPORTED_HARNESS", "UNSUPPORTED_MODEL", "WORKER_LIMIT_REACHED", "FORBIDDEN":
-		return true
-	default:
-		return false
-	}
 }
 func raw(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
 func appendEventTx(ctx context.Context, tx *sql.Tx, e contracts.Event) error {

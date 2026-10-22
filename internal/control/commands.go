@@ -41,6 +41,8 @@ func (s *Server) registerCoreRoutes() {
 	s.runner.HandleFunc("GET /runner/v1/claims/current", s.handleCurrentClaims)
 	s.runner.HandleFunc("GET /runner/v1/runs/{run_id}", s.handleRunControl)
 	s.runner.HandleFunc("POST /runner/v1/runs/{run_id}/observations", s.handleObservation)
+	s.runner.HandleFunc("POST /runner/v1/runs/{run_id}/budget/reservations", s.handleRunBudgetReserve)
+	s.runner.HandleFunc("POST /runner/v1/runs/{run_id}/budget/reservations/{reservation_id}/settlement", s.handleRunBudgetSettle)
 }
 
 func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {

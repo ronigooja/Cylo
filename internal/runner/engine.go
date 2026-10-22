@@ -36,6 +36,15 @@ type RunnerAPI interface {
 	Observe(context.Context, string, contracts.RunnerObservation) error
 }
 
+type runBudgetControl interface {
+	ReserveBudget(context.Context, string, contracts.RunBudgetReserveRequest) (contracts.RunBudgetReceipt, error)
+	SettleBudget(context.Context, string, string, contracts.RunBudgetSettleRequest) (contracts.RunBudgetReceipt, error)
+}
+
+type dispatchAuthorizationControl interface {
+	CheckDispatchAuthorization(context.Context, string) (bool, string, error)
+}
+
 type Route struct {
 	ProfileID       string `json:"profile_id"`
 	RuntimeRouteID  string `json:"runtime_route_id"`
@@ -193,6 +202,16 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 	if err != nil {
 		return fmt.Errorf("journal runner claim: %w", err)
 	}
+	// QueueObservation and SetPhase are separate durable writes. A crash between
+	// them leaves create_pending plus a rejection receipt; inspect the receipt
+	// before every path that could call AO, regardless of the journal phase.
+	pendingCreateRejection, err := e.pendingCreateRejection(ctx, claim.RunID)
+	if err != nil {
+		return err
+	}
+	if pendingCreateRejection {
+		return e.flush(ctx, claim.RunID)
+	}
 	if replayBoundSession {
 		pending, pendingErr := e.Journal.PendingObservations(ctx, claim.RunID)
 		if pendingErr != nil {
@@ -231,6 +250,30 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 			return fmt.Errorf("unsupported desired control %q", control.DesiredControl)
 		}
 		if entry.Phase == "claimed" || entry.Phase == "create_pending" || entry.Phase == "effect_unknown" {
+			if authorization, ok := e.Control.(dispatchAuthorizationControl); ok {
+				allowed, reason, checkErr := authorization.CheckDispatchAuthorization(ctx, claim.RunID)
+				if checkErr != nil {
+					return fmt.Errorf("recheck task dispatch authorization before AO creation: %w", checkErr)
+				}
+				if !allowed {
+					if reason == "" {
+						reason = "dispatch_authorization_revoked"
+					}
+					return e.reportNoEffectTerminal(ctx, claim, "failed", reason, "Task authorization is no longer valid; AO dispatch was not started.")
+				}
+			}
+			budgetID := "ao-initial-prompt"
+			budgetAdmitted := false
+			if budgetControl, ok := e.Control.(runBudgetControl); ok && claim.Budget.MaxModelCalls > 0 {
+				receipt, budgetErr := budgetControl.ReserveBudget(ctx, claim.RunID, contracts.RunBudgetReserveRequest{AttemptID: claim.AttemptID, Fence: claim.Fence, ReservationID: budgetID, Usage: contracts.RunBudgetUsage{ModelCalls: 1}})
+				if budgetErr != nil {
+					return fmt.Errorf("reserve initial AO prompt budget before dispatch: %w", budgetErr)
+				}
+				if !receipt.Allowed {
+					return e.reportNoEffectTerminal(ctx, claim, "failed", "run_budget_exhausted", "The run budget is exhausted; AO dispatch was not started and the run was asked to stop.")
+				}
+				budgetAdmitted = true
+			}
 			if err := e.checkInstance(ctx, claim, true); err != nil {
 				return e.reportFailure(ctx, claim, "instance_fence_unavailable", "The active server instance changed or disabled dispatch; AO creation remains fenced.")
 			}
@@ -246,6 +289,9 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 			session, err := e.AO.CreateWorker(ctx, spec)
 			if err != nil {
 				if errors.Is(err, ao.ErrOutcomeUnknown) {
+					if budgetAdmitted {
+						e.settleUnknownCreateBudget(ctx, claim, budgetID)
+					}
 					_ = e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "effect_unknown")
 					return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_create", "AO worker creation could not be reconciled after replaying the identical clientRequestId and request body.", nil, nil, "AO worker create remains unknown", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "unknown"}}))
 				}
@@ -261,12 +307,28 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 			}
 			entry.Session = session.ID
 			entry.Phase = "bound"
+			if budgetAdmitted {
+				e.settleUnknownCreateBudget(ctx, claim, budgetID)
+			}
 			if err := e.emitWithEffects(ctx, claim, "dispatch_bound", "ao_session", "AO worker session id was returned and durably journaled.", nil, nil, "", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "created", Reference: session.ID}}); err != nil {
 				return err
 			}
 		}
 	}
 	return e.monitor(ctx, claim, entry.Session, effectiveHarness(spec.Harness))
+}
+
+func (e *Engine) pendingCreateRejection(ctx context.Context, runID string) (bool, error) {
+	pending, err := e.Journal.PendingObservations(ctx, runID)
+	if err != nil {
+		return false, err
+	}
+	for _, queued := range pending {
+		if queued.Body.Kind == "create_rejected" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (e *Engine) reportCreateRejected(ctx context.Context, claim contracts.JobClaim, rejected ao.CreateRejectedError) error {
@@ -287,7 +349,7 @@ func (e *Engine) reportCreateRejected(ctx context.Context, claim contracts.JobCl
 		}
 		return e.flush(ctx, claim.RunID)
 	}
-	obs := contracts.RunnerObservation{ObservationID: obsID, RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence, Kind: "create_rejected", OccurredAt: time.Now().UTC(), AOProjectID: claim.AOProjectID, Error: "AO rejected worker creation before creating a session.", CreateRejection: proof, Evidence: []contracts.Evidence{{ID: observationID(claim.RunID, claim.AttemptID, claim.Fence, "create_rejected", rejected.Code), Kind: "create_rejected", Summary: "AO definitively rejected worker creation.", Source: "ao_gateway", CreatedAt: time.Now().UTC(), Verified: false}}}
+	obs := contracts.RunnerObservation{ObservationID: obsID, RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence, Kind: "create_rejected", OccurredAt: time.Now().UTC(), AOProjectID: claim.AOProjectID, Error: "AO rejected worker creation before creating a session.", CreateRejection: proof, BudgetReservationID: "ao-initial-prompt", Evidence: []contracts.Evidence{{ID: observationID(claim.RunID, claim.AttemptID, claim.Fence, "create_rejected", rejected.Code), Kind: "create_rejected", Summary: "AO definitively rejected worker creation.", Source: "ao_gateway", CreatedAt: time.Now().UTC(), Verified: false}}}
 	if err := e.Journal.QueueObservation(ctx, claim.RunID, obs); err != nil {
 		return err
 	}
@@ -295,6 +357,14 @@ func (e *Engine) reportCreateRejected(ctx context.Context, claim contracts.JobCl
 		return err
 	}
 	return e.flush(ctx, claim.RunID)
+}
+
+func (e *Engine) settleUnknownCreateBudget(ctx context.Context, claim contracts.JobClaim, reservationID string) {
+	budgetControl, ok := e.Control.(runBudgetControl)
+	if !ok || claim.Budget.MaxModelCalls <= 0 {
+		return
+	}
+	_, _ = budgetControl.SettleBudget(ctx, claim.RunID, reservationID, contracts.RunBudgetSettleRequest{AttemptID: claim.AttemptID, Fence: claim.Fence, SettlementID: "ao-initial-prompt-outcome", Outcome: "unknown"})
 }
 
 func sameRecoveredClaim(persisted, current contracts.JobClaim, journalSession string) bool {
@@ -412,15 +482,17 @@ func (e *Engine) monitor(ctx context.Context, claim contracts.JobClaim, sessionI
 			return e.stopAndConfirm(ctx, claim, sessionID)
 		}
 		if !claim.Budget.HardDeadline.IsZero() && !time.Now().UTC().Before(claim.Budget.HardDeadline) {
+			var deadlineReportErr error
 			if !hasEntry || entry.Phase != "budget_exhausted" {
-				if err := e.emit(ctx, claim, "failure", "run_budget", "Run hard deadline was exhausted; the AO runtime is being stopped.", nil, map[string]string{"code": "run_deadline_exceeded"}, "Run deadline exceeded"); err != nil {
-					return err
-				}
-				if err := e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "budget_exhausted"); err != nil {
-					return err
+				deadlineReportErr = e.emit(ctx, claim, "failure", "run_budget", "Run hard deadline was exhausted; the AO runtime is being stopped.", nil, map[string]string{"code": "run_deadline_exceeded"}, "Run deadline exceeded")
+				if entry.Phase != "stop_pending" && entry.Phase != "stop_uncertain" {
+					if err := e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "budget_exhausted"); err != nil {
+						deadlineReportErr = errors.Join(deadlineReportErr, err)
+					}
 				}
 			}
-			return e.stopAndConfirm(ctx, claim, sessionID)
+			stopErr := e.stopAndConfirm(ctx, claim, sessionID)
+			return errors.Join(deadlineReportErr, stopErr)
 		}
 		control, err := e.Control.Control(ctx, claim.RunID)
 		if err != nil {

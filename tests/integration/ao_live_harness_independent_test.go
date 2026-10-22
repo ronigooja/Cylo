@@ -22,8 +22,8 @@ func TestIndependentLiveDefiniteCreateFailureDoesNotReplayInCleanup(t *testing.T
 			posts.Add(1)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(`{"error":{"code":"FORBIDDEN","message":"synthetic definite refusal"}}`))
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"code":"PROJECT_NOT_FOUND","message":"synthetic definite refusal"}}`))
 	}))
 	defer fakeAO.Close()
 	binary, err := os.Executable()

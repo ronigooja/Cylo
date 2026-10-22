@@ -31,14 +31,20 @@ func (e CreateRejectedError) Error() string {
 	return fmt.Sprintf("AO worker creation rejected (HTTP %d, %s)", e.Status, e.Code)
 }
 
-var definiteCreateRejections = map[string]bool{
-	"INVALID_REQUEST":       true,
-	"PROJECT_NOT_FOUND":     true,
-	"PROJECT_ACCESS_DENIED": true,
-	"UNSUPPORTED_HARNESS":   true,
-	"UNSUPPORTED_MODEL":     true,
-	"WORKER_LIMIT_REACHED":  true,
-	"FORBIDDEN":             true,
+// IsDefiniteCreateRejection requires both a known AO code and the HTTP status
+// range documented for that refusal. A proxy-generated 5xx carrying a stale
+// or unrelated code remains an unknown outcome.
+func IsDefiniteCreateRejection(status int, code string) bool {
+	switch code {
+	case "INVALID_REQUEST":
+		return status == http.StatusBadRequest || status == http.StatusUnprocessableEntity
+	case "UNKNOWN_HARNESS", "UNSUPPORTED_MODEL":
+		return status == http.StatusBadRequest
+	case "PROJECT_NOT_FOUND":
+		return status == http.StatusNotFound
+	default:
+		return false
+	}
 }
 
 type Config struct {
@@ -202,7 +208,7 @@ func (c *Client) CreateWorker(ctx context.Context, spec WorkerSpec) (Session, er
 			return Session{}, fmt.Errorf("%w: AO worker creation is still in progress", ErrOutcomeUnknown)
 		}
 		var rejected statusError
-		if errors.As(err, &rejected) && definiteCreateRejections[rejected.code] {
+		if errors.As(err, &rejected) && IsDefiniteCreateRejection(rejected.status, rejected.code) {
 			return Session{}, CreateRejectedError{Status: rejected.status, Code: rejected.code}
 		}
 		if errors.As(err, &rejected) {

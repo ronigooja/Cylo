@@ -115,6 +115,54 @@ func (c *ControlClient) Control(ctx context.Context, runID string) (contracts.Ru
 	return control, nil
 }
 
+func (c *ControlClient) ReserveBudget(ctx context.Context, runID string, request contracts.RunBudgetReserveRequest) (contracts.RunBudgetReceipt, error) {
+	if runID == "" || request.ReservationID == "" {
+		return contracts.RunBudgetReceipt{}, errors.New("run and budget reservation ids are required")
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return contracts.RunBudgetReceipt{}, fmt.Errorf("encode run budget reservation: %w", err)
+	}
+	endpoint := "/runner/v1/runs/" + url.PathEscape(runID) + "/budget/reservations"
+	response, err := c.request(ctx, http.MethodPost, endpoint, encoded, request.ReservationID)
+	if err != nil {
+		return contracts.RunBudgetReceipt{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return contracts.RunBudgetReceipt{}, safeHTTPError("reserve run budget", response.StatusCode)
+	}
+	var receipt contracts.RunBudgetReceipt
+	if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&receipt); err != nil {
+		return receipt, fmt.Errorf("decode run budget reservation: %w", err)
+	}
+	return receipt, nil
+}
+
+func (c *ControlClient) SettleBudget(ctx context.Context, runID, reservationID string, request contracts.RunBudgetSettleRequest) (contracts.RunBudgetReceipt, error) {
+	if runID == "" || reservationID == "" || request.SettlementID == "" {
+		return contracts.RunBudgetReceipt{}, errors.New("run, reservation, and settlement ids are required")
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return contracts.RunBudgetReceipt{}, fmt.Errorf("encode run budget settlement: %w", err)
+	}
+	endpoint := "/runner/v1/runs/" + url.PathEscape(runID) + "/budget/reservations/" + url.PathEscape(reservationID) + "/settlement"
+	response, err := c.request(ctx, http.MethodPost, endpoint, encoded, request.SettlementID)
+	if err != nil {
+		return contracts.RunBudgetReceipt{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return contracts.RunBudgetReceipt{}, safeHTTPError("settle run budget", response.StatusCode)
+	}
+	var receipt contracts.RunBudgetReceipt
+	if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&receipt); err != nil {
+		return receipt, fmt.Errorf("decode run budget settlement: %w", err)
+	}
+	return receipt, nil
+}
+
 func (c *ControlClient) Observe(ctx context.Context, runID string, observation contracts.RunnerObservation) error {
 	if observation.ObservationID == "" {
 		return errors.New("observation id is required")

@@ -107,10 +107,10 @@ func TestCreateWorkerReturnsSanitizedAllowlistedRejection(t *testing.T) {
 	}
 }
 
-func TestCreateWorkerRecognizesNestedForbiddenRejection(t *testing.T) {
+func TestCreateWorkerRecognizesNestedProjectNotFoundRejection(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = io.WriteString(w, `{"error":{"code":"FORBIDDEN","message":"private"}}`)
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":{"code":"PROJECT_NOT_FOUND","message":"private"}}`)
 	}))
 	defer srv.Close()
 	client, err := New(Config{BaseURL: srv.URL, Token: "fixture-token"})
@@ -119,8 +119,25 @@ func TestCreateWorkerRecognizesNestedForbiddenRejection(t *testing.T) {
 	}
 	_, err = client.CreateWorker(context.Background(), WorkerSpec{ClientRequestID: "run-1", ProjectID: "p", Harness: "codex", DisplayName: "test", Prompt: "test"})
 	var rejected CreateRejectedError
-	if !errors.As(err, &rejected) || rejected.Code != "FORBIDDEN" || rejected.Status != http.StatusForbidden {
+	if !errors.As(err, &rejected) || rejected.Code != "PROJECT_NOT_FOUND" || rejected.Status != http.StatusNotFound {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestCreateWorkerDoesNotTrustAllowlistedCodeOnServerFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, `{"code":"INVALID_REQUEST"}`)
+	}))
+	defer srv.Close()
+	client, err := New(Config{BaseURL: srv.URL, Token: "fixture-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.CreateWorker(context.Background(), WorkerSpec{ClientRequestID: "run-1", ProjectID: "p", Harness: "codex", DisplayName: "test", Prompt: "test"})
+	var rejected CreateRejectedError
+	if errors.As(err, &rejected) || !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("error=%v; proxy 5xx must stay unknown", err)
 	}
 }
 

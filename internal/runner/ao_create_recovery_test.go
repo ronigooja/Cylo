@@ -147,3 +147,31 @@ func TestDefiniteCreateRejectionReplaysJournalReceiptWithoutCallingAO(t *testing
 		t.Fatalf("replayed AO create after restart: calls=%d observations=%+v", agent.createN, secondControl.observations)
 	}
 }
+
+func TestCreateRejectionReceiptQueuedBeforePhaseWritePreventsReplay(t *testing.T) {
+	ctx := context.Background()
+	claim := validClaim()
+	journal, err := OpenJournal(ctx, filepath.Join(t.TempDir(), "runner.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	spec := ao.WorkerSpec{ClientRequestID: claim.RunID, ProjectID: claim.AOProjectID, Harness: "codex", DisplayName: "test", Prompt: "fixture"}
+	if _, err := journal.SaveClaim(ctx, claim, spec, "create_pending"); err != nil {
+		t.Fatal(err)
+	}
+	proof := &contracts.CreateRejectionProof{HTTPStatus: 400, ErrorCode: "INVALID_REQUEST"}
+	receipt := contracts.RunnerObservation{ObservationID: "durable-create-rejection", RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence, Kind: "create_rejected", OccurredAt: time.Now().UTC(), AOProjectID: claim.AOProjectID, CreateRejection: proof, Evidence: []contracts.Evidence{}}
+	if err := journal.QueueObservation(ctx, claim.RunID, receipt); err != nil {
+		t.Fatal(err)
+	}
+	agent := &fakeAO{}
+	control := &fakeControl{control: contracts.RunControl{DesiredControl: "run"}}
+	engine := &Engine{Control: control, AO: agent, Journal: journal, Isolation: permitIsolation{}}
+	if err := engine.Process(ctx, claim); err != nil {
+		t.Fatal(err)
+	}
+	if agent.createN != 0 || len(control.observations) != 1 || control.observations[0].Kind != "create_rejected" {
+		t.Fatalf("create=%d observations=%+v", agent.createN, control.observations)
+	}
+}

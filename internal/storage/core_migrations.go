@@ -364,8 +364,11 @@ ALTER TABLE runs ADD COLUMN harness TEXT NOT NULL DEFAULT 'codex';
 	}}); err != nil {
 		return err
 	}
-	return s.RegisterMigration(Migration{Namespace: "core", Version: 7, Name: "run_budget_snapshot", Up: func(ctx context.Context, tx *sql.Tx) error {
+	if err := s.RegisterMigration(Migration{Namespace: "core", Version: 7, Name: "run_budget_snapshot", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `ALTER TABLE runs ADD COLUMN budget_snapshot_json BLOB NOT NULL DEFAULT '{}'`)
 		return err
-	}})
+	}}); err != nil {
+		return err
+	}
+	return RegisterRunBudgetMigrations(s)
 }

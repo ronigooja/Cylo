@@ -190,6 +190,31 @@ func TestRunHardDeadlineReportsBudgetFailureAndStopsAO(t *testing.T) {
 	}
 }
 
+func TestRunHardDeadlineDoesNotRetryUncertainAOStop(t *testing.T) {
+	ctx := context.Background()
+	claim := validClaim()
+	claim.Budget.HardDeadline = time.Now().UTC().Add(-time.Second)
+	agent := &fakeAO{session: ao.Session{ID: "ao-1", Status: "working"}}
+	engine, _ := makeEngine(t, claim, contracts.RunControl{DesiredControl: "run", ControlVersion: 1}, agent, permitIsolation{}, nil)
+	spec := ao.WorkerSpec{ClientRequestID: claim.RunID, ProjectID: claim.AOProjectID, Harness: "codex", DisplayName: "test", Prompt: "fixture"}
+	if _, err := engine.Journal.SaveClaim(ctx, claim, spec, "stop_uncertain"); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Journal.SetSession(ctx, claim.RunID, claim.AttemptID, claim.Fence, "ao-1", "stop_uncertain"); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Process(ctx, claim); err == nil {
+		t.Fatal("uncertain stop should remain pending")
+	}
+	if agent.stopN != 0 {
+		t.Fatalf("deadline handling repeated non-idempotent stop %d times", agent.stopN)
+	}
+	entry, ok, err := engine.Journal.Entry(ctx, claim.RunID)
+	if err != nil || !ok || entry.Phase != "stop_uncertain" {
+		t.Fatalf("deadline overwrote uncertain-stop phase: entry=%+v ok=%v err=%v", entry, ok, err)
+	}
+}
+
 func TestProcessFailsClosedWithoutIsolationVerifier(t *testing.T) {
 	claim := validClaim()
 	agent := &fakeAO{}

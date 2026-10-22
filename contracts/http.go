@@ -297,6 +297,7 @@ type RunnerObservation struct {
 	TerminationProof *TerminationProof     `json:"termination_proof,omitempty"`
 	NoEffectProof    *NoEffectProof        `json:"no_effect_proof,omitempty"`
 	CreateRejection  *CreateRejectionProof `json:"create_rejection,omitempty"`
+	BudgetReservationID string `json:"budget_reservation_id,omitempty"`
 }
 
 // CreateRejectionProof is a sanitized AO response contract proving that AO
