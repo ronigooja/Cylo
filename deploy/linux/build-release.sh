@@ -22,20 +22,42 @@ if [[ -e "$release_dir" || -L "$release_dir" ]]; then
   echo "release directory already exists; choose a new immutable release tag" >&2
   exit 1
 fi
-mkdir -p "$build_root/$tag/bin" "$release_dir/bin"
-chmod 0700 "$build_root/$tag"
+mkdir -p "$build_root" "$release_root"
+build_dir=""
+release_stage=""
+cleanup_stages() {
+  [[ -z "$release_stage" ]] || rm -rf -- "$release_stage"
+  [[ -z "$build_dir" ]] || rm -rf -- "$build_dir"
+}
+trap cleanup_stages EXIT
+build_dir="$(mktemp -d "$build_root/.${tag}.build.XXXXXX")"
+release_stage="$(mktemp -d "$release_root/.${tag}.staging.XXXXXX")"
+chmod 0700 "$build_dir"
+mkdir -p "$build_dir/bin" "$release_stage/bin"
 
 export CGO_ENABLED=0 GOOS=linux
-"${GO:-go}" build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_root/$tag/bin/cylo-server" ./cmd/cylo-server
-"${GO:-go}" build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_root/$tag/bin/cylo-runner" ./cmd/cylo-runner
-"${GO:-go}" build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_root/$tag/bin/cylo-secret-entrypoint" ./deploy/linux/secret-entrypoint.go
-install -m 0755 "$build_root/$tag/bin/cylo-runner" "$release_dir/bin/cylo-runner"
-install -m 0755 "$build_root/$tag/bin/cylo-secret-entrypoint" "$release_dir/bin/cylo-secret-entrypoint"
-cp -a "$repo_root/deploy/linux" "$release_dir/deploy-linux"
+"${GO:-go}" build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_dir/bin/cylo-server" ./cmd/cylo-server
+"${GO:-go}" build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_dir/bin/cylo-runner" ./cmd/cylo-runner
+"${GO:-go}" build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_dir/bin/cylo-secret-entrypoint" ./deploy/linux/secret-entrypoint.go
+install -m 0755 "$build_dir/bin/cylo-runner" "$release_stage/bin/cylo-runner"
+install -m 0755 "$build_dir/bin/cylo-secret-entrypoint" "$release_stage/bin/cylo-secret-entrypoint"
+cp -a "$repo_root/deploy/linux" "$release_stage/deploy-linux"
 
 "$docker_bin" buildx build --load --platform linux/amd64 -f "$repo_root/deploy/linux/Dockerfile.server" -t "cylo-server:$tag" "$repo_root"
 "$docker_bin" buildx build --load --platform linux/amd64 -f "$repo_root/deploy/linux/Dockerfile.memory" -t "cylo-memory-worker:$tag" "$repo_root"
 "$docker_bin" buildx build --load --platform linux/amd64 -f "$repo_root/deploy/linux/Dockerfile.runner" -t "cylo-runner:$tag" "$repo_root"
 
+# Linux GNU mv -Tn publishes the directory as one no-clobber rename. The image
+# tags above are separate Docker operations and are not a multi-tag transaction.
+if ! mv -Tn -- "$release_stage" "$release_dir"; then
+  echo "could not publish release directory; choose a new immutable release tag" >&2
+  exit 1
+fi
+if [[ -e "$release_stage" || -L "$release_stage" ]]; then
+  echo "another build published this release tag first; this build's release was not published" >&2
+  exit 1
+fi
+release_stage=""
+
 printf 'Built Linux release %s under %s and images cylo-server:%s, cylo-memory-worker:%s, cylo-runner:%s\n' "$tag" "$release_dir" "$tag" "$tag" "$tag"
-printf 'Build outputs are private under %s; authoritative and runner state remain under /var/lib/cylo.\n' "$build_root/$tag"
+printf 'Build scratch was private under %s and removed; authoritative and runner state remain under /var/lib/cylo.\n' "$build_root"
