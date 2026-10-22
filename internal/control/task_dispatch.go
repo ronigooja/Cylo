@@ -31,7 +31,7 @@ func (s *Server) RegisterTaskDispatchGuard(source string, guard TaskDispatchGuar
 }
 
 func (s *Server) taskDispatchReasonTx(ctx context.Context, tx *sql.Tx, source, workspaceID, taskID string, now time.Time) (string, error) {
-	if source == "user" || source == "voice" || source == "system" {
+	if source == "user" || source == "voice" || source == "system" || source == "child" {
 		return "", nil
 	}
 	s.mu.RLock()
@@ -54,6 +54,12 @@ func (s *Server) TaskDispatchAuthorizationTx(ctx context.Context, tx *sql.Tx, ru
 	}
 	if err != nil {
 		return contracts.DispatchAuthorization{}, err
+	}
+	if status == "uncertain" {
+		// There is no AO read-only lookup contract yet. Preserve this effect as
+		// uncertain so the runner cannot mistake a failed recheck for proof
+		// that no external session was created.
+		return contracts.DispatchAuthorization{Allowed: false, ReasonCode: "reconciliation_unavailable"}, nil
 	}
 	if status != "dispatching" && status != "active" {
 		return contracts.DispatchAuthorization{Allowed: false, ReasonCode: "run_not_dispatchable"}, nil
@@ -92,7 +98,7 @@ func (s *Server) handleDispatchAuthorization(w http.ResponseWriter, r *http.Requ
 	}
 	defer tx.Rollback()
 	var workspaceID, assignedRunner string
-	err = tx.QueryRowContext(r.Context(), `SELECT workspace_id,runner_id FROM runs WHERE id=? AND status='dispatching'`, runID).Scan(&workspaceID, &assignedRunner)
+	err = tx.QueryRowContext(r.Context(), `SELECT workspace_id,runner_id FROM runs WHERE id=? AND status IN ('dispatching','active','uncertain')`, runID).Scan(&workspaceID, &assignedRunner)
 	if errors.Is(err, sql.ErrNoRows) || assignedRunner != runner.RunnerID || !HasRunnerScope(runner, "runner:claim", workspaceID) {
 		WriteError(w, NewAPIError(http.StatusNotFound, "run_unavailable", "dispatch authorization is unavailable for this runner", nil))
 		return

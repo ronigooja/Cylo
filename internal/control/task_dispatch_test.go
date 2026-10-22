@@ -1,0 +1,71 @@
+package control
+
+import (
+	"context"
+	"database/sql"
+	"testing"
+	"time"
+
+	"github.com/ronigooja/Cylo/internal/storage"
+)
+
+func TestUncertainTaskDispatchRemainsNonDispatchableWithoutMutation(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, storage.Config{Path: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := storage.RegisterCoreMigrations(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO devices(id,workspace_id,subject_id,name,status,token_hash,created_at) VALUES('device','default','owner','test','approved',x'01',?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(store, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	guardCalled := false
+	if err := server.RegisterTaskDispatchGuard("service", func(context.Context, *sql.Tx, string, string, time.Time) (string, error) {
+		guardCalled = true
+		return "grant_revoked", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,title,goal,source,profile_id,status,version,created_at,updated_at,created_by_device_id,command_id) VALUES('task','default','test','test','service','profile','active',1,?,?, 'device','command')`, at, at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,started_at) VALUES('run','default','task','attempt','uncertain','run',1,'runner','device','command','test','profile','runtime','model','worker',?)`, at); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := server.TaskDispatchAuthorizationTx(ctx, tx, "run", time.Now().UTC())
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if result.Allowed || result.ReasonCode != "reconciliation_unavailable" {
+		t.Fatalf("uncertain run authorization = %+v, want reconciliation-only denial", result)
+	}
+	if guardCalled {
+		t.Fatal("uncertain run reached the new-dispatch grant guard")
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var status, desired string
+	if err := store.DB().QueryRowContext(ctx, `SELECT status,desired_control FROM runs WHERE id='run'`).Scan(&status, &desired); err != nil {
+		t.Fatal(err)
+	}
+	if status != "uncertain" || desired != "run" {
+		t.Fatalf("uncertain run mutated to status=%q desired_control=%q", status, desired)
+	}
+}
