@@ -43,6 +43,9 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (c
 		return out, err
 	}
 	out.EventCursor = strconv.FormatInt(cursor, 10)
+	if err := tx.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&out.Authority.InstanceLineageID, &out.Authority.Generation, &out.Authority.DeletionSequence); err != nil {
+		return out, err
+	}
 	projects, err := tx.QueryContext(ctx, `SELECT id,name,description,status,version,created_at,updated_at FROM projects p WHERE workspace_id=? AND (owner_subject_id=? OR EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=p.workspace_id AND m.project_id=p.id AND m.subject_id=? AND m.status='active')) ORDER BY created_at,id`, workspace, subject, subject)
 	if err != nil {
 		return out, err
@@ -241,7 +244,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if cursorText != "" {
 		n, err := strconv.ParseInt(cursorText, 10, 64)
 		if err != nil || n < 0 {
-			writeSnapshotRequired(w, "invalid_cursor")
+			s.writeSnapshotRequired(w, r.Context(), "invalid_cursor")
 			return
 		}
 		cursor = n
@@ -252,7 +255,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if cursor > high {
-		writeSnapshotRequired(w, "cursor_ahead")
+		s.writeSnapshotRequired(w, r.Context(), "cursor_ahead")
 		return
 	}
 	oldest := high + 1
@@ -262,7 +265,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		oldest = earliest.Int64
 	}
 	if cursor > 0 && oldest > 1 && cursor < oldest-1 {
-		writeSnapshotRequired(w, "cursor_expired")
+		s.writeSnapshotRequired(w, r.Context(), "cursor_expired")
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -337,11 +340,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func writeSnapshotRequired(w http.ResponseWriter, reason string) {
+func (s *Server) writeSnapshotRequired(w http.ResponseWriter, ctx context.Context, reason string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(200)
-	_, _ = fmt.Fprintf(w, "event: snapshot_required\ndata: %s\n\n", `{"reason":"`+reason+`"}`)
+	var lineage, deletionSequence string
+	var generation int64
+	_ = s.store.DB().QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&lineage, &generation, &deletionSequence)
+	authority := map[string]any{"instance_lineage_id": lineage, "generation": generation, "deletion_sequence": deletionSequence}
+	data, _ := json.Marshal(map[string]any{"reason": reason, "authority": authority})
+	_, _ = fmt.Fprintf(w, "event: snapshot_required\ndata: %s\n\n", data)
 }
 
 var _ context.Context

@@ -238,5 +238,20 @@ END;
 	}); err != nil {
 		return err
 	}
-	return nil
+	return store.RegisterMigration(storage.Migration{
+		Namespace: "memory",
+		Version:   103,
+		Name:      "memory_deletion_lineage_and_target_versions_v1",
+		Up: func(ctx context.Context, tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, `
+ALTER TABLE memory_deletion_events ADD COLUMN instance_lineage_id TEXT;
+ALTER TABLE memory_deletion_events ADD COLUMN instance_generation INTEGER;
+ALTER TABLE memory_deletion_events ADD COLUMN entity_kind TEXT;
+ALTER TABLE memory_deletion_events ADD COLUMN entity_target_version INTEGER;
+ALTER TABLE memory_deletion_events ADD COLUMN instance_deletion_sequence INTEGER;
+CREATE INDEX memory_deletion_events_lineage ON memory_deletion_events(instance_lineage_id,instance_generation,sequence);
+`)
+			return err
+		},
+	})
 }

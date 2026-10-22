@@ -74,7 +74,8 @@ func RegisterDerived(s *control.Server, store *storage.Store, config DerivedConf
 		return errorsf("derived memory registration requires control server and storage")
 	}
 	cfg := config.withDefaults()
-	svc := &derivedService{db: store.DB(), cfg: cfg}
+	journal, _ := storage.NewDeletionJournal(store.Path())
+	svc := &derivedService{db: store.DB(), cfg: cfg, deletionJournal: journal}
 	return s.RegisterRunnerRoutes(func(mux *http.ServeMux) {
 		mux.HandleFunc("POST /runner/v1/memory/jobs/claim", svc.handleClaim)
 		mux.HandleFunc("POST /runner/v1/memory/jobs/{job_id}/validate", svc.handleValidate)
@@ -86,8 +87,9 @@ func RegisterDerived(s *control.Server, store *storage.Store, config DerivedConf
 }
 
 type derivedService struct {
-	db  *sql.DB
-	cfg DerivedConfig
+	db              *sql.DB
+	cfg             DerivedConfig
+	deletionJournal *storage.DeletionJournal
 }
 
 type derivedClaimRequest struct {
@@ -283,6 +285,13 @@ func (s *derivedService) materializeTx(ctx context.Context, tx *sql.Tx, job *der
 		if err := storage.CheckRestoreDeletionReconciliationTx(ctx, tx); err != nil {
 			return nil, "", err
 		}
+		versions, err := journalledDeletionVersionsTx(ctx, tx, s.deletionJournal)
+		if err != nil {
+			return nil, "", err
+		}
+		if job.EntityVersion <= versions[job.WorkspaceID+"\x00"+job.EntityID] {
+			return &derivedJob{ID: job.ID, WorkspaceID: job.WorkspaceID, Kind: job.Kind, EntityID: job.EntityID, EntityVersion: job.EntityVersion, Target: job.Target}, "stale_generation", nil
+		}
 	}
 	out := &derivedJob{ID: job.ID, WorkspaceID: job.WorkspaceID, Kind: job.Kind, EntityID: job.EntityID, EntityVersion: job.EntityVersion, Target: job.Target, Attempt: job.Attempt, LeaseUntil: job.LeaseUntil, Payload: job.Payload}
 	switch job.Kind {
@@ -330,7 +339,7 @@ WHERE c.workspace_id=? AND c.id=? AND c.revision=? AND c.status IN ('active','co
 		out.Source = &derivedSource{ID: source.ID, Version: source.Version, Scope: source.Scope, Kind: source.Kind, Reference: source.Reference, ContentHash: source.ContentHash, ExtractorInput: material}
 		return out, "", nil
 	case "delete_cleanup":
-		if job.Target != "mem0" && job.Target != "qdrant" && job.Target != "cache" && job.Target != "exports" && job.Target != "backups" && job.Target != "source_ledger" {
+		if job.Target != "claim" && job.Target != "source_links" && job.Target != "proposals" && job.Target != "mem0" && job.Target != "qdrant" && job.Target != "cache" && job.Target != "export_temp" && job.Target != "backup_delete_manifest" && job.Target != "source_ledger" {
 			return nil, "", fmt.Errorf("unsupported memory cleanup target")
 		}
 		var revision int64
@@ -563,7 +572,7 @@ ORDER BY created_at,id LIMIT ?`, workspace, sourceLedgerReconcileBatch)
 			return err
 		}
 	}
-	return nil
+	return refreshDeletionCheckpointTx(ctx, tx, "source_ledger", now)
 }
 
 // settleSourceLedgerJobTx validates the current tombstone fence and performs
@@ -824,6 +833,9 @@ func (s *derivedService) finish(ctx context.Context, p contracts.RunnerPrincipal
 		if err = tx.QueryRowContext(ctx, `SELECT status FROM memory_jobs WHERE id=?`, id).Scan(&settledStatus); err != nil {
 			return derivedJobResult{}, err
 		}
+		if err = refreshDeletionCheckpointTx(ctx, tx, target, nowText); err != nil {
+			return derivedJobResult{}, err
+		}
 		if err = tx.Commit(); err != nil {
 			return derivedJobResult{}, err
 		}
@@ -848,6 +860,11 @@ func (s *derivedService) finish(ctx context.Context, p contracts.RunnerPrincipal
 		if err != nil {
 			return derivedJobResult{}, err
 		}
+		if kind == "delete_cleanup" {
+			if err = refreshDeletionCheckpointTx(ctx, tx, target, nowText); err != nil {
+				return derivedJobResult{}, err
+			}
+		}
 		if err = tx.Commit(); err != nil {
 			return derivedJobResult{}, err
 		}
@@ -863,10 +880,47 @@ func (s *derivedService) finish(ctx context.Context, p contracts.RunnerPrincipal
 	if err != nil {
 		return derivedJobResult{}, err
 	}
+	if kind == "delete_cleanup" {
+		if err = refreshDeletionCheckpointTx(ctx, tx, target, nowText); err != nil {
+			return derivedJobResult{}, err
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return derivedJobResult{}, err
 	}
 	return derivedJobResult{ID: id, Status: state}, nil
+}
+
+func refreshDeletionCheckpointTx(ctx context.Context, tx *sql.Tx, target, now string) error {
+	var head int64
+	if err := tx.QueryRowContext(ctx, `SELECT deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&head); err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return nil
+		}
+		return err
+	}
+	var pending int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM memory_jobs j JOIN memory_deletion_events e ON e.workspace_id=j.workspace_id AND e.claim_id=j.entity_id AND e.revision=j.entity_version WHERE j.kind='delete_cleanup' AND j.target=? AND e.instance_deletion_sequence<=? AND j.status!='done'`, target, head).Scan(&pending); err != nil {
+		return err
+	}
+	lastError := ""
+	completed := head
+	if pending > 0 {
+		completed = 0
+		lastError = "cleanup_pending"
+		var blocked int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM memory_jobs j JOIN memory_deletion_events e ON e.workspace_id=j.workspace_id AND e.claim_id=j.entity_id AND e.revision=j.entity_version WHERE j.kind='delete_cleanup' AND j.target=? AND e.instance_deletion_sequence<=? AND j.status='blocked' AND j.last_error_code='adapter_missing'`, target, head).Scan(&blocked); err != nil {
+			return err
+		}
+		if blocked > 0 {
+			lastError = "adapter_missing"
+		}
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO cylo_deletion_reconciliation_checkpoints(target,completed_sequence,updated_at,last_error) VALUES(?,?,?,?) ON CONFLICT(target) DO UPDATE SET completed_sequence=excluded.completed_sequence,updated_at=excluded.updated_at,last_error=excluded.last_error`, target, completed, now, lastError)
+	if err != nil && strings.Contains(err.Error(), "no such table") {
+		return nil
+	}
+	return err
 }
 
 // repairStaleEffectTx schedules the current generation again after a worker

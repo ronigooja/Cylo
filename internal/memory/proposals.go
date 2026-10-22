@@ -41,6 +41,16 @@ func (r *Repository) CreateProposal(ctx context.Context, runner contracts.Runner
 		return Proposal{}, err
 	}
 	defer tx.Rollback()
+	if err := r.replayPendingDeletionsTx(ctx, tx); err != nil {
+		return Proposal{}, err
+	}
+	deletedSource, err := sourceHasJournalledDeletionTx(ctx, tx, r.deletionJournal, req.WorkspaceID, req.SourceID, req.SourceVersion)
+	if err != nil {
+		return Proposal{}, err
+	}
+	if deletedSource {
+		return Proposal{}, ErrInvalidSource
+	}
 	var source Source
 	var sourceScope string
 	var recorded string
@@ -86,6 +96,9 @@ func (r *Repository) CreateProposal(ctx context.Context, runner contracts.Runner
 }
 
 func (r *Repository) ApproveProposalTx(ctx context.Context, tx *sql.Tx, principal contracts.Principal, commandID, proposalID string, expected int64, acceptedAt time.Time) (Claim, error) {
+	if err := r.replayPendingDeletionsTx(ctx, tx); err != nil {
+		return Claim{}, err
+	}
 	if expected < 1 {
 		return Claim{}, featureError(http.StatusBadRequest, "invalid_request", "expected_version is required for proposal approval", nil)
 	}

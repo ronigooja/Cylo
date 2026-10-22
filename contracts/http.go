@@ -140,13 +140,20 @@ type Approval struct {
 }
 
 type Snapshot struct {
-	ServerVersion string     `json:"server_version"`
-	EventCursor   string     `json:"event_cursor"`
-	Projects      []Project  `json:"projects"`
-	Tasks         []Task     `json:"tasks"`
-	Approvals     []Approval `json:"approvals"`
-	Devices       []Device   `json:"devices"`
-	Runs          []Run      `json:"runs"`
+	ServerVersion string           `json:"server_version"`
+	EventCursor   string           `json:"event_cursor"`
+	Authority     AuthorityVersion `json:"authority"`
+	Projects      []Project        `json:"projects"`
+	Tasks         []Task           `json:"tasks"`
+	Approvals     []Approval       `json:"approvals"`
+	Devices       []Device         `json:"devices"`
+	Runs          []Run            `json:"runs"`
+}
+
+type AuthorityVersion struct {
+	InstanceLineageID string `json:"instance_lineage_id"`
+	Generation        int64  `json:"generation"`
+	DeletionSequence  string `json:"deletion_sequence"`
 }
 
 type Notification struct {
