@@ -1,6 +1,28 @@
 import XCTest
 @testable import CyloKit
 @testable import CyloUI
+import Foundation
+
+private final class ExportURLProtocol: URLProtocol {
+    static var responseHandler: ((URLRequest) -> (Int, [String: String], Data))?
+    static var capturedRequest: URLRequest?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.capturedRequest = request
+        let (status, headers, body) = Self.responseHandler?(request) ?? (500, [:], Data())
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
+private struct StaticExportCredential: BearerTokenProviding {
+    func bearerToken() throws -> String { UUID().uuidString }
+}
 
 private actor AsyncTestGate {
     private var continuation: CheckedContinuation<Void, Never>?
@@ -28,6 +50,114 @@ private actor AsyncTestGate {
 }
 
 final class ClientContractTests: XCTestCase {
+    private func exportSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ExportURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+
+    private func exportBody(scope: String = "personal", schemaVersion: Int = 1) -> Data {
+        Data(#"{"manifest":{"format":"cylo.authority-export","schema_version":\#(schemaVersion),"export_id":"export-1","created_at":"2026-10-21T12:00:00Z","workspace_id":"workspace-1","subject_id":"device-1","scope":"\#(scope)","authority":{"snapshot_event_cursor":"17"},"coverage":{}},"projects":[],"tasks":[],"task_dependencies":[],"task_entries":[],"approvals":[],"runs":[],"evidence":[],"memory":[]}"#.utf8)
+    }
+
+    func testScopedExportUsesAuthenticatedScopedRequestAndPrivateTemporaryFile() async throws {
+        ExportURLProtocol.capturedRequest = nil
+        ExportURLProtocol.responseHandler = { _ in
+            (200, ["Content-Type": "application/vnd.cylo.export+json; charset=utf-8", "Content-Disposition": "attachment; filename=\"cylo-export-exp-1.json\""], self.exportBody())
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let client = try APIClient(serverURL: URL(string: "https://cylo.example/base")!, credentials: StaticExportCredential(), session: exportSession())
+
+        let artifact = try await client.downloadExport(scope: "personal", temporaryDirectory: directory)
+
+        let request = try XCTUnwrap(ExportURLProtocol.capturedRequest)
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.path, "/base/v1/export")
+        XCTAssertEqual(URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems, [URLQueryItem(name: "scope", value: "personal")])
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "application/vnd.cylo.export+json")
+        XCTAssertTrue(try XCTUnwrap(request.value(forHTTPHeaderField: "Authorization")).hasPrefix("Bearer "))
+        XCTAssertEqual(artifact.scope, "personal")
+        XCTAssertEqual(artifact.filename, "cylo-export-exp-1.json")
+        XCTAssertEqual(artifact.snapshotCursor, "17")
+        XCTAssertEqual(try Data(contentsOf: artifact.fileURL), exportBody())
+        let attributes = try FileManager.default.attributesOfItem(atPath: artifact.fileURL.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        try FileManager.default.removeItem(at: artifact.fileURL)
+    }
+
+    func testScopedExportRejectsInvalidScopeSchemaFilenameAndDeclaredOversize() async throws {
+        let client = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        do { _ = try await client.downloadExport(scope: "all"); XCTFail("invalid scope accepted") } catch { if case CyloError.invalidResponse = error {} else { XCTFail("unexpected error: \(error)") } }
+
+        for (headers, body) in [
+            (["Content-Type": "application/vnd.cylo.export+json", "Content-Disposition": "attachment; filename=\"cylo-export-x.json\""], exportBody(schemaVersion: 2)),
+            (["Content-Type": "application/vnd.cylo.export+json", "Content-Disposition": "attachment; filename=\"../cylo-export-x.json\""], exportBody()),
+            (["Content-Type": "application/vnd.cylo.export+json", "Content-Disposition": "attachment; filename=\"cylo-export-x.json\""], exportBody(scope: "workspace"))
+        ] {
+            ExportURLProtocol.responseHandler = { _ in (200, headers, body) }
+            do { _ = try await client.downloadExport(scope: "personal"); XCTFail("invalid export accepted") }
+            catch { if case CyloError.invalidResponse = error {} else { XCTFail("unexpected error: \(error)") } }
+        }
+
+        ExportURLProtocol.responseHandler = { _ in
+            (200, ["Content-Type": "application/vnd.cylo.export+json", "Content-Disposition": "attachment; filename=\"cylo-export-x.json\"", "Content-Length": String(64 * 1024 * 1024 + 1)], Data())
+        }
+        do { _ = try await client.downloadExport(scope: "personal"); XCTFail("oversized export accepted") }
+        catch { if case CyloError.exportTooLarge = error {} else { XCTFail("unexpected error: \(error)") } }
+    }
+
+    @MainActor
+    func testExportResultFromOldConnectionIsDeletedAndNotPresented() async throws {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let model = CyloAppModel(defaults: defaults)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let gate = AsyncTestGate()
+        var producedURL: URL?
+        model.exportDownloadOverrideForTesting = { scope in
+            XCTAssertEqual(scope, "personal")
+            await gate.pause()
+            let url = directory.appendingPathComponent("late.json")
+            try Data("{}".utf8).write(to: url)
+            producedURL = url
+            return ScopedExportArtifact(fileURL: url, filename: "cylo-export-late.json", scope: scope, snapshotCursor: "1")
+        }
+        let epoch = model.connectionEpoch
+        let task = Task { await model.prepareExport(scope: "personal", expectedConnectionEpoch: epoch) }
+        await gate.waitUntilStarted()
+        model.serverAddress = ""
+        await model.updateServerAddress()
+        await gate.resume()
+        await task.value
+        XCTAssertNil(model.exportArtifact)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(producedURL).path))
+    }
+
+    @MainActor
+    func testExportSaveAndCancelRemovePreparedTemporaryFile() throws {
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("{}".utf8).write(to: fileURL)
+        model.setExportArtifactForTesting(ScopedExportArtifact(fileURL: fileURL, filename: "cylo-export-one.json", scope: "personal", snapshotCursor: "1"))
+
+        model.exportSaveFinished(saved: false)
+
+        XCTAssertNil(model.exportArtifact)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+        XCTAssertTrue(model.exportStatus?.contains("canceled") == true)
+
+        let secondURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("{}".utf8).write(to: secondURL)
+        model.setExportArtifactForTesting(ScopedExportArtifact(fileURL: secondURL, filename: "cylo-export-two.json", scope: "workspace", snapshotCursor: "2"))
+        model.cancelExport()
+
+        XCTAssertNil(model.exportArtifact)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: secondURL.path))
+    }
+
     func testConnectionGenerationRejectsResponsesAfterOriginOrCredentialSwitch() throws {
         let serverA = try XCTUnwrap(URL(string: "https://server-a.example"))
         let serverB = try XCTUnwrap(URL(string: "https://server-b.example"))

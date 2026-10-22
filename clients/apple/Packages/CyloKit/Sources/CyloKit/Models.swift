@@ -373,6 +373,7 @@ public struct APIFailureBody: Codable, Sendable {
 public enum CyloError: Error, LocalizedError, Sendable {
     case invalidServerURL
     case missingCredential
+    case exportTooLarge
     case http(status: Int, code: String, message: String, details: [String: JSONValue]?)
     case invalidResponse
     case persistence(String)
@@ -381,6 +382,7 @@ public enum CyloError: Error, LocalizedError, Sendable {
         switch self {
         case .invalidServerURL: "Enter a valid Cylo server URL."
         case .missingCredential: "This device has not been paired with the server."
+        case .exportTooLarge: "This export is larger than the 64 MiB download limit."
         case let .http(_, _, message, _): message
         case .invalidResponse: "The server returned a response the app could not read."
         case let .persistence(message): message

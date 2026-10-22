@@ -1,5 +1,6 @@
 import CyloKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 public struct CyloRootView: View {
     @ObservedObject private var model: CyloAppModel
@@ -1004,6 +1005,12 @@ private struct SettingsView: View {
     @State private var deviceName = "Apple device"
     @State private var bootstrapCode = ""
     @State private var showingRevoke: Device?
+    @State private var exportScope = "personal"
+    @State private var showingExportSave = false
+
+    private var exportDocument: ScopedExportFileDocument {
+        ScopedExportFileDocument(fileURL: model.exportArtifact?.fileURL ?? FileManager.default.temporaryDirectory)
+    }
 
     var body: some View {
         Form {
@@ -1044,9 +1051,37 @@ private struct SettingsView: View {
                     }
                 }
             }
+            Section("Your data") {
+                Text("Prepare a copy of authorized Cylo records. Large artifact files, derived stores, and backups are not included.")
+                    .foregroundStyle(.secondary)
+                Picker("Data scope", selection: $exportScope) {
+                    Text("Personal data").tag("personal")
+                    Text("Workspace data I can access").tag("workspace")
+                }
+                Button("Prepare export") {
+                    let epoch = model.connectionEpoch
+                    Task { await model.prepareExport(scope: exportScope, expectedConnectionEpoch: epoch) }
+                }
+                .disabled(model.exportStatus == "Preparing the authorized export…" || model.exportArtifact != nil)
+                if let artifact = model.exportArtifact {
+                    LabeledContent("Prepared file", value: artifact.filename)
+                    Button("Save export…") { showingExportSave = true }
+                    Button("Discard export", role: .cancel) { model.cancelExport() }
+                }
+                if let status = model.exportStatus {
+                    Text(status).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+            }
             if let notice = model.notice { Section("Latest update") { Text(notice).textSelection(.enabled) } }
         }
         .navigationTitle("Settings")
+        .fileExporter(isPresented: $showingExportSave, document: exportDocument, contentType: .json, defaultFilename: model.exportArtifact?.filename ?? "cylo-export.json") { result in
+            switch result {
+            case .success: model.exportSaveFinished(saved: true)
+            case let .failure(error): model.exportSaveFinished(saved: false, error: error)
+            }
+        }
+        .onChange(of: model.connectionEpoch) { _, _ in showingExportSave = false }
         .confirmationDialog("Revoke \(showingRevoke?.name ?? "this device")?", isPresented: Binding(get: { showingRevoke != nil }, set: { if !$0 { showingRevoke = nil } })) {
             if let device = showingRevoke {
                 Button("Revoke device", role: .destructive) { Task { await model.revoke(device, reason: "Revoked in Cylo Settings"); showingRevoke = nil } }
@@ -1055,5 +1090,20 @@ private struct SettingsView: View {
         } message: {
             Text("Revocation blocks future requests and disconnects its event stream. The server owns the revocation result.")
         }
+    }
+}
+
+private struct ScopedExportFileDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+    let fileURL: URL
+
+    init(fileURL: URL) { self.fileURL = fileURL }
+
+    init(configuration: ReadConfiguration) throws {
+        throw CyloError.invalidResponse
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: try Data(contentsOf: fileURL, options: .mappedIfSafe))
     }
 }

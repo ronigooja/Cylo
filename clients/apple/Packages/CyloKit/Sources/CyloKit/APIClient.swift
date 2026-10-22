@@ -8,6 +8,20 @@ public protocol BearerTokenProviding: Sendable {
     func bearerToken() throws -> String
 }
 
+public struct ScopedExportArtifact: Sendable {
+    public let fileURL: URL
+    public let filename: String
+    public let scope: String
+    public let snapshotCursor: String
+
+    public init(fileURL: URL, filename: String, scope: String, snapshotCursor: String) {
+        self.fileURL = fileURL
+        self.filename = filename
+        self.scope = scope
+        self.snapshotCursor = snapshotCursor
+    }
+}
+
 public final class APIClient: @unchecked Sendable {
     public let serverURL: URL
     private let session: URLSession
@@ -48,6 +62,70 @@ public final class APIClient: @unchecked Sendable {
 
     public func snapshot() async throws -> Snapshot {
         try await request(path: ["v1", "snapshot"], method: "GET", authenticated: true)
+    }
+
+    public func downloadExport(scope: String, temporaryDirectory: URL = FileManager.default.temporaryDirectory) async throws -> ScopedExportArtifact {
+        guard scope == "personal" || scope == "workspace" else { throw CyloError.invalidResponse }
+        var components = URLComponents(url: try makeURL(path: ["v1", "export"]), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "scope", value: scope)]
+        guard let url = components?.url else { throw CyloError.invalidServerURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/vnd.cylo.export+json", forHTTPHeaderField: "Accept")
+        try authorize(&request)
+
+        let (bytes, rawResponse) = try await session.bytes(for: request)
+        guard let response = rawResponse as? HTTPURLResponse else { throw CyloError.invalidResponse }
+        guard (200..<300).contains(response.statusCode) else {
+            let data = try await collect(bytes, limit: 1 << 20)
+            throw decodeFailure(status: response.statusCode, data: data)
+        }
+        if let length = response.value(forHTTPHeaderField: "Content-Length").flatMap(Int64.init), length > Self.maximumExportBytes {
+            throw CyloError.exportTooLarge
+        }
+        guard response.value(forHTTPHeaderField: "Content-Type")?.lowercased().hasPrefix("application/vnd.cylo.export+json") == true,
+              let filename = Self.safeExportFilename(response.value(forHTTPHeaderField: "Content-Disposition")) else {
+            throw CyloError.invalidResponse
+        }
+
+        var data = Data()
+        for try await byte in bytes {
+            guard data.count < Self.maximumExportBytes else { throw CyloError.exportTooLarge }
+            data.append(byte)
+        }
+        let manifest: ExportManifest
+        do { manifest = try decoder.decode(ExportDocumentHeader.self, from: data).manifest }
+        catch { throw CyloError.invalidResponse }
+        guard manifest.format == "cylo.authority-export", manifest.schemaVersion == 1,
+              manifest.scope == scope, !manifest.workspaceId.isEmpty, !manifest.subjectId.isEmpty,
+              !manifest.authority.snapshotEventCursor.isEmpty else { throw CyloError.invalidResponse }
+
+        let fileURL = temporaryDirectory.appendingPathComponent(UUID().uuidString.lowercased() + ".json", isDirectory: false)
+        guard FileManager.default.createFile(atPath: fileURL.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+            throw CyloError.persistence("The export could not be saved in the app's private temporary folder.")
+        }
+        do {
+            let handle = try FileHandle(forWritingTo: fileURL)
+            try handle.write(contentsOf: data)
+            try handle.synchronize()
+            try handle.close()
+            return ScopedExportArtifact(fileURL: fileURL, filename: filename, scope: scope, snapshotCursor: manifest.authority.snapshotEventCursor)
+        } catch {
+            try? FileManager.default.removeItem(at: fileURL)
+            throw CyloError.persistence("The export could not be written to a private temporary file.")
+        }
+    }
+
+    private static let maximumExportBytes = 64 * 1024 * 1024
+
+    private static func safeExportFilename(_ header: String?) -> String? {
+        guard let header, let marker = header.range(of: "filename=\""),
+              let end = header[marker.upperBound...].firstIndex(of: "\"") else { return nil }
+        let candidate = String(header[marker.upperBound..<end])
+        guard candidate.hasPrefix("cylo-export-"), candidate.hasSuffix(".json"),
+              !candidate.contains("/"), !candidate.contains("\\"),
+              candidate.dropFirst("cylo-export-".count).dropLast(".json".count).allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }) else { return nil }
+        return candidate
     }
 
     public func searchMemory(query: String = "", limit: Int = 50) async throws -> MemorySearchResult {
@@ -217,10 +295,34 @@ public final class APIClient: @unchecked Sendable {
     }
 
     private func collect(_ bytes: URLSession.AsyncBytes) async throws -> Data {
+        try await collect(bytes, limit: Int.max)
+    }
+
+    private func collect(_ bytes: URLSession.AsyncBytes, limit: Int) async throws -> Data {
         var data = Data()
-        for try await byte in bytes { data.append(byte) }
+        for try await byte in bytes {
+            guard data.count < limit else { throw CyloError.exportTooLarge }
+            data.append(byte)
+        }
         return data
     }
+}
+
+private struct ExportDocumentHeader: Decodable {
+    let manifest: ExportManifest
+}
+
+private struct ExportManifest: Decodable {
+    let format: String
+    let schemaVersion: Int
+    let workspaceId: String
+    let subjectId: String
+    let scope: String
+    let authority: ExportAuthority
+}
+
+private struct ExportAuthority: Decodable {
+    let snapshotEventCursor: String
 }
 
 private struct CommandEnvelope<Payload: Encodable & Sendable>: Encodable {

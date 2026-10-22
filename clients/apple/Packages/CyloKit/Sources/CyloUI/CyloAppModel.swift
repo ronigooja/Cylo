@@ -26,6 +26,8 @@ public final class CyloAppModel: ObservableObject {
     @Published public private(set) var voiceStatus: VoiceIntegrationStatus = .idle
     @Published public var voiceDraft = ""
     @Published public private(set) var voiceDraftRevision: Int64 = 0
+    @Published public private(set) var exportArtifact: ScopedExportArtifact?
+    @Published public private(set) var exportStatus: String?
 
     private let defaults: UserDefaults
     private var api: APIClient?
@@ -36,12 +38,19 @@ public final class CyloAppModel: ObservableObject {
     private var snapshotCache: SnapshotCache?
     private var streamBackoff: UInt64 = 1
     private var connectionGeneration = ConnectionGeneration()
+    private var exportDownloadTask: Task<ScopedExportArtifact, Error>?
+    private var exportRequestID: UUID?
 #if DEBUG
     var capabilityRevocationSubmitOverrideForTesting: ((Int64, JSONValue) async -> Bool)?
     var capabilityRevocationRefreshOverrideForTesting: (() async -> Void)?
+    var exportDownloadOverrideForTesting: ((String) async throws -> ScopedExportArtifact)?
 
     func setCapabilityDeploymentsForTesting(_ deployments: [CapabilityDeployment]) {
         capabilityDeployments = deployments
+    }
+
+    func setExportArtifactForTesting(_ artifact: ScopedExportArtifact?) {
+        exportArtifact = artifact
     }
 #endif
     private var configuredServerURL: URL?
@@ -129,6 +138,7 @@ public final class CyloAppModel: ObservableObject {
     public func reconnect() async { await start() }
 
     public func updateServerAddress() async {
+        cancelExport(status: nil)
         connectionGeneration.advance()
         connectionEpoch = connectionGeneration.value
         capabilityReleases = []
@@ -734,6 +744,72 @@ public final class CyloAppModel: ObservableObject {
         return tasks.first { $0.id == id }
     }
 
+    public func prepareExport(scope: String, expectedConnectionEpoch: UInt64) async {
+#if DEBUG
+        let testDownload = exportDownloadOverrideForTesting
+#else
+        let testDownload: ((String) async throws -> ScopedExportArtifact)? = nil
+#endif
+        guard scope == "personal" || scope == "workspace",
+              expectedConnectionEpoch == connectionGeneration.value,
+              api != nil || testDownload != nil else {
+            if expectedConnectionEpoch == connectionGeneration.value { exportStatus = "Connect an approved device before preparing an export." }
+            return
+        }
+        discardExportArtifact()
+        exportStatus = "Preparing the authorized export…"
+        let generation = connectionGeneration.value
+        let capturedAPI = api
+        let requestID = UUID()
+        exportRequestID = requestID
+        let task = Task {
+            if let testDownload { return try await testDownload(scope) }
+            guard let capturedAPI else { throw CyloError.missingCredential }
+            return try await capturedAPI.downloadExport(scope: scope)
+        }
+        exportDownloadTask = task
+        do {
+            let artifact = try await task.value
+            guard !Task.isCancelled, requestID == exportRequestID,
+                  generation == connectionGeneration.value,
+                  testDownload != nil || capturedAPI === self.api else {
+                try? FileManager.default.removeItem(at: artifact.fileURL)
+                return
+            }
+            exportArtifact = artifact
+            exportStatus = "Export prepared by the server. Choose Save to select where to keep the file."
+        } catch {
+            guard requestID == exportRequestID, generation == connectionGeneration.value else { return }
+            exportStatus = error.localizedDescription
+        }
+        if requestID == exportRequestID {
+            exportDownloadTask = nil
+            exportRequestID = nil
+        }
+    }
+
+    public func exportSaveFinished(saved: Bool, error: Error? = nil) {
+        guard let artifact = exportArtifact else { return }
+        try? FileManager.default.removeItem(at: artifact.fileURL)
+        exportArtifact = nil
+        if saved { exportStatus = "Export saved on this device." }
+        else if let error, (error as NSError).code != NSUserCancelledError { exportStatus = "The export could not be saved: \(error.localizedDescription)" }
+        else { exportStatus = "Saving was canceled. The prepared temporary file was removed." }
+    }
+
+    public func cancelExport(status: String? = "Export canceled. The prepared temporary file was removed.") {
+        exportRequestID = nil
+        exportDownloadTask?.cancel()
+        exportDownloadTask = nil
+        discardExportArtifact()
+        if let status { exportStatus = status }
+    }
+
+    private func discardExportArtifact() {
+        if let artifact = exportArtifact { try? FileManager.default.removeItem(at: artifact.fileURL) }
+        exportArtifact = nil
+    }
+
     public func projectName(_ id: String?) -> String {
         guard let id else { return "Unassigned" }
         return projects.first(where: { $0.id == id })?.name ?? "Project unavailable"
@@ -749,6 +825,7 @@ public final class CyloAppModel: ObservableObject {
         defaults.set(trimmed, forKey: "cylo.serverAddress")
         if let api, api.serverURL == url, coordinator != nil { return api }
         if configuredServerURL != url {
+            cancelExport(status: nil)
             connectionGeneration.switchOrigin(to: url)
             configuredServerURL = url
             snapshot = nil
