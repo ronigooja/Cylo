@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -91,8 +92,8 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 	if hasPersisted {
 		// Recovery must preserve the exact original AO request even if the
 		// currently configured route has since changed or been removed.
-		if persisted.Claim.AttemptID != claim.AttemptID || persisted.Claim.Fence != claim.Fence {
-			return errors.New("runner journal claim attempt or fence does not match server claim")
+		if !sameRecoveredClaim(persisted.Claim, claim) || persisted.Spec.ClientRequestID != "" && persisted.Spec.Harness != effectiveHarness(claim.Harness) {
+			return errors.New("runner journal claim and AO request harness do not match the server claim")
 		}
 		spec = persisted.Spec
 		phase = ""
@@ -117,6 +118,9 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 		route, ok := e.Routes[claim.ProfileID]
 		if !ok || route.ProfileID != claim.ProfileID || route.RuntimeRouteID != claim.RuntimeRouteID || route.ModelRouteID != claim.ModelRouteID || !validAOApprovalMode(route.ApprovalMode) {
 			return e.reportNoEffectTerminal(ctx, claim, "failed", "route_unavailable", "Server-selected runtime route is not available on this runner.")
+		}
+		if effectiveHarness(route.Harness) != effectiveHarness(claim.Harness) || route.IsolationPolicy != claim.IsolationPolicy {
+			return e.reportNoEffectTerminal(ctx, claim, "failed", "route_unavailable", "Runner route harness and isolation do not match the server-selected run profile.")
 		}
 		if !supportedSupervisedRoute(route) {
 			return e.reportNoEffectTerminal(ctx, claim, "failed", "runtime_unavailable", "This runner has no approved supervised runtime profile for the selected AO harness and isolation policy.")
@@ -205,7 +209,25 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 			}
 		}
 	}
-	return e.monitor(ctx, claim, entry.Session, spec.Harness)
+	return e.monitor(ctx, claim, entry.Session, effectiveHarness(spec.Harness))
+}
+
+func sameRecoveredClaim(persisted, current contracts.JobClaim) bool {
+	if persisted.Harness == "" {
+		// Older server claims did not serialize harness. The journaled AO request
+		// separately binds the legacy claim to Codex, checked by the caller.
+		if effectiveHarness(current.Harness) != "codex" {
+			return false
+		}
+		persisted.Harness = "codex"
+	}
+	persisted.Harness = effectiveHarness(persisted.Harness)
+	current.Harness = effectiveHarness(current.Harness)
+	// A recovered current claim may include the AO session assigned after the
+	// local claim was first journaled. All other claim fields stay immutable.
+	persisted.AOSessionID = ""
+	current.AOSessionID = ""
+	return reflect.DeepEqual(persisted, current)
 }
 
 func supportedSupervisedRoute(route Route) bool {
@@ -222,6 +244,9 @@ func supportedSupervisedRoute(route Route) bool {
 func (e *Engine) validateClaim(claim contracts.JobClaim) error {
 	if claim.RunID == "" || claim.TaskID == "" || claim.AttemptID == "" || claim.WorkspaceID == "" || claim.Fence == 0 || claim.ProfileID == "" || claim.RuntimeRouteID == "" || claim.ModelRouteID == "" || claim.AOProjectID == "" || claim.IsolationPolicy == "" {
 		return errors.New("runner claim is missing required server-selected identity or route fields")
+	}
+	if harness := effectiveHarness(claim.Harness); harness != "codex" && harness != "opencode" {
+		return errors.New("runner claim selects an unsupported AO harness")
 	}
 	if claim.Role != "super" && claim.Role != "worker" && claim.Role != "curator" {
 		return errors.New("runner claim has an unsupported role")
@@ -352,7 +377,7 @@ func (e *Engine) stopAndConfirm(ctx context.Context, claim contracts.JobClaim, s
 		_ = e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "stop_uncertain")
 		return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_stop", "AO reports terminal status after a lost kill reply, but workspace cleanup completion is unknown; the run stays fenced.", nil, nil, "AO cleanup could not be verified", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_stop", Status: "unknown", Reference: sessionID}}))
 	}
-	if session.Status != "terminated" || kill.CleanupPending || !validTerminationProof(kill.TerminationProof, sessionID) || (e.Containers != nil && (containerProof == nil || !containerProof.CleanupComplete)) {
+	if session.Status != "terminated" || kill.CleanupPending || !validTerminationProof(kill.TerminationProof, entry.Spec.Harness, sessionID) || (e.Containers != nil && (containerProof == nil || !containerProof.CleanupComplete)) {
 		_ = e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "stop_uncertain")
 		return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_stop", "AO has not provided trusted native process-exit and cleanup proof; the run stays fenced.", nil, nil, "AO termination is not confirmed", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_stop", Status: "pending", Reference: sessionID}}))
 	}
@@ -378,12 +403,26 @@ func (e *Engine) stopAndConfirm(ctx context.Context, claim contracts.JobClaim, s
 	return e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "terminated")
 }
 
-func validTerminationProof(proof *ao.TerminationProof, sessionID string) bool {
-	if proof == nil || proof.Source != "ao_chat_stop" || proof.Method != "native_process_exit_waited" || proof.SessionID != sessionID || !proof.CleanupComplete || proof.VerifiedAt.IsZero() || proof.VerifiedAt.After(time.Now().UTC().Add(time.Minute)) {
+func validTerminationProof(proof *ao.TerminationProof, harness, sessionID string) bool {
+	expectedMethod := ""
+	switch effectiveHarness(harness) {
+	case "codex":
+		expectedMethod = "native_process_exit_waited"
+	case "opencode":
+		expectedMethod = "acp_process_exit_waited"
+	}
+	if expectedMethod == "" || proof == nil || proof.Source != "ao_chat_stop" || proof.Method != expectedMethod || proof.SessionID != sessionID || !proof.CleanupComplete || proof.VerifiedAt.IsZero() || proof.VerifiedAt.After(time.Now().UTC().Add(time.Minute)) {
 		return false
 	}
 	_, offset := proof.VerifiedAt.Zone()
 	return offset == 0
+}
+
+func effectiveHarness(harness string) string {
+	if strings.TrimSpace(harness) == "" {
+		return "codex"
+	}
+	return strings.TrimSpace(harness)
 }
 
 func toContractProof(proof *ao.TerminationProof) *contracts.TerminationProof {

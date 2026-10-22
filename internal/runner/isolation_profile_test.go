@@ -26,6 +26,7 @@ func TestSupervisedRuntimeIsolationRequiresExactHarnessPolicyProfile(t *testing.
 		"opencode": {Harness: "opencode", IsolationPolicy: OpenCodeWorkspaceWritePolicy, Image: "cylo-opencode:pinned"},
 	}}
 	claim := validClaim()
+	claim.Harness = "opencode"
 	claim.IsolationPolicy = OpenCodeWorkspaceWritePolicy
 	route := Route{Harness: "opencode", IsolationPolicy: OpenCodeWorkspaceWritePolicy}
 	if err := isolation.CheckRoute(context.Background(), claim, route); err != nil {

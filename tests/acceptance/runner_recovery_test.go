@@ -117,9 +117,10 @@ func TestQueuedHarnessSnapshotSurvivesConfigurationChange(t *testing.T) {
 }
 
 func TestTerminationProofMethodIsBoundToRunHarness(t *testing.T) {
-	for _, tc := range []struct{ name, harness, policy, wrongMethod string }{
+	for _, tc := range []struct{ name, harness, storedHarness, policy, wrongMethod string }{
 		{name: "codex rejects ACP proof", harness: "codex", policy: "native-sandbox", wrongMethod: "acp_process_exit_waited"},
 		{name: "opencode rejects native proof", harness: "opencode", policy: "ao-opencode-workspace-write-v1", wrongMethod: "native_process_exit_waited"},
+		{name: "unknown persisted harness rejects empty proof", harness: "codex", storedHarness: "third-party", policy: "native-sandbox", wrongMethod: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bootstrapCode, deviceToken, runnerToken := reviewToken(t), reviewToken(t), reviewToken(t)
@@ -138,7 +139,11 @@ func TestTerminationProofMethodIsBoundToRunHarness(t *testing.T) {
 			if err := json.Unmarshal(claimResponse.Body.Bytes(), &claim); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.DB().Exec(`UPDATE runs SET desired_control='stop',ao_project_id='workers',ao_session_id='session-1' WHERE id=?`, claim.RunID); err != nil {
+			storedHarness := tc.storedHarness
+			if storedHarness == "" {
+				storedHarness = tc.harness
+			}
+			if _, err := store.DB().Exec(`UPDATE runs SET desired_control='stop',harness=?,ao_project_id='workers',ao_session_id='session-1' WHERE id=?`, storedHarness, claim.RunID); err != nil {
 				t.Fatal(err)
 			}
 			observation := contracts.RunnerObservation{ObservationID: "wrong-proof", RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence, Kind: "stop_confirmed", AOProjectID: "workers", AOSessionID: "session-1", TerminationProof: &contracts.TerminationProof{Source: "ao_chat_stop", Method: tc.wrongMethod, SessionID: "session-1", VerifiedAt: time.Now().UTC(), CleanupComplete: true}}

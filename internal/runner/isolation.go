@@ -51,11 +51,14 @@ func (i SupervisedRuntimeIsolation) Check(ctx context.Context, claim contracts.J
 	if !matched || strings.TrimSpace(profile.Harness) == "" || strings.TrimSpace(profile.Image) == "" {
 		return errors.New("supervised runtime container isolation is unavailable for the selected policy")
 	}
+	if effectiveHarness(profile.Harness) != effectiveHarness(claim.Harness) {
+		return errors.New("supervised runtime harness does not match the server-selected run harness")
+	}
 	return i.checkProfile(ctx, claim, profile)
 }
 
 func (i SupervisedRuntimeIsolation) CheckRoute(ctx context.Context, claim contracts.JobClaim, route Route) error {
-	if i.Docker == nil || route.IsolationPolicy != claim.IsolationPolicy {
+	if i.Docker == nil || route.IsolationPolicy != claim.IsolationPolicy || effectiveHarness(route.Harness) != effectiveHarness(claim.Harness) {
 		return errors.New("supervised runtime container isolation is unavailable for the selected route")
 	}
 	profile, ok := i.Profiles[route.Harness]

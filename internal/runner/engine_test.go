@@ -58,6 +58,7 @@ type fakeAO struct {
 	stopSuccess  bool
 	stopPending  bool
 	proofSession string
+	proofMethod  string
 	session      ao.Session
 	conversation ao.Conversation
 }
@@ -96,7 +97,11 @@ func (f *fakeAO) StopWorker(_ context.Context, id string) (ao.Session, ao.KillRe
 		if proofSession == "" {
 			proofSession = id
 		}
-		proof := &ao.TerminationProof{Source: "ao_chat_stop", Method: "native_process_exit_waited", SessionID: proofSession, VerifiedAt: time.Now().UTC(), CleanupComplete: !f.stopPending}
+		method := f.proofMethod
+		if method == "" {
+			method = "native_process_exit_waited"
+		}
+		proof := &ao.TerminationProof{Source: "ao_chat_stop", Method: method, SessionID: proofSession, VerifiedAt: time.Now().UTC(), CleanupComplete: !f.stopPending}
 		return ao.Session{ID: id, Status: "terminated"}, ao.KillResponse{SessionID: id, Freed: !f.stopPending, CleanupPending: f.stopPending, TerminationProof: proof}, nil
 	}
 	return ao.Session{}, ao.KillResponse{}, errors.New("kill response unknown")
@@ -188,6 +193,100 @@ func TestRouteUnavailableFailsRunBeforeAOCreate(t *testing.T) {
 	}
 	if len(control.observations) != 1 || control.observations[0].Kind != "no_effect_terminal" || control.observations[0].NoEffectProof == nil || control.observations[0].NoEffectProof.Outcome != "failed" {
 		t.Fatalf("route rejection did not report a no-effect terminal observation: %+v", control.observations)
+	}
+}
+
+func TestServerSelectedHarnessMustMatchRunnerRoute(t *testing.T) {
+	claim := validClaim()
+	claim.Harness = "opencode"
+	agent := &fakeAO{}
+	engine, control := makeEngine(t, claim, contracts.RunControl{DesiredControl: "run"}, agent, permitIsolation{}, nil)
+	if err := engine.Process(context.Background(), claim); err != nil {
+		t.Fatal(err)
+	}
+	if agent.createN != 0 {
+		t.Fatalf("runner dispatched %s claim through its %s route", claim.Harness, engine.Routes[claim.ProfileID].Harness)
+	}
+	if len(control.observations) != 1 || control.observations[0].Kind != "no_effect_terminal" {
+		t.Fatalf("harness mismatch was not reported as no-effect: %+v", control.observations)
+	}
+}
+
+func TestOpenCodeACPProofIsAcceptedAndNativeProofIsRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name, method string
+		wantTerminal bool
+	}{
+		{name: "ACP proof", method: "acp_process_exit_waited", wantTerminal: true},
+		{name: "native proof", method: "native_process_exit_waited", wantTerminal: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			claim := validClaim()
+			claim.Harness = "opencode"
+			claim.RuntimeRouteID = "opencode"
+			claim.IsolationPolicy = OpenCodeWorkspaceWritePolicy
+			agent := &fakeAO{session: ao.Session{Status: "terminated"}, stopSuccess: true, proofMethod: tc.method}
+			engine, control := makeEngine(t, claim, contracts.RunControl{DesiredControl: "run"}, agent, permitIsolation{}, nil)
+			route := engine.Routes[claim.ProfileID]
+			route.Harness = "opencode"
+			route.RuntimeRouteID = "opencode"
+			route.IsolationPolicy = OpenCodeWorkspaceWritePolicy
+			engine.Routes[claim.ProfileID] = route
+			err := engine.Process(context.Background(), claim)
+			if tc.wantTerminal {
+				if err != nil {
+					t.Fatal(err)
+				}
+				last := control.observations[len(control.observations)-1]
+				if last.Kind != "runtime_terminated" || last.TerminationProof == nil || last.TerminationProof.Method != tc.method {
+					t.Fatalf("ACP proof was not accepted: %+v", control.observations)
+				}
+			} else {
+				if !errors.Is(err, ErrOutcomePending) {
+					t.Fatalf("native proof unexpectedly verified OpenCode stop: %v", err)
+				}
+				for _, observation := range control.observations {
+					if observation.Kind == "runtime_terminated" || observation.Kind == "stop_confirmed" {
+						t.Fatalf("native proof falsely verified ACP shutdown: %+v", observation)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestLegacyCodexJournalClaimRecoversWithExplicitServerHarness(t *testing.T) {
+	ctx := context.Background()
+	claim := validClaim() // Simulates a pre-harness server claim serialized in an old journal.
+	agent := &fakeAO{session: ao.Session{Status: "terminated"}, stopSuccess: true}
+	engine, _ := makeEngine(t, claim, contracts.RunControl{DesiredControl: "run"}, agent, permitIsolation{}, nil)
+	spec := ao.WorkerSpec{ClientRequestID: claim.RunID, ProjectID: claim.AOProjectID, Harness: "codex", Model: "gpt-6.1-sol", ApprovalMode: "auto", DisplayName: "worker", Prompt: "fixture"}
+	if _, err := engine.Journal.SaveClaim(ctx, claim, spec, "claimed"); err != nil {
+		t.Fatal(err)
+	}
+	claim.Harness = "codex"
+	if err := engine.Process(ctx, claim); err != nil {
+		t.Fatalf("legacy Codex journal did not recover: %v", err)
+	}
+	if agent.createN != 1 || agent.createSpec.Harness != "codex" {
+		t.Fatalf("legacy Codex journal replay changed harness: %+v", agent.createSpec)
+	}
+}
+
+func TestJournaledAOHarnessMustMatchCurrentClaim(t *testing.T) {
+	ctx := context.Background()
+	claim := validClaim()
+	agent := &fakeAO{}
+	engine, _ := makeEngine(t, claim, contracts.RunControl{DesiredControl: "run"}, agent, permitIsolation{}, nil)
+	spec := ao.WorkerSpec{ClientRequestID: claim.RunID, ProjectID: claim.AOProjectID, Harness: "opencode", Model: "cylo/gpt-6-luna", ApprovalMode: "auto", DisplayName: "worker", Prompt: "fixture"}
+	if _, err := engine.Journal.SaveClaim(ctx, claim, spec, "claimed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Process(ctx, claim); err == nil {
+		t.Fatal("mismatched persisted AO harness was accepted")
+	}
+	if agent.createN != 0 {
+		t.Fatal("AO create ran with a mismatched persisted harness")
 	}
 }
 

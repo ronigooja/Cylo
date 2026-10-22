@@ -399,7 +399,7 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		case "opencode":
 			expectedMethod = "acp_process_exit_waited"
 		}
-		if proof == nil || proof.Source != "ao_chat_stop" || proof.Method != expectedMethod || proof.SessionID != boundSession || !proof.CleanupComplete || proof.VerifiedAt.IsZero() || offset != 0 || proof.VerifiedAt.After(time.Now().UTC().Add(5*time.Minute)) {
+		if expectedMethod == "" || proof == nil || proof.Source != "ao_chat_stop" || proof.Method != expectedMethod || proof.SessionID != boundSession || !proof.CleanupComplete || proof.VerifiedAt.IsZero() || offset != 0 || proof.VerifiedAt.After(time.Now().UTC().Add(5*time.Minute)) {
 			writeError(w, apiError(409, "termination_unproven", "termination requires trusted AO stop proof for the bound session", nil))
 			return
 		}

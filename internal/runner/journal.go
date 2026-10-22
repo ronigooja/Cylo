@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -379,7 +380,8 @@ func (j *Journal) SaveClaim(ctx context.Context, claim contracts.JobClaim, spec 
 	var epoch int64
 	err = tx.QueryRowContext(ctx, `SELECT attempt_id,fence,claim_json,ao_spec_json,ao_session_id,ao_container_id,instance_id,instance_epoch,phase,updated_at FROM journal_runs WHERE run_id=?`, claim.RunID).Scan(&existingAttempt, &existingFence, &existingClaim, &existingSpec, &session, &container, &instanceID, &epoch, &persistedPhase, &updated)
 	if err == nil {
-		if existingAttempt != claim.AttemptID || uint64(existingFence) != claim.Fence || string(existingClaim) != string(claimJSON) || string(existingSpec) != string(specJSON) {
+		claimMatches := bytes.Equal(existingClaim, claimJSON) || legacyCodexHarnessClaimMatches(existingClaim, existingSpec, claim, spec, claimJSON)
+		if existingAttempt != claim.AttemptID || uint64(existingFence) != claim.Fence || !claimMatches || !bytes.Equal(existingSpec, specJSON) {
 			return JournalEntry{}, errors.New("runner journal run identity or request changed under the same run id")
 		}
 		phase = persistedPhase
@@ -397,6 +399,24 @@ func (j *Journal) SaveClaim(ctx context.Context, claim contracts.JobClaim, spec 
 		return JournalEntry{}, err
 	}
 	return JournalEntry{Claim: claim, Spec: spec, Session: session, Container: container, InstanceID: instanceID, Epoch: epoch, Phase: phase, Updated: now}, nil
+}
+
+// legacyCodexHarnessClaimMatches narrowly upgrades a journal written before
+// JobClaim carried the server-selected harness. The old claim is accepted only
+// when the persisted AO request already pins Codex and every other claim field
+// matches byte-for-byte after that one field is filled in.
+func legacyCodexHarnessClaimMatches(existingClaim, existingSpec []byte, claim contracts.JobClaim, spec ao.WorkerSpec, currentClaimJSON []byte) bool {
+	if claim.Harness != "codex" || spec.Harness != "codex" {
+		return false
+	}
+	var oldClaim contracts.JobClaim
+	var oldSpec ao.WorkerSpec
+	if json.Unmarshal(existingClaim, &oldClaim) != nil || json.Unmarshal(existingSpec, &oldSpec) != nil || oldClaim.Harness != "" || oldSpec.Harness != "codex" {
+		return false
+	}
+	oldClaim.Harness = "codex"
+	upgradedClaim, err := json.Marshal(oldClaim)
+	return err == nil && bytes.Equal(upgradedClaim, currentClaimJSON)
 }
 
 func (j *Journal) Entry(ctx context.Context, runID string) (JournalEntry, bool, error) {
