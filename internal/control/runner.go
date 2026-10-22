@@ -70,22 +70,22 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	rows, err := tx.QueryContext(r.Context(), `SELECT id,workspace_id,title,goal,profile_id,version,created_by_device_id,command_id,coalesce(lineage_root_task_id,id),coalesce(lineage_parent_task_id,''),lineage_depth,child_policy_json,pregrant_capabilities_json FROM tasks WHERE status='queued' AND NOT EXISTS (SELECT 1 FROM task_dependencies d WHERE d.task_id=tasks.id AND d.status<>'satisfied') ORDER BY created_at,id`)
+	rows, err := tx.QueryContext(r.Context(), `SELECT id,workspace_id,title,goal,profile_id,harness,version,created_by_device_id,command_id,coalesce(lineage_root_task_id,id),coalesce(lineage_parent_task_id,''),lineage_depth,child_policy_json,pregrant_capabilities_json FROM tasks WHERE status='queued' AND NOT EXISTS (SELECT 1 FROM task_dependencies d WHERE d.task_id=tasks.id AND d.status<>'satisfied') ORDER BY created_at,id`)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	type candidate struct {
-		id, workspace, title, goal, profile, device, command string
-		root, parent                                         string
-		depth                                                int
-		childPolicyJSON, pregrantJSON                        []byte
-		version                                              int64
+		id, workspace, title, goal, profile, harness, device, command string
+		root, parent                                                  string
+		depth                                                         int
+		childPolicyJSON, pregrantJSON                                 []byte
+		version                                                       int64
 	}
 	var chosen *candidate
 	for rows.Next() {
 		var c candidate
-		if err = rows.Scan(&c.id, &c.workspace, &c.title, &c.goal, &c.profile, &c.version, &c.device, &c.command, &c.root, &c.parent, &c.depth, &c.childPolicyJSON, &c.pregrantJSON); err != nil {
+		if err = rows.Scan(&c.id, &c.workspace, &c.title, &c.goal, &c.profile, &c.harness, &c.version, &c.device, &c.command, &c.root, &c.parent, &c.depth, &c.childPolicyJSON, &c.pregrantJSON); err != nil {
 			rows.Close()
 			writeError(w, err)
 			return
@@ -97,7 +97,10 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		if !exists {
 			continue
 		}
-		if profile.AOAgentKind != "worker" || profile.IsolationPolicy == "" {
+		if c.harness == "" {
+			c.harness = "codex"
+		}
+		if profile.AOAgentKind != "worker" || profile.IsolationPolicy == "" || profile.Harness != c.harness {
 			continue
 		}
 		chosen = &c
@@ -151,7 +154,7 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	_, err = tx.ExecContext(r.Context(), `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,control_version,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,isolation_policy,ao_project_id,started_at,task_version,authorization_json,child_policy_json,lineage_root_task_id,lineage_parent_task_id,lineage_depth) VALUES(?,?,?,?,'dispatching','run',1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, runID, chosen.workspace, chosen.id, attemptID, fence, p.RunnerID, chosen.device, chosen.command, chosen.goal, profile.ID, profile.RuntimeRouteID, profile.ModelRouteID, profile.Role, profile.IsolationPolicy, profile.AOProjectID, now, newVersion, authorizationJSON, policyBytes, chosen.root, nullString(chosen.parent), chosen.depth)
+	_, err = tx.ExecContext(r.Context(), `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,control_version,fence,runner_id,authorized_device_id,command_id,goal,profile_id,harness,runtime_route_id,model_route_id,role,isolation_policy,ao_project_id,started_at,task_version,authorization_json,child_policy_json,lineage_root_task_id,lineage_parent_task_id,lineage_depth) VALUES(?,?,?,?,'dispatching','run',1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, runID, chosen.workspace, chosen.id, attemptID, fence, p.RunnerID, chosen.device, chosen.command, chosen.goal, profile.ID, chosen.harness, profile.RuntimeRouteID, profile.ModelRouteID, profile.Role, profile.IsolationPolicy, profile.AOProjectID, now, newVersion, authorizationJSON, policyBytes, chosen.root, nullString(chosen.parent), chosen.depth)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -165,7 +168,7 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	claim := contracts.JobClaim{RunID: runID, TaskID: chosen.id, AttemptID: attemptID, WorkspaceID: chosen.workspace, TaskVersion: newVersion, Goal: chosen.goal, ProfileID: profile.ID, RuntimeRouteID: profile.RuntimeRouteID, ModelRouteID: profile.ModelRouteID, IsolationPolicy: profile.IsolationPolicy, Role: profile.Role, AOProjectID: profile.AOProjectID, Authorization: authorization, Fence: fence, LineageRootTaskID: chosen.root, LineageParentTaskID: chosen.parent, LineageDepth: chosen.depth, PregrantCapabilityIDs: append([]string{}, pregrant...)}
+	claim := contracts.JobClaim{RunID: runID, TaskID: chosen.id, AttemptID: attemptID, WorkspaceID: chosen.workspace, TaskVersion: newVersion, Goal: chosen.goal, ProfileID: profile.ID, Harness: chosen.harness, RuntimeRouteID: profile.RuntimeRouteID, ModelRouteID: profile.ModelRouteID, IsolationPolicy: profile.IsolationPolicy, Role: profile.Role, AOProjectID: profile.AOProjectID, Authorization: authorization, Fence: fence, LineageRootTaskID: chosen.root, LineageParentTaskID: chosen.parent, LineageDepth: chosen.depth, PregrantCapabilityIDs: append([]string{}, pregrant...)}
 	if err = tx.Commit(); err != nil {
 		writeError(w, err)
 		return
@@ -201,9 +204,12 @@ func loadClaim(ctx context.Context, tx *sql.Tx, runID string, cfg Config) (contr
 	var fence uint64
 	var aoProject, aoSession string
 	var authJSON []byte
-	err := tx.QueryRowContext(ctx, `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json,coalesce(r.lineage_root_task_id,''),coalesce(r.lineage_parent_task_id,''),r.lineage_depth FROM runs r WHERE r.id=?`, runID).Scan(&c.RunID, &c.TaskID, &c.AttemptID, &c.WorkspaceID, &c.TaskVersion, &c.Goal, &c.ProfileID, &c.RuntimeRouteID, &c.ModelRouteID, &c.Role, &c.IsolationPolicy, &aoProject, &aoSession, &fence, &authJSON, &c.LineageRootTaskID, &c.LineageParentTaskID, &c.LineageDepth)
+	err := tx.QueryRowContext(ctx, `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.harness,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json,coalesce(r.lineage_root_task_id,''),coalesce(r.lineage_parent_task_id,''),r.lineage_depth FROM runs r WHERE r.id=?`, runID).Scan(&c.RunID, &c.TaskID, &c.AttemptID, &c.WorkspaceID, &c.TaskVersion, &c.Goal, &c.ProfileID, &c.Harness, &c.RuntimeRouteID, &c.ModelRouteID, &c.Role, &c.IsolationPolicy, &aoProject, &aoSession, &fence, &authJSON, &c.LineageRootTaskID, &c.LineageParentTaskID, &c.LineageDepth)
 	if err != nil {
 		return c, err
+	}
+	if c.Harness == "" {
+		c.Harness = "codex"
 	}
 	c.AOProjectID = aoProject
 	c.AOSessionID = aoSession
@@ -253,10 +259,13 @@ func (s *Server) handleCurrentClaims(w http.ResponseWriter, r *http.Request) {
 	for _, id := range ids {
 		var claim contracts.JobClaim
 		var authJSON []byte
-		err = s.store.DB().QueryRowContext(r.Context(), `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json,coalesce(r.lineage_root_task_id,''),coalesce(r.lineage_parent_task_id,''),r.lineage_depth FROM runs r WHERE r.id=?`, id).Scan(&claim.RunID, &claim.TaskID, &claim.AttemptID, &claim.WorkspaceID, &claim.TaskVersion, &claim.Goal, &claim.ProfileID, &claim.RuntimeRouteID, &claim.ModelRouteID, &claim.Role, &claim.IsolationPolicy, &claim.AOProjectID, &claim.AOSessionID, &claim.Fence, &authJSON, &claim.LineageRootTaskID, &claim.LineageParentTaskID, &claim.LineageDepth)
+		err = s.store.DB().QueryRowContext(r.Context(), `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.harness,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json,coalesce(r.lineage_root_task_id,''),coalesce(r.lineage_parent_task_id,''),r.lineage_depth FROM runs r WHERE r.id=?`, id).Scan(&claim.RunID, &claim.TaskID, &claim.AttemptID, &claim.WorkspaceID, &claim.TaskVersion, &claim.Goal, &claim.ProfileID, &claim.Harness, &claim.RuntimeRouteID, &claim.ModelRouteID, &claim.Role, &claim.IsolationPolicy, &claim.AOProjectID, &claim.AOSessionID, &claim.Fence, &authJSON, &claim.LineageRootTaskID, &claim.LineageParentTaskID, &claim.LineageDepth)
 		if err != nil {
 			writeError(w, err)
 			return
+		}
+		if claim.Harness == "" {
+			claim.Harness = "codex"
 		}
 		if err = json.Unmarshal(authJSON, &claim.Authorization); err != nil {
 			writeError(w, apiError(500, "internal", "persisted run authorization is invalid", nil))
@@ -328,9 +337,9 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	var workspace, taskID, attempt, runnerID, status, desired, boundProject, boundSession string
+	var workspace, taskID, attempt, runnerID, status, desired, boundProject, boundSession, boundHarness string
 	var fence uint64
-	err = tx.QueryRowContext(r.Context(), `SELECT workspace_id,task_id,attempt_id,runner_id,status,desired_control,fence,ao_project_id,ao_session_id FROM runs WHERE id=?`, runID).Scan(&workspace, &taskID, &attempt, &runnerID, &status, &desired, &fence, &boundProject, &boundSession)
+	err = tx.QueryRowContext(r.Context(), `SELECT workspace_id,task_id,attempt_id,runner_id,status,desired_control,fence,ao_project_id,ao_session_id,harness FROM runs WHERE id=?`, runID).Scan(&workspace, &taskID, &attempt, &runnerID, &status, &desired, &fence, &boundProject, &boundSession, &boundHarness)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, apiError(404, "not_found", "run not found", nil))
 		return
@@ -380,7 +389,17 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		}
 		proof := observation.TerminationProof
 		_, offset := proofTimeZone(proof)
-		if proof == nil || proof.Source != "ao_chat_stop" || proof.Method != "native_process_exit_waited" || proof.SessionID != boundSession || !proof.CleanupComplete || proof.VerifiedAt.IsZero() || offset != 0 || proof.VerifiedAt.After(time.Now().UTC().Add(5*time.Minute)) {
+		if boundHarness == "" {
+			boundHarness = "codex"
+		}
+		expectedMethod := ""
+		switch boundHarness {
+		case "codex":
+			expectedMethod = "native_process_exit_waited"
+		case "opencode":
+			expectedMethod = "acp_process_exit_waited"
+		}
+		if proof == nil || proof.Source != "ao_chat_stop" || proof.Method != expectedMethod || proof.SessionID != boundSession || !proof.CleanupComplete || proof.VerifiedAt.IsZero() || offset != 0 || proof.VerifiedAt.After(time.Now().UTC().Add(5*time.Minute)) {
 			writeError(w, apiError(409, "termination_unproven", "termination requires trusted AO stop proof for the bound session", nil))
 			return
 		}

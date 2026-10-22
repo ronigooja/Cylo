@@ -158,6 +158,7 @@ func TestReviewLateCoreMigrationAfterFeatureHistory(t *testing.T) {
 		`ALTER TABLE tasks DROP COLUMN root_child_limit`, `ALTER TABLE tasks DROP COLUMN pregrant_capabilities_json`,
 		`ALTER TABLE runs DROP COLUMN child_policy_json`, `ALTER TABLE runs DROP COLUMN lineage_root_task_id`,
 		`ALTER TABLE runs DROP COLUMN lineage_parent_task_id`, `ALTER TABLE runs DROP COLUMN lineage_depth`,
+		`ALTER TABLE tasks DROP COLUMN harness`, `ALTER TABLE runs DROP COLUMN harness`,
 	} {
 		if _, err := s.DB().ExecContext(ctx, stmt); err != nil {
 			t.Fatal(err)
@@ -167,6 +168,9 @@ func TestReviewLateCoreMigrationAfterFeatureHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := s.DB().ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=5`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=6`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.DB().ExecContext(ctx, `CREATE TABLE schema_migrations_legacy (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
@@ -269,7 +273,7 @@ func TestReviewLegacyNamespaceBackfillRollsBackOnHistoryGap(t *testing.T) {
 	if err := s.DB().QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE namespace<>''`).Scan(&named); err != nil {
 		t.Fatal(err)
 	}
-	if blank != 4 || named != 0 {
+	if blank != 5 || named != 0 {
 		t.Fatalf("failed validation partially backfilled legacy history: blank=%d named=%d", blank, named)
 	}
 }

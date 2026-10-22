@@ -35,6 +35,7 @@ type Config struct {
 
 type RuntimeProfile struct {
 	ID              string      `json:"id"`
+	Harness         string      `json:"harness,omitempty"`
 	AOProjectID     string      `json:"ao_project_id"`
 	RuntimeRouteID  string      `json:"runtime_route_id"`
 	ModelRouteID    string      `json:"model_route_id"`
@@ -225,6 +226,10 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 	}
 	profiles := make(map[string]RuntimeProfile, len(cfg.Profiles))
 	for id, profile := range cfg.Profiles {
+		profile.Harness = strings.TrimSpace(profile.Harness)
+		if profile.Harness == "" {
+			profile.Harness = "codex"
+		}
 		profile.CapabilityIDs = append([]string(nil), profile.CapabilityIDs...)
 		profile.Scopes = append([]string(nil), profile.Scopes...)
 		profile.ChildPolicy.AllowedProfileIDs = append([]string(nil), profile.ChildPolicy.AllowedProfileIDs...)
@@ -256,6 +261,15 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 		}
 	}
 	for id, profile := range cfg.Profiles {
+		if profile.Harness != "codex" && profile.Harness != "opencode" {
+			return nil, fmt.Errorf("runtime profile %q selects unsupported harness %q", id, profile.Harness)
+		}
+		if profile.Harness == "opencode" && profile.IsolationPolicy != "ao-opencode-workspace-write-v1" {
+			return nil, fmt.Errorf("runtime profile %q selects OpenCode with an incompatible isolation policy", id)
+		}
+		if profile.Harness == "codex" && profile.IsolationPolicy == "ao-opencode-workspace-write-v1" {
+			return nil, fmt.Errorf("runtime profile %q selects Codex with an OpenCode isolation policy", id)
+		}
 		if id == "" || profile.ID != id || profile.AOProjectID == "" || profile.RuntimeRouteID == "" || profile.ModelRouteID == "" || profile.Role == "" || profile.AOAgentKind != "worker" || profile.IsolationPolicy == "" {
 			return nil, fmt.Errorf("runtime profile %q is incomplete or does not select AO worker execution", id)
 		}

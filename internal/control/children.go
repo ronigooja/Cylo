@@ -135,7 +135,7 @@ func (s *Server) handleChildProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	profile, profileExists := s.cfg.Profiles[req.ProfileID]
-	if !profileExists || profile.AOAgentKind != "worker" || profile.IsolationPolicy == "" {
+	if !profileExists || profile.AOAgentKind != "worker" || profile.IsolationPolicy == "" || (profile.Harness != "codex" && profile.Harness != "opencode") || (profile.Harness == "opencode" && profile.IsolationPolicy != "ao-opencode-workspace-write-v1") || (profile.Harness == "codex" && profile.IsolationPolicy == "ao-opencode-workspace-write-v1") {
 		writeError(w, apiError(http.StatusConflict, "profile_unavailable", "requested child profile is not configured for worker execution", nil))
 		return
 	}
@@ -303,7 +303,7 @@ func (s *Server) admitChildTaskTx(ctx context.Context, tx *sql.Tx, req contracts
 		taskStatus = "waiting"
 	}
 	command := "child:" + proposalRowID
-	_, err = tx.ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,project_id,title,goal,source,profile_id,status,version,created_at,updated_at,accepted_at,created_by_device_id,command_id,owner_subject_id,lineage_root_task_id,lineage_parent_task_id,lineage_depth,child_policy_json,root_child_limit,pregrant_capabilities_json) VALUES(?,?,?,?,?,'child',?,?,1,?,?,?,?,?,?,?,?,?,?,?,?)`, childID, workspace, nullableValue(project), req.Title, req.Goal, req.ProfileID, taskStatus, now, now, now, device, command, subject, rootID, parentTaskID, depth, policyJSON, rootLimit, pregrantJSON)
+	_, err = tx.ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,project_id,title,goal,source,profile_id,harness,status,version,created_at,updated_at,accepted_at,created_by_device_id,command_id,owner_subject_id,lineage_root_task_id,lineage_parent_task_id,lineage_depth,child_policy_json,root_child_limit,pregrant_capabilities_json) VALUES(?,?,?,?,?,'child',?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?)`, childID, workspace, nullableValue(project), req.Title, req.Goal, req.ProfileID, profile.Harness, taskStatus, now, now, now, device, command, subject, rootID, parentTaskID, depth, policyJSON, rootLimit, pregrantJSON)
 	if err != nil {
 		return "", err
 	}

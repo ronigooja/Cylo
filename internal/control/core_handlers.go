@@ -168,7 +168,7 @@ func (s *Server) AdmitTaskTx(ctx context.Context, tx *sql.Tx, in AdmissionContex
 		childLimit = profile.ChildPolicy.MaxChildRuns
 	}
 	stamp := at.Format(time.RFC3339Nano)
-	_, err = tx.ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,project_id,title,goal,source,profile_id,status,version,created_at,updated_at,accepted_at,created_by_device_id,command_id,owner_subject_id,lineage_root_task_id,lineage_depth,child_policy_json,root_child_limit) VALUES(?,?,?,?,?,?,?,'queued',1,?,?,?,?,?,?,?,0,?,?)`, id, in.Principal.WorkspaceID, nullString(in.ProjectID), in.Title, in.Goal, in.Source, profileID, stamp, stamp, stamp, in.Principal.DeviceID, in.IdempotencyKey, in.Principal.SubjectID, id, policyJSON, childLimit)
+	_, err = tx.ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,project_id,title,goal,source,profile_id,harness,status,version,created_at,updated_at,accepted_at,created_by_device_id,command_id,owner_subject_id,lineage_root_task_id,lineage_depth,child_policy_json,root_child_limit) VALUES(?,?,?,?,?,?,?,?, 'queued',1,?,?,?,?,?,?,?,0,?,?)`, id, in.Principal.WorkspaceID, nullString(in.ProjectID), in.Title, in.Goal, in.Source, profileID, profile.Harness, stamp, stamp, stamp, in.Principal.DeviceID, in.IdempotencyKey, in.Principal.SubjectID, id, policyJSON, childLimit)
 	if err != nil {
 		return TaskAdmissionResult{}, err
 	}

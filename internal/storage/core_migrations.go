@@ -315,7 +315,7 @@ CREATE TABLE child_budget_reservations (
 	}}); err != nil {
 		return err
 	}
-	return s.RegisterMigration(Migration{Namespace: "core", Version: 5, Name: "device_push_tokens_and_delivery", Up: func(ctx context.Context, tx *sql.Tx) error {
+	if err := s.RegisterMigration(Migration{Namespace: "core", Version: 5, Name: "device_push_tokens_and_delivery", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 CREATE TABLE device_push_tokens (
   id TEXT PRIMARY KEY,
@@ -350,6 +350,15 @@ CREATE TABLE push_deliveries (
 );
 CREATE INDEX push_deliveries_due ON push_deliveries(status,next_attempt_at,created_at);
 CREATE INDEX push_deliveries_token ON push_deliveries(push_token_id,status);
+`)
+		return err
+	}}); err != nil {
+		return err
+	}
+	return s.RegisterMigration(Migration{Namespace: "core", Version: 6, Name: "task_and_run_harness_snapshot", Up: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+ALTER TABLE tasks ADD COLUMN harness TEXT NOT NULL DEFAULT 'codex';
+ALTER TABLE runs ADD COLUMN harness TEXT NOT NULL DEFAULT 'codex';
 `)
 		return err
 	}})

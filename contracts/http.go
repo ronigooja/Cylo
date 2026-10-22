@@ -212,6 +212,7 @@ type JobClaim struct {
 	TaskVersion           int64            `json:"task_version"`
 	Goal                  string           `json:"goal"`
 	ProfileID             string           `json:"profile_id"`
+	Harness               string           `json:"harness"`
 	RuntimeRouteID        string           `json:"runtime_route_id"`
 	ModelRouteID          string           `json:"model_route_id"`
 	IsolationPolicy       string           `json:"isolation_policy"`
