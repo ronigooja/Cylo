@@ -24,6 +24,16 @@ type fakeControl struct {
 	loseObservationNumber   int
 }
 
+type authorizationControl struct {
+	*fakeControl
+	allowed bool
+	reason  string
+}
+
+func (f *authorizationControl) CheckDispatchAuthorization(context.Context, string) (bool, string, error) {
+	return f.allowed, f.reason, nil
+}
+
 func (f *fakeControl) Claim(context.Context) (*contracts.JobClaim, error)    { return nil, ErrNoClaim }
 func (f *fakeControl) Current(context.Context) ([]contracts.JobClaim, error) { return nil, nil }
 func (f *fakeControl) Control(_ context.Context, runID string) (contracts.RunControl, error) {
@@ -243,6 +253,34 @@ func TestRouteUnavailableFailsRunBeforeAOCreate(t *testing.T) {
 	}
 	if len(control.observations) != 1 || control.observations[0].Kind != "no_effect_terminal" || control.observations[0].NoEffectProof == nil || control.observations[0].NoEffectProof.Outcome != "failed" {
 		t.Fatalf("route rejection did not report a no-effect terminal observation: %+v", control.observations)
+	}
+}
+
+func TestRevokedAuthorizationAfterDispatchKeepsUnknownWithoutAOReplay(t *testing.T) {
+	claim := validClaim()
+	agent := &fakeAO{}
+	engine, fake := makeEngine(t, claim, contracts.RunControl{DesiredControl: "run"}, agent, permitIsolation{}, nil)
+	control := &authorizationControl{fakeControl: fake, reason: "dispatch_authorization_revoked"}
+	engine.Control = control
+	spec := ao.WorkerSpec{ClientRequestID: claim.RunID, ProjectID: claim.AOProjectID, Harness: "codex", DisplayName: "original", Prompt: "original request body"}
+	if _, err := engine.Journal.SaveClaim(context.Background(), claim, spec, "claimed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Journal.SetPhase(context.Background(), claim.RunID, claim.AttemptID, claim.Fence, "create_pending"); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Process(context.Background(), claim); !errors.Is(err, ErrOutcomePending) {
+		t.Fatal(err)
+	}
+	if agent.createN != 0 {
+		t.Fatal("runner replayed AO create after dispatch authorization was revoked")
+	}
+	if len(fake.observations) != 1 || fake.observations[0].Kind != "effect_unknown" || fake.observations[0].NoEffectProof != nil {
+		t.Fatalf("revoked post-dispatch recovery must remain uncertain: %+v", fake.observations)
+	}
+	entry, ok, err := engine.Journal.Entry(context.Background(), claim.RunID)
+	if err != nil || !ok || entry.Phase != "effect_unknown" {
+		t.Fatalf("journal phase=%q ok=%v err=%v", entry.Phase, ok, err)
 	}
 }
 

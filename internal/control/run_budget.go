@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -306,16 +307,27 @@ func budgetConsumedTx(r *http.Request, tx *sql.Tx, runID string) (contracts.RunB
 	return total, rows.Err()
 }
 func addBudgetUsage(a, b contracts.RunBudgetUsage) contracts.RunBudgetUsage {
-	return contracts.RunBudgetUsage{ModelCalls: a.ModelCalls + b.ModelCalls, InputUnits: a.InputUnits + b.InputUnits, OutputUnits: a.OutputUnits + b.OutputUnits, ToolSteps: a.ToolSteps + b.ToolSteps, ArtifactBytes: a.ArtifactBytes + b.ArtifactBytes}
+	return contracts.RunBudgetUsage{ModelCalls: saturatingBudgetAdd(a.ModelCalls, b.ModelCalls), InputUnits: saturatingBudgetAdd(a.InputUnits, b.InputUnits), OutputUnits: saturatingBudgetAdd(a.OutputUnits, b.OutputUnits), ToolSteps: saturatingBudgetAdd(a.ToolSteps, b.ToolSteps), ArtifactBytes: saturatingBudgetAdd(a.ArtifactBytes, b.ArtifactBytes)}
 }
+
+func saturatingBudgetAdd(a, b int64) int64 {
+	if b > 0 && a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	if b < 0 && a < math.MinInt64-b {
+		return math.MinInt64
+	}
+	return a + b
+}
+
 func validBudgetUsage(u contracts.RunBudgetUsage) bool {
 	return u.ModelCalls >= 0 && u.InputUnits >= 0 && u.OutputUnits >= 0 && u.ToolSteps >= 0 && u.ArtifactBytes >= 0
 }
 func hasBudgetUsage(u contracts.RunBudgetUsage) bool {
-	return u.ModelCalls+u.InputUnits+u.OutputUnits+u.ToolSteps+u.ArtifactBytes > 0
+	return u.ModelCalls > 0 || u.InputUnits > 0 || u.OutputUnits > 0 || u.ToolSteps > 0 || u.ArtifactBytes > 0
 }
 func budgetWithinLimits(u contracts.RunBudgetUsage, b contracts.RunBudgetSnapshot) bool {
-	return u.ModelCalls <= b.MaxModelCalls && u.InputUnits <= b.MaxInputUnits && u.OutputUnits <= b.MaxOutputUnits && u.ToolSteps <= b.MaxToolSteps && u.ArtifactBytes <= b.MaxArtifactBytes
+	return u.ModelCalls >= 0 && u.InputUnits >= 0 && u.OutputUnits >= 0 && u.ToolSteps >= 0 && u.ArtifactBytes >= 0 && u.ModelCalls <= b.MaxModelCalls && u.InputUnits <= b.MaxInputUnits && u.OutputUnits <= b.MaxOutputUnits && u.ToolSteps <= b.MaxToolSteps && u.ArtifactBytes <= b.MaxArtifactBytes
 }
 
 func requestBudgetStopTx(r *http.Request, tx *sql.Tx, workspace, runID, attempt string, fence uint64, reason, reservation string) error {

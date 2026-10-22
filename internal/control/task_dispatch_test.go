@@ -1,11 +1,15 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/ronigooja/Cylo/internal/runner"
 	"github.com/ronigooja/Cylo/internal/storage"
 )
 
@@ -67,5 +71,77 @@ func TestUncertainTaskDispatchRemainsNonDispatchableWithoutMutation(t *testing.T
 	}
 	if status != "uncertain" || desired != "run" {
 		t.Fatalf("uncertain run mutated to status=%q desired_control=%q", status, desired)
+	}
+}
+
+func TestProductionControlClientRechecksLiveTaskAuthorizationOverHTTP(t *testing.T) {
+	ctx := context.Background()
+	runnerToken := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
+	store, err := storage.Open(ctx, storage.Config{Path: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := storage.RegisterCoreMigrations(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO devices(id,workspace_id,subject_id,name,status,token_hash,created_at) VALUES('device','default','owner','test','approved',x'01',?)`, at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,title,goal,source,profile_id,status,version,created_at,updated_at,created_by_device_id,command_id) VALUES('task','default','test','test','user','profile','active',1,?,?, 'device','command')`, at, at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,started_at) VALUES('run','default','task','attempt','active','run',1,'runner','device','command','test','profile','runtime','model','worker',?)`, at); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(store, Config{RunnerToken: runnerToken, RunnerID: "runner", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	guardCalled := false
+	if err := server.RegisterTaskDispatchGuard("service", func(context.Context, *sql.Tx, string, string, time.Time) (string, error) {
+		guardCalled = true
+		return "grant_revoked", nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	client, err := runner.NewControlClient(httpServer.URL, runnerToken, httpServer.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed, reason, err := client.CheckDispatchAuthorization(ctx, "run")
+	if err != nil || !allowed || reason != "" {
+		t.Fatalf("user dispatch check = allowed:%v reason:%q err:%v", allowed, reason, err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE tasks SET source='service' WHERE id='task'`); err != nil {
+		t.Fatal(err)
+	}
+	allowed, reason, err = client.CheckDispatchAuthorization(ctx, "run")
+	if err != nil || allowed || reason != "grant_revoked" {
+		t.Fatalf("revoked dispatch check = allowed:%v reason:%q err:%v", allowed, reason, err)
+	}
+	var desired string
+	if err := store.DB().QueryRowContext(ctx, `SELECT desired_control FROM runs WHERE id='run'`).Scan(&desired); err != nil || desired != "stop" {
+		t.Fatalf("revoked active run desired_control=%q err=%v", desired, err)
+	}
+	guardCalled = false
+	if _, err := store.DB().ExecContext(ctx, `UPDATE runs SET status='uncertain',desired_control='run' WHERE id='run'`); err != nil {
+		t.Fatal(err)
+	}
+	allowed, reason, err = client.CheckDispatchAuthorization(ctx, "run")
+	if err != nil || allowed || reason != "reconciliation_unavailable" {
+		t.Fatalf("uncertain recovery check = allowed:%v reason:%q err:%v", allowed, reason, err)
+	}
+	if guardCalled {
+		t.Fatal("uncertain recovery reached a dispatch grant or create authorization")
+	}
+	if err := store.DB().QueryRowContext(ctx, `SELECT desired_control FROM runs WHERE id='run'`).Scan(&desired); err != nil || desired != "run" {
+		t.Fatalf("uncertain dispatch check changed desired_control=%q err=%v", desired, err)
 	}
 }

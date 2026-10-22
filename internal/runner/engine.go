@@ -259,7 +259,7 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 					if reason == "" {
 						reason = "dispatch_authorization_revoked"
 					}
-					return e.reportNoEffectTerminal(ctx, claim, "failed", reason, "Task authorization is no longer valid; AO dispatch was not started.")
+					return e.reportDispatchAuthorizationDenied(ctx, claim, entry.Phase, reason)
 				}
 			}
 			budgetID := "ao-initial-prompt"
@@ -702,6 +702,20 @@ func (e *Engine) reportStopWithoutSession(ctx context.Context, claim contracts.J
 		return e.reportNoEffectTerminal(ctx, claim, "stopped", "stop_before_dispatch", "Stop was confirmed before any AO session was created.")
 	}
 	return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_create", "Stop arrived while AO creation may have had an unknown outcome; the run remains fenced for reconciliation.", nil, nil, "", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "unknown"}}))
+}
+
+func (e *Engine) reportDispatchAuthorizationDenied(ctx context.Context, claim contracts.JobClaim, phase, reason string) error {
+	if phase == "claimed" {
+		return e.reportNoEffectTerminal(ctx, claim, "failed", reason, "Task authorization was revoked before AO dispatch started.")
+	}
+	// Once dispatch_started is in the journal, a grant change cannot prove that
+	// AO did not accept the request. Do not send another create request or claim
+	// no effect; retain the effect as uncertain until a read-only reconciliation
+	// API or other trusted evidence resolves it.
+	if err := e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "effect_unknown"); err != nil {
+		return err
+	}
+	return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_create", "Task authorization changed after AO dispatch began; no new create request was sent and the previous create outcome remains unresolved.", nil, map[string]any{"reason": reason}, "AO worker creation remains uncertain pending read-only reconciliation.", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "unknown"}}))
 }
 
 func (e *Engine) reportNoEffectTerminal(ctx context.Context, claim contracts.JobClaim, outcome, reason, message string) error {

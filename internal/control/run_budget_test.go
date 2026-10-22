@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -112,6 +113,27 @@ func TestBudgetReservationReplayRechecksCurrentRunControl(t *testing.T) {
 	var count int
 	if err := server.store.DB().QueryRow(`SELECT count(*) FROM run_budget_reservations WHERE run_id='budget-run'`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("replay reservation count=%d err=%v", count, err)
+	}
+}
+
+func TestBudgetReservationRejectsUsageOverflow(t *testing.T) {
+	server, closeStore := budgetTestServer(t, contracts.RunBudgetSnapshot{MaxInputUnits: 100, MaxModelCalls: 1})
+	defer closeStore()
+	first := contracts.RunBudgetReserveRequest{AttemptID: "budget-attempt", Fence: 91, ReservationID: "provider-call-1", Usage: contracts.RunBudgetUsage{InputUnits: 40}}
+	if response := budgetPrincipalRequest(server.handleRunBudgetReserve, first, "budget-run"); response.Code != http.StatusOK {
+		t.Fatalf("first reserve status=%d body=%s", response.Code, response.Body.String())
+	}
+	second := contracts.RunBudgetReserveRequest{AttemptID: "budget-attempt", Fence: 91, ReservationID: "provider-call-2", Usage: contracts.RunBudgetUsage{InputUnits: math.MaxInt64}}
+	response := budgetPrincipalRequest(server.handleRunBudgetReserve, second, "budget-run")
+	if response.Code != http.StatusOK {
+		t.Fatalf("overflow reserve status=%d body=%s", response.Code, response.Body.String())
+	}
+	var receipt contracts.RunBudgetReceipt
+	if err := json.Unmarshal(response.Body.Bytes(), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Allowed || !receipt.StopRequested || receipt.Consumed.InputUnits != 40 {
+		t.Fatalf("overflow reservation was not rejected conservatively: %+v", receipt)
 	}
 }
 

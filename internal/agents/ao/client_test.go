@@ -9,15 +9,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
 
-func TestCreateWorkerUsesSameIdempotentRequestAfterServerFailure(t *testing.T) {
+func TestCreateWorkerKeepsServerFailureUnknownWithoutCreateReplay(t *testing.T) {
 	requests := 0
-	var firstBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		if r.URL.Path != "/api/v1/sessions" || r.Method != http.MethodPost {
@@ -33,32 +30,19 @@ func TestCreateWorkerUsesSameIdempotentRequestAfterServerFailure(t *testing.T) {
 		if body["kind"] != "worker" || body["clientRequestId"] != "run-1" {
 			t.Fatalf("unsafe/non-idempotent create body: %#v", body)
 		}
-		encoded, _ := json.Marshal(body)
-		if requests == 1 {
-			firstBody = string(encoded)
-			w.WriteHeader(http.StatusBadGateway)
-			return
-		}
-		if string(encoded) != firstBody {
-			t.Fatal("retry did not preserve the original request body")
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"session":{"id":"ao-session-1","status":"working"}}`)
+		w.WriteHeader(http.StatusBadGateway)
 	}))
 	defer srv.Close()
 	client, err := New(Config{BaseURL: srv.URL, Token: "deployment-token"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := client.CreateWorker(context.Background(), WorkerSpec{
+	_, err = client.CreateWorker(context.Background(), WorkerSpec{
 		ClientRequestID: "run-1", ProjectID: "safe-fixture", Harness: "codex",
 		Model: "gpt-6.1-sol", DisplayName: "Cylo run run-1", Prompt: "Inspect the local fixture.",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if session.ID != "ao-session-1" || requests != 2 {
-		t.Fatalf("session=%q requests=%d", session.ID, requests)
+	if !errors.Is(err, ErrOutcomeUnknown) || requests != 1 {
+		t.Fatalf("error=%v requests=%d; unknown create must not be replayed", err, requests)
 	}
 }
 
@@ -141,37 +125,21 @@ func TestCreateWorkerDoesNotTrustAllowlistedCodeOnServerFailure(t *testing.T) {
 	}
 }
 
-func TestCreateWorkerTimeoutThenIncompleteReplayIsUnknownAndKeepsRequest(t *testing.T) {
-	var requests atomic.Int64
-	var mu sync.Mutex
-	var firstBody []byte
+func TestCreateWorkerTimeoutRemainsUnknownWithoutReplay(t *testing.T) {
+	requests := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestNumber := requests.Add(1)
+		requests++
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("read request body: %v", err)
 			return
 		}
-		if requestNumber == 1 {
-			mu.Lock()
-			firstBody = body
-			mu.Unlock()
-			<-r.Context().Done()
-			return
-		}
-		mu.Lock()
-		originalBody := append([]byte(nil), firstBody...)
-		mu.Unlock()
-		if string(body) != string(originalBody) {
-			t.Errorf("replay body changed: first=%s replay=%s", originalBody, body)
-		}
 		var request map[string]any
 		if err := json.Unmarshal(body, &request); err != nil || request["clientRequestId"] != "run-timeout" {
-			t.Errorf("replay identity changed: %#v (%v)", request, err)
+			t.Errorf("request identity changed: %#v (%v)", request, err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		_, _ = io.WriteString(w, `{"error":"conflict","code":"CLIENT_REQUEST_INCOMPLETE","message":"do not expose this"}`)
+		<-r.Context().Done()
 	}))
 	defer srv.Close()
 	client, err := New(Config{BaseURL: srv.URL, Token: "fixture-token", Client: &http.Client{Timeout: 25 * time.Millisecond}})
@@ -182,52 +150,33 @@ func TestCreateWorkerTimeoutThenIncompleteReplayIsUnknownAndKeepsRequest(t *test
 		ClientRequestID: "run-timeout", ProjectID: "safe-fixture", Harness: "opencode",
 		DisplayName: "bounded fixture", Prompt: "local fixture only",
 	})
-	if !errors.Is(err, ErrOutcomeUnknown) || requests.Load() != 2 {
-		t.Fatalf("error=%v requests=%d, want unknown after same-key incomplete replay", err, requests.Load())
+	if !errors.Is(err, ErrOutcomeUnknown) || requests != 1 {
+		t.Fatalf("error=%v requests=%d, want one unknown create request", err, requests)
 	}
 	if strings.Contains(err.Error(), "do not expose this") || strings.Contains(err.Error(), "fixture-token") {
 		t.Fatalf("unsafe error detail escaped: %v", err)
 	}
 }
 
-func TestCreateWorkerIncompleteReplayCanReturnCommittedOriginalSession(t *testing.T) {
-	var requests atomic.Int64
-	var mu sync.Mutex
-	var firstBody []byte
+func TestCreateWorkerDoesNotReplayIncompleteKeyAsCreate(t *testing.T) {
+	requests := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestNumber := requests.Add(1)
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read request body: %v", err)
-			return
-		}
-		if requestNumber == 1 {
-			mu.Lock()
-			firstBody = body
-			mu.Unlock()
-			<-r.Context().Done()
-			return
-		}
-		mu.Lock()
-		originalBody := append([]byte(nil), firstBody...)
-		mu.Unlock()
-		if string(body) != string(originalBody) {
-			t.Errorf("replay body changed")
-		}
+		requests++
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"session":{"id":"ao-original-session","status":"working"}}`)
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"error":"conflict","code":"CLIENT_REQUEST_INCOMPLETE"}`)
 	}))
 	defer srv.Close()
 	client, err := New(Config{BaseURL: srv.URL, Token: "fixture-token", Client: &http.Client{Timeout: 25 * time.Millisecond}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := client.CreateWorker(context.Background(), WorkerSpec{
+	_, err = client.CreateWorker(context.Background(), WorkerSpec{
 		ClientRequestID: "run-committed", ProjectID: "safe-fixture", Harness: "opencode",
 		DisplayName: "bounded fixture", Prompt: "local fixture only",
 	})
-	if err != nil || session.ID != "ao-original-session" || requests.Load() != 2 {
-		t.Fatalf("session=%q error=%v requests=%d", session.ID, err, requests.Load())
+	if !errors.Is(err, ErrOutcomeUnknown) || requests != 1 {
+		t.Fatalf("error=%v requests=%d; incomplete create is not a read-only lookup", err, requests)
 	}
 }
 
@@ -260,44 +209,23 @@ func TestAOErrorEnvelopeCodeIsIgnoredWhenMalformedOrOversized(t *testing.T) {
 	}
 }
 
-func TestCreateWorkerReplaysMalformedSuccessfulResponseWithSameKey(t *testing.T) {
+func TestCreateWorkerKeepsMalformedSuccessfulResponseUnknownWithoutReplay(t *testing.T) {
 	requests := 0
-	var originalBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if requests == 1 {
-			originalBody = string(body)
-			w.WriteHeader(http.StatusCreated)
-			_, _ = fmt.Fprint(w, `{"session":`)
-			return
-		}
-		if string(body) != originalBody {
-			t.Fatal("retry changed the idempotent request body")
-		}
-		var request map[string]any
-		if err := json.Unmarshal(body, &request); err != nil || request["clientRequestId"] != "run-ambiguous" {
-			t.Fatalf("unexpected replay body: %s (%v)", body, err)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"session":{"id":"ao-session-2"}}`)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = fmt.Fprint(w, `{"session":`)
 	}))
 	defer srv.Close()
 	client, err := New(Config{BaseURL: srv.URL, Token: "test-token"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := client.CreateWorker(context.Background(), WorkerSpec{
+	_, err = client.CreateWorker(context.Background(), WorkerSpec{
 		ClientRequestID: "run-ambiguous", ProjectID: "safe-fixture", Harness: "codex", DisplayName: "test", Prompt: "inspect fixture",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if session.ID != "ao-session-2" || requests != 2 {
-		t.Fatalf("session=%q requests=%d", session.ID, requests)
+	if !errors.Is(err, ErrOutcomeUnknown) || requests != 1 {
+		t.Fatalf("error=%v requests=%d; malformed create response must stay uncertain", err, requests)
 	}
 }
 
@@ -315,7 +243,7 @@ func TestCreateWorkerTreatsSuccessfulResponseWithoutIDAsUnknown(t *testing.T) {
 	_, err = client.CreateWorker(context.Background(), WorkerSpec{
 		ClientRequestID: "run-ambiguous", ProjectID: "safe-fixture", Harness: "codex", DisplayName: "test", Prompt: "inspect fixture",
 	})
-	if !errors.Is(err, ErrOutcomeUnknown) || requests != 2 {
+	if !errors.Is(err, ErrOutcomeUnknown) || requests != 1 {
 		t.Fatalf("error=%v requests=%d", err, requests)
 	}
 }

@@ -157,9 +157,10 @@ func New(cfg Config) (*Client, error) {
 	return &Client{base: u, token: cfg.Token, client: client}, nil
 }
 
-// CreateWorker uses AO's worker-only session endpoint. When the response is
-// lost, it repeats the identical request with the same clientRequestId; AO
-// deduplicates that key and rejects a different request body.
+// CreateWorker uses AO's worker-only session endpoint. An ambiguous response
+// stays unknown: repeating the create POST with the same clientRequestId is
+// still a create when AO has not durably claimed that key, so only a future
+// read-only lookup may reconcile it automatically.
 func (c *Client) CreateWorker(ctx context.Context, spec WorkerSpec) (Session, error) {
 	if spec.ClientRequestID == "" || len(spec.ClientRequestID) > 128 || spec.ProjectID == "" || spec.Harness == "" || spec.DisplayName == "" || spec.Prompt == "" {
 		return Session{}, errors.New("AO worker spec is incomplete")
@@ -186,46 +187,22 @@ func (c *Client) CreateWorker(ctx context.Context, spec WorkerSpec) (Session, er
 	if err != nil {
 		return Session{}, fmt.Errorf("encode AO worker request: %w", err)
 	}
-	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		var response SpawnResponse
-		status, err := c.do(ctx, http.MethodPost, "/api/v1/sessions", encoded, &response)
-		if err == nil {
-			if response.Session.ID == "" {
-				// A successful response without the identifier does not prove that AO
-				// failed to create the worker. Replay the identical idempotent request.
-				lastErr = fmt.Errorf("AO worker creation returned no session id (HTTP %d)", status)
-				continue
-			}
-			return response.Session, nil
+	var response SpawnResponse
+	status, err := c.do(ctx, http.MethodPost, "/api/v1/sessions", encoded, &response)
+	if err == nil {
+		if response.Session.ID == "" {
+			return Session{}, fmt.Errorf("%w: AO worker creation returned no session id (HTTP %d)", ErrOutcomeUnknown, status)
 		}
-		lastErr = err
-		var incomplete statusError
-		if errors.As(err, &incomplete) && incomplete.status == http.StatusConflict && incomplete.code == "CLIENT_REQUEST_INCOMPLETE" {
-			// AO has durably claimed this idempotency key, but has not committed
-			// the launch yet. Preserve the unknown outcome so the runner retries
-			// this exact request later; a different key could create a duplicate.
-			return Session{}, fmt.Errorf("%w: AO worker creation is still in progress", ErrOutcomeUnknown)
-		}
-		var rejected statusError
-		if errors.As(err, &rejected) && IsDefiniteCreateRejection(rejected.status, rejected.code) {
-			return Session{}, CreateRejectedError{Status: rejected.status, Code: rejected.code}
-		}
-		if errors.As(err, &rejected) {
-			// Replaying the same idempotency key and byte-identical body is AO's
-			// reconciliation operation for an unrecognized response.
-			if attempt == 0 && (rejected.status == http.StatusConflict || retryableUnknown(err)) {
-				continue
-			}
-			return Session{}, fmt.Errorf("%w: AO worker creation response was not a recognized no-create rejection", ErrOutcomeUnknown)
-		}
-		// A malformed/truncated 2xx response can follow a successful create. The
-		// endpoint's clientRequestId makes an identical replay safe.
-		if !retryableUnknown(err) {
-			return Session{}, err
-		}
+		return response.Session, nil
 	}
-	return Session{}, fmt.Errorf("%w: %v", ErrOutcomeUnknown, lastErr)
+	var rejected statusError
+	if errors.As(err, &rejected) && IsDefiniteCreateRejection(rejected.status, rejected.code) {
+		return Session{}, CreateRejectedError{Status: rejected.status, Code: rejected.code}
+	}
+	if errors.As(err, &rejected) || retryableUnknown(err) {
+		return Session{}, fmt.Errorf("%w: AO worker creation response did not prove whether a session was created", ErrOutcomeUnknown)
+	}
+	return Session{}, err
 }
 
 func (c *Client) GetSession(ctx context.Context, id string) (Session, error) {

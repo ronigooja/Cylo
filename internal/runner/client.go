@@ -115,6 +115,29 @@ func (c *ControlClient) Control(ctx context.Context, runID string) (contracts.Ru
 	return control, nil
 }
 
+// CheckDispatchAuthorization refreshes the source grant immediately before an
+// AO create or exact-request recovery. A denied check after dispatch_started
+// must remain uncertain; it does not prove that the earlier request had no
+// effect.
+func (c *ControlClient) CheckDispatchAuthorization(ctx context.Context, runID string) (bool, string, error) {
+	if strings.TrimSpace(runID) == "" {
+		return false, "", errors.New("run id is required for dispatch authorization")
+	}
+	response, err := c.request(ctx, http.MethodPost, "/runner/v1/runs/"+url.PathEscape(runID)+"/dispatch-authorization", nil, "")
+	if err != nil {
+		return false, "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return false, "", safeHTTPError("check task dispatch authorization", response.StatusCode)
+	}
+	var result contracts.DispatchAuthorization
+	if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&result); err != nil {
+		return false, "", fmt.Errorf("decode task dispatch authorization: %w", err)
+	}
+	return result.Allowed, result.ReasonCode, nil
+}
+
 func (c *ControlClient) ReserveBudget(ctx context.Context, runID string, request contracts.RunBudgetReserveRequest) (contracts.RunBudgetReceipt, error) {
 	if runID == "" || request.ReservationID == "" {
 		return contracts.RunBudgetReceipt{}, errors.New("run and budget reservation ids are required")
