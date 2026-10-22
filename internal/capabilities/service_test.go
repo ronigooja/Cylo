@@ -3,18 +3,22 @@ package capabilities
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Cylo/internal/agents/ao"
 	"github.com/ronigooja/Cylo/internal/control"
+	"github.com/ronigooja/Cylo/internal/runner"
 	"github.com/ronigooja/Cylo/internal/storage"
 )
 
@@ -169,9 +173,9 @@ func TestRunnerDeploymentClaimAndFencedObservation(t *testing.T) {
 	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
 		t.Fatal(err)
 	}
-	server, err := control.NewServer(store, control.Config{RunnerToken: runnerToken, RunnerID: "runner-test", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"capability:deploy", "runner:observe"}, Profiles: map[string]control.RuntimeProfile{
-		"worker-profile": {ID: "worker-profile", AOProjectID: "ao-project", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "strict"},
-		"super-profile":  {ID: "super-profile", AOProjectID: "ao-project", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "super", AOAgentKind: "worker", IsolationPolicy: "strict"},
+	server, err := control.NewServer(store, control.Config{RunnerToken: runnerToken, RunnerID: "runner-test", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"capability:deploy", "runner:observe", "runner:claim", "runner:control:read"}, Profiles: map[string]control.RuntimeProfile{
+		"worker-profile": {ID: "worker-profile", Harness: "codex", AOProjectID: "ao-project", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: runner.CodexWorkspaceWritePolicy},
+		"super-profile":  {ID: "super-profile", Harness: "codex", AOProjectID: "ao-project", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "super", AOAgentKind: "worker", IsolationPolicy: runner.CodexWorkspaceWritePolicy},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -654,6 +658,227 @@ func postCapabilityRunTerminalObservation(t *testing.T, handler http.Handler, to
 	terminal.AOSessionID = bound.AOSessionID
 	terminal.TerminationProof = &contracts.TerminationProof{Source: "ao_chat_stop", Method: "native_process_exit_waited", SessionID: bound.AOSessionID, VerifiedAt: time.Now().UTC(), CleanupComplete: true}
 	post(terminal)
+}
+
+type capabilityIntegrationIsolation struct{}
+
+func (capabilityIntegrationIsolation) Check(context.Context, contracts.JobClaim) error { return nil }
+
+func TestCapabilityTriggerRunnerAOResultChain(t *testing.T) {
+	ctx := context.Background()
+	runnerToken := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	store, err := storage.Open(ctx, storage.Config{Path: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err = storage.RegisterCoreMigrations(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
+		t.Fatal(err)
+	}
+	server, err := control.NewServer(store, control.Config{RunnerToken: runnerToken, RunnerID: "runner-chain", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim", "runner:observe", "runner:control:read", "capability:deploy"}, Profiles: map[string]control.RuntimeProfile{
+		"worker-profile": {ID: "worker-profile", Harness: "codex", AOProjectID: "ao-project", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: runner.CodexWorkspaceWritePolicy},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = Register(server, store, Config{AvailableCapabilityIDs: []string{"mail.read"}, RuntimeBackend: runtimeBackendDocker}); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	insertCapabilityTestDevice(t, store, "device", "owner")
+	handler := server.Handler()
+	svc := &Service{db: store.DB(), server: server, availableCapabilityIDs: map[string]struct{}{"mail.read": {}}, runtimeBackend: runtimeBackendDocker}
+	manifest := contracts.CapabilityManifest{SchemaVersion: 1, ArtifactRef: "oci://registry.example/app@sha256:" + strings.Repeat("c", 64), ArtifactDigest: "sha256:" + strings.Repeat("c", 64), Entrypoint: "/app/run", Capabilities: []string{"mail.read"}, Triggers: []contracts.CapabilityTrigger{{Kind: "event", Source: "task.created", Mode: "worker", Scopes: []string{"mail.read"}}}, Budget: contracts.CapabilityResourceBudget{CPUMillis: 50, MemoryBytes: 100, DiskBytes: 100, TimeoutSeconds: 30, Concurrency: 1}, Network: contracts.CapabilityNetworkPolicy{Mode: "none"}, HealthCheck: &contracts.CapabilityHealthCheck{Kind: "http", Target: "/health", Port: 8080, IntervalSeconds: 10, TimeoutSeconds: 2, FailureThreshold: 2}}
+	principal := contracts.Principal{WorkspaceID: "default", SubjectID: "owner", DeviceID: "device", Scopes: []string{"capability:release:submit", "capability:deployment:request", "capability:deployment:authorize"}}
+	command := control.CommandContext{CommandID: "trigger-chain", Principal: principal, AcceptedAt: time.Now().UTC()}
+	tx := begin(t, store.DB())
+	release, _, err := svc.submitRelease(ctx, tx, command, contracts.CommandRequest{Payload: marshal(submitReleasePayload{Manifest: manifest})})
+	if err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var digest string
+	if err = store.DB().QueryRowContext(ctx, `SELECT digest FROM capability_releases WHERE release_id=?`, release.ResourceID).Scan(&digest); err != nil {
+		t.Fatal(err)
+	}
+	tx = begin(t, store.DB())
+	deployment, _, err := svc.requestDeployment(ctx, tx, command, contracts.CommandRequest{Payload: marshal(deploymentRequestPayload{ServiceID: "mail", ReleaseDigest: digest, Operation: "install"})})
+	if err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	expectedVersion := int64(1)
+	authorize := authorizePayload{DeploymentID: deployment.ResourceID, ScopeKind: "workspace", Actions: []string{"install"}, Budget: manifest.Budget, ExpiresAt: time.Now().UTC().Add(time.Hour)}
+	tx = begin(t, store.DB())
+	if _, _, err = svc.authorizeDeployment(ctx, tx, command, contracts.CommandRequest{ExpectedVersion: &expectedVersion, Payload: marshal(authorize)}); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	controlHTTP := httptest.NewServer(handler)
+	defer controlHTTP.Close()
+	controlClient, err := runner.NewControlClient(controlHTTP.URL, runnerToken, controlHTTP.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deploymentClaim, err := controlClient.ClaimDeployment(ctx)
+	if err != nil || deploymentClaim == nil {
+		t.Fatalf("claim deployment for trigger setup: claim=%#v err=%v", deploymentClaim, err)
+	}
+	if err = controlClient.ObserveDeployment(ctx, contracts.DeploymentObservation{DeploymentID: deploymentClaim.DeploymentID, AttemptID: deploymentClaim.AttemptID, Fence: deploymentClaim.Fence, ObservationID: "trigger-chain-deployment-running", Operation: "install", State: "running", ExternalEffectRef: []string{"fixture-container"}, Health: contracts.CapabilityHealth{State: "healthy", CheckedAt: time.Now().UTC(), EvidenceRef: "fixture-health"}, ObservedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("record running deployment observation: %v", err)
+	}
+	if _, err = store.DB().ExecContext(ctx, `UPDATE event_counters SET current_cursor=2 WHERE workspace_id='default'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB().ExecContext(ctx, `INSERT INTO events(event_id,workspace_id,cursor,schema_version,event_type,occurred_at,subject_id,aggregate_type,aggregate_id,aggregate_version,payload) VALUES('chain-source-1','default',1,1,'task.created',?,'owner','task','source-task-1',1,'{"type":"task.created","payload":{"task":{"task_id":"source-task-1"}}}'),('chain-source-2','default',2,1,'task.created',?,'owner','task','source-task-2',1,'{"type":"task.created","payload":{"task":{"task_id":"source-task-2"}}}')`, time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	postAdmissions := func() {
+		req := httptest.NewRequest(http.MethodPost, "/runner/v1/capability-triggers/admissions", nil)
+		req.Header.Set("Authorization", "Bearer "+runnerToken)
+		resp := httptest.NewRecorder()
+		handler.ServeHTTP(resp, req)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("trigger admission poll status=%d body=%s", resp.Code, resp.Body.String())
+		}
+	}
+	postAdmissions()
+	var admitted, queued int
+	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM capability_trigger_runs WHERE mode='worker' AND state='running'`).Scan(&admitted); err != nil || admitted != 1 {
+		t.Fatalf("trigger grant did not admit exactly one worker: count=%d err=%v", admitted, err)
+	}
+	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM capability_trigger_runs WHERE mode='worker' AND state='queued'`).Scan(&queued); err != nil || queued != 1 {
+		t.Fatalf("concurrency one did not retain second trigger queued: count=%d err=%v", queued, err)
+	}
+
+	aoOutcome := "success"
+	var createCalls, killCalls int
+	sessionStates := map[string]string{}
+	aoHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions":
+			createCalls++
+			if aoOutcome == "reject" {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":{"code":"INVALID_REQUEST"}}`))
+				return
+			}
+			sessionID := fmt.Sprintf("ao-session-%d", createCalls)
+			sessionStates[sessionID] = "running"
+			_ = json.NewEncoder(w).Encode(map[string]any{"session": map[string]any{"id": sessionID, "projectId": "ao-project", "status": "running"}})
+		case strings.HasPrefix(r.URL.Path, "/api/v1/sessions/") && strings.HasSuffix(r.URL.Path, "/conversation"):
+			sessionID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/"), "/conversation")
+			_ = json.NewEncoder(w).Encode(map[string]any{"sessionId": sessionID, "controller": "idle", "turns": []map[string]any{{"id": "turn-1", "state": "completed", "requestedAt": time.Now().UTC().Format(time.RFC3339Nano)}}, "messages": []map[string]any{{"id": "message-1", "turnId": "turn-1", "sequence": 1, "role": "assistant", "text": "The authorized worker completed its task.", "streaming": false, "createdAt": time.Now().UTC().Format(time.RFC3339Nano)}}, "activities": []map[string]any{{"id": "tool-1", "activityKind": "mcp_tool", "status": "completed", "summary": "Read the authorized mailbox fixture.", "createdAt": time.Now().UTC().Format(time.RFC3339Nano)}}})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/kill"):
+			killCalls++
+			sessionID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/"), "/kill")
+			sessionStates[sessionID] = "terminated"
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "sessionId": sessionID, "freed": true, "cleanupPending": false, "terminationProof": map[string]any{"source": "ao_chat_stop", "method": "native_process_exit_waited", "sessionId": sessionID, "verifiedAt": time.Now().UTC(), "cleanupComplete": true}})
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/sessions/"):
+			sessionID := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
+			status := sessionStates[sessionID]
+			if status == "" {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"session": map[string]any{"id": sessionID, "projectId": "ao-project", "status": status}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer aoHTTP.Close()
+	aoClient, err := ao.New(ao.Config{BaseURL: aoHTTP.URL, Token: "fixture-token", Client: aoHTTP.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := runner.OpenJournal(ctx, filepath.Join(t.TempDir(), "runner.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	engine := &runner.Engine{Control: controlClient, AO: aoClient, Journal: journal, Routes: map[string]runner.Route{"worker-profile": {ProfileID: "worker-profile", RuntimeRouteID: "runtime", ModelRouteID: "model", IsolationPolicy: runner.CodexWorkspaceWritePolicy, Harness: "codex", Model: "fixture-model", ApprovalMode: "accept-edits"}}, Isolation: capabilityIntegrationIsolation{}, PollInterval: time.Millisecond}
+
+	claim, err := controlClient.Claim(ctx)
+	if err != nil || claim == nil || claim.Role != "worker" {
+		t.Fatalf("ControlClient claim for admitted trigger: claim=%#v err=%v", claim, err)
+	}
+	if err := engine.Process(ctx, *claim); err != nil {
+		t.Fatalf("runner Engine AO execution: %v", err)
+	}
+	if createCalls != 1 || killCalls != 1 {
+		t.Fatalf("AO HTTP fixture lifecycle create=%d kill=%d, want one each", createCalls, killCalls)
+	}
+	var runStatus, taskStatus string
+	if err := store.DB().QueryRowContext(ctx, `SELECT r.status,t.status FROM runs r JOIN tasks t ON t.id=r.task_id WHERE r.id=?`, claim.RunID).Scan(&runStatus, &taskStatus); err != nil || runStatus != "verification_pending" || taskStatus != "awaiting_user" {
+		t.Fatalf("runner result did not await user acceptance: run=%q task=%q err=%v", runStatus, taskStatus, err)
+	}
+	var toolEvidence int
+	if err := store.DB().QueryRowContext(ctx, `SELECT count(*) FROM evidence WHERE run_id=? AND kind='mcp_tool'`, claim.RunID).Scan(&toolEvidence); err != nil || toolEvidence != 1 {
+		t.Fatalf("AO tool evidence was not persisted: count=%d err=%v", toolEvidence, err)
+	}
+	postAdmissions()
+	var triggerState string
+	if err := store.DB().QueryRowContext(ctx, `SELECT state FROM capability_trigger_runs WHERE task_id=?`, claim.TaskID).Scan(&triggerState); err != nil || triggerState != "waiting" {
+		t.Fatalf("awaiting_user run mapped to trigger state=%q err=%v", triggerState, err)
+	}
+	postAdmissions()
+	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM capability_trigger_runs WHERE mode='worker' AND state='queued'`).Scan(&queued); err != nil || queued != 1 {
+		t.Fatalf("waiting result released worker trigger slot: queued=%d err=%v", queued, err)
+	}
+	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE source='service'`).Scan(&admitted); err != nil || admitted != 1 {
+		t.Fatalf("waiting result admitted another service task: tasks=%d err=%v", admitted, err)
+	}
+
+	var taskVersion int64
+	if err = store.DB().QueryRowContext(ctx, `SELECT version FROM tasks WHERE id=?`, claim.TaskID).Scan(&taskVersion); err != nil {
+		t.Fatal(err)
+	}
+	acceptRequest := contracts.CommandRequest{Kind: "task.accept_result", ExpectedVersion: &taskVersion, Payload: marshal(map[string]string{"task_id": claim.TaskID, "run_id": claim.RunID, "decision": "accept"})}
+	acceptBytes, _ := json.Marshal(acceptRequest)
+	acceptHash := sha256.Sum256(acceptBytes)
+	acceptPrincipal := contracts.Principal{WorkspaceID: "default", SubjectID: "owner", DeviceID: "device", Scopes: []string{"client:command"}}
+	if _, err = server.ExecuteCommand(ctx, acceptPrincipal, "accept-trigger-result", acceptRequest, acceptHash[:]); err != nil {
+		t.Fatalf("authorized result acceptance: %v", err)
+	}
+	postAdmissions()
+	if err = store.DB().QueryRowContext(ctx, `SELECT state FROM capability_trigger_runs WHERE task_id=?`, claim.TaskID).Scan(&triggerState); err != nil || triggerState != "completed" {
+		t.Fatalf("accepted result did not terminally release trigger: state=%q err=%v", triggerState, err)
+	}
+	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE source='service'`).Scan(&admitted); err != nil || admitted != 2 {
+		t.Fatalf("authorized acceptance did not free worker slot for second trigger: tasks=%d err=%v", admitted, err)
+	}
+
+	aoOutcome = "reject"
+	rejectedClaim, err := controlClient.Claim(ctx)
+	if err != nil || rejectedClaim == nil || rejectedClaim.TaskID == claim.TaskID || rejectedClaim.ProfileID != "worker-profile" {
+		t.Fatalf("claim worker task admitted after acceptance: claim=%#v err=%v", rejectedClaim, err)
+	}
+	if err := engine.Process(ctx, *rejectedClaim); err != nil {
+		t.Fatalf("runner Engine handling AO create rejection: %v", err)
+	}
+	if createCalls != 2 || killCalls != 1 {
+		t.Fatalf("AO rejection unexpectedly created or stopped a session: create=%d kill=%d", createCalls, killCalls)
+	}
+	postAdmissions()
+	if err = store.DB().QueryRowContext(ctx, `SELECT state FROM capability_trigger_runs WHERE task_id=?`, rejectedClaim.TaskID).Scan(&triggerState); err != nil || triggerState != "failed" {
+		t.Fatalf("authoritative AO rejection did not fail trigger: state=%q err=%v", triggerState, err)
+	}
 }
 
 func begin(t *testing.T, db *sql.DB) *sql.Tx {

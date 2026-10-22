@@ -237,7 +237,7 @@ func (s *Service) admitQueuedTaskTriggers(ctx context.Context, tx *sql.Tx, works
 			return err
 		}
 		var active int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM capability_trigger_runs WHERE trigger_id=? AND state IN ('claimed','running','uncertain')`, item.triggerID).Scan(&active); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM capability_trigger_runs WHERE trigger_id=? AND state IN ('claimed','running','uncertain','waiting')`, item.triggerID).Scan(&active); err != nil {
 			return err
 		}
 		if active >= budget.Concurrency {
