@@ -95,6 +95,7 @@ private struct ConversationView: View {
                 .pickerStyle(.menu)
                 .padding(.horizontal)
             }
+            PendingCommandRows(summaries: model.pendingCommandSummaries, model: model)
             composer
         }
         .navigationTitle("Conversation")
@@ -104,7 +105,7 @@ private struct ConversationView: View {
     private var composer: some View {
         let selectedTask = model.task(id: selectedTaskID)
         let canAppend = selectedTask?.status.canAcceptEntries ?? true
-        VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: 8) {
             if selectedTask == nil, !model.projects.isEmpty {
                 Picker("Project", selection: $projectID) {
                     Text("Unassigned").tag("")
@@ -190,6 +191,38 @@ private struct ConversationView: View {
     }
 }
 
+private struct PendingCommandRows: View {
+    let summaries: [PendingCommandSummary]
+    @ObservedObject var model: CyloAppModel
+
+    var body: some View {
+        ForEach(summaries) { summary in
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(summary.title).font(.subheadline.weight(.medium))
+                    Text(statusText(summary.state)).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 4)
+                if summary.state == .waitingForConfirmation {
+                    Button("Check status") { Task { await model.checkPendingCommand(summary) } }
+                        .disabled(model.isBusy)
+                }
+            }
+            .padding(.horizontal)
+        }
+    }
+
+    private func statusText(_ state: PendingCommandSummary.State) -> String {
+        switch state {
+        case .waitingForConfirmation: "Cylo is waiting to confirm whether the server applied this action."
+        case .checkingStatus: "Checking the saved action with the server…"
+        case .acceptedAwaitingSnapshot: "The server accepted this action; the latest task state is still loading."
+        case .needsReview: "The server state changed. Review it before choosing a new action."
+        case .differentWorkspace: "This saved action belongs to a different workspace and was not retried."
+        }
+    }
+}
+
 private struct TaskConversation: View {
     let task: TaskRecord
     @ObservedObject var model: CyloAppModel
@@ -227,6 +260,7 @@ private struct TasksView: View {
         VStack(spacing: 8) {
             FreshnessBanner(model: model).padding(.horizontal)
             NoticeCard(message: model.notice).padding(.horizontal)
+            PendingCommandRows(summaries: model.pendingCommandSummaries, model: model)
             NavigationSplitView {
                 List(model.tasks) { task in
                     NavigationLink(value: task.id) {

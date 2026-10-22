@@ -28,6 +28,7 @@ public final class CyloAppModel: ObservableObject {
     @Published public private(set) var voiceDraftRevision: Int64 = 0
     @Published public private(set) var exportArtifact: ScopedExportArtifact?
     @Published public private(set) var exportStatus: String?
+    @Published public private(set) var pendingCommandSummaries: [PendingCommandSummary] = []
 
     private let defaults: UserDefaults
     private var api: APIClient?
@@ -43,6 +44,8 @@ public final class CyloAppModel: ObservableObject {
     private var memoryRefreshSequence: UInt64 = 0
     private var memoryRefreshInFlight = false
     private var pendingMemoryRefreshQuery: String?
+    private var commandTitleByKey: [String: String] = [:]
+    private var commandStatusByKey: [String: PendingCommandSummary.State] = [:]
 #if DEBUG
     var capabilityRevocationSubmitOverrideForTesting: ((Int64, JSONValue) async -> Bool)?
     var capabilityRevocationRefreshOverrideForTesting: (() async -> Void)?
@@ -70,11 +73,20 @@ public final class CyloAppModel: ObservableObject {
         try await refreshSnapshot()
     }
 
-    func recoverPendingCommandsForTesting(api: APIClient, journal: CommandJournal, expectedGeneration: UInt64? = nil) async {
+    func recoverPendingCommandsForTesting(api: APIClient, journal: CommandJournal, expectedGeneration: UInt64? = nil, workspaceID: String? = "workspace-1") async {
         self.api = api
         let testCoordinator = CommandCoordinator(api: api, journal: journal)
         coordinator = testCoordinator
-        await recoverPendingCommands(expectedGeneration: expectedGeneration ?? connectionGeneration.value, sourceAPI: api, coordinator: testCoordinator)
+        await recoverPendingCommands(expectedGeneration: expectedGeneration ?? connectionGeneration.value, sourceAPI: api, coordinator: testCoordinator, workspaceID: workspaceID)
+    }
+
+    func preparePendingCheckForTesting(api: APIClient, journal: CommandJournal, snapshot: Snapshot) async {
+        self.api = api
+        self.journal = journal
+        coordinator = CommandCoordinator(api: api, journal: journal)
+        self.snapshot = snapshot
+        snapshotFetchOverrideForTesting = { snapshot }
+        await reloadPendingCommandSummaries()
     }
 #endif
     private var configuredServerURL: URL?
@@ -135,6 +147,7 @@ public final class CyloAppModel: ObservableObject {
         do {
             let configuredAPI = try configure()
             generation = connectionGeneration.value
+            await reloadPendingCommandSummaries()
             if pushNotificationsEnabled { NativeNotificationDelivery.shared.registerForRemoteNotifications() }
             try await refreshSnapshot()
             guard generation == connectionGeneration.value else { return }
@@ -142,7 +155,7 @@ public final class CyloAppModel: ObservableObject {
             guard generation == connectionGeneration.value else { return }
             await refreshNotifications()
             guard generation == connectionGeneration.value else { return }
-            if let coordinator { await recoverPendingCommands(expectedGeneration: generation, sourceAPI: configuredAPI, coordinator: coordinator) }
+            if let coordinator { await recoverPendingCommands(expectedGeneration: generation, sourceAPI: configuredAPI, coordinator: coordinator, workspaceID: snapshot?.devices.first?.workspaceId) }
             guard generation == connectionGeneration.value else { return }
             startEventLoop()
         } catch {
@@ -155,6 +168,9 @@ public final class CyloAppModel: ObservableObject {
     public func updateServerAddress() async {
         cancelExport(status: nil)
         clearVisibleMemory()
+        pendingCommandSummaries = []
+        commandStatusByKey = [:]
+        commandTitleByKey = [:]
         connectionGeneration.advance()
         connectionEpoch = connectionGeneration.value
         capabilityReleases = []
@@ -671,7 +687,7 @@ public final class CyloAppModel: ObservableObject {
     }
 
     public func confirmVoiceDraftAsTask(title: String? = nil) async {
-        guard let session = voiceSession, let coordinator, !voiceDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        guard !isBusy, let session = voiceSession, let coordinator, let sourceAPI = api, !voiceDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let turnID = voiceTurnID, voiceDraftRevision > 0 else { return }
         let generation = connectionGeneration.value
         let revision = voiceDraftRevision
@@ -687,12 +703,18 @@ public final class CyloAppModel: ObservableObject {
         ]
         if let voiceProviderMessageID { commitFields["provider_message_id"] = .string(voiceProviderMessageID) }
         let commit = JSONValue.object(commitFields)
+        let taskTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? title! : String(text.prefix(72))
+        let commitKey = UUID().uuidString.lowercased()
+        let taskKey = UUID().uuidString.lowercased()
+        var taskCreateAttempted = false
         isBusy = true
         defer { isBusy = false }
         do {
-            _ = try await coordinator.submit(kind: "voice.turn.commit", payload: commit, workspaceID: workspaceID)
-            guard generation == connectionGeneration.value, voiceSession?.voiceSessionId == session.voiceSessionId else { return }
-            let taskTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? title! : String(text.prefix(72))
+            _ = try await coordinator.submit(kind: "voice.turn.commit", payload: commit, workspaceID: workspaceID, idempotencyKey: commitKey)
+            guard isCurrentConnection(generation, sourceAPI: sourceAPI), voiceSession?.voiceSessionId == session.voiceSessionId else { return }
+            commandTitleByKey[commitKey] = "Save confirmed voice turn"
+            commandStatusByKey[commitKey] = .acceptedAwaitingSnapshot
+            await reloadPendingCommandSummaries()
             let sourceReference: JSONValue = .object([
                 "kind": .string("voice_turn"),
                 "voice_session_id": .string(session.voiceSessionId),
@@ -707,8 +729,13 @@ public final class CyloAppModel: ObservableObject {
                 "source_reference": sourceReference,
                 "initial_message": .string(text)
             ])
-            let taskReceipt = try await coordinator.submit(kind: "task.create", payload: createTask, workspaceID: workspaceID).receipt
-            guard generation == connectionGeneration.value, voiceSession?.voiceSessionId == session.voiceSessionId else { return }
+            taskCreateAttempted = true
+            let taskOutcome = try await coordinator.submit(kind: "task.create", payload: createTask, workspaceID: workspaceID, idempotencyKey: taskKey)
+            guard isCurrentConnection(generation, sourceAPI: sourceAPI), voiceSession?.voiceSessionId == session.voiceSessionId else { return }
+            commandTitleByKey[taskKey] = "Create task"
+            commandStatusByKey[taskKey] = .acceptedAwaitingSnapshot
+            await reloadPendingCommandSummaries()
+            let taskReceipt = taskOutcome.receipt
             guard let taskID = taskReceipt.resourceId, let version = taskReceipt.resourceVersion else { throw CyloError.invalidResponse }
             guard version > 0 else { throw CyloError.invalidResponse }
             notice = "Voice turn confirmed and linked to task \(taskID)."
@@ -718,7 +745,15 @@ public final class CyloAppModel: ObservableObject {
             voiceDraftRevision = 0
             try await refreshSnapshot()
         } catch {
-            if generation == connectionGeneration.value { notice = "The voice turn may be committed, but task creation needs attention: \(userMessage(error))" }
+            if isCurrentConnection(generation, sourceAPI: sourceAPI) {
+                if isNeedsReview(error) {
+                    let key = taskCreateAttempted ? taskKey : commitKey
+                    commandStatusByKey[key] = .needsReview
+                    try? await refreshSnapshot()
+                }
+                notice = "The voice turn may be committed, but task creation needs attention: \(userMessage(error))"
+                await reloadPendingCommandSummaries()
+            }
         }
     }
 
@@ -919,6 +954,11 @@ public final class CyloAppModel: ObservableObject {
         let api = try APIClient(serverURL: url, credentials: identity)
         let deviceIdentity = try identity.loadOrCreate()
         let identityFingerprint = Self.pushIdentityFingerprint(deviceToken: deviceIdentity.deviceToken)
+        if let previousFingerprint = pushIdentityFingerprint, previousFingerprint != identityFingerprint {
+            pendingCommandSummaries = []
+            commandStatusByKey = [:]
+            commandTitleByKey = [:]
+        }
         pushIdentityFingerprint = identityFingerprint
         if configuredServerURL == url {
             registeredPushTokenID = defaults.string(forKey: pushRegistrationKey(for: url, identityFingerprint: identityFingerprint))
@@ -940,19 +980,25 @@ public final class CyloAppModel: ObservableObject {
 
     @discardableResult
     private func send(kind: String, expectedVersion: Int64? = nil, payload: JSONValue) async -> Bool {
-        guard let coordinator else { notice = "Connect to a Cylo server first."; return false }
+        guard !isBusy else { return false }
+        guard let coordinator, let sourceAPI = api else { notice = "Connect to a Cylo server first."; return false }
         let generation = connectionGeneration.value
+        let idempotencyKey = UUID().uuidString.lowercased()
+        let title = pendingCommandTitle(kind: kind, payload: payload)
         isBusy = true
         defer { isBusy = false }
         do {
-            let outcome = try await coordinator.submit(kind: kind, expectedVersion: expectedVersion, payload: payload, workspaceID: snapshot?.devices.first?.workspaceId)
-            guard generation == connectionGeneration.value else { return false }
+            let outcome = try await coordinator.submit(kind: kind, expectedVersion: expectedVersion, payload: payload, workspaceID: snapshot?.devices.first?.workspaceId, idempotencyKey: idempotencyKey)
+            guard isCurrentConnection(generation, sourceAPI: sourceAPI) else { return false }
+            commandTitleByKey[outcome.receipt.idempotencyKey] = title
+            commandStatusByKey[outcome.receipt.idempotencyKey] = .acceptedAwaitingSnapshot
+            await reloadPendingCommandSummaries()
             do { try await refreshSnapshot() }
             catch {
-                guard generation == connectionGeneration.value else { return false }
+                guard isCurrentConnection(generation, sourceAPI: sourceAPI) else { return false }
                 setStale("The command was accepted, but the latest snapshot could not be loaded: \(userMessage(error))")
             }
-            guard generation == connectionGeneration.value else { return false }
+            guard isCurrentConnection(generation, sourceAPI: sourceAPI) else { return false }
             if kind == "task.stop" {
                 notice = "Stop intent recorded (receipt \(outcome.receipt.commandId)). Awaiting server confirmation that the runtime terminated."
             } else {
@@ -960,8 +1006,58 @@ public final class CyloAppModel: ObservableObject {
             }
             return true
         } catch {
-            if generation == connectionGeneration.value { notice = userMessage(error) }
+            if isCurrentConnection(generation, sourceAPI: sourceAPI) {
+                commandTitleByKey[idempotencyKey] = title
+                if isNeedsReview(error) { commandStatusByKey[idempotencyKey] = .needsReview }
+                notice = userMessage(error)
+                await reloadPendingCommandSummaries()
+                if isNeedsReview(error) { try? await refreshSnapshot() }
+            }
             return false
+        }
+    }
+
+    public func checkPendingCommand(_ summary: PendingCommandSummary) async {
+        guard !isBusy else { return }
+        guard summary.state == .waitingForConfirmation || summary.state == .differentWorkspace else { return }
+        guard summary.state != .differentWorkspace,
+              let coordinator,
+              let api,
+              let workspaceID = snapshot?.devices.first?.workspaceId else {
+            notice = "Refresh the server and choose the workspace that owns this saved action before checking it."
+            return
+        }
+        let generation = connectionGeneration.value
+        isBusy = true
+        defer { isBusy = false }
+        commandStatusByKey[summary.id] = .checkingStatus
+        commandTitleByKey[summary.id] = summary.title
+        await reloadPendingCommandSummaries()
+        do {
+            let outcome = try await coordinator.retryPending(idempotencyKey: summary.id, currentWorkspaceID: workspaceID)
+            guard isCurrentConnection(generation, sourceAPI: api) else { return }
+            commandStatusByKey[summary.id] = .acceptedAwaitingSnapshot
+            notice = "\(summary.title) was accepted. Refreshing the latest task state."
+            await reloadPendingCommandSummaries()
+            do { try await refreshSnapshot() }
+            catch {
+                guard isCurrentConnection(generation, sourceAPI: api) else { return }
+                setStale("The action was accepted, but the latest snapshot could not be loaded: \(userMessage(error))")
+            }
+            if outcome.receipt.kind.hasPrefix("memory.") {
+                await reconcileRecoveredMemoryOutcome(outcome, expectedGeneration: generation, sourceAPI: api)
+            }
+        } catch {
+            guard isCurrentConnection(generation, sourceAPI: api) else { return }
+            if isNeedsReview(error) {
+                commandStatusByKey[summary.id] = .needsReview
+                notice = "\(summary.title) was not applied because the server state changed. Review the refreshed task and make a new choice."
+                try? await refreshSnapshot()
+            } else {
+                commandStatusByKey[summary.id] = .waitingForConfirmation
+                notice = "Cylo could not confirm whether \(summary.title.lowercased()) was applied. The saved action is unchanged; check status again when connected."
+            }
+            await reloadPendingCommandSummaries()
         }
     }
 
@@ -995,6 +1091,9 @@ public final class CyloAppModel: ObservableObject {
         snapshot = latest
         try cache?.save(latest)
         freshness = .current(serverVersion: latest.serverVersion, cursor: latest.eventCursor)
+        commandStatusByKey = commandStatusByKey.filter { $0.value == .needsReview }
+        commandTitleByKey = commandTitleByKey.filter { commandStatusByKey[$0.key] == .needsReview }
+        await reloadPendingCommandSummaries()
         canRegisterPushToken = true
         if pushNotificationsEnabled { await registerPendingAPNSToken() }
         else { await revokePendingPushToken() }
@@ -1387,12 +1486,28 @@ public final class CyloAppModel: ObservableObject {
         await refreshMemory()
     }
 
-    private func recoverPendingCommands(expectedGeneration: UInt64, sourceAPI: APIClient, coordinator: CommandCoordinator) async {
+    private func recoverPendingCommands(expectedGeneration: UInt64, sourceAPI: APIClient, coordinator: CommandCoordinator, workspaceID: String?) async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
         do {
-            let recovered = try await coordinator.recoverPending { [weak self] outcome in
+            let recovered = try await coordinator.recoverPending(currentWorkspaceID: workspaceID, enforceWorkspace: true, onOutcome: { [weak self] outcome in
                 guard let self, self.isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
+                self.commandTitleByKey[outcome.receipt.idempotencyKey] = self.pendingCommandTitle(kind: outcome.command.kind, payload: outcome.command.payload)
+                self.commandStatusByKey[outcome.receipt.idempotencyKey] = .acceptedAwaitingSnapshot
+                await self.reloadPendingCommandSummaries()
                 await self.reconcileRecoveredMemoryOutcome(outcome, expectedGeneration: expectedGeneration, sourceAPI: sourceAPI)
-            }
+            }, onWorkspaceMismatch: { [weak self] command in
+                guard let self, self.isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
+                self.commandTitleByKey[command.idempotencyKey] = self.pendingCommandTitle(kind: command.kind, payload: command.payload)
+                self.commandStatusByKey[command.idempotencyKey] = .differentWorkspace
+                await self.reloadPendingCommandSummaries()
+            }, onFailure: { [weak self] command, error in
+                guard let self, self.isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
+                self.commandTitleByKey[command.idempotencyKey] = self.pendingCommandTitle(kind: command.kind, payload: command.payload)
+                self.commandStatusByKey[command.idempotencyKey] = self.isNeedsReview(error) ? .needsReview : .waitingForConfirmation
+                await self.reloadPendingCommandSummaries()
+            })
             guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
             guard !recovered.isEmpty else { return }
             notice = "Recovered \(recovered.count) command receipt(s) from this device's durable queue."
@@ -1403,8 +1518,53 @@ public final class CyloAppModel: ObservableObject {
             }
             guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
         } catch {
-            if isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) { notice = "A saved command needs attention: \(userMessage(error))" }
+            if isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) {
+                notice = isNeedsReview(error) ? "A saved action needs review. The original action was not rewritten; check the updated server state before choosing again." : userMessage(error)
+                if isNeedsReview(error) { try? await refreshSnapshot() }
+                await reloadPendingCommandSummaries()
+            }
         }
+    }
+
+    private func reloadPendingCommandSummaries() async {
+        guard let journal else { pendingCommandSummaries = []; return }
+        let commands = (try? await journal.all()) ?? []
+        let currentWorkspaceID = snapshot?.devices.first?.workspaceId
+        var summaries = commands.map { command in
+            let state: PendingCommandSummary.State
+            if command.workspaceID != currentWorkspaceID { state = .differentWorkspace }
+            else { state = commandStatusByKey[command.idempotencyKey] ?? .waitingForConfirmation }
+            let title = commandTitleByKey[command.idempotencyKey] ?? pendingCommandTitle(kind: command.kind, payload: command.payload)
+            return PendingCommandSummary(id: command.idempotencyKey, title: title, state: state)
+        }
+        let pendingKeys = Set(commands.map(\.idempotencyKey))
+        for (key, state) in commandStatusByKey where !pendingKeys.contains(key) && (state == .acceptedAwaitingSnapshot || state == .needsReview) {
+            summaries.append(PendingCommandSummary(id: key, title: commandTitleByKey[key] ?? "Saved action", state: state))
+        }
+        pendingCommandSummaries = summaries
+    }
+
+    private func pendingCommandTitle(kind: String, payload: JSONValue) -> String {
+        let object: [String: JSONValue]
+        if case let .object(fields) = payload { object = fields } else { object = [:] }
+        func string(_ key: String) -> String? { if case let .string(value)? = object[key] { return value }; return nil }
+        let taskName = string("task_id").flatMap { task(id: $0)?.title }
+        switch kind {
+        case "task.create": return "Create task"
+        case "task.append": return taskName.map { "Add entry to \($0)" } ?? "Add entry to task"
+        case "task.stop": return taskName.map { "Request stop for \($0)" } ?? "Request stop for task"
+        case "task.approve": return string("decision") == "reject" ? "Reject requested action" : "Approve requested action"
+        case "task.accept_result": return taskName.map { "Review result for \($0)" } ?? "Review task result"
+        case "project.create": return "Create project"
+        case "memory.remember": return "Save memory"
+        case "memory.delete": return "Delete memory"
+        default: return "Submit saved action"
+        }
+    }
+
+    private func isNeedsReview(_ error: Error?) -> Bool {
+        guard let error = error as? CyloError, case let .http(status, _, _, _) = error else { return false }
+        return status == 409
     }
 
     private func reconcileRecoveredMemoryOutcome(_ outcome: CommandOutcome, expectedGeneration: UInt64, sourceAPI: APIClient) async {

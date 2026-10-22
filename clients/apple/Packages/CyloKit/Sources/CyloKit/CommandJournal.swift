@@ -85,6 +85,28 @@ public actor CommandJournal {
 public struct CommandOutcome: Sendable {
     public let receipt: CommandReceipt
     public let recovered: Bool
+    public let command: PendingCommand
+}
+
+public struct PendingCommandSummary: Identifiable, Equatable, Sendable {
+    public enum State: Equatable, Sendable {
+        case waitingForConfirmation
+        case checkingStatus
+        case acceptedAwaitingSnapshot
+        case needsReview
+        case differentWorkspace
+    }
+
+    /// Local row identity only; the UI must not render this value as user-facing text.
+    public let id: String
+    public let title: String
+    public let state: State
+
+    public init(id: String, title: String, state: State) {
+        self.id = id
+        self.title = title
+        self.state = state
+    }
 }
 
 public actor CommandCoordinator {
@@ -97,10 +119,10 @@ public actor CommandCoordinator {
     }
 
     /// A command is journaled before POST. A retry first checks the durable receipt by key.
-    public func submit(kind: String, expectedVersion: Int64? = nil, payload: JSONValue, workspaceID: String? = nil) async throws -> CommandOutcome {
+    public func submit(kind: String, expectedVersion: Int64? = nil, payload: JSONValue, workspaceID: String? = nil, idempotencyKey: String? = nil) async throws -> CommandOutcome {
         let expectedResource = Self.resourceExpectation(kind: kind, payload: payload)
         let command = PendingCommand(
-            idempotencyKey: UUID().uuidString.lowercased(),
+            idempotencyKey: idempotencyKey ?? UUID().uuidString.lowercased(),
             kind: kind,
             expectedVersion: expectedVersion,
             payload: payload,
@@ -114,20 +136,47 @@ public actor CommandCoordinator {
     }
 
     public func recoverPending() async throws -> [CommandOutcome] {
-        try await recoverPending(onOutcome: { _ in })
+        try await recoverPending(currentWorkspaceID: nil, enforceWorkspace: false, onOutcome: { _ in })
     }
 
     /// Reports each receipt as soon as its journal row is durably removed. Callers can
     /// reconcile accepted commands even if a later row in the same replay fails.
     public func recoverPending(onOutcome: @MainActor @Sendable (CommandOutcome) async -> Void) async throws -> [CommandOutcome] {
+        try await recoverPending(currentWorkspaceID: nil, enforceWorkspace: false, onOutcome: onOutcome)
+    }
+
+    public func recoverPending(
+        currentWorkspaceID: String?,
+        enforceWorkspace: Bool = true,
+        onOutcome: @MainActor @Sendable (CommandOutcome) async -> Void,
+        onWorkspaceMismatch: @MainActor @Sendable (PendingCommand) async -> Void = { _ in },
+        onFailure: @MainActor @Sendable (PendingCommand, CyloError?) async -> Void = { _, _ in }
+    ) async throws -> [CommandOutcome] {
         let commands = try await journal.all()
         var outcomes: [CommandOutcome] = []
         for command in commands {
-            let outcome = try await deliver(command, checkReceiptFirst: true)
+            guard !enforceWorkspace || command.workspaceID == currentWorkspaceID else {
+                await onWorkspaceMismatch(command)
+                continue
+            }
+            let outcome: CommandOutcome
+            do { outcome = try await deliver(command, checkReceiptFirst: true) }
+            catch {
+                await onFailure(command, error as? CyloError)
+                throw error
+            }
             outcomes.append(outcome)
             await onOutcome(outcome)
         }
         return outcomes
+    }
+
+    public func retryPending(idempotencyKey: String, currentWorkspaceID: String?) async throws -> CommandOutcome {
+        guard let command = try await journal.all().first(where: { $0.idempotencyKey == idempotencyKey }) else {
+            throw CyloError.persistence("The saved action is no longer pending.")
+        }
+        guard command.workspaceID == currentWorkspaceID else { throw CyloError.pendingCommandWorkspaceMismatch }
+        return try await deliver(command, checkReceiptFirst: true)
     }
 
     private func deliver(_ command: PendingCommand, checkReceiptFirst: Bool) async throws -> CommandOutcome {
@@ -136,7 +185,7 @@ public actor CommandCoordinator {
                 let receipt = try await api.receipt(idempotencyKey: command.idempotencyKey)
                 try validate(receipt, command: command)
                 try await journal.remove(idempotencyKey: command.idempotencyKey)
-                return CommandOutcome(receipt: receipt, recovered: true)
+                return CommandOutcome(receipt: receipt, recovered: true, command: command)
             } catch let error as CyloError {
                 guard case let .http(status, _, _, _) = error, status == 404 else { throw error }
             }
@@ -146,7 +195,7 @@ public actor CommandCoordinator {
             let receipt = try await api.submit(kind: command.kind, expectedVersion: command.expectedVersion, payload: command.payload, idempotencyKey: command.idempotencyKey)
             try validate(receipt, command: command)
             try await journal.remove(idempotencyKey: command.idempotencyKey)
-            return CommandOutcome(receipt: receipt, recovered: false)
+            return CommandOutcome(receipt: receipt, recovered: false, command: command)
         } catch {
             // Keep the exact key and payload. The next attempt resolves a lost response first.
             if let error = error as? CyloError,

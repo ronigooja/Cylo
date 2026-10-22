@@ -382,6 +382,7 @@ public enum CyloError: Error, LocalizedError, Sendable {
     case http(status: Int, code: String, message: String, details: [String: JSONValue]?)
     case invalidResponse
     case persistence(String)
+    case pendingCommandWorkspaceMismatch
 
     public var errorDescription: String? {
         switch self {
@@ -391,6 +392,7 @@ public enum CyloError: Error, LocalizedError, Sendable {
         case let .http(_, _, message, _): message
         case .invalidResponse: "The server returned a response the app could not read."
         case let .persistence(message): message
+        case .pendingCommandWorkspaceMismatch: "This saved action belongs to a different workspace and was not retried."
         }
     }
 }

@@ -5,12 +5,17 @@ import Foundation
 
 private final class ExportURLProtocol: URLProtocol {
     static var responseHandler: ((URLRequest) -> (Int, [String: String], Data))?
+    static var failureHandler: ((URLRequest) -> Error?)?
     static var capturedRequest: URLRequest?
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         Self.capturedRequest = request
+        if let error = Self.failureHandler?(request) {
+            client?.urlProtocol(self, didFailWithError: error)
+            return
+        }
         let (status, headers, body) = Self.responseHandler?(request) ?? (500, [:], Data())
         let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
@@ -51,6 +56,7 @@ private actor AsyncTestGate {
 
 final class ClientContractTests: XCTestCase {
     private func exportSession() -> URLSession {
+        ExportURLProtocol.failureHandler = nil
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [ExportURLProtocol.self]
         return URLSession(configuration: configuration)
@@ -680,5 +686,238 @@ final class ClientContractTests: XCTestCase {
             XCTAssertEqual(code, "local_idempotency_conflict")
         }
         try? FileManager.default.removeItem(at: file)
+    }
+
+    func testUncertainSubmissionChecksReceiptBeforeRetryAndDoesNotPostTwice() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = try CommandJournal(fileURL: directory.appendingPathComponent("commands.json"))
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        let coordinator = CommandCoordinator(api: api, journal: journal)
+        let key = "stable-retry-\(UUID().uuidString.lowercased())"
+        var postCount = 0
+        var receiptCount = 0
+        var acceptedReceipt = Data()
+        ExportURLProtocol.failureHandler = { request in
+            guard request.url?.path == "/v1/commands", request.httpMethod == "POST" else { return nil }
+            postCount += 1
+            let submittedKey = request.value(forHTTPHeaderField: "Idempotency-Key") ?? ""
+            acceptedReceipt = Self.commandReceipt(key: submittedKey, kind: "task.create", workspaceID: "workspace-1", resourceID: "task-created")
+            return URLError(.timedOut)
+        }
+        ExportURLProtocol.responseHandler = { request in
+            if request.url?.path == "/v1/commands", request.httpMethod == "GET" {
+                receiptCount += 1
+                return (200, ["Content-Type": "application/json"], acceptedReceipt)
+            }
+            return (503, ["Content-Type": "application/json"], Data())
+        }
+
+        do {
+            _ = try await coordinator.submit(kind: "task.create", payload: .object(["title": .string("Work")]), workspaceID: "workspace-1", idempotencyKey: key)
+            XCTFail("The first response should be lost after the server accepts the command")
+        } catch { }
+        let pendingAfterTimeout = try await journal.all()
+        XCTAssertEqual(pendingAfterTimeout.map(\.idempotencyKey), [key])
+
+        let recovered = try await coordinator.retryPending(idempotencyKey: key, currentWorkspaceID: "workspace-1")
+
+        XCTAssertTrue(recovered.recovered)
+        XCTAssertEqual(recovered.receipt.idempotencyKey, key)
+        XCTAssertEqual(postCount, 1, "a receipt found after a lost response must prevent another command POST")
+        XCTAssertEqual(receiptCount, 1)
+        let remaining = try await journal.all()
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
+    func testPendingRetryPostsOriginalPayloadAndKeyOnlyAfterDefinitiveReceipt404() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = try CommandJournal(fileURL: directory.appendingPathComponent("commands.json"))
+        let key = "definitive-404-\(UUID().uuidString.lowercased())"
+        let payload: JSONValue = .object(["title": .string("Original title"), "goal": .string("Original payload")])
+        try await journal.append(PendingCommand(idempotencyKey: key, kind: "task.create", expectedVersion: nil, payload: payload, createdAt: "2026-10-22T12:00:00Z", workspaceID: "workspace-1", expectedResourceType: "task", expectedResourceID: nil))
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        let coordinator = CommandCoordinator(api: api, journal: journal)
+        var receiptCount = 0
+        var postCount = 0
+        var postKey: String?
+        var postBody: Data?
+        ExportURLProtocol.responseHandler = { request in
+            if request.url?.path == "/v1/commands", request.httpMethod == "GET" {
+                receiptCount += 1
+                return (404, ["Content-Type": "application/json"], Data())
+            }
+            if request.url?.path == "/v1/commands", request.httpMethod == "POST" {
+                postCount += 1
+                postKey = request.value(forHTTPHeaderField: "Idempotency-Key")
+                postBody = Self.requestBody(request)
+                return (200, ["Content-Type": "application/json"], Self.commandReceipt(key: key, kind: "task.create", workspaceID: "workspace-1", resourceID: "task-created"))
+            }
+            return (503, ["Content-Type": "application/json"], Data())
+        }
+
+        let outcome = try await coordinator.retryPending(idempotencyKey: key, currentWorkspaceID: "workspace-1")
+
+        XCTAssertEqual(receiptCount, 1, "receipt lookup must precede the safe retry")
+        XCTAssertEqual(postCount, 1)
+        XCTAssertEqual(postKey, key)
+        let postedEnvelope = try XCTUnwrap(postBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+        XCTAssertEqual(postedEnvelope["kind"] as? String, "task.create")
+        XCTAssertEqual(postedEnvelope["payload"] as? [String: String], ["title": "Original title", "goal": "Original payload"])
+        XCTAssertEqual(outcome.receipt.idempotencyKey, key)
+        let remaining = try await journal.all()
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
+    func testPendingRetryRefusesIncompatibleWorkspaceWithoutNetworkRequest() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = try CommandJournal(fileURL: directory.appendingPathComponent("commands.json"))
+        let key = "workspace-guard-\(UUID().uuidString.lowercased())"
+        try await journal.append(PendingCommand(idempotencyKey: key, kind: "task.create", expectedVersion: nil, payload: .object([:]), createdAt: "now", workspaceID: "old-workspace", expectedResourceType: "task", expectedResourceID: nil))
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        let coordinator = CommandCoordinator(api: api, journal: journal)
+        ExportURLProtocol.responseHandler = { _ in XCTFail("workspace mismatch must not make a network request"); return (500, [:], Data()) }
+
+        do {
+            _ = try await coordinator.retryPending(idempotencyKey: key, currentWorkspaceID: "new-workspace")
+            XCTFail("Expected a workspace guard")
+        } catch let error as CyloError {
+            guard case .pendingCommandWorkspaceMismatch = error else { return XCTFail("Unexpected error: \(error)") }
+        }
+        let remaining = try await journal.all()
+        XCTAssertEqual(remaining.map(\.idempotencyKey), [key])
+    }
+
+    func testPendingReceiptLookupNetworkFailureDoesNotResubmitOrDropJournalRow() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = try CommandJournal(fileURL: directory.appendingPathComponent("commands.json"))
+        let key = "receipt-timeout-\(UUID().uuidString.lowercased())"
+        try await journal.append(PendingCommand(idempotencyKey: key, kind: "task.create", expectedVersion: nil, payload: .object(["title": .string("Work")]), createdAt: "now", workspaceID: "workspace-1", expectedResourceType: "task", expectedResourceID: nil))
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        let coordinator = CommandCoordinator(api: api, journal: journal)
+        var postCount = 0
+        ExportURLProtocol.failureHandler = { request in
+            if request.url?.path == "/v1/commands", request.httpMethod == "GET" { return URLError(.timedOut) }
+            if request.url?.path == "/v1/commands", request.httpMethod == "POST" { postCount += 1 }
+            return nil
+        }
+        ExportURLProtocol.responseHandler = { _ in XCTFail("a failed receipt lookup must not fall through to POST"); return (500, [:], Data()) }
+
+        do {
+            _ = try await coordinator.retryPending(idempotencyKey: key, currentWorkspaceID: "workspace-1")
+            XCTFail("Expected receipt lookup to remain uncertain")
+        } catch { }
+
+        XCTAssertEqual(postCount, 0)
+        let remaining = try await journal.all()
+        XCTAssertEqual(remaining.map(\.idempotencyKey), [key])
+    }
+
+    @MainActor
+    func testVersionConflictMarksPendingActionForReviewAndRefreshesWithoutRewritingIt() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = try CommandJournal(fileURL: directory.appendingPathComponent("commands.json"))
+        let key = "version-conflict-\(UUID().uuidString.lowercased())"
+        let payload: JSONValue = .object(["task_id": .string("task-1"), "content": .string("original content")])
+        try await journal.append(PendingCommand(idempotencyKey: key, kind: "task.append", expectedVersion: 4, payload: payload, createdAt: "now", workspaceID: "workspace-1", expectedResourceType: "task", expectedResourceID: "task-1"))
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        var postedVersion: Int64?
+        var postedEnvelope: [String: Any]?
+        var snapshotRefreshes = 0
+        ExportURLProtocol.responseHandler = { request in
+            if request.httpMethod == "GET" {
+                return (404, ["Content-Type": "application/json"], Data())
+            }
+            if request.httpMethod == "POST" {
+                if let body = Self.requestBody(request), let envelope = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+                    postedEnvelope = envelope
+                    postedVersion = (envelope["expected_version"] as? NSNumber)?.int64Value
+                }
+                return (409, ["Content-Type": "application/json"], Data(#"{"code":"version_conflict","message":"version changed","details":{"current_version":5}}"#.utf8))
+            }
+            return (500, [:], Data())
+        }
+        let oldSnapshot = Snapshot(serverVersion: "1", eventCursor: "1", projects: [], tasks: [], approvals: [], devices: [Device(id: "device-1", workspaceId: "workspace-1", name: "Test", status: "approved", version: 1, createdAt: "now", approvedAt: nil, lastSeenAt: nil)], runs: [])
+        let freshSnapshot = Snapshot(serverVersion: "2", eventCursor: "2", projects: [], tasks: [], approvals: [], devices: oldSnapshot.devices, runs: [])
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        await model.preparePendingCheckForTesting(api: api, journal: journal, snapshot: oldSnapshot)
+        model.snapshotFetchOverrideForTesting = { snapshotRefreshes += 1; return freshSnapshot }
+        let summary = try XCTUnwrap(model.pendingCommandSummaries.first)
+
+        await model.checkPendingCommand(summary)
+
+        XCTAssertEqual(postedVersion, 4)
+        XCTAssertEqual(postedEnvelope?["payload"] as? [String: String], ["task_id": "task-1", "content": "original content"])
+        XCTAssertEqual(snapshotRefreshes, 1)
+        XCTAssertEqual(model.snapshot?.serverVersion, "2")
+        XCTAssertEqual(model.pendingCommandSummaries.first?.state, .needsReview)
+        let remaining = try await journal.all()
+        XCTAssertTrue(remaining.isEmpty, "a conflict is final for the original immutable command")
+    }
+
+    @MainActor
+    func testRecoveredMemoryReceiptInvalidatesExportBeforeLaterJournalRowFails() async throws {
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let exportURL = directory.appendingPathComponent("private-export.json")
+        try Data("stale memory export".utf8).write(to: exportURL)
+        model.setExportArtifactForTesting(ScopedExportArtifact(fileURL: exportURL, filename: "cylo-export-old.json", scope: "personal", snapshotCursor: "4"))
+        var memoryRefreshCount = 0
+        model.memorySearchOverrideForTesting = { _ in
+            memoryRefreshCount += 1
+            return MemorySearchResult(items: [], missing: [], conflicts: [])
+        }
+        let deleteKey = "accepted-delete-\(UUID().uuidString.lowercased())"
+        let laterKey = "later-command-\(UUID().uuidString.lowercased())"
+        let journal = try CommandJournal(fileURL: directory.appendingPathComponent("commands.json"))
+        try await journal.append(PendingCommand(idempotencyKey: deleteKey, kind: "memory.delete", expectedVersion: 1, payload: .object(["memory_id": .string("memory-1")]), createdAt: "now", workspaceID: "workspace-1", expectedResourceType: "memory", expectedResourceID: "memory-1"))
+        try await journal.append(PendingCommand(idempotencyKey: laterKey, kind: "task.create", expectedVersion: nil, payload: .object(["title": .string("Later")]), createdAt: "later", workspaceID: "workspace-1", expectedResourceType: "task", expectedResourceID: nil))
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        ExportURLProtocol.responseHandler = { request in
+            guard request.url?.path == "/v1/commands", request.httpMethod == "GET" else { return (503, [:], Data()) }
+            let key = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "key" })?.value
+            if key == deleteKey {
+                return (200, ["Content-Type": "application/json"], Self.commandReceipt(key: deleteKey, kind: "memory.delete", workspaceID: "workspace-1", resourceID: "memory-1", resourceType: "memory"))
+            }
+            return (503, ["Content-Type": "application/json"], Data())
+        }
+
+        await model.recoverPendingCommandsForTesting(api: api, journal: journal)
+
+        let remaining = try await journal.all()
+        XCTAssertEqual(remaining.map(\.idempotencyKey), [laterKey], "the accepted row is removed while the unresolved row remains durable")
+        XCTAssertEqual(memoryRefreshCount, 1, "accepted memory receipts reconcile immediately before replay moves to the next row")
+        XCTAssertNil(model.exportArtifact)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: exportURL.path))
+    }
+
+    private static func commandReceipt(key: String, kind: String, workspaceID: String, resourceID: String, resourceType: String = "task") -> Data {
+        Data("{\"command_id\":\"command-1\",\"idempotency_key\":\"\(key)\",\"workspace_id\":\"\(workspaceID)\",\"kind\":\"\(kind)\",\"status\":\"accepted\",\"resource_type\":\"\(resourceType)\",\"resource_id\":\"\(resourceID)\",\"resource_version\":1,\"accepted_at\":\"2026-10-22T12:00:00Z\",\"event_cursor\":\"8\"}".utf8)
+    }
+
+    private static func requestBody(_ request: URLRequest) -> Data? {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return nil }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count <= 0 { break }
+            data.append(buffer, count: count)
+        }
+        return data.isEmpty ? nil : data
     }
 }
