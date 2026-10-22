@@ -62,7 +62,23 @@ func TestDockerBackedCapabilityDeploymentHTTPRecoveryLifecycle(t *testing.T) {
 	releaseV1 := submitCapabilityRelease(t, httpServer.Client(), httpServer.URL, deviceToken, manifestV1, "release-v1")
 	deploymentID, version := requestCapabilityDeployment(t, httpServer.Client(), httpServer.URL, deviceToken, "local-service", releaseV1, "install", nil, "install-request")
 	containerName := "cylo-cap-" + capabilityShortHash(deploymentID)
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "--force", containerName).Run() })
+	assertDockerObjectAbsent(t, ctx, "inspect", containerName)
+	var containerID string
+	t.Cleanup(func() {
+		raw, err := exec.Command("docker", "inspect", "--format", "{{json .}}", containerName).Output()
+		if err != nil {
+			return
+		}
+		var inspected struct {
+			ID     string `json:"Id"`
+			Config struct {
+				Labels map[string]string `json:"Labels"`
+			} `json:"Config"`
+		}
+		if json.Unmarshal(raw, &inspected) == nil && inspected.ID != "" && (containerID == "" || inspected.ID == containerID) && inspected.Config.Labels["io.cylo.managed"] == "true" && inspected.Config.Labels["io.cylo.deployment"] == capabilityShortHash(deploymentID) && inspected.Config.Labels["io.cylo.workspace"] == capabilityShortHash("default") {
+			_ = exec.Command("docker", "rm", "--force", inspected.ID).Run()
+		}
+	})
 	version = authorizeCapabilityDeployment(t, httpServer.Client(), httpServer.URL, deviceToken, deploymentID, version, "install", manifestV1.Budget, "install-authorize")
 
 	faults.failNextDeploymentObservation.Store(true)
@@ -73,7 +89,7 @@ func TestDockerBackedCapabilityDeploymentHTTPRecoveryLifecycle(t *testing.T) {
 	if observationState != "running" || acknowledged {
 		t.Fatalf("runner journal did not preserve unacknowledged install receipt: state=%q acknowledged=%v", observationState, acknowledged)
 	}
-	containerID := capabilityContainerID(t, ctx, containerName)
+	containerID = capabilityContainerID(t, ctx, containerName)
 	if err := runCapabilityRunnerOnce(t, runnerBinary, httpServer.URL, runnerToken, journalPath); err != nil {
 		t.Fatalf("restarted runner failed to submit its durable receipt: %v", err)
 	}

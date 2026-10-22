@@ -515,3 +515,29 @@ func containsString(values []string, expected string) bool {
 	}
 	return false
 }
+
+func TestDeploymentExecutorAllowsFencedStopAfterGrantExpiry(t *testing.T) {
+	claim := validDeploymentClaim()
+	claim.DesiredOp = "stop"
+	claim.DesiredControl = "stopped"
+	claim.ClaimState = "claimed"
+	claim.Grant.ExpiresAt = time.Now().Add(-time.Hour)
+	priorLabels := deploymentOwnershipLabels(claim)
+	priorLabels["io.cylo.release"] = strings.TrimPrefix(claim.ReleaseDigest, "sha256:")
+	priorLabels["io.cylo.fence"] = "1"
+	priorLabels["io.cylo.attempt"] = labelValue("attempt-old")
+	docker := &fakeDocker{claim: claim, containerRunning: true, containerID: "container-id", created: true, containerLabels: priorLabels}
+	obs := (&DeploymentExecutor{Docker: docker, Fences: deploymentTestAuthority(t)}).Execute(context.Background(), claim)
+	if obs.State != "stopped" || obs.TerminationProof == nil || !obs.TerminationProof.CleanupComplete {
+		t.Fatalf("authorized expired-grant stop did not prove termination: observation=%+v commands=%v", obs, docker.commands)
+	}
+	foundStop := false
+	for _, command := range docker.commands {
+		if len(command) > 0 && command[0] == "stop" {
+			foundStop = true
+		}
+	}
+	if !foundStop {
+		t.Fatalf("expired-grant stop was not dispatched to the owned container: %v", docker.commands)
+	}
+}

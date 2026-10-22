@@ -104,7 +104,7 @@ func (e *DeploymentExecutor) Execute(ctx context.Context, claim contracts.Deploy
 	opCtx, cancel := context.WithTimeout(ctx, time.Duration(deadline)*time.Second)
 	defer cancel()
 	grantExpired := !claim.Grant.ExpiresAt.After(now())
-	if !claim.CleanupOnly && (claim.DesiredControl == "stopped" || grantExpired) {
+	if !claim.CleanupOnly && (grantExpired && claim.DesiredOp != "stop" || claim.DesiredControl == "stopped" && claim.DesiredOp != "stop" && claim.DesiredOp != "uninstall") {
 		return e.reconcileOnly(opCtx, claim, obs)
 	}
 	fresh, err := e.Fences.BeginDeploymentEffect(ctx, claim.DeploymentID, claim.Fence, fingerprint)
