@@ -190,6 +190,7 @@ final class ClientContractTests: XCTestCase {
         XCTAssertEqual(model.notice, "The deployment version changed. The latest capability inventory has been loaded; review it before trying again.")
     }
 
+    @MainActor
     private func makeRevocationDeployment(observed: String, version: Int64 = 8) throws -> CapabilityDeployment {
         let data = Data(#"{"items":[{"deployment_id":"deploy-1","workspace_id":"workspace-1","service_id":"service-1","release_digest":"sha256:release","requested_operation":"start","desired_state":"stopped","observed_state":"\#(observed)","grant_id":"grant-1","config_ref":"","config_sha256":"","version":\#(version),"created_by":"owner-1","created_at":"2026-10-21T12:00:00Z","updated_at":"2026-10-21T12:01:00Z","latest_attempt_id":"attempt-1","latest_fence":4,"last_error_code":"","revoked_at":null,"revoked_by":null,"revocation_cleanup_state":null}]}"#.utf8)
         return try XCTUnwrap(CyloJSON.decoder.decode(CapabilityDeploymentList.self, from: data).items.first)
