@@ -241,7 +241,11 @@ func (s *Service) create(ctx context.Context, p contracts.Principal, req createR
 		_ = s.markSession(ctx, id, "quarantined", "gateway_response_invalid", nil, "")
 		return sessionResponse{}, apiError(http.StatusBadGateway, "voice_outcome_unknown", "Space gateway response is incomplete; media lease quarantined", nil)
 	}
-	answerJSON, _ := json.Marshal(upstream)
+	// The gateway's account ID is sensitive correlation data. Persist only the
+	// answer and opaque lease identity; the account ID is hashed below.
+	answerJSON, _ := json.Marshal(struct {
+		AnswerSDP string `json:"answer_sdp"`
+	}{AnswerSDP: upstream.AnswerSDP})
 	if err := s.markSession(ctx, id, "active", "", answerJSON, upstream.VoiceSessionID); err != nil {
 		// The gateway created a session, but Cylo could not durably bind it. Keep
 		// the allocating lease; do not free a potentially live media resource.
