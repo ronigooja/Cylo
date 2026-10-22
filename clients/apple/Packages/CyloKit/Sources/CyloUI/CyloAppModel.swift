@@ -1811,6 +1811,7 @@ public final class CyloAppModel: ObservableObject {
     }
 
     private static func cleanupExpiredExportTemporaries() {
+        APIClient.cleanupAbandonedExportDownloads()
         let directory = FileManager.default.temporaryDirectory
         guard let entries = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
         for entry in entries where entry.lastPathComponent.hasPrefix("cylo-export-") && entry.pathExtension == "zip" {

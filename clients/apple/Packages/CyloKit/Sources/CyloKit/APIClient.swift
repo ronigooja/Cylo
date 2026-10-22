@@ -36,6 +36,10 @@ public final class APIClient: @unchecked Sendable {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
+    public static func cleanupAbandonedExportDownloads() {
+        BoundedDownloadDelegate.cleanupAbandonedFiles()
+    }
+
     public init(serverURL: URL, credentials: BearerTokenProviding? = nil, session: URLSession = .shared) throws {
         guard let scheme = serverURL.scheme?.lowercased(), ["http", "https"].contains(scheme), serverURL.host != nil else {
             throw CyloError.invalidServerURL
