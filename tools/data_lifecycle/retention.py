@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime, timedelta, timezone
+import fcntl
 import hashlib
 import hmac
 import json
@@ -14,6 +16,7 @@ import tempfile
 from typing import Any
 
 MANIFEST_NAME = ".cylo-retention.json"
+LOCK_NAME = ".cylo-retention.lock"
 FORMAT = "cylo-backup-retention-v1"
 ARTIFACT_RE = re.compile(r"cylo-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}\.cylo-backup\Z")
 ENTRY_FIELDS = {
@@ -51,11 +54,12 @@ def register_backup(directory: Path, artifact: Path, created_at: datetime, delet
         "deletion_targets": _deletion_targets(deletion),
         "deletion_version": 1,
     }
-    manifest = _read_manifest(directory, key)
-    if any(entry["artifact"] == artifact.name for entry in manifest["entries"]):
-        fail("backup artifact is already registered")
-    manifest["entries"].append(record)
-    _write_manifest(directory, manifest, key)
+    with _manifest_lock(directory):
+        manifest = _read_manifest(directory, key)
+        if any(entry["artifact"] == artifact.name for entry in manifest["entries"]):
+            fail("backup artifact is already registered")
+        manifest["entries"].append(record)
+        _write_manifest(directory, manifest, key)
 
 
 def purge_expired(directory: Path, key: bytes, retention_days: int = 30, now: datetime | None = None) -> int:
@@ -67,34 +71,35 @@ def purge_expired(directory: Path, key: bytes, retention_days: int = 30, now: da
     if now.tzinfo is None:
         fail("retention clock must include a timezone")
     now = now.astimezone(timezone.utc)
-    manifest = _read_manifest(directory, key)
-    cutoff = now - timedelta(days=retention_days)
-    expired: list[dict[str, Any]] = []
-    keep: list[dict[str, Any]] = []
-    for entry in manifest["entries"]:
-        created = _parse_timestamp(entry["created_at"])
-        if created > now:
-            fail("retention manifest contains a future backup timestamp")
-        artifact = directory / entry["artifact"]
-        if artifact.is_symlink():
-            fail("registered backup artifact is a symlink")
-        if artifact.exists():
-            if not artifact.is_file() or artifact.stat().st_size != entry["size"] or _hash_file(artifact) != entry["sha256"]:
-                fail("registered backup artifact does not match its durable ownership record")
-        elif created >= cutoff:
-            fail("registered unexpired backup artifact is missing")
-        (expired if created < cutoff else keep).append(entry)
+    with _manifest_lock(directory):
+        manifest = _read_manifest(directory, key)
+        cutoff = now - timedelta(days=retention_days)
+        expired: list[dict[str, Any]] = []
+        keep: list[dict[str, Any]] = []
+        for entry in manifest["entries"]:
+            created = _parse_timestamp(entry["created_at"])
+            if created > now:
+                fail("retention manifest contains a future backup timestamp")
+            artifact = directory / entry["artifact"]
+            if artifact.is_symlink():
+                fail("registered backup artifact is a symlink")
+            if artifact.exists():
+                if not artifact.is_file() or artifact.stat().st_size != entry["size"] or _hash_file(artifact) != entry["sha256"]:
+                    fail("registered backup artifact does not match its durable ownership record")
+            elif created >= cutoff:
+                fail("registered unexpired backup artifact is missing")
+            (expired if created < cutoff else keep).append(entry)
 
-    removed = 0
-    for entry in expired:
-        artifact = directory / entry["artifact"]
-        if artifact.exists():
-            artifact.unlink()
-            removed += 1
-    if expired:
-        manifest["entries"] = keep
-        _write_manifest(directory, manifest, key)
-    return removed
+        removed = 0
+        for entry in expired:
+            artifact = directory / entry["artifact"]
+            if artifact.exists():
+                artifact.unlink()
+                removed += 1
+        if expired:
+            manifest["entries"] = keep
+            _write_manifest(directory, manifest, key)
+        return removed
 
 
 def _safe_directory(directory: Path) -> Path:
@@ -103,6 +108,21 @@ def _safe_directory(directory: Path) -> Path:
         fail("configured backup directory cannot be a symlink")
     private_dir(directory)
     return directory.resolve(strict=True)
+
+
+@contextlib.contextmanager
+def _manifest_lock(directory: Path):
+    path = directory / LOCK_NAME
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+            fail("retention lock must be a current-user-owned regular file")
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
 
 
 def _read_manifest(directory: Path, key: bytes) -> dict[str, Any]:

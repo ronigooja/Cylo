@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 import unittest
 
 from data_lifecycle.retention import MANIFEST_NAME, purge_expired, register_backup
@@ -89,6 +91,48 @@ class BackupRetentionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "authentication failed"):
             purge_expired(self.directory, self.key, now=self.now)
         self.assertTrue(artifact.exists())
+
+    def test_concurrent_registration_preserves_both_manifest_records(self):
+        entries = [
+            ("cylo-20261001T000000Z-aabbcc01.cylo-backup", self.now - timedelta(days=5)),
+            ("cylo-20261002T000000Z-aabbcc02.cylo-backup", self.now - timedelta(days=4)),
+        ]
+        barrier = Barrier(2)
+        def register(item):
+            name, created = item
+            barrier.wait()
+            self.backup(name, created)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(register, entries))
+
+        manifest = json.loads((self.directory / MANIFEST_NAME).read_text())
+        self.assertEqual({row["artifact"] for row in manifest["entries"]}, {item[0] for item in entries})
+
+    def test_concurrent_registration_and_purge_preserve_new_backup(self):
+        expired = self.backup("cylo-20260901T000000Z-aabbccdd.cylo-backup", self.now - timedelta(days=31))
+        fresh_name = "cylo-20261021T000000Z-aabbcc01.cylo-backup"
+        fresh = self.directory / fresh_name
+        fresh.write_bytes(b"new backup")
+        os.chmod(fresh, 0o600)
+
+        def register():
+            register_backup(self.directory, fresh, self.now - timedelta(days=1), {
+                "snapshot_lineage_id": "fixture-lineage", "snapshot_sequence": 8,
+                "cleanup_targets": ["backup_delete_manifest"],
+            }, self.key)
+
+        def purge():
+            return purge_expired(self.directory, self.key, now=self.now)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(register), pool.submit(purge)]
+            for future in futures:
+                future.result()
+        self.assertFalse(expired.exists())
+        self.assertTrue(fresh.exists())
+        manifest = json.loads((self.directory / MANIFEST_NAME).read_text())
+        self.assertEqual([row["artifact"] for row in manifest["entries"]], [fresh_name])
 
 
 if __name__ == "__main__":
