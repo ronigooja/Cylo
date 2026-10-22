@@ -192,7 +192,7 @@ func run() error {
 	server, err := composeControlServer(store, cfg, voice.Config{GatewayURL: os.Getenv("CYLO_VOICE_GATEWAY_URL"), GatewayAPIKey: os.Getenv("CYLO_VOICE_GATEWAY_API_KEY")}, capabilities.Config{
 		AvailableCapabilityIDs: splitEnv("CYLO_AVAILABLE_CAPABILITY_IDS", ""),
 		RuntimeBackend:         strings.TrimSpace(os.Getenv("CYLO_CAPABILITY_RUNTIME_BACKEND")),
-	}, memory.DerivedConfig{})
+	}, memory.DerivedConfig{BackupDeleteManifestPath: strings.TrimSpace(os.Getenv("CYLO_BACKUP_DELETE_MANIFEST_PATH"))})
 	if err != nil {
 		return err
 	}

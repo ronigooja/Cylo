@@ -17,7 +17,7 @@ from data_lifecycle.common import (
     file_record, load_inventory, private_dir, read_key, run_volume_quiesce_adapter,
     sqlite_snapshot, independent_deletion_journal_metadata,
 )
-from data_lifecycle.retention import purge_expired, register_backup
+from data_lifecycle.retention import purge_expired, read_backup_delete_manifest, register_backup
 
 
 def main() -> int:
@@ -25,6 +25,7 @@ def main() -> int:
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--destination", type=Path, required=True, help="private backup directory")
     parser.add_argument("--retention-days", type=int, default=30, help="retain registered backups for this many days (default: 30)")
+    parser.add_argument("--backup-delete-manifest", type=Path, default=os.environ.get("CYLO_BACKUP_DELETE_MANIFEST_PATH"), help="configured independent durable deletion manifest written by the memory worker")
     parser.add_argument("--key-file", type=Path, required=True, help="32-byte deployment-managed key, mode 0600")
     parser.add_argument("--data-root", action="append", default=[], metavar="ID=PATH", help="allowed source root; repeat for configs/artifacts/volumes")
     parser.add_argument("--inventory", type=Path, help="JSON list of relative managed paths and secret references")
@@ -61,6 +62,7 @@ def main() -> int:
             journal_target.write_bytes(sidecar.read_bytes() if sidecar.exists() else b"")
             os.chmod(journal_target, 0o600)
             db_record["trusted_deletion_head"] = journal_record
+            backup_delete_manifest = read_backup_delete_manifest(args.backup_delete_manifest, journal_target, journal_record)
             entries = []
             for role in ("service_config_paths", "artifact_paths", "persistent_volume_paths"):
                 for entry in inventory[role]:
@@ -88,12 +90,7 @@ def main() -> int:
                 },
                 "secret_refs": inventory["secret_refs"],
                 "files": records,
-                "backup_delete_manifest": {
-                    "baseline": journal_record["snapshot_lineage_id"],
-                    "sequence": journal_record["snapshot_sequence"],
-                    "targets": sorted({target for line in journal_target.read_text(encoding="utf-8").splitlines() for target in json.loads(line).get("cleanup_targets", [])}),
-                    "version": 1,
-                },
+                "backup_delete_manifest": backup_delete_manifest,
                 "encryption": {"algorithm": "AES-256-GCM", "kdf": "scrypt", "scrypt_n": 2**18, "scrypt_r": 8, "scrypt_p": 1},
                 "retention_days": args.retention_days,
             }

@@ -5,9 +5,9 @@ from __future__ import annotations
 import contextlib
 from datetime import datetime, timedelta, timezone
 import fcntl
-import hashlib
 import hmac
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -100,6 +100,70 @@ def purge_expired(directory: Path, key: bytes, retention_days: int = 30, now: da
             manifest["entries"] = keep
             _write_manifest(directory, manifest, key)
         return removed
+
+
+def read_backup_delete_manifest(path: Path | None, journal_path: Path, journal_metadata: dict[str, Any]) -> dict[str, Any]:
+    """Require the configured manifest to cover the exact frozen journal head."""
+    journal_records = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
+    if path is None:
+        return {
+            "baseline": journal_metadata["snapshot_lineage_id"],
+            "sequence": journal_metadata["snapshot_sequence"],
+            "targets": sorted({target for record in journal_records for target in record["cleanup_targets"]}),
+            "version": 1,
+        }
+    manifest_path = Path(path).absolute()
+    if manifest_path.is_symlink():
+        fail("backup deletion manifest cannot be a symlink")
+    if manifest_path.parent.resolve(strict=True) != manifest_path.parent:
+        fail("backup deletion manifest directory cannot contain symlinks")
+    parent_stat = manifest_path.parent.stat()
+    if not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != os.getuid() or stat.S_IMODE(parent_stat.st_mode) & 0o077:
+        fail("backup deletion manifest directory must be current-user-owned and private")
+    if not manifest_path.exists():
+        if journal_records:
+            fail("backup deletion manifest is missing while the deletion journal has records")
+        rows = []
+    else:
+        st = manifest_path.lstat()
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) != 0o600:
+            fail("backup deletion manifest must be a current-user-owned regular file with mode 0600")
+        try:
+            rows = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines()]
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            fail(f"backup deletion manifest is invalid: {exc}")
+    if len(rows) != len(journal_records):
+        fail("backup deletion manifest is not complete for the frozen journal head")
+    targets: set[str] = set()
+    by_sequence: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"version", "sequence", "baseline", "targets", "source_hash"}:
+            fail("backup deletion manifest has an unsupported record schema")
+        sequence = row["sequence"]
+        if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1 or sequence in by_sequence:
+            fail("backup deletion manifest sequence is invalid or duplicated")
+        by_sequence[sequence] = row
+    if set(by_sequence) != set(range(1, len(journal_records) + 1)):
+        fail("backup deletion manifest is not complete for the frozen journal head")
+    for index, journal_record in enumerate(journal_records, 1):
+        row = by_sequence[index]
+        if (
+            row["version"] != 1
+            or row["baseline"] != journal_record["lineage_id"]
+            or row["targets"] != journal_record["cleanup_targets"]
+            or row["source_hash"] != journal_record["hash"]
+            or not isinstance(row["targets"], list)
+            or not isinstance(row["source_hash"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", row["source_hash"])
+        ):
+            fail("backup deletion manifest does not match the trusted deletion journal")
+        targets.update(journal_record["cleanup_targets"])
+    return {
+        "baseline": journal_metadata["snapshot_lineage_id"],
+        "sequence": len(rows),
+        "targets": sorted(targets),
+        "version": 1,
+    }
 
 
 def _safe_directory(directory: Path) -> Path:
