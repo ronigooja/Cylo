@@ -249,11 +249,11 @@ public struct CapabilityDeployment: Codable, Equatable, Identifiable, Sendable {
     public var revocationCleanupStatus: CapabilityRevocationCleanupStatus? {
         guard revokedAt != nil else { return nil }
         switch observedState {
-        case "stopped": .stopped
-        case "unknown": .unknown
-        case "uncertain": .uncertain
-        case "failed": .failed
-        default: .pending(observedState: observedState)
+        case "stopped": return .stopped
+        case "unknown": return .unknown
+        case "uncertain": return .uncertain
+        case "failed": return .failed
+        default: return .pending(observedState: observedState)
         }
     }
 }
