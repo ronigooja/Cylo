@@ -22,6 +22,7 @@ var (
 	ErrNotFound        = errors.New("memory record not found")
 	ErrVersionConflict = errors.New("memory revision conflict")
 	ErrInvalidSource   = errors.New("memory source is unavailable or inaccessible")
+	ErrContextStale    = errors.New("memory context changed during assembly")
 )
 
 type Repository struct {
@@ -527,6 +528,10 @@ WHERE c.workspace_id=? AND c.deleted_at IS NULL AND c.status IN ('active','confl
 // AssembleContext returns only source-verified claims visible to the recipient
 // and records the exact revisions disclosed in a durable context manifest.
 func (r *Repository) AssembleContext(ctx context.Context, principal contracts.Principal, taskID, recipientID, query string, budget int) (ContextManifest, []Claim, error) {
+	return r.assembleContext(ctx, principal, taskID, recipientID, query, budget, nil)
+}
+
+func (r *Repository) assembleContext(ctx context.Context, principal contracts.Principal, taskID, recipientID, query string, budget int, beforeSave func()) (ContextManifest, []Claim, error) {
 	if principal.WorkspaceID == "" || principal.SubjectID == "" || recipientID == "" {
 		return ContextManifest{}, nil, ErrForbidden
 	}
@@ -571,6 +576,10 @@ func (r *Repository) AssembleContext(ctx context.Context, principal contracts.Pr
 			return ContextManifest{}, nil, err
 		}
 	}
+	snapshotSequence, err := r.contextDeletionSequence(ctx)
+	if err != nil {
+		return ContextManifest{}, nil, err
+	}
 	reader := principal
 	reader.SubjectID = recipientID
 	result, err := r.Search(ctx, reader, query, filter)
@@ -610,6 +619,9 @@ func (r *Repository) AssembleContext(ctx context.Context, principal contracts.Pr
 		claims = append(claims, claim)
 	}
 	manifest.Missing = uniqueStrings(manifest.Missing)
+	if beforeSave != nil {
+		beforeSave()
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ContextManifest{}, nil, err
@@ -617,6 +629,13 @@ func (r *Repository) AssembleContext(ctx context.Context, principal contracts.Pr
 	defer tx.Rollback()
 	if err := storage.CheckRestoreDeletionReconciliationTx(ctx, tx); err != nil {
 		return ContextManifest{}, nil, err
+	}
+	currentSequence, err := contextDeletionSequenceTx(ctx, tx)
+	if err != nil {
+		return ContextManifest{}, nil, err
+	}
+	if currentSequence != snapshotSequence {
+		return ContextManifest{}, nil, ErrContextStale
 	}
 	if err := r.SaveContext(ctx, tx, manifest); err != nil {
 		return ContextManifest{}, nil, err
@@ -631,12 +650,58 @@ func (r *Repository) SaveContext(ctx context.Context, tx *sql.Tx, manifest Conte
 	if manifest.ID == "" || manifest.WorkspaceID == "" || manifest.RecipientID == "" || manifest.Budget <= 0 {
 		return errors.New("invalid context manifest")
 	}
+	journalled, err := journalledDeletionVersionsTx(ctx, tx, r.deletionJournal)
+	if err != nil {
+		return err
+	}
+	for _, entry := range manifest.Entries {
+		if entry.ClaimID == "" || entry.Revision < 1 || journalled[manifest.WorkspaceID+"\x00"+entry.ClaimID] >= entry.Revision {
+			return ErrContextStale
+		}
+		var revision int64
+		var status string
+		var deletedAt sql.NullString
+		var content string
+		err := tx.QueryRowContext(ctx, `SELECT c.revision,c.status,c.deleted_at,r.content
+FROM memory_claims c JOIN memory_revisions r ON r.claim_id=c.id AND r.revision=c.revision
+WHERE c.workspace_id=? AND c.id=?`, manifest.WorkspaceID, entry.ClaimID).Scan(&revision, &status, &deletedAt, &content)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrContextStale
+		}
+		if err != nil {
+			return err
+		}
+		if revision != entry.Revision || (status != string(ClaimActive) && status != string(ClaimConflicted)) || deletedAt.Valid || hashString(content) != entry.ContentHash {
+			return ErrContextStale
+		}
+	}
 	body, err := json.Marshal(manifest)
 	if err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO memory_context_manifests(id,workspace_id,task_id,recipient_id,manifest,created_at) VALUES(?,?,?,?,?,?)`, manifest.ID, manifest.WorkspaceID, manifest.TaskID, manifest.RecipientID, body, manifest.CreatedAt.UTC().Format(time.RFC3339Nano))
 	return err
+}
+
+func (r *Repository) contextDeletionSequence(ctx context.Context) (int64, error) {
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if err = storage.CheckRestoreDeletionReconciliationTx(ctx, tx); err != nil {
+		return 0, err
+	}
+	return contextDeletionSequenceTx(ctx, tx)
+}
+
+func contextDeletionSequenceTx(ctx context.Context, tx *sql.Tx) (int64, error) {
+	var sequence int64
+	err := tx.QueryRowContext(ctx, `SELECT deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&sequence)
+	if err != nil && strings.Contains(err.Error(), "no such table") {
+		return 0, nil
+	}
+	return sequence, err
 }
 
 func insertSourceTx(ctx context.Context, tx *sql.Tx, workspace string, s Source) error {

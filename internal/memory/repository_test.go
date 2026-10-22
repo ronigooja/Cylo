@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -163,6 +164,101 @@ func TestClaimDeletionInvalidatesWorkspaceContextCacheTransactionally(t *testing
 	}
 	if err = store.DB().QueryRowContext(ctx, `SELECT completed_sequence FROM cylo_deletion_reconciliation_checkpoints WHERE target='export_temp'`).Scan(&completed); err != nil || completed != 0 {
 		t.Fatalf("export-temp checkpoint advanced before physical cleanup: sequence=%d err=%v", completed, err)
+	}
+}
+
+func TestContextAssemblyCannotRestoreManifestAfterDeletionBarrier(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, storage.Config{Path: filepath.Join(t.TempDir(), "context-race.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err = storage.RegisterCoreMigrations(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = RegisterMigrations(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewRepositoryWithStore(store)
+	scope := Scope{Kind: ScopePersonal, PrincipalID: "context-race-user"}
+	claim := writeMemory(t, ctx, store.DB(), repo, scope, "context race payload", "context-race-source", 0)
+	principal := contracts.Principal{WorkspaceID: "default", SubjectID: scope.PrincipalID, Scopes: []string{"memory:read:personal"}}
+	deleteErr := error(nil)
+	manifest, returned, err := repo.assembleContext(ctx, principal, "", scope.PrincipalID, "context race", 100, func() {
+		_, deleteErr = runDelete(ctx, store.DB(), repo, DeleteInput{WorkspaceID: "default", ActorID: scope.PrincipalID, ClaimID: claim.ID, Expected: claim.Revision, ReasonCode: "user_requested"})
+	})
+	if deleteErr != nil {
+		t.Fatalf("barrier deletion failed: %v", deleteErr)
+	}
+	if !errors.Is(err, ErrContextStale) || manifest.ID != "" || returned != nil {
+		t.Fatalf("context assembly after barrier: manifest=%#v returned=%#v err=%v", manifest, returned, err)
+	}
+	var manifests, checkpoint int
+	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM memory_context_manifests WHERE workspace_id='default'`).Scan(&manifests); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.DB().QueryRowContext(ctx, `SELECT completed_sequence FROM cylo_deletion_reconciliation_checkpoints WHERE target='cache'`).Scan(&checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if manifests != 0 || checkpoint != 1 {
+		t.Fatalf("stale context resurrected after cache checkpoint: manifests=%d checkpoint=%d", manifests, checkpoint)
+	}
+}
+
+func TestSaveContextRejectsDeletionJournalIntentAheadOfSQLite(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, storage.Config{Path: filepath.Join(t.TempDir(), "context-journal-race.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err = storage.RegisterCoreMigrations(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = RegisterMigrations(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewRepositoryWithStore(store)
+	scope := Scope{Kind: ScopePersonal, PrincipalID: "journal-race-user"}
+	claim := writeMemory(t, ctx, store.DB(), repo, scope, "journal race payload", "journal-race-source", 0)
+	principal := contracts.Principal{WorkspaceID: "default", SubjectID: scope.PrincipalID, Scopes: []string{"memory:read:personal"}}
+	result, err := repo.Search(ctx, principal, "journal race", SearchFilter{})
+	if err != nil || len(result.Items) != 1 {
+		t.Fatalf("pre-delete search returned %#v err=%v", result.Items, err)
+	}
+	entry := ContextEntry{ClaimID: claim.ID, Revision: claim.Revision, ContentHash: hashString(result.Items[0].Content)}
+	manifest := ContextManifest{ID: "journal-race-manifest", WorkspaceID: "default", RecipientID: scope.PrincipalID, Budget: 100, CreatedAt: time.Now().UTC(), Entries: []ContextEntry{entry}}
+	tx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repo.DeleteTx(ctx, tx, DeleteInput{WorkspaceID: "default", ActorID: scope.PrincipalID, ClaimID: claim.ID, Expected: claim.Revision, ReasonCode: "user_requested"}); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err = tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err = repo.SaveContext(ctx, tx, manifest); !errors.Is(err, ErrContextStale) {
+		t.Fatalf("SaveContext accepted sidecar-only deletion intent: %v", err)
 	}
 }
 
