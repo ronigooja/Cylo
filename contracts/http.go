@@ -282,6 +282,18 @@ type RunnerObservation struct {
 	Error            string            `json:"error,omitempty"`
 	ExternalEffects  []ExternalEffect  `json:"external_effects"`
 	TerminationProof *TerminationProof `json:"termination_proof,omitempty"`
+	NoEffectProof    *NoEffectProof    `json:"no_effect_proof,omitempty"`
+}
+
+// NoEffectProof is the runner journal receipt for a run that ended before AO
+// creation began. The control plane also checks its own observation and effect
+// history before accepting this receipt.
+type NoEffectProof struct {
+	JournalPhase    string `json:"journal_phase"`
+	AOCreateStarted bool   `json:"ao_create_started"`
+	AOSessionID     string `json:"ao_session_id,omitempty"`
+	AOContainerID   string `json:"ao_container_id,omitempty"`
+	Outcome         string `json:"outcome"`
 }
 
 // TerminationProof carries the independent AO process-stop evidence required

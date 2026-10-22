@@ -96,22 +96,28 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 		}
 		spec = persisted.Spec
 		phase = ""
+		if persisted.Phase == "claimed" && spec.ClientRequestID == "" && persisted.Session == "" && persisted.Container == "" {
+			// A prior preflight failure can persist its no-effect receipt before
+			// reporting it. If the runner restarted between those writes, fail the
+			// empty request closed instead of attempting AO creation.
+			return e.reportNoEffectTerminal(ctx, claim, "failed", "claim_recovery_incomplete", "The runner recovered an incomplete claim before AO creation; no runtime was created.")
+		}
 	} else {
 		route, ok := e.Routes[claim.ProfileID]
 		if !ok || route.ProfileID != claim.ProfileID || route.RuntimeRouteID != claim.RuntimeRouteID || route.ModelRouteID != claim.ModelRouteID || !validAOApprovalMode(route.ApprovalMode) {
-			return e.reportFailure(ctx, claim, "route_unavailable", "Server-selected runtime route is not available on this runner.")
+			return e.reportNoEffectTerminal(ctx, claim, "failed", "route_unavailable", "Server-selected runtime route is not available on this runner.")
 		}
 		if e.Containers != nil && route.Harness != "codex" {
-			return e.reportFailure(ctx, claim, "runtime_unavailable", "This supervised runtime profile currently requires the Codex chat harness.")
+			return e.reportNoEffectTerminal(ctx, claim, "failed", "runtime_unavailable", "This supervised runtime profile currently requires the Codex chat harness.")
 		}
 		if e.Isolation == nil {
-			return e.reportFailure(ctx, claim, "isolation_unavailable", "Runtime dispatch is disabled because AO execution isolation has not been verified.")
+			return e.reportNoEffectTerminal(ctx, claim, "failed", "isolation_unavailable", "Runtime dispatch is disabled because AO execution isolation has not been verified.")
 		}
 		if err := e.Isolation.Check(ctx, claim); err != nil {
-			return e.reportFailure(ctx, claim, "isolation_denied", "Runtime dispatch was denied by the configured isolation policy.")
+			return e.reportNoEffectTerminal(ctx, claim, "failed", "isolation_denied", "Runtime dispatch was denied by the configured isolation policy.")
 		}
 		if strings.TrimSpace(claim.Goal) == "" {
-			return e.reportFailure(ctx, claim, "empty_goal", "The server supplied an empty task goal.")
+			return e.reportNoEffectTerminal(ctx, claim, "failed", "empty_goal", "The server supplied an empty task goal.")
 		}
 		spec = ao.WorkerSpec{
 			ClientRequestID: claim.RunID,
@@ -412,10 +418,75 @@ func (e *Engine) reportStopWithoutSession(ctx context.Context, claim contracts.J
 	if err != nil {
 		return err
 	}
-	if ok && (entry.Phase == "claimed" || entry.Phase == "failed") {
-		return e.emit(ctx, claim, "stop_confirmed", "ao_session", "Stop was confirmed before any AO session was created.", nil, nil, "")
+	if ok && entry.Phase == "claimed" && entry.Session == "" && entry.Container == "" {
+		return e.reportNoEffectTerminal(ctx, claim, "stopped", "stop_before_dispatch", "Stop was confirmed before any AO session was created.")
 	}
 	return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_create", "Stop arrived while AO creation may have had an unknown outcome; the run remains fenced for reconciliation.", nil, nil, "", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "unknown"}}))
+}
+
+func (e *Engine) reportNoEffectTerminal(ctx context.Context, claim contracts.JobClaim, outcome, reason, message string) error {
+	entry, ok, err := e.Journal.Entry(ctx, claim.RunID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		entry, err = e.Journal.SaveClaim(ctx, claim, ao.WorkerSpec{}, "claimed")
+		if err != nil {
+			return err
+		}
+	}
+	if entry.Claim.AttemptID != claim.AttemptID || entry.Claim.Fence != claim.Fence || entry.Phase != "claimed" || entry.Session != "" || entry.Container != "" {
+		return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_create", "The runner journal cannot prove that AO creation never began; the run remains fenced.", nil, nil, "", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "unknown"}}))
+	}
+	proof := &contracts.NoEffectProof{JournalPhase: "claimed", AOCreateStarted: false, Outcome: outcome}
+	return e.emitNoEffectTerminal(ctx, claim, reason, message, proof)
+}
+
+func (e *Engine) emitNoEffectTerminal(ctx context.Context, claim contracts.JobClaim, reason, message string, proof *contracts.NoEffectProof) error {
+	if e.Journal == nil || e.Control == nil {
+		return errors.New("runner engine is not initialized")
+	}
+	encoded, err := json.Marshal(struct {
+		Reason string
+		Proof  *contracts.NoEffectProof
+		Error  string
+	}{reason, proof, message})
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(encoded)
+	obsID := observationID(claim.RunID, claim.AttemptID, claim.Fence, "no_effect_terminal", reason+hex.EncodeToString(digest[:]))
+	if exists, acknowledged, err := e.Journal.ObservationExists(ctx, obsID); err != nil {
+		return err
+	} else if exists {
+		if acknowledged {
+			return nil
+		}
+		return e.flush(ctx, claim.RunID)
+	}
+	observation := contracts.RunnerObservation{
+		ObservationID: obsID,
+		RunID:         claim.RunID,
+		AttemptID:     claim.AttemptID,
+		Fence:         claim.Fence,
+		Kind:          "no_effect_terminal",
+		OccurredAt:    time.Now().UTC(),
+		Error:         message,
+		NoEffectProof: proof,
+		Evidence: []contracts.Evidence{{
+			ID:        observationID(claim.RunID, claim.AttemptID, claim.Fence, "no_effect_terminal", reason),
+			Kind:      "no_effect_terminal",
+			Summary:   message,
+			Source:    "runner_journal",
+			CreatedAt: time.Now().UTC(),
+			Verified:  false,
+		}},
+		ExternalEffects: []contracts.ExternalEffect{},
+	}
+	if err := e.Journal.QueueObservation(ctx, claim.RunID, observation); err != nil {
+		return err
+	}
+	return e.flush(ctx, claim.RunID)
 }
 
 func reportUnknown(err error) error {

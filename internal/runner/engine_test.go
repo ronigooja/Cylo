@@ -165,8 +165,43 @@ func TestProcessFailsClosedWithoutIsolationVerifier(t *testing.T) {
 	if agent.createN != 0 {
 		t.Fatal("AO runtime was created without execution isolation")
 	}
-	if len(control.observations) != 1 || control.observations[0].Kind != "failure" || control.observations[0].Evidence[0].Verified {
-		t.Fatalf("expected explicit unverified failure observation: %+v", control.observations)
+	if len(control.observations) != 1 || control.observations[0].Kind != "no_effect_terminal" || control.observations[0].NoEffectProof == nil || control.observations[0].NoEffectProof.Outcome != "failed" || control.observations[0].Evidence[0].Verified {
+		t.Fatalf("expected explicit no-effect terminal observation: %+v", control.observations)
+	}
+}
+
+func TestRouteUnavailableFailsRunBeforeAOCreate(t *testing.T) {
+	claim := validClaim()
+	agent := &fakeAO{}
+	engine, control := makeEngine(t, claim, contracts.RunControl{DesiredControl: "run"}, agent, permitIsolation{}, nil)
+	engine.Routes = map[string]Route{}
+	if err := engine.Process(context.Background(), claim); err != nil {
+		t.Fatal(err)
+	}
+	if agent.createN != 0 {
+		t.Fatal("AO runtime was created without the server-selected route")
+	}
+	if len(control.observations) != 1 || control.observations[0].Kind != "no_effect_terminal" || control.observations[0].NoEffectProof == nil || control.observations[0].NoEffectProof.Outcome != "failed" {
+		t.Fatalf("route rejection did not report a no-effect terminal observation: %+v", control.observations)
+	}
+}
+
+func TestStopBeforeAOCreateReportsJournalBackedNoEffect(t *testing.T) {
+	claim := validClaim()
+	agent := &fakeAO{}
+	engine, control := makeEngine(t, claim, contracts.RunControl{DesiredControl: "stop"}, agent, permitIsolation{}, nil)
+	if err := engine.Process(context.Background(), claim); err != nil {
+		t.Fatal(err)
+	}
+	if agent.createN != 0 || agent.stopN != 0 {
+		t.Fatalf("pre-dispatch stop called AO create/stop: create=%d stop=%d", agent.createN, agent.stopN)
+	}
+	if len(control.observations) != 1 {
+		t.Fatalf("pre-dispatch stop observations=%+v", control.observations)
+	}
+	observation := control.observations[0]
+	if observation.Kind != "no_effect_terminal" || observation.NoEffectProof == nil || observation.NoEffectProof.Outcome != "stopped" || observation.NoEffectProof.JournalPhase != "claimed" || observation.NoEffectProof.AOCreateStarted || observation.NoEffectProof.AOSessionID != "" || observation.NoEffectProof.AOContainerID != "" {
+		t.Fatalf("pre-dispatch stop lacks the exact journal-backed no-effect proof: %+v", observation)
 	}
 }
 

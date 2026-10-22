@@ -385,6 +385,34 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if observation.Kind == "no_effect_terminal" {
+		if status != "dispatching" {
+			writeError(w, apiError(409, "state_conflict", "no-effect termination requires a run that has not started dispatch", nil))
+			return
+		}
+		proof := observation.NoEffectProof
+		if proof == nil || proof.JournalPhase != "claimed" || proof.AOCreateStarted || proof.AOSessionID != "" || proof.AOContainerID != "" || (proof.Outcome != "stopped" && proof.Outcome != "failed") || (observation.AOProjectID != "" && observation.AOProjectID != boundProject) || observation.AOSessionID != "" || boundSession != "" || len(observation.ExternalEffects) != 0 || observation.TerminationProof != nil {
+			writeError(w, apiError(409, "no_effect_unproven", "no-effect termination requires a claimed journal entry with no AO binding or external effects", nil))
+			return
+		}
+		if proof.Outcome == "stopped" && desired != "stop" {
+			writeError(w, apiError(409, "state_conflict", "no-effect stop confirmation requires desired_control=stop", nil))
+			return
+		}
+		var priorDispatch, priorEffects int
+		if err = tx.QueryRowContext(r.Context(), `SELECT count(*) FROM runner_observations WHERE run_id=? AND attempt_id=? AND fence=? AND kind IN ('dispatch_started','dispatch_bound','effect_unknown')`, runID, attempt, fence).Scan(&priorDispatch); err != nil {
+			writeError(w, err)
+			return
+		}
+		if err = tx.QueryRowContext(r.Context(), `SELECT count(*) FROM external_effects WHERE run_id=?`, runID).Scan(&priorEffects); err != nil {
+			writeError(w, err)
+			return
+		}
+		if priorDispatch != 0 || priorEffects != 0 {
+			writeError(w, apiError(409, "no_effect_unproven", "run history contains dispatch or external-effect evidence", nil))
+			return
+		}
+	}
 	now := time.Now().UTC()
 	if observation.OccurredAt.IsZero() {
 		observation.OccurredAt = now
@@ -455,6 +483,14 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		}
 		taskVersion++
 	}
+	if observation.Kind == "no_effect_terminal" && observation.NoEffectProof.Outcome == "failed" {
+		_, err = tx.ExecContext(r.Context(), `UPDATE tasks SET error=?,version=version+1,updated_at=? WHERE id=? AND workspace_id=?`, observation.Error, now.Format(time.RFC3339Nano), taskID, workspace)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		taskVersion++
+	}
 	for _, effect := range observation.ExternalEffects {
 		details, _ := json.Marshal(effect)
 		if effect.ID == "" || effect.Kind == "" {
@@ -486,6 +522,14 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		}
 	case "progress":
 	case "result", "failure":
+	case "no_effect_terminal":
+		if observation.NoEffectProof.Outcome == "stopped" {
+			nextRunStatus = "stopped"
+			nextTaskStatus = "canceled"
+		} else {
+			nextRunStatus = "failed"
+			nextTaskStatus = "failed"
+		}
 	case "effect_unknown":
 		nextRunStatus = "uncertain"
 	case "stop_confirmed":
@@ -585,7 +629,7 @@ func statusForTask(runStatus, taskStatus string) string {
 }
 func validObservationKind(k string) bool {
 	switch k {
-	case "dispatch_started", "dispatch_bound", "progress", "result", "failure", "effect_unknown", "stop_confirmed", "runtime_terminated":
+	case "dispatch_started", "dispatch_bound", "progress", "result", "failure", "effect_unknown", "stop_confirmed", "runtime_terminated", "no_effect_terminal":
 		return true
 	}
 	return false
