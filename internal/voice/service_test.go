@@ -1,10 +1,13 @@
 package voice
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -141,6 +144,42 @@ func TestVoiceSessionRequiresConfiguredSpaceGateway(t *testing.T) {
 	}
 	if sessions != 0 {
 		t.Fatalf("unconfigured gateway created %d voice session records", sessions)
+	}
+}
+
+func TestVoiceCreatePersistsOnlyAccountHashAndOpaqueLease(t *testing.T) {
+	const accountID = "sensitive-account-correlation-id"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/voice/sessions" {
+			t.Errorf("gateway request=%s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"answer_sdp": "v=0\\r\\n", "voice_session_id": "gateway-session",
+			"account_lease_id": "opaque-lease", "account_lease_generation": 9,
+			"account_id": accountID,
+		})
+	}))
+	defer server.Close()
+	store, svc := newVoiceTestService(t, Config{GatewayURL: server.URL, GatewayAPIKey: "test-key", HTTPClient: server.Client()})
+	principal := contracts.Principal{WorkspaceID: "default", SubjectID: "user-1", DeviceID: "device-1"}
+	created, err := svc.create(context.Background(), principal, createRequest{RequestID: "request-sensitive", OfferSDP: "v=0\\r\\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.AccountLeaseID != "opaque-lease" || created.AccountLeaseGeneration != 9 {
+		t.Fatalf("lease identity was not returned: %#v", created)
+	}
+	var answer []byte
+	var accountHash []byte
+	if err := store.DB().QueryRow(`SELECT offer_answer,account_id_hash FROM voice_sessions WHERE id=?`, created.SessionID).Scan(&answer, &accountHash); err != nil {
+		t.Fatal(err)
+	}
+	if string(answer) == "" || bytes.Contains(answer, []byte(accountID)) || bytes.Contains(answer, []byte("account_id")) {
+		t.Fatalf("persisted answer contains account identity material: %s", answer)
+	}
+	wantHash := sha256.Sum256([]byte(accountID))
+	if !bytes.Equal(accountHash, wantHash[:]) {
+		t.Fatalf("persisted account hash=%x want=%x", accountHash, wantHash)
 	}
 }
 
