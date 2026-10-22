@@ -40,10 +40,10 @@ index 1a547dfed..fe787523a 100644
  func (c *Codex) LoginArgv(ctx context.Context) ([]string, error) {
 diff --git a/backend/internal/adapters/agentaccount/codex_external.go b/backend/internal/adapters/agentaccount/codex_external.go
 new file mode 100644
-index 000000000..b824263ea
+index 000000000..d4a712e2c
 --- /dev/null
 +++ b/backend/internal/adapters/agentaccount/codex_external.go
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,254 @@
 +package agentaccount
 +
 +import (
@@ -67,6 +67,7 @@ index 000000000..b824263ea
 +
 +const codexExternalAPIKeyEnv = "CYLO_CODEX_API_KEY"
 +const codexExternalProfileErrorEnv = "CYLO_CODEX_PROFILE_ERROR"
++const codexExternalModelEnv = "CYLO_CODEX_PROXY_MODEL"
 +
 +// CodexExternalProfile is a deployment-selected OpenAI-compatible Responses
 +// API route. Its CODEX_HOME is AO-owned and separate from the operator's home.
@@ -75,6 +76,7 @@ index 000000000..b824263ea
 +type CodexExternalProfile struct {
 +	BaseURL        string
 +	APIKeyFile     string
++	Model          string
 +	ContainerImage string
 +	Home           string
 +}
@@ -82,19 +84,20 @@ index 000000000..b824263ea
 +// NewCodexExternalProfile returns nil when the external route is not
 +// configured. A partial or malformed configuration returns an error so AO can
 +// fail closed rather than falling back to another account or provider.
-+func NewCodexExternalProfile(stateDir, baseURL, apiKeyFile string) (*CodexExternalProfile, error) {
++func NewCodexExternalProfile(stateDir, baseURL, apiKeyFile, model string) (*CodexExternalProfile, error) {
 +	baseURL, apiKeyFile = strings.TrimSpace(baseURL), strings.TrimSpace(apiKeyFile)
-+	if baseURL == "" && apiKeyFile == "" {
++	model = strings.TrimSpace(model)
++	if baseURL == "" && apiKeyFile == "" && model == "" {
 +		return nil, nil
 +	}
-+	if baseURL == "" || apiKeyFile == "" || !filepath.IsAbs(stateDir) || !filepath.IsAbs(apiKeyFile) {
-+		return nil, errors.New("external Codex provider requires an absolute AO state directory, HTTPS base URL, and absolute secret-file path")
++	if baseURL == "" || apiKeyFile == "" || model == "" || !filepath.IsAbs(stateDir) || !filepath.IsAbs(apiKeyFile) {
++		return nil, errors.New("external Codex provider requires an absolute AO state directory, HTTPS base URL, absolute secret-file path, and deployment-selected model")
 +	}
 +	u, err := url.Parse(baseURL)
 +	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost" || u.Hostname() == "::1"))) {
 +		return nil, errors.New("external Codex provider base URL must use HTTPS or local HTTP without credentials, query, or fragment")
 +	}
-+	return &CodexExternalProfile{BaseURL: strings.TrimRight(u.String(), "/"), APIKeyFile: apiKeyFile, Home: filepath.Join(stateDir, "harnesses", "codex", "external-provider")}, nil
++	return &CodexExternalProfile{BaseURL: strings.TrimRight(u.String(), "/"), APIKeyFile: apiKeyFile, Model: model, Home: filepath.Join(stateDir, "harnesses", "codex", "external-provider")}, nil
 +}
 +
 +func (p *CodexExternalProfile) Configured() bool { return p != nil }
@@ -109,6 +112,9 @@ index 000000000..b824263ea
 +	model = strings.TrimSpace(model)
 +	if model == "" {
 +		return errors.New("external Codex provider requires an explicit model")
++	}
++	if model != p.Model {
++		return errors.New("external Codex provider does not permit the requested model")
 +	}
 +	key, err := p.readAPIKey()
 +	if err != nil {
@@ -161,6 +167,7 @@ index 000000000..b824263ea
 +		"CODEX_HOME":                 home,
 +		"CYLO_CODEX_SESSION_ID":      sessionID,
 +		"CYLO_CODEX_PROXY_UPSTREAM":  p.BaseURL,
++		codexExternalModelEnv:        p.Model,
 +		codexExternalProfileErrorEnv: "",
 +	}
 +	if strings.TrimSpace(p.ContainerImage) != "" {
@@ -333,10 +340,10 @@ index 000000000..0e063b9d1
 +}
 diff --git a/backend/internal/adapters/agentaccount/codex_external_test.go b/backend/internal/adapters/agentaccount/codex_external_test.go
 new file mode 100644
-index 000000000..e2f7ff0df
+index 000000000..30318cb2a
 --- /dev/null
 +++ b/backend/internal/adapters/agentaccount/codex_external_test.go
-@@ -0,0 +1,154 @@
+@@ -0,0 +1,157 @@
 +package agentaccount
 +
 +import (
@@ -363,7 +370,7 @@ index 000000000..e2f7ff0df
 +	if err := os.WriteFile(keyFile, []byte(apiKey+"\n"), 0600); err != nil {
 +		t.Fatal(err)
 +	}
-+	profile, err := NewCodexExternalProfile(state, "https://gateway.example/v1", keyFile)
++	profile, err := NewCodexExternalProfile(state, "https://gateway.example/v1", keyFile, "gpt-6-luna")
 +	if err != nil {
 +		t.Fatal(err)
 +	}
@@ -373,7 +380,7 @@ index 000000000..e2f7ff0df
 +	}
 +	env := profile.RuntimeEnvForSession("session one")
 +	second := profile.RuntimeEnvForSession("session/two")
-+	if env["CODEX_HOME"] == second["CODEX_HOME"] || !strings.HasPrefix(env["CODEX_HOME"], profile.Home+string(os.PathSeparator)+"runs"+string(os.PathSeparator)) || env[codexExternalAPIKeyEnv] != apiKey || env["AO_CODEX_CONTAINER_IMAGE"] != profile.ContainerImage {
++	if env["CODEX_HOME"] == second["CODEX_HOME"] || !strings.HasPrefix(env["CODEX_HOME"], profile.Home+string(os.PathSeparator)+"runs"+string(os.PathSeparator)) || env[codexExternalAPIKeyEnv] != apiKey || env[codexExternalModelEnv] != profile.Model || env["AO_CODEX_CONTAINER_IMAGE"] != profile.ContainerImage {
 +		t.Fatalf("runtime environment is incomplete; keys=%v", externalKeys(env))
 +	}
 +	config, err := os.ReadFile(filepath.Join(env["CODEX_HOME"], "config.toml"))
@@ -424,7 +431,7 @@ index 000000000..e2f7ff0df
 +		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-6-luna"}]}`))
 +	}))
 +	defer server.Close()
-+	profile, err := NewCodexExternalProfile(t.TempDir(), server.URL+"/v1", keyFile)
++	profile, err := NewCodexExternalProfile(t.TempDir(), server.URL+"/v1", keyFile, "gpt-6-luna")
 +	if err != nil {
 +		t.Fatal(err)
 +	}
@@ -432,7 +439,10 @@ index 000000000..e2f7ff0df
 +		t.Fatalf("models probe: %v", err)
 +	}
 +	if err := profile.Check(context.Background(), "missing-model"); err == nil {
-+		t.Fatal("unadvertised model accepted")
++		t.Fatal("model outside deployment selection accepted")
++	}
++	if err := profile.Check(context.Background(), " gpt-6-luna "); err != nil {
++		t.Fatalf("trimmed selected model rejected: %v", err)
 +	}
 +}
 +
@@ -454,10 +464,10 @@ index 000000000..e2f7ff0df
 +}
 +
 +func TestCodexExternalProfileRejectsInsecureOrIncompleteConfiguration(t *testing.T) {
-+	if profile, err := NewCodexExternalProfile(t.TempDir(), "", "/tmp/key"); err == nil || profile != nil {
++	if profile, err := NewCodexExternalProfile(t.TempDir(), "", "/tmp/key", "gpt-6-luna"); err == nil || profile != nil {
 +		t.Fatalf("partial config = (%v,%v)", profile, err)
 +	}
-+	if profile, err := NewCodexExternalProfile(t.TempDir(), "http://gateway.example", "/tmp/key"); err == nil || profile != nil {
++	if profile, err := NewCodexExternalProfile(t.TempDir(), "http://gateway.example", "/tmp/key", "gpt-6-luna"); err == nil || profile != nil {
 +		t.Fatalf("remote HTTP config = (%v,%v)", profile, err)
 +	}
 +}
@@ -468,7 +478,7 @@ index 000000000..e2f7ff0df
 +	if err := os.WriteFile(keyFile, []byte(apiKey), 0644); err != nil {
 +		t.Fatal(err)
 +	}
-+	profile, err := NewCodexExternalProfile(t.TempDir(), "https://gateway.example/v1", keyFile)
++	profile, err := NewCodexExternalProfile(t.TempDir(), "https://gateway.example/v1", keyFile, "gpt-6-luna")
 +	if err != nil {
 +		t.Fatal(err)
 +	}
@@ -478,7 +488,7 @@ index 000000000..e2f7ff0df
 +}
 +
 +func TestCodexExternalProfileMarksCredentialReadFailureWithoutLosingRouteMarker(t *testing.T) {
-+	profile, err := NewCodexExternalProfile(t.TempDir(), "https://gateway.example/v1", filepath.Join(t.TempDir(), "missing-secret"))
++	profile, err := NewCodexExternalProfile(t.TempDir(), "https://gateway.example/v1", filepath.Join(t.TempDir(), "missing-secret"), "gpt-6-luna")
 +	if err != nil {
 +		t.Fatal(err)
 +	}
@@ -493,10 +503,10 @@ index 000000000..e2f7ff0df
 +}
 diff --git a/backend/internal/adapters/chatdriver/codexappserver/container.go b/backend/internal/adapters/chatdriver/codexappserver/container.go
 new file mode 100644
-index 000000000..62eae725c
+index 000000000..a69c3567a
 --- /dev/null
 +++ b/backend/internal/adapters/chatdriver/codexappserver/container.go
-@@ -0,0 +1,267 @@
+@@ -0,0 +1,352 @@
 +package codexappserver
 +
 +import (
@@ -512,6 +522,7 @@ index 000000000..62eae725c
 +	"sync"
 +	"time"
 +
++	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 +	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 +)
 +
@@ -520,6 +531,7 @@ index 000000000..62eae725c
 +	containerImageEnv   = "AO_CODEX_CONTAINER_IMAGE"
 +	providerUpstreamEnv = "CYLO_CODEX_PROXY_UPSTREAM"
 +	providerKeyEnv      = "CYLO_CODEX_PROXY_KEY"
++	providerModelEnv    = "CYLO_CODEX_PROXY_MODEL"
 +	sessionIDEnv        = "CYLO_CODEX_SESSION_ID"
 +)
 +
@@ -529,10 +541,11 @@ index 000000000..62eae725c
 +	image := strings.TrimSpace(values[containerImageEnv])
 +	home := strings.TrimSpace(values["CODEX_HOME"])
 +	providerKey := strings.TrimSpace(values[providerKeyEnv])
++	providerModel := strings.TrimSpace(values[providerModelEnv])
 +	if providerKey == "" {
 +		providerKey = strings.TrimSpace(values["CYLO_CODEX_API_KEY"])
 +	}
-+	if sessionID == "" || image == "" || home == "" || !filepath.IsAbs(workdir) || !filepath.IsAbs(home) {
++	if sessionID == "" || image == "" || home == "" || providerModel == "" || !filepath.IsAbs(workdir) || !filepath.IsAbs(home) {
 +		return nil, errors.New("supervised Codex container requires session identity, image, absolute workspace, and private CODEX_HOME")
 +	}
 +	if strings.ContainsAny(sessionID+image+workdir+home, "\x00\r\n,") || strings.HasPrefix(image, "-") {
@@ -544,7 +557,7 @@ index 000000000..62eae725c
 +	if info, err := os.Stat(home); err != nil || !info.IsDir() {
 +		return nil, errors.New("supervised Codex home is unavailable")
 +	}
-+	broker, err := startProviderBroker(values[providerUpstreamEnv], providerKey)
++	broker, err := startProviderBroker(values[providerUpstreamEnv], providerKey, providerModel)
 +	if err != nil {
 +		return nil, err
 +	}
@@ -554,6 +567,11 @@ index 000000000..62eae725c
 +	if docker == "" {
 +		docker = "docker"
 +	}
++	// The caller context owns startup only; session lifetime is owned by the
++	// returned process's terminate closure. AO cancels its HTTP create context
++	// after sending the session response, so tying the attach process directly to
++	// that request would orphan the container and close the controller pipes.
++	processCtx, cancelProcess := context.WithCancel(context.Background())
 +	name := "cylo-ao-" + shortSessionHash(sessionID)
 +	uidgid := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 +	args := []string{
@@ -588,27 +606,35 @@ index 000000000..62eae725c
 +		"-c", `sandbox_mode="danger-full-access"`,
 +		"app-server",
 +	}
-+	cmd := aoprocess.CommandContext(ctx, docker, args...)
++	// The Docker attach process must outlive the HTTP request that starts a
++	// session. Startup cancellation is handled explicitly below; tying the child
++	// to that short-lived context would close the controller pipes immediately
++	// after AO returns the newly created session.
++	cmd := aoprocess.CommandContext(processCtx, docker, args...)
 +	cmd.Dir = workdir
 +	// Docker receives no provider key or AO session environment. The credential
 +	// is held only by the in-process host broker above.
 +	cmd.Env = sanitizedDockerEnvironment(env)
 +	stdin, err := cmd.StdinPipe()
 +	if err != nil {
++		cancelProcess()
 +		_ = broker.Close()
 +		return nil, fmt.Errorf("container stdin pipe: %w", err)
 +	}
 +	stdout, err := cmd.StdoutPipe()
 +	if err != nil {
++		cancelProcess()
 +		_ = broker.Close()
 +		return nil, fmt.Errorf("container stdout pipe: %w", err)
 +	}
 +	stderr, err := cmd.StderrPipe()
 +	if err != nil {
++		cancelProcess()
 +		_ = broker.Close()
 +		return nil, fmt.Errorf("container stderr pipe: %w", err)
 +	}
 +	if err := cmd.Start(); err != nil {
++		cancelProcess()
 +		_ = broker.Close()
 +		return nil, fmt.Errorf("start supervised Codex container: %w", err)
 +	}
@@ -623,26 +649,95 @@ index 000000000..62eae725c
 +		_ = stdin.Close()
 +		_ = cmd.Process.Kill()
 +		<-done
++		cleanupErr := cleanupStartingContainer(docker, cidfile, sessionID, done)
++		cancelProcess()
++		if cleanupErr == nil {
++			_ = broker.Close()
++			return nil, err
++		}
++		// A failed creation has no process handle for AO to retry through. Close
++		// the credential-bearing broker even if exact container cleanup cannot be
++		// verified; the session labels remain available to supervisor recovery.
 +		_ = broker.Close()
-+		return nil, err
++		return nil, fmt.Errorf("%w; supervised Codex startup cleanup could not be verified: %v", err, cleanupErr)
 +	}
-+	var stopMu sync.Once
-+	var stopErr error
++	var stopMu sync.Mutex
++	stopped := false
++	var verifiedAt time.Time
 +	stop := func() error {
-+		stopMu.Do(func() {
-+			_ = stdin.Close()
-+			stopErr = stopContainerAndWait(docker, containerID, done)
-+			if brokerErr := broker.Close(); stopErr == nil {
-+				stopErr = brokerErr
-+			}
-+		})
-+		return stopErr
++		stopMu.Lock()
++		defer stopMu.Unlock()
++		if stopped {
++			return nil
++		}
++		_ = stdin.Close()
++		stopErr := stopContainerAndWait(docker, containerID, done)
++		if stopErr != nil {
++			// The callback remains available for a later retry. The command wait
++			// goroutine always reaps Docker, even if Docker exits independently.
++			return stopErr
++		}
++		cancelProcess()
++		if brokerErr := broker.Close(); brokerErr != nil {
++			return brokerErr
++		}
++		stopped = true
++		verifiedAt = time.Now().UTC()
++		return nil
++	}
++	terminateWithProof := func() (ports.ChatTerminationProof, error) {
++		if err := stop(); err != nil {
++			return ports.ChatTerminationProof{}, err
++		}
++		stopMu.Lock()
++		defer stopMu.Unlock()
++		if !stopped || verifiedAt.IsZero() || sessionID == "" {
++			return ports.ChatTerminationProof{}, errors.New("supervised Codex process exit is unverified")
++		}
++		return ports.ChatTerminationProof{SessionID: sessionID, Method: ports.ChatTerminationNativeProcessExitWaited, CleanupComplete: true, VerifiedAt: verifiedAt}, nil
 +	}
 +	return &process{
 +		stdin: stdin, stdout: stdout,
-+		stop:      stop,
-+		terminate: stop,
++		stop:               stop,
++		terminate:          stop,
++		terminateWithProof: terminateWithProof,
 +	}, nil
++}
++
++func cleanupStartingContainer(docker, cidfile, sessionID string, done <-chan error) error {
++	containerID := ""
++	if data, err := os.ReadFile(cidfile); err == nil {
++		candidate := strings.TrimSpace(string(data))
++		if validContainerID(candidate) {
++			containerID = candidate
++		}
++	}
++	if containerID == "" {
++		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++		defer cancel()
++		args := []string{"ps", "-aq", "--no-trunc",
++			"--filter", "label=io.cylo.managed=true",
++			"--filter", "label=io.cylo.runtime=ao-codex-chat",
++			"--filter", "label=io.cylo.ao.session=" + sessionID,
++		}
++		output, err := exec.CommandContext(ctx, docker, args...).CombinedOutput()
++		if err != nil {
++			return errors.New("could not inspect containers created for this session")
++		}
++		ids := strings.Fields(string(output))
++		if len(ids) == 0 {
++			return nil
++		}
++		if len(ids) != 1 || !validContainerID(ids[0]) {
++			return errors.New("session labels matched an ambiguous container set")
++		}
++		containerID = ids[0]
++	}
++	return stopContainerAndWait(docker, containerID, done)
++}
++
++func validContainerID(id string) bool {
++	return len(id) >= 12 && len(id) <= 128 && isHex(id)
 +}
 +
 +func supervisedExternalRoute(env map[string]string, image string) (bool, error) {
@@ -666,7 +761,7 @@ index 000000000..62eae725c
 +	for {
 +		if data, err := os.ReadFile(path); err == nil {
 +			id := strings.TrimSpace(string(data))
-+			if len(id) >= 12 && len(id) <= 128 && isHex(id) {
++			if validContainerID(id) {
 +				// Docker writes the complete ID before the container command starts.
 +				// cmd.Wait remains owned by the process stop closure below.
 +				return id, nil
@@ -764,19 +859,243 @@ index 000000000..62eae725c
 +	}
 +	return value != ""
 +}
-diff --git a/backend/internal/adapters/chatdriver/codexappserver/container_test.go b/backend/internal/adapters/chatdriver/codexappserver/container_test.go
+diff --git a/backend/internal/adapters/chatdriver/codexappserver/container_lifecycle_linux_test.go b/backend/internal/adapters/chatdriver/codexappserver/container_lifecycle_linux_test.go
 new file mode 100644
-index 000000000..b0dee83fe
+index 000000000..48ae12af2
 --- /dev/null
-+++ b/backend/internal/adapters/chatdriver/codexappserver/container_test.go
-@@ -0,0 +1,45 @@
++++ b/backend/internal/adapters/chatdriver/codexappserver/container_lifecycle_linux_test.go
+@@ -0,0 +1,212 @@
++//go:build linux
++
 +package codexappserver
 +
 +import (
 +	"context"
-+	"errors"
++	"fmt"
++	"os"
 +	"path/filepath"
++	"strconv"
++	"strings"
++	"syscall"
 +	"testing"
++	"time"
++
++	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
++)
++
++func TestContainerAttachOutlivesRequestContextAndStopsWithSession(t *testing.T) {
++	docker, pidPath, stoppedPath := fakeDockerAttach(t, true)
++	ctx, cancel := context.WithCancel(context.Background())
++	proc, err := spawnContainerAppServer(ctx, t.TempDir(), containerTestEnv(docker))
++	if err != nil {
++		t.Fatalf("start fake supervised container: %v", err)
++	}
++	cancel()
++
++	if _, err := proc.stdin.Write([]byte("still-attached\n")); err != nil {
++		t.Fatalf("HTTP request cancellation closed the AO-owned Docker attach: %v", err)
++	}
++	if err := proc.stop(); err != nil {
++		t.Fatalf("stop exact supervised container and attach: %v", err)
++	}
++	if _, err := os.Stat(stoppedPath); err != nil {
++		t.Fatalf("exact container stop was not requested: %v", err)
++	}
++	assertProcessGone(t, pidPath)
++}
++
++func TestContainerStopProofBindsExactSessionAndOriginalWaitTime(t *testing.T) {
++	docker, _, _ := fakeDockerAttach(t, true)
++	proc, err := spawnContainerAppServer(context.Background(), t.TempDir(), containerTestEnv(docker))
++	if err != nil {
++		t.Fatalf("start fake supervised container: %v", err)
++	}
++	proof, err := proc.terminateWithProof()
++	if err != nil {
++		t.Fatalf("stop exact supervised container and wait for attach: %v", err)
++	}
++	if proof.SessionID != "container-lifecycle-test" || proof.Method != ports.ChatTerminationNativeProcessExitWaited || !proof.CleanupComplete || proof.VerifiedAt.IsZero() {
++		t.Fatalf("termination proof = %+v", proof)
++	}
++	replayed, err := proc.terminateWithProof()
++	if err != nil || replayed != proof {
++		t.Fatalf("replayed proof = %+v, err=%v; want exact original %+v", replayed, err, proof)
++	}
++}
++
++func TestContainerStartupCancellationKillsUnidentifiedAttach(t *testing.T) {
++	docker, pidPath, _ := fakeDockerAttach(t, false)
++	ctx, cancel := context.WithCancel(context.Background())
++	result := make(chan error, 1)
++	go func() {
++		_, err := spawnContainerAppServer(ctx, t.TempDir(), containerTestEnv(docker))
++		result <- err
++	}()
++	deadline := time.Now().Add(3 * time.Second)
++	for {
++		if _, err := os.Stat(pidPath); err == nil {
++			break
++		}
++		if time.Now().After(deadline) {
++			t.Fatal("fake Docker attach did not start")
++		}
++		time.Sleep(10 * time.Millisecond)
++	}
++	cancel()
++	select {
++	case err := <-result:
++		if err == nil {
++			t.Fatal("startup cancellation unexpectedly returned a live container")
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("startup cancellation did not return")
++	}
++	assertProcessGone(t, pidPath)
++}
++
++func TestContainerStopFailureRetainsRetryableHandle(t *testing.T) {
++	docker, pidPath, _ := fakeDockerAttach(t, true)
++	stopCount := filepath.Join(filepath.Dir(docker), "stop.count")
++	script := `#!/bin/sh
++case "$1" in
++  run)
++    cidfile=""
++    while [ "$#" -gt 0 ]; do
++      if [ "$1" = "--cidfile" ]; then shift; cidfile="$1"; fi
++      shift
++    done
++    echo "$$" > ` + shellQuote(pidPath) + `
++    printf '%064d\n' 1 > "$cidfile"
++    exec sleep 60
++    ;;
++  stop)
++    count=0
++    [ ! -f ` + shellQuote(stopCount) + ` ] || count=$(cat ` + shellQuote(stopCount) + `)
++    count=$((count + 1))
++    echo "$count" > ` + shellQuote(stopCount) + `
++    if [ "$count" -eq 1 ]; then exit 1; fi
++    kill -TERM "$(cat ` + shellQuote(pidPath) + `)" 2>/dev/null || true
++    exit 0
++    ;;
++  inspect)
++    count=0
++    [ ! -f ` + shellQuote(stopCount) + ` ] || count=$(cat ` + shellQuote(stopCount) + `)
++    if [ "$count" -lt 2 ]; then echo '{}'; exit 0; fi
++    echo 'No such container' >&2
++    exit 1
++    ;;
++  rm) exit 1 ;;
++  *) exit 2 ;;
++esac
++`
++	if err := os.WriteFile(docker, []byte(script), 0o700); err != nil {
++		t.Fatal(err)
++	}
++	proc, err := spawnContainerAppServer(context.Background(), t.TempDir(), containerTestEnv(docker))
++	if err != nil {
++		t.Fatalf("start fake supervised container: %v", err)
++	}
++	if err := proc.stop(); err == nil {
++		t.Fatal("first stop unexpectedly succeeded without proving container removal")
++	}
++	if err := proc.stop(); err != nil {
++		t.Fatalf("retry stop after an unverified failure: %v", err)
++	}
++	assertProcessGone(t, pidPath)
++}
++
++func containerTestEnv(docker string) []string {
++	return []string{
++		"CYLO_CODEX_SESSION_ID=container-lifecycle-test",
++		"AO_CODEX_CONTAINER_IMAGE=cylo-ao-codex:test",
++		"AO_CODEX_DOCKER_BINARY=" + docker,
++		"CYLO_CODEX_PROXY_UPSTREAM=https://provider.invalid/v1",
++		"CYLO_CODEX_PROXY_KEY=fixture-only-provider-key",
++		"CYLO_CODEX_PROXY_MODEL=gpt-6-luna",
++		"CODEX_HOME=/tmp",
++	}
++}
++
++func fakeDockerAttach(t *testing.T, writeContainerID bool) (docker, pidPath, stoppedPath string) {
++	t.Helper()
++	root := t.TempDir()
++	docker = filepath.Join(root, "docker")
++	pidPath = filepath.Join(root, "attach.pid")
++	stoppedPath = filepath.Join(root, "container.stopped")
++	cidCommand := ""
++	if writeContainerID {
++		cidCommand = `printf '%064d\n' 1 > "$cidfile"`
++	}
++	script := fmt.Sprintf(`#!/bin/sh
++pidfile=%q
++stopped=%q
++case "$1" in
++  run)
++    cidfile=""
++    while [ "$#" -gt 0 ]; do
++      if [ "$1" = "--cidfile" ]; then shift; cidfile="$1"; fi
++      shift
++    done
++    echo "$$" > "$pidfile"
++    %s
++    exec sleep 60
++    ;;
++  stop)
++    echo stopped > "$stopped"
++    kill -TERM "$(cat "$pidfile")" 2>/dev/null || true
++    exit 0
++    ;;
++  inspect)
++    echo "No such container" >&2
++    exit 1
++    ;;
++  ps) exit 0 ;;
++  *) exit 2 ;;
++esac
++`, pidPath, stoppedPath, cidCommand)
++	if err := os.WriteFile(docker, []byte(script), 0o700); err != nil {
++		t.Fatal(err)
++	}
++	return docker, pidPath, stoppedPath
++}
++
++func shellQuote(value string) string {
++	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
++}
++
++func assertProcessGone(t *testing.T, pidPath string) {
++	t.Helper()
++	contents, err := os.ReadFile(pidPath)
++	if err != nil {
++		return // The command may have been killed before it recorded its PID.
++	}
++	pid, err := strconv.Atoi(strings.TrimSpace(string(contents)))
++	if err != nil {
++		t.Fatalf("fake Docker attach PID is invalid: %v", err)
++	}
++	if err := syscall.Kill(pid, 0); err == nil || err != syscall.ESRCH {
++		t.Fatalf("Docker attach PID %d is still alive or cannot be verified gone: %v", pid, err)
++	}
++}
+diff --git a/backend/internal/adapters/chatdriver/codexappserver/container_test.go b/backend/internal/adapters/chatdriver/codexappserver/container_test.go
+new file mode 100644
+index 000000000..8be8c7992
+--- /dev/null
++++ b/backend/internal/adapters/chatdriver/codexappserver/container_test.go
+@@ -0,0 +1,204 @@
++package codexappserver
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"log/slog"
++	"path/filepath"
++	"reflect"
++	"sync/atomic"
++	"testing"
++
++	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 +)
 +
 +func TestExternalRouteRequiresSupervisedContainerImage(t *testing.T) {
@@ -802,6 +1121,159 @@ index 000000000..b0dee83fe
 +	}
 +}
 +
++func TestSupervisedContainerLaunchDoesNotResolveHostCodex(t *testing.T) {
++	t.Setenv(containerImageEnv, "cylo-ao-codex:test")
++	env := map[string]string{
++		providerUpstreamEnv: "https://gateway.example/v1",
++		containerImageEnv:   "cylo-ao-codex:test",
++		"CODEX_HOME":        "/tmp/private-codex-home",
++	}
++	driver := New(fakePlugin{binErr: errors.New("host Codex is not installed")}, slog.New(slog.DiscardHandler))
++	bin, launchEnv, err := driver.launchConfig(context.Background(), env)
++	if err != nil {
++		t.Fatalf("containerized route depended on host Codex binary: %v", err)
++	}
++	if bin != "" || !reflect.DeepEqual(launchEnv, envSlice(env)) {
++		t.Fatalf("container launch configuration = bin %q env %v", bin, launchEnv)
++	}
++}
++
++func TestSupervisedContainerLaunchFailsClosedWhenImageIsMissing(t *testing.T) {
++	t.Setenv(containerImageEnv, "")
++	driver := New(fakePlugin{bin: "/usr/bin/codex"}, slog.New(slog.DiscardHandler))
++	if _, _, err := driver.launchConfig(context.Background(), map[string]string{providerUpstreamEnv: "https://gateway.example/v1"}); err == nil {
++		t.Fatal("container-required external route fell back to host Codex when its image was missing")
++	}
++}
++
++func TestSupervisedContainerProbeDoesNotResolveHostCodex(t *testing.T) {
++	t.Setenv(containerImageEnv, "cylo-ao-codex:test")
++	t.Setenv("AO_CODEX_EXTERNAL_BASE_URL", "https://gateway.example/v1")
++	driver := New(fakePlugin{binErr: errors.New("host Codex is not installed")}, slog.New(slog.DiscardHandler))
++	probed, err := driver.Probe(context.Background())
++	if err != nil {
++		t.Fatalf("supervised image probe depended on host Codex binary: %v", err)
++	}
++	if len(probed) == 0 {
++		t.Fatal("supervised image probe returned no chat capabilities")
++	}
++}
++
++func TestContainerImageAloneDoesNotBypassNativeProbe(t *testing.T) {
++	t.Setenv(containerImageEnv, "cylo-ao-codex:test")
++	t.Setenv("AO_CODEX_EXTERNAL_BASE_URL", "")
++	driver := New(fakePlugin{binErr: errors.New("host Codex is not installed")}, slog.New(slog.DiscardHandler))
++	if _, err := driver.Probe(context.Background()); err == nil {
++		t.Fatal("native route skipped its host binary probe without an external provider route")
++	}
++}
++
++func TestDangerFullAccessIsScopedToSupervisedContainer(t *testing.T) {
++	policy, sandbox, reviewer := conversationApprovalSettings(&conversation{supervisedContainer: true}, ports.PermissionModeAuto, false)
++	if policy != "on-request" || sandbox != "danger-full-access" || reviewer != "auto_review" {
++		t.Fatalf("supervised auto approval settings = %q/%q/%q", policy, sandbox, reviewer)
++	}
++	_, nativeSandbox, _ := conversationApprovalSettings(&conversation{}, ports.PermissionModeAuto, false)
++	if nativeSandbox != "workspace-write" {
++		t.Fatalf("native auto sandbox = %q, want workspace-write", nativeSandbox)
++	}
++	_, readOnlySandbox, _ := conversationApprovalSettings(&conversation{supervisedContainer: true}, ports.PermissionModeAuto, true)
++	if readOnlySandbox != "read-only" {
++		t.Fatalf("supervised read-only sandbox = %q, want read-only", readOnlySandbox)
++	}
++}
++
++func TestSupervisedThreadStartsFullAccessAndTurnInheritsIt(t *testing.T) {
++	t.Setenv(containerImageEnv, "cylo-ao-codex:test")
++	d, srv := newTestDriver(t)
++	conv, err := d.Start(context.Background(), ports.ChatStartConfig{
++		WorkspacePath: "/tmp/ws",
++		Env: map[string]string{
++			providerUpstreamEnv: "https://gateway.example/v1",
++			containerImageEnv:   "cylo-ao-codex:test",
++		},
++		Permissions: ports.PermissionModeAuto,
++	})
++	if err != nil {
++		t.Fatalf("start supervised conversation: %v", err)
++	}
++	defer func() { _ = conv.Close() }()
++	start := srv.awaitFrame(func(f frame) bool { return f.Method == "thread/start" })
++	var startParams struct {
++		ApprovalPolicy string `json:"approvalPolicy"`
++		Reviewer       string `json:"approvalsReviewer"`
++		Sandbox        string `json:"sandbox"`
++	}
++	if err := json.Unmarshal(start.Params, &startParams); err != nil {
++		t.Fatalf("decode thread/start: %v", err)
++	}
++	if startParams.ApprovalPolicy != "on-request" || startParams.Reviewer != "auto_review" || startParams.Sandbox != "danger-full-access" {
++		t.Fatalf("supervised thread/start policy = %q/%q/%q", startParams.ApprovalPolicy, startParams.Reviewer, startParams.Sandbox)
++	}
++	if _, err := conv.SendTurn(context.Background(), ports.ChatUserMessage{
++		Text:     "synthetic protocol probe",
++		Settings: ports.ChatTurnSettings{Approval: ports.PermissionModeAuto},
++	}); err != nil {
++		t.Fatalf("send inherited-settings turn: %v", err)
++	}
++	turn := srv.awaitFrame(func(f frame) bool { return f.Method == "turn/start" })
++	var turnParams struct {
++		ApprovalPolicy string          `json:"approvalPolicy"`
++		Reviewer       string          `json:"approvalsReviewer"`
++		SandboxPolicy  json.RawMessage `json:"sandboxPolicy"`
++	}
++	if err := json.Unmarshal(turn.Params, &turnParams); err != nil {
++		t.Fatalf("decode turn/start: %v", err)
++	}
++	var sandboxPolicy map[string]any
++	if err := json.Unmarshal(turnParams.SandboxPolicy, &sandboxPolicy); err != nil {
++		t.Fatalf("decode supervised turn sandboxPolicy: %v", err)
++	}
++	if turnParams.ApprovalPolicy != "on-request" || turnParams.Reviewer != "auto_review" || sandboxPolicy["type"] != "dangerFullAccess" {
++		t.Fatalf("supervised turn policy = %q/%q/%#v", turnParams.ApprovalPolicy, turnParams.Reviewer, sandboxPolicy)
++	}
++}
++
++func TestSupervisedTurnFullAccessDoesNotChangeNativeOrReadOnlyPolicy(t *testing.T) {
++	for _, tc := range []struct {
++		name                 string
++		readOnly, supervised bool
++		wantType             string
++	}{
++		{name: "native auto", supervised: false, wantType: "workspaceWrite"},
++		{name: "supervised auto", supervised: true, wantType: "dangerFullAccess"},
++		{name: "supervised read-only", readOnly: true, supervised: true, wantType: "readOnly"},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			params := map[string]any{}
++			applyTurnSettings(params, ports.ChatTurnSettings{Approval: ports.PermissionModeAuto}, tc.readOnly, false, tc.supervised)
++			policy, ok := params["sandboxPolicy"].(map[string]any)
++			if !ok || policy["type"] != tc.wantType {
++				t.Fatalf("turn sandboxPolicy = %#v, want type %q", params["sandboxPolicy"], tc.wantType)
++			}
++		})
++	}
++}
++
++func TestConversationRetriesFailedContainerStop(t *testing.T) {
++	var attempts atomic.Int32
++	conv := &conversation{proc: &process{stop: func() error {
++		if attempts.Add(1) == 1 {
++			return errors.New("container stop unverified")
++		}
++		return nil
++	}}}
++	if err := conv.Close(); err == nil {
++		t.Fatal("first conversation close unexpectedly succeeded")
++	}
++	if err := conv.Close(); err != nil {
++		t.Fatalf("conversation close did not retry after failed container stop: %v", err)
++	}
++	if attempts.Load() != 2 {
++		t.Fatalf("container stop attempts = %d, want 2", attempts.Load())
++	}
++}
++
 +func TestContainerStartupWaitCanDrainClosedWaitChannelAfterEarlyExit(t *testing.T) {
 +	done := make(chan error, 1)
 +	done <- errors.New("docker exited before writing cidfile")
@@ -815,14 +1287,264 @@ index 000000000..b0dee83fe
 +		t.Fatal("closed process wait channel blocked the startup cleanup path")
 +	}
 +}
+diff --git a/backend/internal/adapters/chatdriver/codexappserver/conversation.go b/backend/internal/adapters/chatdriver/codexappserver/conversation.go
+index 7a705a53c..b18cf9694 100644
+--- a/backend/internal/adapters/chatdriver/codexappserver/conversation.go
++++ b/backend/internal/adapters/chatdriver/codexappserver/conversation.go
+@@ -54,6 +54,9 @@ type conversation struct {
+ 	providerScopeID string
+ 	readOnly        bool
+ 	disableNetwork  bool
++	// supervisedContainer means the deployment's read-only container, network
++	// boundary, and scoped workspace mount provide the host-level sandbox.
++	supervisedContainer bool
+ 	// launchMode is the permission mode the thread started or resumed with;
+ 	// a turn without its own approval setting runs under it.
+ 	launchMode ports.PermissionMode
+@@ -94,15 +97,19 @@ type conversation struct {
+ 	// once.
+ 	compactedTurn string
+ 
+-	pumpDone     chan struct{}
+-	eventsMu     sync.RWMutex
+-	eventsClosed bool
+-	closeOnce    sync.Once
+-	closeErr     error
++	pumpDone          chan struct{}
++	eventsMu          sync.RWMutex
++	eventsClosed      bool
++	closeMu           sync.Mutex
++	approvalsFailed   bool
++	detachComplete    bool
++	terminateComplete bool
++	closeErr          error
+ }
+ 
+ var _ ports.ChatConversation = (*conversation)(nil)
+ var _ ports.ChatProviderHibernator = (*conversation)(nil)
++var _ ports.ChatProviderProofTerminator = (*conversation)(nil)
+ 
+ // Asserted here so a refactor cannot silently drop model listing: the service
+ // feature-detects this interface, and a missed method would just mean "no models"
+@@ -353,7 +360,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage)
+ 		// must not produce a second turn.
+ 		params["clientUserMessageId"] = msg.ClientMessageID
+ 	}
+-	applyTurnSettings(params, msg.Settings, c.readOnly, c.disableNetwork)
++	applyTurnSettings(params, msg.Settings, c.readOnly, c.disableNetwork, c.supervisedContainer)
+ 	// A service tier sticks to the thread once set, so leaving the fast tier
+ 	// has to be said: an explicit null returns the thread to its default.
+ 	if msg.Settings.Fast {
+@@ -403,7 +410,7 @@ func (c *conversation) SendTurn(ctx context.Context, msg ports.ChatUserMessage)
+ // Only fields the caller actually chose are sent. An omitted field lets the
+ // provider fall back to what the thread was started with, which is why a caller
+ // that chooses nothing behaves exactly as it did before per-turn settings existed.
+-func applyTurnSettings(params map[string]any, settings ports.ChatTurnSettings, readOnly, disableNetwork bool) {
++func applyTurnSettings(params map[string]any, settings ports.ChatTurnSettings, readOnly, disableNetwork, supervisedContainer bool) {
+ 	if settings.Model != "" {
+ 		params["model"] = settings.Model
+ 	}
+@@ -428,6 +435,11 @@ func applyTurnSettings(params map[string]any, settings ports.ChatTurnSettings, r
+ 		params["approvalPolicy"] = "never"
+ 		params["approvalsReviewer"] = "user"
+ 		params["sandboxPolicy"] = map[string]any{"type": "readOnly", "networkAccess": !disableNetwork}
++	} else if supervisedContainer {
++		// Pin the turn-level override too: app-server threads can resume with
++		// stored settings that predate the container boundary or came from another
++		// controller. The host enforces the actual writable paths and networking.
++		params["sandboxPolicy"] = map[string]any{"type": "dangerFullAccess"}
+ 	}
+ }
+ 
+@@ -1009,29 +1021,65 @@ func (c *conversation) failPendingApprovals() {
+ 
+ // Close releases the controller without touching provider-side history.
+ func (c *conversation) Close() error {
+-	c.closeOnce.Do(func() {
+-		if c.proc.terminate == nil {
+-			c.failPendingApprovals()
+-		}
+-		if c.proc.stop != nil {
+-			c.closeErr = c.proc.stop()
+-		}
+-	})
++	c.closeMu.Lock()
++	defer c.closeMu.Unlock()
++	if c.detachComplete || c.terminateComplete {
++		return nil
++	}
++	if !c.approvalsFailed && c.proc.terminate == nil {
++		c.failPendingApprovals()
++		c.approvalsFailed = true
++	}
++	if c.proc.stop != nil {
++		c.closeErr = c.proc.stop()
++	}
++	if c.closeErr == nil {
++		c.detachComplete = true
++	}
+ 	return c.closeErr
+ }
+ 
+ // Terminate destroys the provider host. Close only detaches and is used by
+ // daemon-wide shutdown; explicit session/controller replacement calls this.
+ func (c *conversation) Terminate() error {
+-	c.closeOnce.Do(func() {
+-		c.failPendingApprovals()
+-		if c.proc.terminate != nil {
+-			c.closeErr = c.proc.terminate()
+-		} else if c.proc.stop != nil {
+-			c.closeErr = c.proc.stop()
++	_, err := c.terminateWithEvidence(false)
++	return err
++}
++
++func (c *conversation) TerminateWithProof() (ports.ChatTerminationProof, error) {
++	return c.terminateWithEvidence(true)
++}
++
++func (c *conversation) CanTerminateWithProof() bool { return c.proc.terminateWithProof != nil }
++
++func (c *conversation) terminateWithEvidence(requireProof bool) (ports.ChatTerminationProof, error) {
++	c.closeMu.Lock()
++	defer c.closeMu.Unlock()
++	if c.terminateComplete {
++		if requireProof && c.proc.terminateWithProof != nil {
++			return c.proc.terminateWithProof()
+ 		}
+-	})
+-	return c.closeErr
++		return ports.ChatTerminationProof{}, nil
++	}
++	if !c.approvalsFailed {
++		c.failPendingApprovals()
++		c.approvalsFailed = true
++	}
++	var proof ports.ChatTerminationProof
++	if requireProof && c.proc.terminateWithProof != nil {
++		proof, c.closeErr = c.proc.terminateWithProof()
++	} else if requireProof {
++		c.closeErr = errors.New("provider does not expose native process wait evidence")
++	} else if c.proc.terminate != nil {
++		c.closeErr = c.proc.terminate()
++	} else if c.proc.stop != nil {
++		c.closeErr = c.proc.stop()
++	}
++	if c.closeErr == nil {
++		c.terminateComplete = true
++		c.detachComplete = true
++	}
++	return proof, c.closeErr
+ }
+ 
+ // CanHibernate reads Codex's live exec registry, since a settled turn can leave
 diff --git a/backend/internal/adapters/chatdriver/codexappserver/driver.go b/backend/internal/adapters/chatdriver/codexappserver/driver.go
-index 84dfa7c7c..816d090f0 100644
+index 84dfa7c7c..b5c6f9dba 100644
 --- a/backend/internal/adapters/chatdriver/codexappserver/driver.go
 +++ b/backend/internal/adapters/chatdriver/codexappserver/driver.go
-@@ -542,9 +542,16 @@ func (d *Driver) connectSession(
+@@ -62,6 +62,9 @@ type process struct {
+ 	stop func() error
+ 	// terminate destroys a persistent host for explicit session shutdown.
+ 	terminate func() error
++	// terminateWithProof is set only by a supervised process handle whose exact
++	// container and attached Docker process are both synchronously reaped.
++	terminateWithProof func() (ports.ChatTerminationProof, error)
+ }
+ 
+ // spawnFunc launches an app-server. Injected so tests never exec anything.
+@@ -164,6 +167,12 @@ func capabilities() ports.ChatCapabilities {
+ // Probe reports what this install can do without creating a conversation, so an
+ // unsupported request can be refused before AO commits a session or worktree.
+ func (d *Driver) Probe(ctx context.Context) (ports.ChatCapabilities, error) {
++	if strings.TrimSpace(os.Getenv(containerImageEnv)) != "" && strings.TrimSpace(os.Getenv("AO_CODEX_EXTERNAL_BASE_URL")) != "" {
++		// The pinned supervised image owns the Codex binary. AO's deployment
++		// provider check proves the selected model before session creation; a
++		// host-side protocol probe here would require an unrelated host install.
++		return capabilities(), nil
++	}
+ 	bin, err := d.plugin.ResolveBinary(ctx)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
+@@ -304,7 +313,7 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
+ 		return nil, errors.New("persistent chat host already owns a provider conversation for a fresh session")
+ 	}
+ 
+-	policy, sandbox, reviewer := launchApprovalSettings(cfg.Permissions, cfg.ReadOnly)
++	policy, sandbox, reviewer := conversationApprovalSettings(conv, cfg.Permissions, cfg.ReadOnly)
+ 	conv.readOnly = cfg.ReadOnly
+ 	conv.disableNetwork = cfg.DisableNetwork
+ 	conv.launchMode = cfg.Permissions
+@@ -390,7 +399,7 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
+ 		return conv, nil
+ 	}
+ 
+-	policy, sandbox, reviewer := launchApprovalSettings(cfg.Permissions, cfg.ReadOnly)
++	policy, sandbox, reviewer := conversationApprovalSettings(conv, cfg.Permissions, cfg.ReadOnly)
+ 	conv.readOnly = cfg.ReadOnly
+ 	conv.launchMode = cfg.Permissions
+ 	params := map[string]any{
+@@ -515,17 +524,17 @@ func threadConfig(effort string, servers []ports.ChatMCPServerConfig) map[string
+ 
+ // connect spawns app-server and completes the initialize handshake.
+ func (d *Driver) connect(ctx context.Context, workdir string, env map[string]string, providerScopeID string) (*conversation, error) {
+-	bin, err := d.plugin.ResolveBinary(ctx)
++	bin, launchEnv, err := d.launchConfig(ctx, env)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("%w: %w", ports.ErrChatDriverUnavailable, err)
+ 	}
+-
+-	proc, err := d.spawn(ctx, bin, workdir, codexProcessEnv(ctx, bin, env))
++	proc, err := d.spawn(ctx, bin, workdir, launchEnv)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("%w: launch app-server: %w", ports.ErrChatDriverUnavailable, err)
+ 	}
+ 
+ 	conv := newConversation(proc, d.log, providerScopeID)
++	conv.supervisedContainer, _ = supervisedExternalRoute(env, os.Getenv(containerImageEnv))
+ 	if err := d.initialize(ctx, conv); err != nil {
+ 		_ = conv.Close()
+ 		return nil, err
+@@ -533,6 +542,24 @@ func (d *Driver) connect(ctx context.Context, workdir string, env map[string]str
+ 	return conv, nil
+ }
+ 
++func (d *Driver) launchConfig(ctx context.Context, env map[string]string) (string, []string, error) {
++	containerized, err := supervisedExternalRoute(env, os.Getenv(containerImageEnv))
++	if err != nil {
++		return "", nil, err
++	}
++	if containerized {
++		// The Codex executable belongs to the selected image. Resolving a host
++		// binary here would incorrectly require Codex to be installed on the AO
++		// daemon host before the supervised container can be launched.
++		return "", envSlice(env), nil
++	}
++	bin, err := d.plugin.ResolveBinary(ctx)
++	if err != nil {
++		return "", nil, err
++	}
++	return bin, codexProcessEnv(ctx, bin, env), nil
++}
++
+ func (d *Driver) connectSession(
+ 	ctx context.Context,
+ 	sessionID domain.SessionID,
+@@ -542,13 +569,32 @@ func (d *Driver) connectSession(
  	providerScopeID string,
  	reconnectOnly bool,
  ) (*conversation, bool, error) {
++	prepared := false
++	// A supervised image is deployment-selected, while its upstream route is
++	// added by the session profile's PrepareEnv callback. Resolve that profile
++	// before choosing between the native persistent host and the container.
++	if !reconnectOnly && prepareEnv != nil && strings.TrimSpace(os.Getenv(containerImageEnv)) != "" {
++		preparedEnv, err := prepareEnv(ctx)
++		if err != nil {
++			return nil, false, err
++		}
++		env = preparedEnv
++		prepared = true
++	}
 +	// The external Codex route is a Cylo worker profile. When its supervised
 +	// image is configured, do not attach to AO's persistent host: that host
 +	// survives the controller and would escape the container PID namespace.
@@ -837,8 +1559,35 @@ index 84dfa7c7c..816d090f0 100644
  		if reconnectOnly {
  			return nil, false, ports.ErrChatHostNotRunning
  		}
-@@ -721,6 +728,14 @@ func launchApprovalSettings(mode ports.PermissionMode, readOnly bool) (policy, s
+-		if prepareEnv != nil {
++		if prepareEnv != nil && !prepared {
+ 			var err error
+ 			env, err = prepareEnv(ctx)
+ 			if err != nil {
+@@ -574,7 +620,7 @@ func (d *Driver) connectSession(
+ 		Env:           envSlice(env),
+ 		Argv:          []string{bin, "app-server"},
+ 	}
+-	if prepareEnv != nil {
++	if prepareEnv != nil && !prepared {
+ 		hostConfig.Prepare = func(prepareCtx context.Context) (persistenthost.PreparedProvider, error) {
+ 			preparedEnv, prepareErr := prepareEnv(prepareCtx)
+ 			if prepareErr != nil {
+@@ -719,8 +765,27 @@ func launchApprovalSettings(mode ports.PermissionMode, readOnly bool) (policy, s
+ 	return policy, sandbox, approvalReviewer(mode)
+ }
  
++func conversationApprovalSettings(conv *conversation, mode ports.PermissionMode, readOnly bool) (policy, sandbox, reviewer string) {
++	policy, sandbox, reviewer = launchApprovalSettings(mode, readOnly)
++	if conv != nil && conv.supervisedContainer && !readOnly {
++		// Codex's nested bwrap sandbox cannot start under the deployment's
++		// unprivileged container seccomp profile. The host-level container has no
++		// network, a read-only rootfs, and only the project worktree writable.
++		sandbox = "danger-full-access"
++	}
++	return policy, sandbox, reviewer
++}
++
  // spawnAppServer is the real launcher.
  func spawnAppServer(ctx context.Context, bin, workdir string, env []string) (*process, error) {
 +	containerEnv := environmentMap(env)
@@ -852,17 +1601,42 @@ index 84dfa7c7c..816d090f0 100644
  	args := []string{"app-server"}
  	cmd := aoprocess.Command(bin, args...)
  	cmd.Dir = workdir
+@@ -822,7 +887,7 @@ func (d *Driver) ForkIntoHost(ctx context.Context, sourceProviderConversationID,
+ 		_ = conv.Close()
+ 		return nil, errors.New("side provider host already owns a conversation")
+ 	}
+-	policy, sandbox, reviewer := launchApprovalSettings(cfg.Permissions, cfg.ReadOnly)
++	policy, sandbox, reviewer := conversationApprovalSettings(conv, cfg.Permissions, cfg.ReadOnly)
+ 	conv.readOnly = cfg.ReadOnly
+ 	conv.disableNetwork = cfg.DisableNetwork
+ 	conv.launchMode = cfg.Permissions
+diff --git a/backend/internal/adapters/chatdriver/codexappserver/driver_test.go b/backend/internal/adapters/chatdriver/codexappserver/driver_test.go
+index 7eefe6c79..ed3bb5649 100644
+--- a/backend/internal/adapters/chatdriver/codexappserver/driver_test.go
++++ b/backend/internal/adapters/chatdriver/codexappserver/driver_test.go
+@@ -1221,7 +1221,7 @@ func TestApprovalSettingsMirrorTUIPosture(t *testing.T) {
+ 
+ func TestReadOnlyTurnCannotOverrideSandbox(t *testing.T) {
+ 	params := map[string]any{}
+-	applyTurnSettings(params, ports.ChatTurnSettings{Approval: ports.PermissionModeAuto}, true, false)
++	applyTurnSettings(params, ports.ChatTurnSettings{Approval: ports.PermissionModeAuto}, true, false, false)
+ 	if params["approvalPolicy"] != "never" || params["approvalsReviewer"] != "user" ||
+ 		!reflect.DeepEqual(params["sandboxPolicy"], map[string]any{"type": "readOnly", "networkAccess": true}) {
+ 		t.Fatalf("read-only turn settings = %#v", params)
 diff --git a/backend/internal/adapters/chatdriver/codexappserver/provider_broker.go b/backend/internal/adapters/chatdriver/codexappserver/provider_broker.go
 new file mode 100644
-index 000000000..6fed171a5
+index 000000000..a88922439
 --- /dev/null
 +++ b/backend/internal/adapters/chatdriver/codexappserver/provider_broker.go
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,239 @@
 +package codexappserver
 +
 +import (
++	"bytes"
++	"encoding/json"
 +	"errors"
 +	"fmt"
++	"io"
 +	"net"
 +	"net/http"
 +	"net/http/httputil"
@@ -883,10 +1657,11 @@ index 000000000..6fed171a5
 +	root     string
 +}
 +
-+func startProviderBroker(upstream, key string) (*providerBroker, error) {
++func startProviderBroker(upstream, key, selectedModel string) (*providerBroker, error) {
 +	upstream, key = strings.TrimRight(strings.TrimSpace(upstream), "/"), strings.TrimSpace(key)
-+	if key == "" {
-+		return nil, errors.New("Codex provider bridge credential is unavailable")
++	selectedModel = strings.TrimSpace(selectedModel)
++	if key == "" || selectedModel == "" || strings.ContainsAny(selectedModel, "\r\n\x00") {
++		return nil, errors.New("Codex provider bridge credential or selected model is unavailable")
 +	}
 +	target, err := url.Parse(upstream)
 +	if err != nil || target.Host == "" || target.User != nil || target.RawQuery != "" || target.Fragment != "" || (target.Scheme != "https" && !(target.Scheme == "http" && (target.Hostname() == "127.0.0.1" || target.Hostname() == "localhost" || target.Hostname() == "::1"))) {
@@ -917,6 +1692,13 @@ index 000000000..6fed171a5
 +	proxy := httputil.NewSingleHostReverseProxy(target)
 +	proxy.Transport = &http.Transport{Proxy: nil, ResponseHeaderTimeout: 2 * time.Minute, DisableKeepAlives: true}
 +	proxy.Director = nil
++	modelsPath := strings.TrimRight(target.Path, "/") + "/models"
++	proxy.ModifyResponse = func(response *http.Response) error {
++		if response.Request != nil && response.Request.Method == http.MethodGet && response.Request.URL.Path == modelsPath {
++			return filterModelCatalog(response, selectedModel)
++		}
++		return nil
++	}
 +	proxy.Rewrite = func(pr *httputil.ProxyRequest) {
 +		pr.SetURL(target)
 +		resource := strings.TrimPrefix(pr.In.URL.Path, "/v1")
@@ -931,11 +1713,28 @@ index 000000000..6fed171a5
 +	}
 +	server := &http.Server{
 +		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++			if r.URL.RawQuery != "" || r.URL.ForceQuery || r.URL.EscapedPath() != r.URL.Path {
++				http.Error(w, "provider route denied", http.StatusNotFound)
++				return
++			}
 +			if !((r.Method == http.MethodGet && r.URL.Path == "/v1/models") || (r.Method == http.MethodPost && (r.URL.Path == "/v1/responses" || r.URL.Path == "/v1/responses/compact"))) {
 +				http.Error(w, "provider route denied", http.StatusNotFound)
 +				return
 +			}
-+			r.Body = http.MaxBytesReader(w, r.Body, 32<<20)
++			if r.Method == http.MethodPost {
++				r.Body = http.MaxBytesReader(w, r.Body, 32<<20)
++				body, err := io.ReadAll(r.Body)
++				if err != nil {
++					http.Error(w, "provider request rejected", http.StatusBadRequest)
++					return
++				}
++				if err := requireSelectedModel(body, selectedModel); err != nil {
++					http.Error(w, "provider model denied", http.StatusForbidden)
++					return
++				}
++				r.Body = io.NopCloser(bytes.NewReader(body))
++				r.ContentLength = int64(len(body))
++			}
 +			proxy.ServeHTTP(w, r)
 +		}),
 +		ReadHeaderTimeout: 10 * time.Second,
@@ -943,6 +1742,110 @@ index 000000000..6fed171a5
 +	b := &providerBroker{server: server, listener: listener, root: root}
 +	go func() { _ = server.Serve(listener) }()
 +	return b, nil
++}
++
++// requireSelectedModel rejects malformed or ambiguous top-level fields so a
++// duplicate model key cannot smuggle a second destination through a decoder.
++func requireSelectedModel(body []byte, selectedModel string) error {
++	fields, err := decodeUniqueJSONObject(body)
++	if err != nil {
++		return err
++	}
++	rawModel, ok := fields["model"]
++	if !ok {
++		return errors.New("Codex request omitted model")
++	}
++	var model string
++	if err := json.Unmarshal(rawModel, &model); err != nil || model != selectedModel {
++		return errors.New("Codex request model is not the selected deployment model")
++	}
++	return nil
++}
++
++func decodeUniqueJSONObject(body []byte) (map[string]json.RawMessage, error) {
++	decoder := json.NewDecoder(bytes.NewReader(body))
++	token, err := decoder.Token()
++	if err != nil || token != json.Delim('{') {
++		return nil, errors.New("Codex request must be a JSON object")
++	}
++	fields := make(map[string]json.RawMessage)
++	for decoder.More() {
++		token, err = decoder.Token()
++		if err != nil {
++			return nil, errors.New("Codex request JSON is invalid")
++		}
++		key, ok := token.(string)
++		if !ok {
++			return nil, errors.New("Codex request JSON is invalid")
++		}
++		if _, exists := fields[key]; exists {
++			return nil, errors.New("Codex request has duplicate fields")
++		}
++		var value json.RawMessage
++		if err := decoder.Decode(&value); err != nil {
++			return nil, errors.New("Codex request JSON is invalid")
++		}
++		fields[key] = value
++	}
++	if token, err = decoder.Token(); err != nil || token != json.Delim('}') {
++		return nil, errors.New("Codex request JSON is invalid")
++	}
++	var trailing any
++	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
++		return nil, errors.New("Codex request has trailing data")
++	}
++	return fields, nil
++}
++
++func filterModelCatalog(response *http.Response, selectedModel string) error {
++	const maxCatalogBytes = 1 << 20
++	if response.StatusCode != http.StatusOK {
++		return nil
++	}
++	body, err := io.ReadAll(io.LimitReader(response.Body, maxCatalogBytes+1))
++	if err != nil || len(body) > maxCatalogBytes {
++		return errors.New("Codex provider model catalog is invalid")
++	}
++	fields, err := decodeUniqueJSONObject(body)
++	if err != nil {
++		return errors.New("Codex provider model catalog is invalid")
++	}
++	var items []json.RawMessage
++	rawItems, ok := fields["data"]
++	if !ok || json.Unmarshal(rawItems, &items) != nil {
++		return errors.New("Codex provider model catalog is invalid")
++	}
++	filtered := make([]json.RawMessage, 0, 1)
++	for _, item := range items {
++		entry, err := decodeUniqueJSONObject(item)
++		if err != nil {
++			return errors.New("Codex provider model catalog is invalid")
++		}
++		var id string
++		if rawID, ok := entry["id"]; ok && json.Unmarshal(rawID, &id) == nil && id == selectedModel {
++			filtered = append(filtered, item)
++		}
++	}
++	if len(filtered) != 1 {
++		return errors.New("Codex provider model catalog does not contain exactly one selected model")
++	}
++	data, err := json.Marshal(filtered)
++	if err != nil {
++		return errors.New("Codex provider model catalog is invalid")
++	}
++	filteredBody, err := json.Marshal(map[string]json.RawMessage{"data": data})
++	if err != nil {
++		return errors.New("Codex provider model catalog is invalid")
++	}
++	_ = response.Body.Close()
++	response.Body = io.NopCloser(bytes.NewReader(filteredBody))
++	response.ContentLength = int64(len(filteredBody))
++	response.Header.Set("Content-Length", fmt.Sprint(len(filteredBody)))
++	response.Header.Del("Content-Encoding")
++	response.Header.Del("Transfer-Encoding")
++	response.TransferEncoding = nil
++	response.Uncompressed = false
++	return nil
 +}
 +
 +func (b *providerBroker) SocketPath() string {
@@ -967,10 +1870,10 @@ index 000000000..6fed171a5
 +}
 diff --git a/backend/internal/adapters/chatdriver/codexappserver/provider_broker_test.go b/backend/internal/adapters/chatdriver/codexappserver/provider_broker_test.go
 new file mode 100644
-index 000000000..03c4555cb
+index 000000000..dcf523987
 --- /dev/null
 +++ b/backend/internal/adapters/chatdriver/codexappserver/provider_broker_test.go
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,163 @@
 +package codexappserver
 +
 +import (
@@ -998,8 +1901,8 @@ index 000000000..03c4555cb
 +		if got := r.Header.Get("Authorization"); got != "Bearer "+apiKey {
 +			t.Errorf("upstream authorization did not match host-held key")
 +		}
-+		if r.URL.Path == "/v1/models" {
-+			_, _ = io.WriteString(w, `{"data":[{"id":"gpt-6-luna"}]}`)
++		if strings.HasSuffix(r.URL.Path, "/v1/models") {
++			_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"gpt-6-luna"},{"id":"other-model"}]}`)
 +			return
 +		}
 +		w.Header().Set("Content-Type", "text/event-stream")
@@ -1011,7 +1914,7 @@ index 000000000..03c4555cb
 +	}))
 +	defer upstream.Close()
 +
-+	broker, err := startProviderBroker(upstream.URL, apiKey)
++	broker, err := startProviderBroker(upstream.URL+"/gateway", apiKey, "gpt-6-luna")
 +	if err != nil {
 +		t.Fatal(err)
 +	}
@@ -1026,7 +1929,7 @@ index 000000000..03c4555cb
 +	}
 +	body, err := io.ReadAll(response.Body)
 +	response.Body.Close()
-+	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(body), "gpt-6-luna") {
++	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(body), "gpt-6-luna") || strings.Contains(string(body), "other-model") {
 +		t.Fatalf("models proxy status/body = %d/%q, err=%v", response.StatusCode, body, err)
 +	}
 +
@@ -1052,8 +1955,113 @@ index 000000000..03c4555cb
 +		t.Fatalf("upstream calls = %d, want two allowed calls", calls)
 +	}
 +}
++
++func TestProviderBrokerBindsBothResponsesEndpointsToDeploymentModel(t *testing.T) {
++	const selectedModel = "gpt-6-luna"
++	secret := make([]byte, 32)
++	if _, err := rand.Read(secret); err != nil {
++		t.Fatal(err)
++	}
++	apiKey := base64.RawURLEncoding.EncodeToString(secret)
++	var calls int
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		calls++
++		if r.Header.Get("Authorization") != "Bearer "+apiKey {
++			t.Error("upstream authorization did not match host-held key")
++		}
++		w.WriteHeader(http.StatusOK)
++		_, _ = io.WriteString(w, "ok")
++	}))
++	defer upstream.Close()
++	broker, err := startProviderBroker(upstream.URL, apiKey, selectedModel)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer broker.Close()
++	transport := &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) { return net.Dial("unix", broker.SocketPath()) }}
++	client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
++	for _, test := range []struct {
++		path string
++		body string
++		want int
++	}{
++		{"/v1/responses", `{"model":"gpt-6-luna","input":"x"}`, http.StatusOK},
++		{"/v1/responses/compact", `{"model":"gpt-6-luna","input":[]}`, http.StatusOK},
++		{"/v1/responses", `{"model":"other-model"}`, http.StatusForbidden},
++		{"/v1/responses", `{"model":"gpt-6-luna","model":"other-model"}`, http.StatusForbidden},
++		{"/v1/responses", `{"model":null}`, http.StatusForbidden},
++		{"/v1/responses", `{"input":"missing model"}`, http.StatusForbidden},
++		{"/v1/responses/compact", `{"input":[]}`, http.StatusForbidden},
++		{"/v1/responses/compact", `{"model":"other-model","input":[]}`, http.StatusForbidden},
++	} {
++		request, err := http.NewRequest(http.MethodPost, "http://provider"+test.path, strings.NewReader(test.body))
++		if err != nil {
++			t.Fatal(err)
++		}
++		request.Header.Set("Content-Type", "application/json")
++		response, err := client.Do(request)
++		if err != nil {
++			t.Fatal(err)
++		}
++		_, _ = io.Copy(io.Discard, response.Body)
++		_ = response.Body.Close()
++		if response.StatusCode != test.want {
++			t.Errorf("%s status=%d, want %d", test.path, response.StatusCode, test.want)
++		}
++	}
++	if calls != 2 {
++		t.Fatalf("upstream calls=%d, want only the two selected-model requests", calls)
++	}
++	for _, path := range []string{"/v1/responses?alt=other", "/v1/responses/../responses", "/v1/responses/%2fcompact"} {
++		request, err := http.NewRequest(http.MethodPost, "http://provider"+path, strings.NewReader(`{"model":"gpt-6-luna"}`))
++		if err != nil {
++			t.Fatal(err)
++		}
++		response, err := client.Do(request)
++		if err != nil {
++			t.Fatal(err)
++		}
++		_, _ = io.Copy(io.Discard, response.Body)
++		_ = response.Body.Close()
++		if response.StatusCode != http.StatusNotFound {
++			t.Errorf("route %q status=%d, want %d", path, response.StatusCode, http.StatusNotFound)
++		}
++	}
++	if calls != 2 {
++		t.Fatalf("denied requests reached upstream; calls=%d", calls)
++	}
++}
++
++func TestProviderBrokerRejectsMissingDeploymentModel(t *testing.T) {
++	if _, err := startProviderBroker("https://gateway.invalid/v1", "nonempty-placeholder", ""); err == nil {
++		t.Fatal("broker accepted missing deployment model")
++	}
++}
+diff --git a/backend/internal/daemon/chat_launcher_test.go b/backend/internal/daemon/chat_launcher_test.go
+index bc7f5d2e0..641ca5405 100644
+--- a/backend/internal/daemon/chat_launcher_test.go
++++ b/backend/internal/daemon/chat_launcher_test.go
+@@ -40,3 +40,18 @@ func TestChatLauncherForwardsSessionRelay(t *testing.T) {
+ 		})
+ 	}
+ }
++
++func TestChatLauncherForwardsRequiredTerminationProof(t *testing.T) {
++	store := sqlitetest.MustOpen(t)
++	created, err := store.CreateSession(context.Background(), domain.SessionRecord{
++		Kind: domain.KindWorker, Harness: domain.HarnessCodex, Mode: domain.SessionModeChat,
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	launcher := chatLauncher{svc: chatsvc.New(chatsvc.Options{Sessions: store})}
++	proof, err := launcher.StopChatWithProof(context.Background(), created.ID)
++	if proof != (ports.ChatTerminationProof{}) || !errors.Is(err, chatsvc.ErrNoController) {
++		t.Fatalf("StopChatWithProof() = (%+v, %v), want the real chat service's missing-controller error", proof, err)
++	}
++}
 diff --git a/backend/internal/daemon/daemon.go b/backend/internal/daemon/daemon.go
-index 0772cce6e..67c28bb67 100644
+index 0772cce6e..038585a9c 100644
 --- a/backend/internal/daemon/daemon.go
 +++ b/backend/internal/daemon/daemon.go
 @@ -519,7 +519,20 @@ func Run(buildVersion string) error {
@@ -1061,7 +2069,7 @@ index 0772cce6e..67c28bb67 100644
  		chatSvc.SetTerminalProviderSwitcher(switcher)
  	}
 -	agentAccountSvc := newAgentAccounts(cfg, store, codexHome, agentDeps.CodexAccounts, log)
-+	externalCodex, err := agentaccount.NewCodexExternalProfile(cfg.StateDir, os.Getenv("AO_CODEX_EXTERNAL_BASE_URL"), os.Getenv("AO_CODEX_EXTERNAL_API_KEY_FILE"))
++	externalCodex, err := agentaccount.NewCodexExternalProfile(cfg.StateDir, os.Getenv("AO_CODEX_EXTERNAL_BASE_URL"), os.Getenv("AO_CODEX_EXTERNAL_API_KEY_FILE"), os.Getenv("AO_CODEX_EXTERNAL_MODEL"))
 +	if err != nil {
 +		stop()
 +		lcStack.Stop()
@@ -1096,6 +2104,181 @@ index 0772cce6e..67c28bb67 100644
  	}
  	return agentaccounts.New(store, providers, filepath.Join(cfg.StateDir, "agent-accounts"), nil, log)
  }
+diff --git a/backend/internal/daemon/lifecycle_wiring.go b/backend/internal/daemon/lifecycle_wiring.go
+index e17fd4481..0b82859d1 100644
+--- a/backend/internal/daemon/lifecycle_wiring.go
++++ b/backend/internal/daemon/lifecycle_wiring.go
+@@ -613,6 +613,9 @@ var _ sessionmanager.ChatLauncher = chatLauncher{}
+ // forward compiles but silently turns the feature off.
+ var _ sessionmanager.ChatVersionRefresher = chatLauncher{}
+ var _ sessionmanager.ChatUpdateHibernator = chatLauncher{}
++var _ interface {
++	StopChatWithProof(context.Context, domain.SessionID) (ports.ChatTerminationProof, error)
++} = chatLauncher{}
+ var _ interface {
+ 	RunBackgroundTask(context.Context, domain.AgentHarness, ports.ChatStartConfig, string) (string, error)
+ 	RunPromptSuggestionTask(context.Context, domain.SessionID, string, domain.AgentHarness, ports.ChatStartConfig, string) (string, error)
+@@ -793,6 +796,10 @@ func (c chatLauncher) StopChat(ctx context.Context, id domain.SessionID) error {
+ 	return c.svc.StopChat(ctx, id)
+ }
+ 
++func (c chatLauncher) StopChatWithProof(ctx context.Context, id domain.SessionID) (ports.ChatTerminationProof, error) {
++	return c.svc.StopChatWithProof(ctx, id)
++}
++
+ // reviewPRRefresher lets a review trigger fetch a worker's PR fresh from the
+ // provider through the session service's claim, which re-reads the PR and
+ // records it on the session. Claiming a PR the session already owns only
+diff --git a/backend/internal/httpd/controllers/dto.go b/backend/internal/httpd/controllers/dto.go
+index 7f89759aa..23a2d4797 100644
+--- a/backend/internal/httpd/controllers/dto.go
++++ b/backend/internal/httpd/controllers/dto.go
+@@ -1151,16 +1151,26 @@ type InterfaceTransitionNoticeAckResponse struct {
+ // DeleteArtifacts empties the session's artifact directory once it is
+ // terminated. Only the archive dialog sets it; the CLI and the reaper never do.
+ type KillSessionRequest struct {
+-	DeleteArtifacts bool `json:"deleteArtifacts,omitempty"`
++	DeleteArtifacts         bool `json:"deleteArtifacts,omitempty"`
++	RequireTerminationProof bool `json:"requireTerminationProof,omitempty"`
++}
++
++type KillTerminationProof struct {
++	Source          string    `json:"source"`
++	Method          string    `json:"method"`
++	SessionID       string    `json:"sessionId"`
++	CleanupComplete bool      `json:"cleanupComplete"`
++	VerifiedAt      time.Time `json:"verifiedAt"`
+ }
+ 
+ // KillSessionResponse is the body of POST /api/v1/sessions/{sessionId}/kill.
+ type KillSessionResponse struct {
+-	OK               bool             `json:"ok"`
+-	SessionID        domain.SessionID `json:"sessionId"`
+-	Freed            bool             `json:"freed,omitempty"`
+-	CleanupPending   bool             `json:"cleanupPending,omitempty"`
+-	ArtifactsDeleted bool             `json:"artifactsDeleted,omitempty"`
++	OK               bool                  `json:"ok"`
++	SessionID        domain.SessionID      `json:"sessionId"`
++	Freed            bool                  `json:"freed,omitempty"`
++	CleanupPending   bool                  `json:"cleanupPending,omitempty"`
++	ArtifactsDeleted bool                  `json:"artifactsDeleted,omitempty"`
++	TerminationProof *KillTerminationProof `json:"terminationProof,omitempty"`
+ }
+ 
+ // RollbackSessionResponse is the body of POST /api/v1/sessions/{sessionId}/rollback.
+diff --git a/backend/internal/httpd/controllers/sessions.go b/backend/internal/httpd/controllers/sessions.go
+index 96fdfcef2..a6e1ea00c 100644
+--- a/backend/internal/httpd/controllers/sessions.go
++++ b/backend/internal/httpd/controllers/sessions.go
+@@ -2065,11 +2065,28 @@ func (c *SessionsController) kill(w http.ResponseWriter, r *http.Request) {
+ 		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
+ 		return
+ 	}
+-	result, err := c.Svc.RequestKill(r.Context(), sessionID(r))
++	var result sessionmanager.KillResult
++	var err error
++	if in.RequireTerminationProof {
++		service, ok := c.Svc.(interface {
++			RequestKillWithProof(context.Context, domain.SessionID) (sessionmanager.KillResult, error)
++		})
++		if !ok {
++			envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "TERMINATION_UNPROVEN", "AO could not verify native process exit; the session remains fenced", nil)
++			return
++		}
++		result, err = service.RequestKillWithProof(r.Context(), sessionID(r))
++	} else {
++		result, err = c.Svc.RequestKill(r.Context(), sessionID(r))
++	}
+ 	if err != nil {
+ 		envelope.WriteError(w, r, err)
+ 		return
+ 	}
++	if in.RequireTerminationProof && result.CleanupPending {
++		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "CLEANUP_PENDING", "AO process exit was verified, but session cleanup remains pending", nil)
++		return
++	}
+ 	// The session is already archived here, so a failed delete must not fail
+ 	// the request: the caller would roll back an archive that happened. The
+ 	// response reports it instead and the files stay on disk.
+@@ -2081,7 +2098,15 @@ func (c *SessionsController) kill(w http.ResponseWriter, r *http.Request) {
+ 			artifactsDeleted = true
+ 		}
+ 	}
+-	envelope.WriteJSON(w, http.StatusOK, KillSessionResponse{OK: true, SessionID: sessionID(r), Freed: result.Freed, CleanupPending: result.CleanupPending, ArtifactsDeleted: artifactsDeleted})
++	var terminationProof *KillTerminationProof
++	if proof := result.TerminationProof; proof != nil {
++		terminationProof = &KillTerminationProof{Source: "ao_chat_stop", Method: string(proof.Method), SessionID: proof.SessionID, CleanupComplete: proof.CleanupComplete, VerifiedAt: proof.VerifiedAt.UTC()}
++	}
++	if in.RequireTerminationProof && (terminationProof == nil || terminationProof.Source != "ao_chat_stop" || terminationProof.SessionID != string(sessionID(r)) || !terminationProof.CleanupComplete || terminationProof.VerifiedAt.IsZero() || terminationProof.VerifiedAt.Location() != time.UTC || terminationProof.VerifiedAt.After(time.Now().UTC().Add(time.Minute)) || (terminationProof.Method != string(ports.ChatTerminationNativeProcessExitWaited) && terminationProof.Method != string(ports.ChatTerminationACPProcessExitWaited))) {
++		envelope.WriteAPIError(w, r, http.StatusConflict, "conflict", "TERMINATION_UNPROVEN", "AO could not verify native process exit; the session remains fenced", nil)
++		return
++	}
++	envelope.WriteJSON(w, http.StatusOK, KillSessionResponse{OK: true, SessionID: sessionID(r), Freed: result.Freed, CleanupPending: result.CleanupPending, ArtifactsDeleted: artifactsDeleted, TerminationProof: terminationProof})
+ }
+ 
+ // rollback undoes a partially-completed spawn: if the session row is still in
+diff --git a/backend/internal/httpd/controllers/sessions_test.go b/backend/internal/httpd/controllers/sessions_test.go
+index 566a2021d..a29ecd77c 100644
+--- a/backend/internal/httpd/controllers/sessions_test.go
++++ b/backend/internal/httpd/controllers/sessions_test.go
+@@ -5117,6 +5117,22 @@ func TestSessionsAPI_KillKeepsArtifactsByDefault(t *testing.T) {
+ 	}
+ }
+ 
++func TestSessionsAPI_RequiredTerminationProofFailsClosedAndLegacyKillRemainsCompatible(t *testing.T) {
++	svc := newFakeSessionService()
++	srv := newSessionTestServer(t, svc)
++	body, status, _ := doRequest(t, srv, http.MethodPost, "/api/v1/sessions/ao-1/kill", `{"requireTerminationProof":true}`)
++	if status != http.StatusConflict || !strings.Contains(string(body), "TERMINATION_UNPROVEN") || svc.sessions["ao-1"].IsTerminated {
++		t.Fatalf("required proof response = %d %s, session terminated=%v; want fail-closed conflict", status, body, svc.sessions["ao-1"].IsTerminated)
++	}
++
++	legacy := newFakeSessionService()
++	legacyServer := newSessionTestServer(t, legacy)
++	body, status, _ = doRequest(t, legacyServer, http.MethodPost, "/api/v1/sessions/ao-1/kill", `{"requireTerminationProof":false}`)
++	if status != http.StatusOK || !legacy.sessions["ao-1"].IsTerminated || strings.Contains(string(body), "terminationProof") {
++		t.Fatalf("legacy kill response = %d %s, terminated=%v", status, body, legacy.sessions["ao-1"].IsTerminated)
++	}
++}
++
+ func TestSessionsAPI_KillDeletesArtifactsWhenAsked(t *testing.T) {
+ 	svc := newFakeSessionService()
+ 	srv := newSessionTestServer(t, svc)
+diff --git a/backend/internal/ports/chat.go b/backend/internal/ports/chat.go
+index 92aec7035..da1eeed80 100644
+--- a/backend/internal/ports/chat.go
++++ b/backend/internal/ports/chat.go
+@@ -1222,6 +1222,30 @@ type ChatProviderTerminator interface {
+ 	Terminate() error
+ }
+ 
++// ChatTerminationProof is evidence returned only by providers that can wait
++// for the exact native process they own to exit. The method is a closed set so
++// an adapter cannot label a status observation as a process wait.
++type ChatTerminationProof struct {
++	SessionID       string
++	Method          ChatTerminationMethod
++	CleanupComplete bool
++	VerifiedAt      time.Time
++}
++
++type ChatTerminationMethod string
++
++const (
++	ChatTerminationNativeProcessExitWaited ChatTerminationMethod = "native_process_exit_waited"
++	ChatTerminationACPProcessExitWaited    ChatTerminationMethod = "acp_process_exit_waited"
++)
++
++// ChatProviderProofTerminator is implemented only when Terminate can return
++// evidence from the exact provider process handle.
++type ChatProviderProofTerminator interface {
++	CanTerminateWithProof() bool
++	TerminateWithProof() (ChatTerminationProof, error)
++}
++
+ // ChatProviderHibernator stops the controller and provider process while
+ // retaining the native conversation for a later Resume.
+ type ChatProviderHibernator interface {
 diff --git a/backend/internal/service/agentaccounts/service.go b/backend/internal/service/agentaccounts/service.go
 index beef915f6..c9fa02560 100644
 --- a/backend/internal/service/agentaccounts/service.go
@@ -1125,8 +2308,307 @@ index beef915f6..c9fa02560 100644
  		if account.Device() {
  			continue
  		}
+diff --git a/backend/internal/service/chat/controller.go b/backend/internal/service/chat/controller.go
+index b0b4da45f..108d98af8 100644
+--- a/backend/internal/service/chat/controller.go
++++ b/backend/internal/service/chat/controller.go
+@@ -2735,6 +2735,58 @@ func (c *Controller) Terminate(ctx context.Context) error {
+ 	}
+ }
+ 
++// TerminateWithProof explicitly stops the controller and asks the same exact
++// provider handle for waited process evidence. Providers without that handle
++// fail closed even when their ordinary Terminate call succeeds.
++func terminationProofMethodForHarness(harness domain.AgentHarness) (ports.ChatTerminationMethod, bool) {
++	switch harness {
++	case domain.HarnessCodex:
++		return ports.ChatTerminationNativeProcessExitWaited, true
++	case domain.HarnessOpenCode:
++		return ports.ChatTerminationACPProcessExitWaited, true
++	default:
++		return "", false
++	}
++}
++
++func (c *Controller) CanTerminateWithProof() bool {
++	if _, ok := terminationProofMethodForHarness(c.harness); !ok {
++		return false
++	}
++	terminator, ok := c.conv.(ports.ChatProviderProofTerminator)
++	return ok && terminator.CanTerminateWithProof()
++}
++
++func (c *Controller) TerminateWithProof(ctx context.Context) (ports.ChatTerminationProof, error) {
++	expectedMethod, supportedHarness := terminationProofMethodForHarness(c.harness)
++	terminator, ok := c.conv.(ports.ChatProviderProofTerminator)
++	if !supportedHarness || !ok || !terminator.CanTerminateWithProof() {
++		return ports.ChatTerminationProof{}, errors.New("provider does not expose waited process evidence for this harness")
++	}
++	// Obtain proof before consuming Controller's once-only close path. A failed
++	// process stop leaves the provider handle retryable; a later retry must not
++	// be trapped behind a cached controller error.
++	proof, err := terminator.TerminateWithProof()
++	if err != nil {
++		return ports.ChatTerminationProof{}, err
++	}
++	if proof.SessionID == "" || proof.Method != expectedMethod || !proof.CleanupComplete || proof.VerifiedAt.IsZero() {
++		return ports.ChatTerminationProof{}, errors.New("provider returned incomplete native process wait evidence")
++	}
++	if err := c.Terminate(ctx); err != nil {
++		// An earlier ordinary Stop may have consumed the once-only path and
++		// cached its provider error. Fresh native process-exit proof supersedes
++		// that stale error only after this controller's event loop has stopped.
++		select {
++		case <-c.stopped:
++			return proof, nil
++		case <-ctx.Done():
++			return ports.ChatTerminationProof{}, errors.Join(err, ctx.Err())
++		}
++	}
++	return proof, nil
++}
++
+ // closeForBranchHandoff retires and terminates a source controller without
+ // publishing a session-level exit. Branch replacement is an in-place writer
+ // handoff, not the end of the session; the replacement generation continues the
+diff --git a/backend/internal/service/chat/service.go b/backend/internal/service/chat/service.go
+index 0fd0a4a83..94c70ec27 100644
+--- a/backend/internal/service/chat/service.go
++++ b/backend/internal/service/chat/service.go
+@@ -1689,6 +1689,13 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
+ 		return err
+ 	}
+ 	defer gate.unlock()
++	return s.stopLocked(ctx, id, nil)
++}
++
++// stopLocked performs teardown while the owner gate is held. expected pins a
++// proof-bearing caller to the exact controller whose provider handle it stopped.
++func (s *Service) stopLocked(ctx context.Context, id domain.SessionID, expected *Controller) error {
++	owner := domain.SessionConversationOwner(id)
+ 	// Each side is marked closed before its host stops, and a host that fails to
+ 	// stop stays queued for the periodic cleanup retry. Stopping the main chat
+ 	// (Exit agent, agent switch, spawn rollback) must not depend on it.
+@@ -1703,6 +1710,26 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
+ 	s.mu.RLock()
+ 	controller, ok := s.controllers[id]
+ 	s.mu.RUnlock()
++	if expected != nil {
++		if ok && controller != expected {
++			return errors.New("chat controller changed during required-proof stop")
++		}
++		if !ok {
++			select {
++			case <-expected.stopped:
++				// A prior ordinary stop may have retired this exact controller
++				// after its event loop observed process exit. The required proof
++				// still belongs to that generation; no replacement is present.
++				s.mu.Lock()
++				delete(s.startConfigs, owner)
++				delete(s.awakeInterrupted, owner)
++				s.mu.Unlock()
++				return s.clearHibernation(ctx, id)
++			default:
++				return errors.New("chat controller changed during required-proof stop")
++			}
++		}
++	}
+ 	if !ok {
+ 		s.mu.Lock()
+ 		delete(s.startConfigs, owner)
+@@ -1724,7 +1751,19 @@ func (s *Service) Stop(ctx context.Context, id domain.SessionID) error {
+ 		// Explicit Kill can still retry authenticated shutdown of this owner.
+ 		hostErr = s.stopProviderHost(ctx, id)
+ 	}
+-	err := errors.Join(hostErr, controller.Terminate(ctx))
++	err := hostErr
++	if expected == nil {
++		err = errors.Join(err, controller.Terminate(ctx))
++	} else {
++		// Required proof has already stopped and waited for this exact
++		// controller. Replaying Terminate here could re-surface a cached error
++		// from an earlier ordinary stop after cleanup has now succeeded.
++		select {
++		case <-controller.stopped:
++		default:
++			return errors.Join(err, errors.New("proof-bearing controller has not stopped"))
++		}
++	}
+ 	if preserved && !hibernating && s.stopProviderHost != nil {
+ 		// Close may already have retired this handle (for example after a failed
+ 		// projection). Explicit Stop targets current session ownership under the
+@@ -2804,6 +2843,40 @@ func (s *Service) StopChat(ctx context.Context, id domain.SessionID) error {
+ 	return s.Stop(ctx, id)
+ }
+ 
++// StopChatWithProof stops one session controller and returns waited evidence
++// from that controller's exact provider handle. A session whose controller was
++// already discarded has no retained proof and therefore fails closed.
++func (s *Service) StopChatWithProof(ctx context.Context, id domain.SessionID) (ports.ChatTerminationProof, error) {
++	owner := domain.SessionConversationOwner(id)
++	gate := s.controllerGate(owner)
++	if err := gate.lock(ctx); err != nil {
++		return ports.ChatTerminationProof{}, err
++	}
++	defer gate.unlock()
++	record, err := s.requireChatSession(ctx, id)
++	if err != nil {
++		return ports.ChatTerminationProof{}, err
++	}
++	controller, err := s.Controller(id)
++	if err != nil {
++		return ports.ChatTerminationProof{}, err
++	}
++	if controller.harness != record.Harness {
++		return ports.ChatTerminationProof{}, errors.New("persisted harness does not match the proof-bearing controller")
++	}
++	if !controller.CanTerminateWithProof() {
++		return ports.ChatTerminationProof{}, errors.New("provider does not expose waited process evidence for the persisted harness")
++	}
++	proof, err := controller.TerminateWithProof(ctx)
++	if err != nil {
++		return ports.ChatTerminationProof{}, err
++	}
++	if err := s.stopLocked(ctx, id, controller); err != nil {
++		return proof, err
++	}
++	return proof, nil
++}
++
+ // permissionConfigOptions annotates only provider controls whose semantics are
+ // known. In particular, plan and dontAsk are not AO approval policies.
+ func permissionConfigOptions(harness domain.AgentHarness, options []ports.ChatConfigOption) []ports.ChatConfigOption {
+diff --git a/backend/internal/service/chat/termination_proof_retry_test.go b/backend/internal/service/chat/termination_proof_retry_test.go
+new file mode 100644
+index 000000000..777f2abc1
+--- /dev/null
++++ b/backend/internal/service/chat/termination_proof_retry_test.go
+@@ -0,0 +1,123 @@
++package chat_test
++
++import (
++	"context"
++	"errors"
++	"testing"
++
++	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
++	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
++	chatsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/chat"
++	"time"
++)
++
++type independentRetryProofConversation struct {
++	*fakeConversation
++	attempts int
++}
++
++func (c *independentRetryProofConversation) CanTerminateWithProof() bool { return true }
++func (c *independentRetryProofConversation) Terminate() error {
++	c.attempts++
++	if c.attempts == 1 {
++		return errors.New("synthetic container stop unverified")
++	}
++	return c.fakeConversation.Close()
++}
++func (c *independentRetryProofConversation) TerminateWithProof() (ports.ChatTerminationProof, error) {
++	if err := c.Terminate(); err != nil {
++		return ports.ChatTerminationProof{}, err
++	}
++	return ports.ChatTerminationProof{SessionID: string(testSession), Method: ports.ChatTerminationNativeProcessExitWaited, CleanupComplete: true, VerifiedAt: time.Now().UTC()}, nil
++}
++func TestStopChatWithProofRetriesSameControllerAfterStopFailure(t *testing.T) {
++	conversation := &independentRetryProofConversation{fakeConversation: newFakeConversation()}
++	harness := newHarnessWithConversation(t, conversation)
++	t.Cleanup(func() { _ = conversation.fakeConversation.Close() })
++	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
++	defer cancel()
++	if _, err := harness.svc.StopChatWithProof(ctx, testSession); err == nil {
++		t.Fatal("first unverified stop returned proof")
++	}
++	retryCtx, retryCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
++	defer retryCancel()
++	proof, err := harness.svc.StopChatWithProof(retryCtx, testSession)
++	if err != nil || !proof.CleanupComplete {
++		t.Fatalf("same exact controller retry failed: attempts=%d proof=%+v err=%v", conversation.attempts, proof, err)
++	}
++}
++
++func TestStopChatWithProofRetriesAfterOrdinaryStopFailure(t *testing.T) {
++	conversation := &independentRetryProofConversation{fakeConversation: newFakeConversation()}
++	harness := newHarnessWithConversation(t, conversation)
++	t.Cleanup(func() { _ = conversation.fakeConversation.Close() })
++	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
++	defer cancel()
++	if err := harness.svc.Stop(ctx, testSession); err == nil {
++		t.Fatal("first ordinary stop unexpectedly succeeded")
++	}
++	retryCtx, retryCancel := context.WithTimeout(context.Background(), time.Second)
++	defer retryCancel()
++	proof, err := harness.svc.StopChatWithProof(retryCtx, testSession)
++	if err != nil || !proof.CleanupComplete || conversation.attempts < 2 {
++		t.Fatalf("required retry after ordinary failure: attempts=%d cleanup=%t err=%v", conversation.attempts, proof.CleanupComplete, err)
++	}
++}
++
++type gatedProofConversation struct {
++	*independentRetryProofConversation
++	entered chan struct{}
++	release chan struct{}
++}
++
++func (c *gatedProofConversation) TerminateWithProof() (ports.ChatTerminationProof, error) {
++	close(c.entered)
++	<-c.release
++	return c.independentRetryProofConversation.TerminateWithProof()
++}
++
++func TestStopChatWithProofHoldsControllerGateThroughProofAndCleanup(t *testing.T) {
++	conversation := &gatedProofConversation{
++		independentRetryProofConversation: &independentRetryProofConversation{fakeConversation: newFakeConversation()},
++		entered:                           make(chan struct{}), release: make(chan struct{}),
++	}
++	harness := newHarnessWithConversation(t, conversation)
++	conversation.attempts = 1 // model a prior ordinary stop that failed
++	t.Cleanup(func() { _ = conversation.fakeConversation.Close() })
++	proofDone := make(chan error, 1)
++	go func() {
++		_, err := harness.svc.StopChatWithProof(context.Background(), testSession)
++		proofDone <- err
++	}()
++	select {
++	case <-conversation.entered:
++	case <-time.After(time.Second):
++		t.Fatal("proof call did not reach provider")
++	}
++	startDone := make(chan error, 1)
++	go func() {
++		_, err := harness.svc.Start(context.Background(), chatsvc.StartConfig{
++			SessionID: testSession, ProjectID: testProject, Harness: domain.HarnessCodex, WorkspacePath: t.TempDir(),
++		})
++		startDone <- err
++	}()
++	select {
++	case err := <-startDone:
++		t.Fatalf("same-owner start crossed in-flight proof gate: %v", err)
++	case <-time.After(50 * time.Millisecond):
++	}
++	close(conversation.release)
++	select {
++	case err := <-proofDone:
++		if err != nil {
++			t.Fatalf("required proof stop failed: %v", err)
++		}
++	case <-time.After(time.Second):
++		t.Fatal("proof stop did not finish after provider release")
++	}
++	select {
++	case <-startDone:
++	case <-time.After(time.Second):
++		t.Fatal("same-owner start remained blocked after proof cleanup")
++	}
++}
 diff --git a/backend/internal/service/session/service.go b/backend/internal/service/session/service.go
-index de040c1cf..90195b71a 100644
+index de040c1cf..c787113fe 100644
 --- a/backend/internal/service/session/service.go
 +++ b/backend/internal/service/session/service.go
 @@ -184,6 +184,11 @@ type outputTypeReconciler interface {
@@ -1178,6 +2660,38 @@ index de040c1cf..90195b71a 100644
  // spawnWithTelemetry is the only path from the service into manager.Spawn, so
  // every created session emits ao.session.spawned or ao.session.spawn_failed
  // exactly once. Client-request replays return before reaching it.
+@@ -915,6 +934,20 @@ func (s *Service) RequestKill(ctx context.Context, id domain.SessionID) (session
+ 	return result, toAPIError(err)
+ }
+ 
++// RequestKillWithProof opts into a stop path that must return exact native
++// process wait evidence before the kill is acknowledged.
++func (s *Service) RequestKillWithProof(ctx context.Context, id domain.SessionID) (sessionmanager.KillResult, error) {
++	s.cancelTitleRefinement(id)
++	manager, ok := s.manager.(interface {
++		RequestKillWithProof(context.Context, domain.SessionID) (sessionmanager.KillResult, error)
++	})
++	if !ok {
++		return sessionmanager.KillResult{}, sessionmanager.ErrTerminationUnproven
++	}
++	result, err := manager.RequestKillWithProof(ctx, id)
++	return result, toAPIError(err)
++}
++
+ // artifactDeleter deletes a session's artifact files and version rows. The
+ // production implementation is *artifactversions.Capturer.
+ type artifactDeleter interface {
+@@ -1427,6 +1460,10 @@ func mapSessionError(err error) error {
+ 		return apierr.Conflict("SESSION_NOT_RESTORABLE", "Session is not restorable", nil)
+ 	case errors.Is(err, sessionmanager.ErrTerminated):
+ 		return apierr.Conflict("SESSION_TERMINATED", "Session is terminated", nil)
++	case errors.Is(err, sessionmanager.ErrTerminationUnproven):
++		return apierr.Conflict("TERMINATION_UNPROVEN", "AO could not verify native process exit; the session remains fenced", nil)
++	case errors.Is(err, sessionmanager.ErrTerminationCleanupPending):
++		return apierr.Conflict("CLEANUP_PENDING", "AO process exit was verified, but session cleanup remains pending", nil)
+ 	case errors.Is(err, sessionmanager.ErrAgentExited):
+ 		return apierr.Conflict("AGENT_EXITED",
+ 			"The agent process exited; relaunch it before sending another message", nil)
 diff --git a/backend/internal/service/session/service_test.go b/backend/internal/service/session/service_test.go
 index e532e419b..686806721 100644
 --- a/backend/internal/service/session/service_test.go
@@ -1262,3 +2776,291 @@ index e532e419b..686806721 100644
  // The readiness gate reads the computer's own Codex login. A task that will run
  // on a saved account does not use that login, so its state is not a reason to
  // refuse; the launch checks the account it runs on.
+diff --git a/backend/internal/session_manager/manager.go b/backend/internal/session_manager/manager.go
+index 1ed2302db..29fbcab69 100644
+--- a/backend/internal/session_manager/manager.go
++++ b/backend/internal/session_manager/manager.go
+@@ -132,26 +132,28 @@ var (
+ 	// "spawn <id>:" so wrapping them does not change daemon-log wording, while
+ 	// errors.Is can tell the service which stage failed. More specific wrapped
+ 	// sentinels (branch, agent binary, chat preflight) still match first.
+-	ErrSpawnPrompt             = errors.New("prompt")
+-	ErrSpawnCreate             = errors.New("create")
+-	ErrSpawnSystemPrompt       = errors.New("system prompt file")
+-	ErrSpawnArtifactDir        = errors.New("artifact dir")
+-	ErrSpawnAgentAccount       = errors.New("agent account")
+-	ErrWorkspaceCreate         = errors.New("workspace")
+-	ErrWorkspaceProvision      = errors.New("provision")
+-	ErrSpawnAttachments        = errors.New("attachments")
+-	ErrSpawnBrowser            = errors.New("browser capability")
+-	ErrSpawnPrepare            = errors.New("prepare")
+-	ErrSpawnPromptDelivery     = errors.New("prompt delivery")
+-	ErrSpawnLaunchCommand      = errors.New("launch command")
+-	ErrSpawnSupervisor         = errors.New("supervisor")
+-	ErrSpawnPrepareLaunch      = errors.New("prepare launch")
+-	ErrRuntimeCreate           = errors.New("runtime")
+-	ErrSpawnCommit             = errors.New("completed")
+-	ErrSpawnDeliverPrompt      = errors.New("deliver prompt")
+-	ErrClientRequestConflict   = errors.New("client request id belongs to a different task")
+-	ErrClientRequestIncomplete = errors.New("client request has an incomplete prior spawn")
+-	ErrChatController          = errors.New("chat controller")
++	ErrSpawnPrompt               = errors.New("prompt")
++	ErrSpawnCreate               = errors.New("create")
++	ErrSpawnSystemPrompt         = errors.New("system prompt file")
++	ErrSpawnArtifactDir          = errors.New("artifact dir")
++	ErrSpawnAgentAccount         = errors.New("agent account")
++	ErrWorkspaceCreate           = errors.New("workspace")
++	ErrWorkspaceProvision        = errors.New("provision")
++	ErrSpawnAttachments          = errors.New("attachments")
++	ErrSpawnBrowser              = errors.New("browser capability")
++	ErrSpawnPrepare              = errors.New("prepare")
++	ErrSpawnPromptDelivery       = errors.New("prompt delivery")
++	ErrSpawnLaunchCommand        = errors.New("launch command")
++	ErrSpawnSupervisor           = errors.New("supervisor")
++	ErrSpawnPrepareLaunch        = errors.New("prepare launch")
++	ErrRuntimeCreate             = errors.New("runtime")
++	ErrSpawnCommit               = errors.New("completed")
++	ErrSpawnDeliverPrompt        = errors.New("deliver prompt")
++	ErrClientRequestConflict     = errors.New("client request id belongs to a different task")
++	ErrClientRequestIncomplete   = errors.New("client request has an incomplete prior spawn")
++	ErrChatController            = errors.New("chat controller")
++	ErrTerminationUnproven       = errors.New("native process termination is unproven")
++	ErrTerminationCleanupPending = errors.New("session cleanup is pending")
+ )
+ 
+ // wrapSpawnStage annotates a spawn failure with a stage sentinel. The original
+@@ -415,6 +417,11 @@ type Manager struct {
+ 	// killTeardown bounds Kill's detached teardown. Zero means
+ 	// killTeardownBudget; tests shrink it to prove what survives its expiry.
+ 	killTeardown time.Duration
++	// terminationProofs retains exact waited evidence for idempotent required
++	// kill retries in this daemon. It is intentionally volatile: after restart,
++	// AO cannot recreate proof from a terminal session row.
++	terminationProofsMu sync.Mutex
++	terminationProofs   map[domain.SessionID]cachedTerminationProof
+ 	// openTranscriptFile is os.Open in production. The narrow seam lets tests
+ 	// deterministically prove that a post-stop transcript read failure falls
+ 	// back without advertising the provider path.
+@@ -2503,23 +2510,80 @@ func (m *Manager) recordTermination(ctx context.Context, id domain.SessionID, dr
+ 
+ // KillResult distinguishes accepted cleanup from a preserved workspace.
+ type KillResult struct {
+-	Freed          bool
+-	CleanupPending bool
++	Freed            bool
++	CleanupPending   bool
++	TerminationProof *ports.ChatTerminationProof
++}
++
++type cachedTerminationProof struct {
++	Proof                  ports.ChatTerminationProof
++	Harness                domain.AgentHarness
++	ProviderConversationID string
++	AgentSessionID         string
+ }
+ 
+ // Kill waits for workspace retirement for internal callers that depend on it.
+ func (m *Manager) Kill(ctx context.Context, id domain.SessionID) (bool, error) {
+-	result, err := m.kill(ctx, id, false)
++	result, err := m.kill(ctx, id, false, false)
+ 	return result.Freed, err
+ }
+ 
+ // RequestKill stops the agent and persists terminal intent before returning.
+ // Configured cleanup commands use the daemon's existing background workers.
+ func (m *Manager) RequestKill(ctx context.Context, id domain.SessionID) (KillResult, error) {
+-	return m.kill(ctx, id, true)
++	return m.kill(ctx, id, true, false)
++}
++
++// RequestKillWithProof is the opt-in kill path used by callers that must prove
++// the exact provider process exited before acknowledging cleanup.
++func (m *Manager) RequestKillWithProof(ctx context.Context, id domain.SessionID) (KillResult, error) {
++	return m.kill(ctx, id, true, true)
++}
++
++func (m *Manager) cachedTerminationProof(id domain.SessionID, rec domain.SessionRecord) *ports.ChatTerminationProof {
++	m.terminationProofsMu.Lock()
++	defer m.terminationProofsMu.Unlock()
++	cached, ok := m.terminationProofs[id]
++	if !ok {
++		return nil
++	}
++	if cached.Harness != rec.Harness || cached.ProviderConversationID != rec.Metadata.ProviderConversationID || cached.AgentSessionID != rec.Metadata.AgentSessionID {
++		delete(m.terminationProofs, id)
++		return nil
++	}
++	proof := cached.Proof
++	return &proof
++}
++
++func (m *Manager) forgetTerminationProof(id domain.SessionID) {
++	m.terminationProofsMu.Lock()
++	delete(m.terminationProofs, id)
++	m.terminationProofsMu.Unlock()
++}
++
++func (m *Manager) rememberTerminationProof(id domain.SessionID, rec domain.SessionRecord, proof ports.ChatTerminationProof) {
++	m.terminationProofsMu.Lock()
++	defer m.terminationProofsMu.Unlock()
++	if m.terminationProofs == nil {
++		m.terminationProofs = make(map[domain.SessionID]cachedTerminationProof)
++	}
++	if _, exists := m.terminationProofs[id]; !exists {
++		m.terminationProofs[id] = cachedTerminationProof{Proof: proof, Harness: rec.Harness, ProviderConversationID: rec.Metadata.ProviderConversationID, AgentSessionID: rec.Metadata.AgentSessionID}
++	}
+ }
+ 
+-func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundCleanup bool) (KillResult, error) {
++func terminationMethodForHarness(harness domain.AgentHarness) (ports.ChatTerminationMethod, bool) {
++	switch harness {
++	case domain.HarnessCodex:
++		return ports.ChatTerminationNativeProcessExitWaited, true
++	case domain.HarnessOpenCode, domain.HarnessOpenCodeV2:
++		return ports.ChatTerminationACPProcessExitWaited, true
++	default:
++		return "", false
++	}
++}
++
++func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundCleanup, requireTerminationProof bool) (KillResult, error) {
+ 	// Teardown deliberately stops riding the caller's context. Kill runs a
+ 	// sequence (stop the agent, tear the controller down, mark the row
+ 	// terminated, drop the worktree) where being cancelled partway leaves a session
+@@ -2587,12 +2651,44 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
+ 		return KillResult{}, fmt.Errorf("kill %s: preserve attachments: %w", id, err)
+ 	}
+ 
++	var terminationProof *ports.ChatTerminationProof
++	if requireTerminationProof {
++		terminationProof = m.cachedTerminationProof(id, rec)
++	}
+ 	// Exactly one controller exists, so exactly one gets torn down. A chat
+ 	// session has no runtime handle; its controller owns an app-server child
+ 	// process, and closing it also settles any turn left in flight so a later
+ 	// read does not show work that is no longer running.
+ 	if domain.NormalizeSessionMode(rec.Mode) == domain.SessionModeChat {
+-		m.stopChatBestEffort(ctx, id)
++		if requireTerminationProof {
++			if terminationProof != nil {
++				// The exact proof belongs to this still-current AO session and is
++				// reused after a prior stop succeeded but later cleanup failed.
++			} else {
++				stopper, ok := m.chat.(interface {
++					StopChatWithProof(context.Context, domain.SessionID) (ports.ChatTerminationProof, error)
++				})
++				if !ok {
++					m.logger.Warn("required chat termination proof rejected", "sessionID", id, "stage", "stop_chat_proof_interface", "harness", rec.Harness, "provider_proof_interface", false)
++					return KillResult{}, fmt.Errorf("kill %s: %w", id, ErrTerminationUnproven)
++				}
++				proof, proofErr := stopper.StopChatWithProof(ctx, id)
++				expectedMethod, methodKnown := terminationMethodForHarness(rec.Harness)
++				sessionMatches := proof.SessionID == string(id)
++				methodMatches := methodKnown && proof.Method == expectedMethod
++				verifiedAtPresent := !proof.VerifiedAt.IsZero()
++				verifiedAtUTC := verifiedAtPresent && proof.VerifiedAt.Location() == time.UTC
++				verifiedAtNotFuture := verifiedAtPresent && !proof.VerifiedAt.After(time.Now().UTC().Add(time.Minute))
++				if proofErr != nil || !methodKnown || !sessionMatches || !methodMatches || !proof.CleanupComplete || !verifiedAtPresent || !verifiedAtUTC || !verifiedAtNotFuture {
++					m.logger.Warn("required chat termination proof rejected", "sessionID", id, "stage", "stop_chat_proof_validate", "harness", rec.Harness, "proof_error_present", proofErr != nil, "proof_error_type", fmt.Sprintf("%T", proofErr), "method_known", methodKnown, "session_matches", sessionMatches, "method_matches", methodMatches, "cleanup_complete", proof.CleanupComplete, "verified_at_present", verifiedAtPresent, "verified_at_utc", verifiedAtUTC, "verified_at_not_future", verifiedAtNotFuture)
++					return KillResult{}, fmt.Errorf("kill %s: %w", id, errors.Join(ErrTerminationUnproven, proofErr))
++				}
++				terminationProof = &proof
++				m.rememberTerminationProof(id, rec, proof)
++			}
++		} else {
++			m.stopChatBestEffort(ctx, id)
++		}
+ 	} else if handle.ID != "" {
+ 		// Any Destroy error stops the kill. Every runtime's Destroy already
+ 		// returns nil when it confirms the session is absent, so an error means
+@@ -2604,6 +2700,9 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
+ 			return KillResult{}, fmt.Errorf("kill %s: runtime: %w", id, err)
+ 		}
+ 	}
++	if requireTerminationProof && terminationProof == nil {
++		return KillResult{}, fmt.Errorf("kill %s: %w", id, ErrTerminationUnproven)
++	}
+ 	if err := m.terminateReviewer(ctx, id, "cancelled by worker session termination"); err != nil {
+ 		return KillResult{}, fmt.Errorf("kill %s: reviewer: %w", id, err)
+ 	}
+@@ -2666,7 +2765,11 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
+ 						m.logger.Error("record background workspace cleanup", "sessionID", id, "error", err)
+ 					}
+ 				})
+-				return KillResult{CleanupPending: true}, nil
++				result := KillResult{CleanupPending: true, TerminationProof: terminationProof}
++				if requireTerminationProof {
++					return result, ErrTerminationCleanupPending
++				}
++				return result, nil
+ 			}
+ 		}
+ 		if err := m.runPreRemove(rec.ProjectID, ws.Path); err != nil {
+@@ -2703,7 +2806,7 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
+ 			return KillResult{}, err
+ 		}
+ 	}
+-	return KillResult{Freed: freed}, nil
++	return KillResult{Freed: freed, TerminationProof: terminationProof}, nil
+ }
+ 
+ // RetireForReplacement terminates a live orchestrator and releases its branch
+diff --git a/backend/internal/session_manager/manager_test.go b/backend/internal/session_manager/manager_test.go
+index a86ef6562..be04e734c 100644
+--- a/backend/internal/session_manager/manager_test.go
++++ b/backend/internal/session_manager/manager_test.go
+@@ -4026,6 +4026,40 @@ func TestKillCleanupScriptHasNoTimeLimit(t *testing.T) {
+ 	}
+ }
+ 
++func TestRequiredTerminationProofCacheReplaysExactProofAndIsVolatileAcrossRestart(t *testing.T) {
++	first := &Manager{}
++	verifiedAt := time.Date(2026, time.October, 21, 12, 34, 56, 123000000, time.UTC)
++	proof := ports.ChatTerminationProof{
++		SessionID:       "ao-session-exact",
++		Method:          ports.ChatTerminationNativeProcessExitWaited,
++		CleanupComplete: true,
++		VerifiedAt:      verifiedAt,
++	}
++	rec := domain.SessionRecord{ID: domain.SessionID(proof.SessionID), Harness: domain.HarnessCodex, IsTerminated: true}
++	first.rememberTerminationProof(rec.ID, rec, proof)
++	replayed := first.cachedTerminationProof(rec.ID, rec)
++	if replayed == nil || *replayed != proof {
++		t.Fatalf("cached proof = %+v, want exact original proof %+v", replayed, proof)
++	}
++	if first.cachedTerminationProof("other-session", rec) != nil {
++		t.Fatal("termination proof was returned for an unrelated session")
++	}
++	active := rec
++	active.IsTerminated = false
++	if replayed := first.cachedTerminationProof(rec.ID, active); replayed == nil || *replayed != proof {
++		t.Fatal("partial teardown retry lost the exact process wait proof")
++	}
++	first.forgetTerminationProof(rec.ID)
++	if first.cachedTerminationProof(rec.ID, active) != nil {
++		t.Fatal("proof remained after a new resume/restore generation invalidated it")
++	}
++
++	second := &Manager{}
++	if second.cachedTerminationProof(rec.ID, rec) != nil {
++		t.Fatal("new manager fabricated proof after restart without process wait evidence")
++	}
++}
++
+ func TestKillCleanupScriptFailurePreservesWorkspaceForRetry(t *testing.T) {
+ 	m, st, rt, ws := newManager()
+ 	m.dataDir = t.TempDir()
+diff --git a/backend/internal/session_manager/session_input.go b/backend/internal/session_manager/session_input.go
+index a0c8d9d77..0c9194d25 100644
+--- a/backend/internal/session_manager/session_input.go
++++ b/backend/internal/session_manager/session_input.go
+@@ -122,6 +122,9 @@ func (m *Manager) beginAgentOperation(ctx context.Context, id domain.SessionID,
+ 		m.agentOperations[id] = kind
+ 		drained = m.inputDrained[id]
+ 		m.agentOpMu.Unlock()
++		if kind == agentOperationResume || kind == agentOperationRestore || kind == agentOperationProviderSwitch {
++			m.forgetTerminationProof(id)
++		}
+ 		break
+ 	}
+ 	if drained == nil {
