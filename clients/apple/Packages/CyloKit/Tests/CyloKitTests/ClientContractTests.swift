@@ -227,6 +227,29 @@ final class ClientContractTests: XCTestCase {
     }
 
     @MainActor
+    func testSnapshotAuthorizationFailureClearsMemoryAndPreparedExport() async throws {
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        model.setMemoryClaimsForTesting([memoryClaim(id: "memory-old", content: "stale private content")])
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("export containing stale memory".utf8).write(to: fileURL)
+        model.setExportArtifactForTesting(ScopedExportArtifact(fileURL: fileURL, filename: "cylo-export-old.json", scope: "personal", snapshotCursor: "5"))
+        model.snapshotFetchOverrideForTesting = {
+            throw CyloError.http(status: 403, code: "forbidden", message: "snapshot denied", details: nil)
+        }
+
+        do { try await model.refreshSnapshotForTesting(); XCTFail("forbidden snapshot accepted") }
+        catch {
+            if let failure = error as? CyloError, case let .http(status, _, _, _) = failure, status == 403 {} else {
+                XCTFail("unexpected error: \(error)")
+            }
+        }
+
+        XCTAssertTrue(model.memoryClaims.isEmpty)
+        XCTAssertNil(model.exportArtifact)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+    }
+
+    @MainActor
     func testConnectionChangeClearsMemoryEvenWhenNewAddressIsInvalid() async throws {
         let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
         model.setMemoryClaimsForTesting([memoryClaim(id: "memory-old-origin", content: "old origin private content")])
@@ -289,6 +312,54 @@ final class ClientContractTests: XCTestCase {
 
         XCTAssertEqual(observedQueries, ["old", "new"])
         XCTAssertEqual(model.memoryClaims.map(\.id), ["memory-new"])
+    }
+
+    @MainActor
+    func testMemoryQueryFromPreviousConnectionCannotRepopulateClearedClaims() async throws {
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        model.setMemoryClaimsForTesting([memoryClaim(id: "memory-before", content: "before")])
+        let gate = AsyncTestGate()
+        model.memorySearchOverrideForTesting = { _ in
+            await gate.pause()
+            return MemorySearchResult(items: [self.memoryClaim(id: "memory-old-origin", content: "old origin result")], missing: [], conflicts: [])
+        }
+
+        let oldSearch = Task { await model.refreshMemory() }
+        await gate.waitUntilStarted()
+        model.serverAddress = "invalid-url"
+        await model.updateServerAddress()
+        await gate.resume()
+        await oldSearch.value
+
+        XCTAssertTrue(model.memoryClaims.isEmpty)
+    }
+
+    @MainActor
+    func testMemoryEventFencesAndDeletesInFlightPreparedExport() async throws {
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let gate = AsyncTestGate()
+        var producedURL: URL?
+        model.exportDownloadOverrideForTesting = { scope in
+            await gate.pause()
+            let url = directory.appendingPathComponent("stale-export.json")
+            try Data("stale export".utf8).write(to: url)
+            producedURL = url
+            return ScopedExportArtifact(fileURL: url, filename: "cylo-export-stale.json", scope: scope, snapshotCursor: "5")
+        }
+        model.memorySearchOverrideForTesting = { _ in MemorySearchResult(items: [], missing: [], conflicts: []) }
+
+        let preparing = Task { await model.prepareExport(scope: "personal", expectedConnectionEpoch: model.connectionEpoch) }
+        await gate.waitUntilStarted()
+        await model.handleEventForTesting(EventEnvelope(schemaVersion: 1, eventId: "event-delete", cursor: "6", type: "memory.deleted", occurredAt: "2026-10-21T12:00:00Z", workspaceId: "workspace-1", subjectId: "subject-1", aggregateType: "memory", aggregateId: "memory-1", aggregateVersion: 2, payload: .object([:])))
+        await gate.resume()
+        await preparing.value
+
+        XCTAssertNil(model.exportArtifact)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(producedURL).path))
+        XCTAssertTrue(model.exportStatus?.contains("Server memory changed") == true)
     }
 
     func testConnectionGenerationRejectsResponsesAfterOriginOrCredentialSwitch() throws {

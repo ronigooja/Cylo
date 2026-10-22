@@ -48,6 +48,7 @@ public final class CyloAppModel: ObservableObject {
     var capabilityRevocationRefreshOverrideForTesting: (() async -> Void)?
     var exportDownloadOverrideForTesting: ((String) async throws -> ScopedExportArtifact)?
     var memorySearchOverrideForTesting: ((String) async throws -> MemorySearchResult)?
+    var snapshotFetchOverrideForTesting: (() async throws -> Snapshot)?
 
     func setCapabilityDeploymentsForTesting(_ deployments: [CapabilityDeployment]) {
         capabilityDeployments = deployments
@@ -63,6 +64,10 @@ public final class CyloAppModel: ObservableObject {
 
     func handleEventForTesting(_ envelope: EventEnvelope) async {
         await handle(.event(envelope))
+    }
+
+    func refreshSnapshotForTesting() async throws {
+        try await refreshSnapshot()
     }
 #endif
     private var configuredServerURL: URL?
@@ -959,11 +964,29 @@ public final class CyloAppModel: ObservableObject {
     }
 
     private func refreshSnapshot() async throws {
-        guard let api else { throw CyloError.invalidServerURL }
+        #if DEBUG
+        let testFetch = snapshotFetchOverrideForTesting
+        #else
+        let testFetch: (() async throws -> Snapshot)? = nil
+        #endif
+        let capturedAPI = api
+        guard capturedAPI != nil || testFetch != nil else { throw CyloError.invalidServerURL }
         let generation = connectionGeneration.value
         let cache = snapshotCache
-        let latest = try await api.snapshot()
-        guard generation == connectionGeneration.value, api === self.api else { return }
+        let latest: Snapshot
+        do {
+            if let testFetch { latest = try await testFetch() }
+            else if let capturedAPI { latest = try await capturedAPI.snapshot() }
+            else { throw CyloError.invalidServerURL }
+        }
+        catch {
+            if generation == connectionGeneration.value, Self.isAccessDenied(error) {
+                clearMemoryAndPreparedExport(status: "Server access changed; cached memory and the prepared export were cleared.")
+            }
+            throw error
+        }
+        guard generation == connectionGeneration.value,
+              testFetch != nil || capturedAPI === self.api else { return }
         if let current = snapshot, !cursor(latest.eventCursor, isAtLeast: current.eventCursor) {
             throw CyloError.invalidResponse
         }
@@ -1326,9 +1349,8 @@ public final class CyloAppModel: ObservableObject {
         switch push {
         case let .event(envelope):
             let memoryChanged = envelope.aggregateType == "memory" && ["memory.revised", "memory.deleted", "memory.proposal_accepted"].contains(envelope.type)
-            let deviceAuthorizationChanged = envelope.aggregateType == "device" && envelope.type == "device.revoked"
-            if memoryChanged || deviceAuthorizationChanged {
-                await handleMemoryOrAuthorizationChange(status: memoryChanged ? "Server memory changed; prepare a fresh export." : "Device authorization changed; prepare a fresh export.")
+            if memoryChanged {
+                await handleMemoryOrAuthorizationChange(status: "Server memory changed; prepare a fresh export.")
             }
             setStale("A server change arrived; refreshing the authoritative snapshot.")
             do { try await refreshSnapshot() }
@@ -1359,6 +1381,12 @@ public final class CyloAppModel: ObservableObject {
         memoryClaims = []
         memoryMissing = []
         memoryConflicts = []
+    }
+
+    private static func isAccessDenied(_ error: Error) -> Bool {
+        guard let failure = error as? CyloError,
+              case let .http(status, _, _, _) = failure else { return false }
+        return status == 401 || status == 403
     }
 
     private func setStale(_ reason: String) {
