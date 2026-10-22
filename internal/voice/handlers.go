@@ -141,21 +141,62 @@ func (s *Service) handleHangup(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": "ended"})
 		return
 	}
+	if state == "ending" {
+		// A prior request may have reached Space before its response or local
+		// finalization was lost. Do not issue another external DELETE from an
+		// unresolved ending state; keep the lease fenced for reconciliation.
+		control.WriteError(w, apiError(http.StatusConflict, "voice_outcome_unknown", "gateway release is already unresolved; media lease remains quarantined", nil))
+		return
+	}
 	if gatewayID == "" {
-		_ = s.markSession(r.Context(), r.PathValue("session_id"), "quarantined", "gateway_session_unbound", nil, "")
+		if err := s.markSession(r.Context(), r.PathValue("session_id"), "quarantined", "gateway_session_unbound", nil, ""); err != nil {
+			control.WriteError(w, safeSessionError(err))
+			return
+		}
 		control.WriteError(w, apiError(http.StatusConflict, "voice_outcome_unknown", "gateway session binding is unknown; lease quarantined", nil))
 		return
 	}
-	_, _ = s.db.ExecContext(r.Context(), `UPDATE voice_sessions SET state='ending',updated_at=? WHERE workspace_id=? AND owner_id=? AND id=?`, time.Now().UTC().Format(time.RFC3339Nano), p.WorkspaceID, p.SubjectID, r.PathValue("session_id"))
+	claim, err := s.db.ExecContext(r.Context(), `UPDATE voice_sessions SET state='ending',updated_at=? WHERE workspace_id=? AND owner_id=? AND id=? AND generation=? AND state IN ('active','quarantined')`, time.Now().UTC().Format(time.RFC3339Nano), p.WorkspaceID, p.SubjectID, r.PathValue("session_id"), generation)
+	if err != nil {
+		control.WriteError(w, safeSessionError(err))
+		return
+	}
+	claimed, err := claim.RowsAffected()
+	if err != nil {
+		control.WriteError(w, safeSessionError(err))
+		return
+	}
+	if claimed != 1 {
+		var current string
+		if err := s.db.QueryRowContext(r.Context(), `SELECT state FROM voice_sessions WHERE workspace_id=? AND owner_id=? AND id=? AND generation=?`, p.WorkspaceID, p.SubjectID, r.PathValue("session_id"), generation).Scan(&current); errors.Is(err, sql.ErrNoRows) {
+			control.WriteError(w, apiError(http.StatusNotFound, "not_found", "voice session not found", nil))
+			return
+		} else if err != nil {
+			control.WriteError(w, safeSessionError(err))
+			return
+		}
+		if current == "ended" {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": "ended"})
+			return
+		}
+		control.WriteError(w, apiError(http.StatusConflict, "voice_outcome_unknown", "voice generation is already ending or otherwise unresolved; media lease remains quarantined", nil))
+		return
+	}
 	response, err := s.callGateway(r.Context(), http.MethodDelete, "/v1/voice/sessions/"+url.PathEscape(gatewayID), nil)
 	if err != nil {
-		_ = s.markSession(r.Context(), r.PathValue("session_id"), "quarantined", "gateway_release_unknown", nil, "")
+		if persistErr := s.markSession(r.Context(), r.PathValue("session_id"), "quarantined", "gateway_release_unknown", nil, ""); persistErr != nil {
+			control.WriteError(w, safeSessionError(persistErr))
+			return
+		}
 		control.WriteError(w, apiError(http.StatusServiceUnavailable, "voice_outcome_unknown", "gateway release result is unknown; media lease quarantined", nil))
 		return
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		_ = s.markSession(r.Context(), r.PathValue("session_id"), "quarantined", "gateway_release_failed", nil, "")
+		if persistErr := s.markSession(r.Context(), r.PathValue("session_id"), "quarantined", "gateway_release_failed", nil, ""); persistErr != nil {
+			control.WriteError(w, safeSessionError(persistErr))
+			return
+		}
 		control.WriteError(w, apiError(http.StatusServiceUnavailable, "voice_outcome_unknown", "gateway did not confirm session unbinding; media lease quarantined", nil))
 		return
 	}
