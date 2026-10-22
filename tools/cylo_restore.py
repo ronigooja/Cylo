@@ -9,13 +9,59 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import sqlite3
+import stat
 import sys
 import tempfile
 
-from data_lifecycle.common import fail, private_dir, read_key, unpack_verified
+from data_lifecycle.common import fail, independent_deletion_journal_metadata, private_dir, read_key, unpack_verified
 
 
 MANAGED_ROLES = {"service_config_paths", "artifact_paths", "persistent_volume_paths"}
+
+
+def verify_latest_deletion_head(latest_path: Path, head_path: Path, snapshot_path: Path, snapshot_head: dict) -> dict:
+    latest_stat = latest_path.lstat()
+    if not stat.S_ISREG(latest_stat.st_mode) or latest_stat.st_uid != os.getuid() or stat.S_IMODE(latest_stat.st_mode) != 0o600:
+        fail("latest deletion journal must be a current-user-owned regular file with mode 0600")
+    head_stat = head_path.lstat()
+    if not stat.S_ISREG(head_stat.st_mode) or head_stat.st_uid != os.getuid() or stat.S_IMODE(head_stat.st_mode) != 0o600:
+        fail("latest deletion head must be a current-user-owned regular file with mode 0600")
+    try:
+        external_head = json.loads(head_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        fail(f"latest deletion head is invalid: {exc}")
+    if not isinstance(external_head, dict) or set(external_head) != {"lineage_id", "generation", "record_generation", "sequence", "head_hash", "file_sha256"}:
+        fail("latest deletion head has an unsupported schema")
+    latest_bytes = latest_path.read_bytes()
+    snapshot_bytes = snapshot_path.read_bytes()
+    if not latest_bytes.startswith(snapshot_bytes):
+        fail("independent latest journal does not extend the selected backup journal")
+    if snapshot_head is None or external_head.get("lineage_id") != snapshot_head.get("lineage_id"):
+        fail("independent latest deletion head belongs to a different lineage")
+    try:
+        latest_sequence = len(latest_bytes.splitlines())
+        latest_generation = external_head["generation"]
+        record_generation = external_head["record_generation"]
+        if isinstance(latest_generation, bool) or not isinstance(latest_generation, int) or latest_generation < 1:
+            fail("independent latest deletion generation is invalid")
+        if isinstance(record_generation, bool) or not isinstance(record_generation, int) or not 0 <= record_generation <= latest_generation:
+            fail("independent latest deletion record generation is invalid")
+        metadata = independent_deletion_journal_metadata(
+            latest_path,
+            {"lineage_id": snapshot_head["snapshot_lineage_id"], "generation": latest_generation,
+             "deletion_sequence": latest_sequence, "event_count": 0, "event_cursor_sum": 0},
+        )
+    except Exception as exc:
+        fail(f"independent latest deletion journal is invalid: {exc}")
+    expected = {
+        "lineage_id": metadata["lineage_id"], "generation": metadata["generation"],
+        "record_generation": metadata["record_generation"],
+        "sequence": metadata["sequence"], "head_hash": metadata["head_hash"],
+        "file_sha256": metadata["file_sha256"],
+    }
+    if external_head != expected or metadata["sequence"] < snapshot_head["snapshot_sequence"]:
+        fail("independent latest deletion head does not match the retained journal or is older than the snapshot")
+    return metadata
 
 
 def restore_managed_paths(payload: Path, staged: Path, manifest: dict) -> int:
@@ -77,6 +123,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--key-file", type=Path, required=True)
+    parser.add_argument("--latest-deletion-ledger", type=Path, required=True, help="independently retained current journal, not copied from the selected backup")
+    parser.add_argument("--latest-deletion-head-file", type=Path, required=True, help="0600 maintenance-owned JSON attesting the retained journal head and file hash")
     parser.add_argument("--restore-directory", type=Path, required=True, help="new path; must not already exist")
     args = parser.parse_args()
     key = read_key(args.key_file)
@@ -90,15 +138,30 @@ def main() -> int:
         # available to a server or any derived retrieval service.
         database_manifest = manifest.get("database", {})
         deletion = manifest.get("database", {}).get("deletion_ledger")
-        trusted_head = database_manifest.get("trusted_deletion_head")
+        snapshot_head = database_manifest.get("trusted_deletion_head")
         source_db = payload / "authority" / "cylo.sqlite"
         source_journal = payload / "authority" / "cylo.sqlite.deletion-ledger"
+        latest_path = args.latest_deletion_ledger
+        head_path = args.latest_deletion_head_file
+        metadata = verify_latest_deletion_head(latest_path, head_path, source_journal, snapshot_head)
+        trusted_head = {
+            "snapshot_lineage_id": snapshot_head["snapshot_lineage_id"],
+            "snapshot_generation": snapshot_head["snapshot_generation"],
+            "snapshot_sequence": snapshot_head["snapshot_sequence"],
+            "snapshot_event_count": snapshot_head["snapshot_event_count"],
+            "snapshot_event_cursor_sum": snapshot_head["snapshot_event_cursor_sum"],
+            "journal_lineage_id": metadata["lineage_id"],
+            "journal_generation": metadata["generation"],
+            "journal_record_generation": metadata["record_generation"],
+            "journal_sequence": metadata["sequence"],
+            "journal_head_sha256": metadata["head_hash"],
+        }
         staged = Path(tmp) / "new-instance"
         staged.mkdir(mode=0o700)
         (staged / "data").mkdir(mode=0o700)
         shutil.copyfile(source_db, staged / "data" / "cylo.sqlite.restore-pending")
         os.chmod(staged / "data" / "cylo.sqlite.restore-pending", 0o600)
-        shutil.copyfile(source_journal, staged / "data" / "cylo.sqlite.restore-pending.deletion-ledger")
+        shutil.copyfile(latest_path, staged / "data" / "cylo.sqlite.restore-pending.deletion-ledger")
         os.chmod(staged / "data" / "cylo.sqlite.restore-pending.deletion-ledger", 0o600)
         # Keep the restore-only closed state inside the database so renaming
         # the staged file cannot bypass the adjacent restore-state.json.
@@ -121,16 +184,9 @@ def main() -> int:
             "requires_deletion_reconciliation_before_derived_reads": bool(deletion),
             "deletion_records_verified": deletion,
             "trusted_deletion_head": {
-                "snapshot_lineage_id": trusted_head["snapshot_lineage_id"],
-                "snapshot_generation": trusted_head["snapshot_generation"],
-                "snapshot_sequence": trusted_head["snapshot_sequence"],
-                "snapshot_event_count": trusted_head["snapshot_event_count"],
-                "snapshot_event_cursor_sum": trusted_head["snapshot_event_cursor_sum"],
-                "journal_lineage_id": trusted_head["lineage_id"],
-                "journal_generation": trusted_head["generation"],
-                "journal_sequence": trusted_head["sequence"],
-                "journal_head_sha256": trusted_head["head_hash"],
-            } if isinstance(trusted_head, dict) else None,
+                **trusted_head,
+                "journal_file_sha256": metadata["file_sha256"],
+            },
         }
         (staged / "restore-state.json").write_text(json.dumps(restored, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         os.chmod(staged / "restore-state.json", 0o600)

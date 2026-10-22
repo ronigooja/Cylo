@@ -2,9 +2,13 @@ package memory
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 
 	"github.com/ronigooja/Cylo/internal/storage"
 )
@@ -23,41 +27,22 @@ type DeletionHead struct {
 // replay to the exact restored authority image; head fields bind it to the
 // complete retained external journal.
 type TrustedDeletionHead struct {
-	SnapshotLineageID  string `json:"snapshot_lineage_id"`
-	SnapshotGeneration int64  `json:"snapshot_generation"`
-	SnapshotSequence   int64  `json:"snapshot_sequence"`
-	SnapshotEventCount int64  `json:"snapshot_event_count"`
-	SnapshotEventSum   int64  `json:"snapshot_event_cursor_sum"`
-	JournalLineageID   string `json:"journal_lineage_id"`
-	JournalGeneration  int64  `json:"journal_generation"`
-	JournalSequence    int64  `json:"journal_sequence"`
-	JournalHeadSHA256  string `json:"journal_head_sha256"`
+	SnapshotLineageID       string `json:"snapshot_lineage_id"`
+	SnapshotGeneration      int64  `json:"snapshot_generation"`
+	SnapshotSequence        int64  `json:"snapshot_sequence"`
+	SnapshotEventCount      int64  `json:"snapshot_event_count"`
+	SnapshotEventSum        int64  `json:"snapshot_event_cursor_sum"`
+	JournalLineageID        string `json:"journal_lineage_id"`
+	JournalGeneration       int64  `json:"journal_generation"`
+	JournalRecordGeneration int64  `json:"journal_record_generation"`
+	JournalSequence         int64  `json:"journal_sequence"`
+	JournalHeadSHA256       string `json:"journal_head_sha256"`
+	JournalFileSHA256       string `json:"journal_file_sha256"`
 }
 
 func ReconcileDeletionJournalWithTrustedHead(ctx context.Context, store *storage.Store, trusted TrustedDeletionHead) (DeletionHead, error) {
-	if store == nil || trusted.SnapshotLineageID == "" || trusted.JournalLineageID == "" || (trusted.JournalSequence > 0 && trusted.JournalHeadSHA256 == "") || trusted.SnapshotGeneration < 1 || trusted.JournalGeneration < 1 || trusted.SnapshotSequence < 0 || trusted.JournalSequence < 0 || trusted.SnapshotEventCount < 0 || trusted.SnapshotEventSum < 0 {
+	if store == nil || trusted.SnapshotLineageID == "" || trusted.JournalLineageID == "" || trusted.JournalLineageID != trusted.SnapshotLineageID || (trusted.JournalSequence > 0 && trusted.JournalHeadSHA256 == "") || trusted.JournalFileSHA256 == "" || trusted.SnapshotGeneration < 1 || trusted.JournalGeneration < 1 || (trusted.JournalSequence == 0 && trusted.JournalRecordGeneration != 0) || (trusted.JournalSequence > 0 && (trusted.JournalRecordGeneration < 1 || trusted.JournalRecordGeneration > trusted.JournalGeneration)) || trusted.SnapshotSequence < 0 || trusted.JournalSequence < 0 || trusted.SnapshotEventCount < 0 || trusted.SnapshotEventSum < 0 || trusted.SnapshotSequence > trusted.JournalSequence {
 		return DeletionHead{}, errors.New("protected restore state has an incomplete deletion baseline")
-	}
-	tx, err := store.DB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return DeletionHead{}, err
-	}
-	var lineage string
-	var generation, sequence, eventCount, eventSum int64
-	if err = tx.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&lineage, &generation, &sequence); err != nil {
-		_ = tx.Rollback()
-		return DeletionHead{}, err
-	}
-	if err = tx.QueryRowContext(ctx, `SELECT count(*),coalesce(sum(cursor),0) FROM events`).Scan(&eventCount, &eventSum); err != nil {
-		_ = tx.Rollback()
-		return DeletionHead{}, err
-	}
-	rollbackErr := tx.Rollback()
-	if rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-		return DeletionHead{}, rollbackErr
-	}
-	if lineage != trusted.SnapshotLineageID || generation != trusted.SnapshotGeneration || sequence != trusted.SnapshotSequence || eventCount != trusted.SnapshotEventCount || eventSum != trusted.SnapshotEventSum {
-		return DeletionHead{}, errors.New("restored authority does not match the authenticated snapshot baseline")
 	}
 	journal, err := storage.NewDeletionJournal(store.Path())
 	if err != nil {
@@ -71,17 +56,35 @@ func ReconcileDeletionJournalWithTrustedHead(ctx context.Context, store *storage
 		return DeletionHead{}, errors.New("retained journal does not match the authenticated external head")
 	}
 	if len(records) == 0 {
-		if trusted.JournalLineageID != trusted.SnapshotLineageID || trusted.JournalGeneration != trusted.SnapshotGeneration || trusted.JournalHeadSHA256 != "" {
+		if trusted.JournalLineageID != trusted.SnapshotLineageID || trusted.JournalRecordGeneration != 0 || trusted.JournalHeadSHA256 != "" {
 			return DeletionHead{}, errors.New("empty deletion journal does not match its trusted head")
 		}
 	} else {
 		last := records[len(records)-1]
-		if last.LineageID != trusted.JournalLineageID || last.Generation != trusted.JournalGeneration || last.Hash != trusted.JournalHeadSHA256 {
+		if last.LineageID != trusted.JournalLineageID || last.Generation != trusted.JournalRecordGeneration || last.Hash != trusted.JournalHeadSHA256 {
 			return DeletionHead{}, errors.New("retained journal identity does not match the authenticated external head")
 		}
 	}
-	return reconcileDeletionJournal(ctx, store, trusted.JournalLineageID, trusted.JournalGeneration, trusted.JournalSequence)
+	file, err := os.Open(journalPath(store.Path()))
+	if err != nil {
+		return DeletionHead{}, err
+	}
+	hash := sha256.New()
+	_, copyErr := io.Copy(hash, file)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return DeletionHead{}, copyErr
+	}
+	if closeErr != nil {
+		return DeletionHead{}, closeErr
+	}
+	if hex.EncodeToString(hash.Sum(nil)) != trusted.JournalFileSHA256 {
+		return DeletionHead{}, errors.New("retained journal file hash does not match authenticated head")
+	}
+	return reconcileDeletionJournal(ctx, store, trusted, records)
 }
+
+func journalPath(databasePath string) string { return databasePath + ".deletion-ledger" }
 
 // replayPendingDeletionJournalTx repairs the crash window where the independent
 // log was fsynced but the surrounding SQLite command transaction rolled back.
@@ -130,18 +133,10 @@ func replayPendingDeletionJournalTx(ctx context.Context, tx *sql.Tx, journal *st
 // ReconcileDeletionJournal replays the independent sidecar log under the
 // caller's exclusive Store lock. Trusted head arguments must come from the
 // deployment's retained journal/backup inventory, never the restored DB.
-func reconcileDeletionJournal(ctx context.Context, store *storage.Store, trustedLineage string, trustedGeneration, trustedHead int64) (DeletionHead, error) {
+func reconcileDeletionJournal(ctx context.Context, store *storage.Store, trusted TrustedDeletionHead, records []storage.DeletionRecord) (DeletionHead, error) {
 	var out DeletionHead
 	if store == nil {
 		return out, errors.New("store is required")
-	}
-	journal, err := storage.NewDeletionJournal(store.Path())
-	if err != nil {
-		return out, err
-	}
-	records, err := journal.ReadAll()
-	if err != nil {
-		return out, fmt.Errorf("verify independent deletion journal: %w", err)
 	}
 	tx, err := store.DB().BeginTx(ctx, nil)
 	if err != nil {
@@ -154,17 +149,49 @@ func reconcileDeletionJournal(ctx context.Context, store *storage.Store, trusted
 	if err = tx.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence,restore_deletion_reconciliation_required FROM cylo_instance_state WHERE singleton=1`).Scan(&currentLineage, &currentGeneration, &currentSequence, &gate); err != nil {
 		return out, err
 	}
-	if trustedLineage == "" || trustedLineage != currentLineage || trustedGeneration != currentGeneration || trustedHead != int64(len(records)) {
-		return out, errors.New("trusted deletion head does not match the retained independent journal")
+	if currentLineage != trusted.SnapshotLineageID || int64(len(records)) != trusted.JournalSequence {
+		return out, errors.New("authority lineage or retained journal does not match authenticated restore state")
 	}
-	if currentSequence > trustedHead {
-		return out, errors.New("restored deletion sequence is ahead of trusted journal head")
+	var appliedSequence, activatedGeneration int64
+	var stored TrustedDeletionHead
+	progressErr := tx.QueryRowContext(ctx, `SELECT snapshot_lineage_id,snapshot_generation,snapshot_sequence,snapshot_event_count,snapshot_event_cursor_sum,journal_lineage_id,journal_generation,journal_record_generation,journal_sequence,journal_head_sha256,journal_file_sha256,applied_sequence,activated_generation FROM cylo_restore_deletion_progress WHERE singleton=1`).Scan(
+		&stored.SnapshotLineageID, &stored.SnapshotGeneration, &stored.SnapshotSequence, &stored.SnapshotEventCount, &stored.SnapshotEventSum,
+		&stored.JournalLineageID, &stored.JournalGeneration, &stored.JournalRecordGeneration, &stored.JournalSequence, &stored.JournalHeadSHA256, &stored.JournalFileSHA256, &appliedSequence, &activatedGeneration)
+	if errors.Is(progressErr, sql.ErrNoRows) {
+		var eventCount, eventSum int64
+		if err = tx.QueryRowContext(ctx, `SELECT count(*),coalesce(sum(cursor),0) FROM events`).Scan(&eventCount, &eventSum); err != nil {
+			return out, err
+		}
+		if currentGeneration != trusted.SnapshotGeneration || currentSequence != trusted.SnapshotSequence || eventCount != trusted.SnapshotEventCount || eventSum != trusted.SnapshotEventSum {
+			return out, errors.New("restored authority does not match the authenticated snapshot baseline")
+		}
+		if err = verifyDeletionSnapshotBaseline(ctx, tx, records, trusted.SnapshotLineageID, trusted.SnapshotGeneration, trusted.SnapshotSequence); err != nil {
+			return out, err
+		}
+		stored = trusted
+		appliedSequence = currentSequence
+		if _, err = tx.ExecContext(ctx, `INSERT INTO cylo_restore_deletion_progress(singleton,snapshot_lineage_id,snapshot_generation,snapshot_sequence,snapshot_event_count,snapshot_event_cursor_sum,journal_lineage_id,journal_generation,journal_record_generation,journal_sequence,journal_head_sha256,journal_file_sha256,applied_sequence,activated_generation) VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?,0)`,
+			trusted.SnapshotLineageID, trusted.SnapshotGeneration, trusted.SnapshotSequence, trusted.SnapshotEventCount, trusted.SnapshotEventSum,
+			trusted.JournalLineageID, trusted.JournalGeneration, trusted.JournalRecordGeneration, trusted.JournalSequence, trusted.JournalHeadSHA256, trusted.JournalFileSHA256, appliedSequence); err != nil {
+			return out, err
+		}
+	} else if progressErr != nil {
+		return out, progressErr
+	} else if stored != trusted {
+		return out, errors.New("authenticated restore baseline or journal head changed during reconciliation")
 	}
-	if err = verifyDeletionSnapshotBaseline(ctx, tx, records, currentLineage, currentGeneration, currentSequence); err != nil {
+	if currentSequence != appliedSequence || appliedSequence < trusted.SnapshotSequence || appliedSequence > trusted.JournalSequence {
+		return out, errors.New("authority sequence does not match durable deletion replay progress")
+	}
+	allowedGeneration := max(trusted.SnapshotGeneration, trusted.JournalGeneration)
+	if currentGeneration != trusted.SnapshotGeneration && (activatedGeneration == 0 || currentGeneration != activatedGeneration) {
+		return out, errors.New("authority generation does not match authenticated restore progress")
+	}
+	if err = verifyAppliedDeletionRecords(ctx, tx, records, trusted.SnapshotSequence, appliedSequence, trusted.SnapshotLineageID); err != nil {
 		return out, err
 	}
 	for _, record := range records {
-		if record.LineageID != currentLineage || record.Generation > currentGeneration {
+		if record.LineageID != currentLineage || record.Generation > allowedGeneration {
 			return out, errors.New("deletion journal contains a foreign lineage or future generation")
 		}
 		if record.Sequence <= currentSequence {
@@ -185,10 +212,13 @@ func reconcileDeletionJournal(ctx context.Context, store *storage.Store, trusted
 		currentSequence = record.Sequence
 		out.Replayed++
 	}
-	if currentSequence != trustedHead {
+	if currentSequence != trusted.JournalSequence {
 		return out, errors.New("replay did not reach trusted deletion head")
 	}
-	if trustedHead == 0 {
+	if _, err = tx.ExecContext(ctx, `UPDATE cylo_restore_deletion_progress SET applied_sequence=? WHERE singleton=1`, currentSequence); err != nil {
+		return out, err
+	}
+	if trusted.JournalSequence == 0 {
 		if _, err = tx.ExecContext(ctx, `UPDATE cylo_deletion_reconciliation_checkpoints SET completed_sequence=0,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),last_error=''`); err != nil {
 			return out, err
 		}
@@ -208,7 +238,7 @@ func reconcileDeletionJournal(ctx context.Context, store *storage.Store, trusted
 			_ = rows.Close()
 			return out, err
 		}
-		if completed < trustedHead || lastError != "" {
+		if completed < trusted.JournalSequence || lastError != "" {
 			allComplete = false
 			if lastError == "" {
 				lastError = "adapter_missing"
@@ -224,7 +254,11 @@ func reconcileDeletionJournal(ctx context.Context, store *storage.Store, trusted
 		return out, err
 	}
 	if gate == 1 && allComplete {
-		if _, err = tx.ExecContext(ctx, `UPDATE cylo_instance_state SET restore_deletion_reconciliation_required=0,derived_retrieval_enabled=1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE singleton=1`); err != nil {
+		newGeneration := allowedGeneration + 1
+		if _, err = tx.ExecContext(ctx, `UPDATE cylo_instance_state SET generation=?,restore_deletion_reconciliation_required=0,derived_retrieval_enabled=1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE singleton=1`, newGeneration); err != nil {
+			return out, err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE cylo_restore_deletion_progress SET activated_generation=? WHERE singleton=1`, newGeneration); err != nil {
 			return out, err
 		}
 		var stageGuard int
@@ -241,8 +275,37 @@ func reconcileDeletionJournal(ctx context.Context, store *storage.Store, trusted
 	if err = tx.Commit(); err != nil {
 		return out, err
 	}
+	if gate == 1 && allComplete {
+		currentGeneration = allowedGeneration + 1
+	}
 	out.LineageID, out.Generation, out.Sequence = currentLineage, currentGeneration, currentSequence
 	return out, nil
+}
+
+func verifyAppliedDeletionRecords(ctx context.Context, tx *sql.Tx, records []storage.DeletionRecord, snapshotSequence, appliedSequence int64, lineage string) error {
+	for sequence := snapshotSequence + 1; sequence <= appliedSequence; sequence++ {
+		record := records[sequence-1]
+		if record.Sequence != sequence || record.LineageID != lineage || record.EntityKind != "memory_claim" {
+			return fmt.Errorf("durable replay progress does not match journal sequence %d", sequence)
+		}
+		var count int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM memory_deletion_events WHERE instance_deletion_sequence=? AND instance_lineage_id=? AND instance_generation=? AND entity_kind=? AND workspace_id=? AND claim_id=? AND revision=? AND entity_target_version=?`, record.Sequence, record.LineageID, record.Generation, record.EntityKind, record.WorkspaceID, record.EntityID, record.EntityVersion, record.EntityVersion).Scan(&count); err != nil {
+			return err
+		}
+		if count != 1 {
+			return fmt.Errorf("durable replay event does not match journal sequence %d", sequence)
+		}
+		var status string
+		var revision int64
+		err := tx.QueryRowContext(ctx, `SELECT status,revision FROM memory_claims WHERE workspace_id=? AND id=?`, record.WorkspaceID, record.EntityID).Scan(&status, &revision)
+		if err == nil && (status != string(ClaimTombstoned) || revision < record.EntityVersion) {
+			return fmt.Errorf("durable replay claim does not preserve sequence %d", sequence)
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	return nil
 }
 
 func verifyDeletionSnapshotBaseline(ctx context.Context, tx *sql.Tx, records []storage.DeletionRecord, lineage string, generation, sequence int64) error {

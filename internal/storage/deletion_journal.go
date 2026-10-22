@@ -111,7 +111,7 @@ func (j *DeletionJournal) Append(record DeletionRecord) (DeletionRecord, error) 
 	}
 	if len(records) > 0 {
 		last := records[len(records)-1]
-		if last.LineageID != record.LineageID || record.Generation < last.Generation || record.Generation > last.Generation+1 {
+		if last.LineageID != record.LineageID || record.Generation < last.Generation {
 			return record, errors.New("deletion journal lineage or generation changed without a verified transition")
 		}
 		record.PreviousHash = last.Hash
@@ -190,7 +190,7 @@ func readDeletionRecords(f *os.File) ([]DeletionRecord, error) {
 		if record.Sequence != int64(len(records)+1) || record.PreviousHash != previousHash || record.Hash == "" {
 			return nil, fmt.Errorf("deletion journal sequence or hash chain gap at record %d", len(records)+1)
 		}
-		if strings.TrimSpace(record.LineageID) == "" || record.Generation < 1 || (lineage != "" && (record.LineageID != lineage || record.Generation < previousGeneration || record.Generation > previousGeneration+1)) {
+		if strings.TrimSpace(record.LineageID) == "" || record.Generation < 1 || (lineage != "" && (record.LineageID != lineage || record.Generation < previousGeneration)) {
 			return nil, fmt.Errorf("deletion journal lineage or generation gap at record %d", len(records)+1)
 		}
 		body := deletionRecordBody{record.Sequence, record.LineageID, record.Generation, record.WorkspaceID, record.EntityKind, record.EntityID, record.EntityVersion, record.ActorID, record.ReasonCode, record.DeletedAt, append([]string(nil), record.CleanupTargets...), record.PreviousHash}

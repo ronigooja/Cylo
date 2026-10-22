@@ -35,15 +35,18 @@ class WorkerConfig:
     poll_seconds: float
     batch_size: int
     extractor_version: str
+    deletion_only: bool = False
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
-        os.environ.setdefault(
-            "FASTEMBED_CACHE_PATH",
-            os.environ.get("CYLO_MEMORY_MODEL_CACHE", "/var/lib/cylo/memory/models"),
-        )
+        deletion_only = os.environ.get("CYLO_MEMORY_DELETION_ONLY", "").strip().lower() in ("1", "true", "yes")
+        if not deletion_only:
+            os.environ.setdefault(
+                "FASTEMBED_CACHE_PATH",
+                os.environ.get("CYLO_MEMORY_MODEL_CACHE", "/var/lib/cylo/memory/models"),
+            )
         provider = os.environ.get("CYLO_MEM0_LLM_PROVIDER", "openai").strip().lower()
-        if provider != "openai":
+        if not deletion_only and provider != "openai":
             raise ValueError("CYLO_MEM0_LLM_PROVIDER must be openai; other providers are not yet accounted")
         return cls(
             control_url=_required("CYLO_CONTROL_URL").rstrip("/"),
@@ -55,12 +58,13 @@ class WorkerConfig:
             embedder_model=MODEL_ID,
             embedder_revision=MODEL_REVISION,
             llm_provider=provider,
-            llm_model=_required("CYLO_MEM0_LLM_MODEL"),
+            llm_model="" if deletion_only else _required("CYLO_MEM0_LLM_MODEL"),
             llm_base_url=os.environ.get("CYLO_MEM0_LLM_BASE_URL") or None,
             llm_api_key=os.environ.get("CYLO_MEM0_LLM_API_KEY") or None,
             poll_seconds=max(0.1, min(float(os.environ.get("CYLO_MEMORY_POLL_SECONDS", "2")), 60.0)),
             batch_size=max(1, min(int(os.environ.get("CYLO_MEMORY_BATCH_SIZE", "10")), 100)),
             extractor_version=os.environ.get("CYLO_MEMORY_EXTRACTOR_VERSION", "mem0-controlled-v1"),
+            deletion_only=deletion_only,
         )
 
     @property

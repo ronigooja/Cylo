@@ -6,8 +6,10 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -34,7 +36,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: cylo-maintenance status|fence|prepare-restore|reconcile-deletions|enable")
+		return errors.New("usage: cylo-maintenance status|fence|deletion-head|prepare-restore|reconcile-deletions|enable")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -86,6 +88,75 @@ func run(args []string) error {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(state)
+	case "deletion-head":
+		flags := flag.NewFlagSet("deletion-head", flag.ContinueOnError)
+		database := flags.String("database", "", "current authoritative database path")
+		output := flags.String("output", "", "new protected deletion-head JSON path")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *output == "" {
+			return errors.New("deletion-head requires --output")
+		}
+		store, err := openStore(ctx, *database)
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		var lineage string
+		var generation, sequence int64
+		if err = store.DB().QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&lineage, &generation, &sequence); err != nil {
+			return err
+		}
+		journal, err := storage.NewDeletionJournal(store.Path())
+		if err != nil {
+			return err
+		}
+		records, err := journal.ReadAll()
+		if err != nil {
+			return err
+		}
+		if int64(len(records)) != sequence {
+			return errors.New("authority deletion sequence differs from current journal")
+		}
+		headHash := ""
+		recordGeneration := int64(0)
+		if len(records) > 0 {
+			last := records[len(records)-1]
+			if last.LineageID != lineage || last.Generation > generation {
+				return errors.New("current deletion journal does not match authority identity")
+			}
+			headHash = last.Hash
+			recordGeneration = last.Generation
+		}
+		journalBytes, err := os.ReadFile(store.Path() + ".deletion-ledger")
+		if errors.Is(err, os.ErrNotExist) {
+			journalBytes = nil
+		} else if err != nil {
+			return err
+		}
+		fileHash := sha256.Sum256(journalBytes)
+		attestation := map[string]any{"lineage_id": lineage, "generation": generation, "record_generation": recordGeneration, "sequence": sequence, "head_hash": headHash, "file_sha256": hex.EncodeToString(fileHash[:])}
+		if err = os.MkdirAll(filepath.Dir(*output), 0o700); err != nil {
+			return err
+		}
+		out, err := os.OpenFile(*output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return err
+		}
+		encodeErr := json.NewEncoder(out).Encode(attestation)
+		syncErr := out.Sync()
+		closeErr := out.Close()
+		if encodeErr != nil {
+			return encodeErr
+		}
+		if syncErr != nil {
+			return syncErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		return nil
 	case "reconcile-deletions":
 		flags := flag.NewFlagSet("reconcile-deletions", flag.ContinueOnError)
 		database := flags.String("database", "", "restored authoritative database path")

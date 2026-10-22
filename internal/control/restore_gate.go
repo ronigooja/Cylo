@@ -4,13 +4,14 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/ronigooja/Cylo/internal/storage"
 )
 
 func (s *Server) restoreDeletionGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if restoreDiagnosticRoute(r.Method, r.URL.Path) {
+		if restoreDiagnosticRoute(r.Method, r.URL.Path) || restoreDeletionWorkerRoute(r.Method, r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -31,6 +32,22 @@ func (s *Server) restoreDeletionGate(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func restoreDeletionWorkerRoute(method, path string) bool {
+	if method != http.MethodPost {
+		return false
+	}
+	const prefix = "/runner/v1/memory/deletion-jobs/"
+	if path == prefix+"claim" {
+		return true
+	}
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	remainder := strings.TrimPrefix(path, prefix)
+	parts := strings.Split(remainder, "/")
+	return len(parts) == 2 && parts[0] != "" && (parts[1] == "validate" || parts[1] == "complete" || parts[1] == "fail")
 }
 
 func restoreDiagnosticRoute(method, path string) bool {
