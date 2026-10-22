@@ -22,6 +22,7 @@ type backupManifestHTTPFixture struct {
 	handler http.Handler
 	root    string
 	job     map[string]any
+	jobs    []map[string]any
 }
 
 const backupManifestRunnerToken = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
@@ -58,6 +59,9 @@ func newBackupManifestHTTPFixture(t *testing.T, manifestPath string) *backupMani
 	if err = RegisterDerived(server, store, DerivedConfig{BackupDeleteManifestPath: manifestPath}); err != nil {
 		t.Fatal(err)
 	}
+	if err = control.RegisterExportRoutes(server); err != nil {
+		t.Fatal(err)
+	}
 	repo := NewRepositoryWithStore(store)
 	claim := writeMemory(t, ctx, store.DB(), repo, Scope{Kind: ScopePersonal, PrincipalID: "fixture-owner"}, "deleted claim", "backup-manifest-source", 0)
 	if _, err = runDelete(ctx, store.DB(), repo, DeleteInput{
@@ -87,7 +91,67 @@ func newBackupManifestHTTPFixture(t *testing.T, manifestPath string) *backupMani
 	if job == nil {
 		t.Fatal("backup_delete_manifest cleanup job was not claimed")
 	}
-	return &backupManifestHTTPFixture{store: store, server: server, handler: handler, root: root, job: job}
+	return &backupManifestHTTPFixture{store: store, server: server, handler: handler, root: root, job: job, jobs: claimed.Items}
+}
+
+func TestExportTempCleanupHTTPThenDeletionCompletionAdvancesCheckpoint(t *testing.T) {
+	f := newBackupManifestHTTPFixture(t, privateBackupManifestPath(t))
+	var job map[string]any
+	for _, candidate := range f.jobs {
+		if candidate["target"] == "export_temp" {
+			job = candidate
+			break
+		}
+	}
+	if job == nil {
+		t.Fatal("export_temp cleanup job was not claimed")
+	}
+	id := "drill-export"
+	now := "2026-10-22T00:00:00Z"
+	if _, err := f.store.DB().ExecContext(context.Background(), `INSERT INTO cylo_export_temp_registry(export_id,workspace_id,owner_id,export_scope,created_deletion_sequence,status,invalidation_sequence,created_at,updated_at) VALUES(?, 'default', 'fixture-owner', 'personal', 0, 'active', 0, ?, ?)`, id, now, now); err != nil {
+		t.Fatal(err)
+	}
+	root := f.store.Path() + ".exports"
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{id + ".data.json", id + ".archive.zip"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("private export fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.store.DB().ExecContext(context.Background(), `UPDATE cylo_instance_state SET restore_deletion_reconciliation_required=1,derived_retrieval_enabled=0 WHERE singleton=1`); err != nil {
+		t.Fatal(err)
+	}
+	ordinary := performBackupManifestRequest(t, f.handler, "POST", "/runner/v1/memory/jobs/claim", map[string]any{"limit": 1}, backupManifestRunnerToken)
+	if ordinary.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ordinary memory route escaped restore gate: status=%d body=%s", ordinary.Code, ordinary.Body.String())
+	}
+	payload := map[string]any{
+		"job_id": job["id"], "workspace_id": job["workspace_id"], "entity_id": job["entity_id"],
+		"entity_version": int64(job["entity_version"].(float64)), "attempt": int(job["attempt"].(float64)),
+	}
+	cleanup := performBackupManifestRequest(t, f.handler, "POST", "/runner/v1/memory/export-temp/cleanup", payload, backupManifestRunnerToken)
+	if cleanup.Code != http.StatusOK || !bytes.Contains(cleanup.Body.Bytes(), []byte(`"status":"completed"`)) {
+		t.Fatalf("export temp cleanup status=%d body=%s", cleanup.Code, cleanup.Body.String())
+	}
+	for _, name := range []string{id + ".data.json", id + ".archive.zip"} {
+		if _, err := os.Lstat(filepath.Join(root, name)); !os.IsNotExist(err) {
+			t.Fatalf("registered export artifact remains or stat failed: %v", err)
+		}
+	}
+	complete := performBackupManifestRequest(t, f.handler, "POST", "/runner/v1/memory/deletion-jobs/"+job["id"].(string)+"/complete", map[string]any{"attempt": int(job["attempt"].(float64))}, backupManifestRunnerToken)
+	if complete.Code != http.StatusOK || !bytes.Contains(complete.Body.Bytes(), []byte(`"status":"done"`)) {
+		t.Fatalf("generic deletion completion status=%d body=%s", complete.Code, complete.Body.String())
+	}
+	var status string
+	if err := f.store.DB().QueryRowContext(context.Background(), `SELECT status FROM memory_jobs WHERE id=?`, job["id"]).Scan(&status); err != nil || status != "done" {
+		t.Fatalf("export cleanup job status=%q err=%v", status, err)
+	}
+	var checkpoint int64
+	if err := f.store.DB().QueryRowContext(context.Background(), `SELECT completed_sequence FROM cylo_deletion_reconciliation_checkpoints WHERE target='export_temp'`).Scan(&checkpoint); err != nil || checkpoint != 1 {
+		t.Fatalf("export temp checkpoint=%d err=%v", checkpoint, err)
+	}
 }
 
 func privateBackupManifestPath(t *testing.T) string {
