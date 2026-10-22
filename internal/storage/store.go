@@ -30,6 +30,26 @@ func CheckRestoreDeletionReconciliationTx(ctx context.Context, tx *sql.Tx) error
 	if tx == nil {
 		return errors.New("restore gate requires a transaction")
 	}
+	var stageTableCount int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cylo_restore_stage_guard'`).Scan(&stageTableCount); err != nil {
+		return err
+	}
+	if stageTableCount != 0 {
+		var pending int
+		err := tx.QueryRowContext(ctx, `SELECT pending FROM cylo_restore_stage_guard WHERE singleton=1`).Scan(&pending)
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("restore stage guard is missing its singleton")
+		}
+		if err != nil {
+			return err
+		}
+		if pending != 0 && pending != 1 {
+			return errors.New("restore stage guard state is invalid")
+		}
+		if pending == 1 {
+			return ErrRestoreDeletionReconciliationRequired
+		}
+	}
 	var tableCount int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cylo_instance_state'`).Scan(&tableCount); err != nil {
 		return err
@@ -73,6 +93,7 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	if cfg.Path == "" {
 		return nil, errors.New("database path is required")
 	}
+	stagedRestorePath := strings.HasSuffix(filepath.Clean(cfg.Path), ".restore-pending")
 	path := cfg.Path
 	var lock *os.File
 	if path != ":memory:" {
@@ -115,6 +136,25 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 			return nil, fmt.Errorf("database is already in use: %w", err)
 		}
 	}
+	if path != ":memory:" {
+		markerPresent, err := restoreMarkerInAncestors(cfg.Path)
+		if err != nil {
+			if lock != nil {
+				_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+				_ = lock.Close()
+			}
+			return nil, fmt.Errorf("inspect restore staging markers: %w", err)
+		}
+		resolvedMarker, err := restoreMarkerInAncestors(path)
+		if err != nil {
+			if lock != nil {
+				_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+				_ = lock.Close()
+			}
+			return nil, fmt.Errorf("inspect resolved restore staging markers: %w", err)
+		}
+		stagedRestorePath = stagedRestorePath || markerPresent || resolvedMarker
+	}
 	db, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
 		if lock != nil {
@@ -130,6 +170,18 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 		_ = store.Close()
 		return nil, fmt.Errorf("enable sqlite WAL: %w", err)
 	}
+	// Persist restore staging inside the database as well as in its filename,
+	// so renaming a staged file cannot open it to ordinary server traffic.
+	if stagedRestorePath || strings.HasSuffix(path, ".restore-pending") {
+		if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS cylo_restore_stage_guard (singleton INTEGER PRIMARY KEY CHECK(singleton=1), pending INTEGER NOT NULL CHECK(pending IN (0,1)))`); err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("record staged restore guard: %w", err)
+		}
+		if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO cylo_restore_stage_guard(singleton,pending) VALUES(1,1)`); err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("record staged restore guard: %w", err)
+		}
+	}
 	for _, sidecar := range []string{path + "-wal", path + "-shm"} {
 		if err := os.Chmod(sidecar, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
 			_ = store.Close()
@@ -137,6 +189,29 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 		}
 	}
 	return store, nil
+}
+
+// restoreMarkerInAncestors recognizes the staging directory emitted by
+// cylo-restore.py. Marker contents never authorize opening; their presence
+// permanently closes the database until a future reconciliation flow exists.
+func restoreMarkerInAncestors(databasePath string) (bool, error) {
+	absolute, err := filepath.Abs(databasePath)
+	if err != nil {
+		return false, err
+	}
+	for directory := filepath.Dir(absolute); ; directory = filepath.Dir(directory) {
+		for _, name := range []string{"restore-state.json", ".restore-pending"} {
+			if _, err := os.Lstat(filepath.Join(directory, name)); err == nil {
+				return true, nil
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return false, err
+			}
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			return false, nil
+		}
+	}
 }
 
 func (s *Store) DB() *sql.DB { return s.db }

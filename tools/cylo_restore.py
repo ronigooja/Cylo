@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import shutil
+import sqlite3
 import sys
 import tempfile
 
@@ -94,6 +95,18 @@ def main() -> int:
         (staged / "data").mkdir(mode=0o700)
         shutil.copyfile(source_db, staged / "data" / "cylo.sqlite.restore-pending")
         os.chmod(staged / "data" / "cylo.sqlite.restore-pending", 0o600)
+        # Keep the restore-only closed state inside the database so renaming
+        # the staged file cannot bypass the adjacent restore-state.json.
+        with sqlite3.connect(staged / "data" / "cylo.sqlite.restore-pending") as database:
+            database.execute(
+                "CREATE TABLE IF NOT EXISTS cylo_restore_stage_guard ("
+                "singleton INTEGER PRIMARY KEY CHECK(singleton=1), "
+                "pending INTEGER NOT NULL CHECK(pending IN (0,1)))"
+            )
+            database.execute(
+                "INSERT INTO cylo_restore_stage_guard(singleton,pending) VALUES(1,1) "
+                "ON CONFLICT(singleton) DO UPDATE SET pending=1"
+            )
         managed_count = restore_managed_paths(payload, staged, manifest)
         restored = dict(manifest)
         restored["restore_state"] = {
