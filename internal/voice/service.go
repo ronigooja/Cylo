@@ -275,7 +275,7 @@ func (s *Service) markSession(ctx context.Context, id, state, code string, answe
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := tx.ExecContext(ctx, `UPDATE voice_sessions SET state=?,last_error_code=?,offer_answer=coalesce(?,offer_answer),gateway_session_id=CASE WHEN ?='' THEN gateway_session_id ELSE ? END,updated_at=? WHERE id=? AND state IN ('allocating','active','ending','quarantined')`, state, code, answer, gatewayID, gatewayID, now, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE voice_sessions SET state=?,last_error_code=?,offer_answer=coalesce(?,offer_answer),gateway_session_id=CASE WHEN ?='' THEN gateway_session_id ELSE ? END,gateway_unbind_unknown=CASE WHEN ? IN ('gateway_release_unknown','gateway_release_failed') THEN 1 ELSE gateway_unbind_unknown END,updated_at=? WHERE id=? AND state IN ('allocating','active','ending','quarantined')`, state, code, answer, gatewayID, gatewayID, code, now, id); err != nil {
 		return err
 	}
 	if state == "quarantined" {

@@ -141,7 +141,8 @@ func (s *Service) handleHangup(w http.ResponseWriter, r *http.Request) {
 	var accountLeaseGeneration int64
 	var accountIDHash []byte
 	var gatewayUnbound int
-	if err := s.db.QueryRowContext(r.Context(), `SELECT state,gateway_session_id,generation,account_lease_id,account_lease_generation,account_id_hash,gateway_unbound FROM voice_sessions WHERE workspace_id=? AND owner_id=? AND id=?`, p.WorkspaceID, p.SubjectID, r.PathValue("session_id")).Scan(&state, &gatewayID, &generation, &accountLeaseID, &accountLeaseGeneration, &accountIDHash, &gatewayUnbound); errors.Is(err, sql.ErrNoRows) {
+	var gatewayUnbindUnknown int
+	if err := s.db.QueryRowContext(r.Context(), `SELECT state,gateway_session_id,generation,account_lease_id,account_lease_generation,account_id_hash,gateway_unbound,gateway_unbind_unknown FROM voice_sessions WHERE workspace_id=? AND owner_id=? AND id=?`, p.WorkspaceID, p.SubjectID, r.PathValue("session_id")).Scan(&state, &gatewayID, &generation, &accountLeaseID, &accountLeaseGeneration, &accountIDHash, &gatewayUnbound, &gatewayUnbindUnknown); errors.Is(err, sql.ErrNoRows) {
 		control.WriteError(w, apiError(http.StatusNotFound, "not_found", "voice session not found", nil))
 		return
 	} else if err != nil {
@@ -202,7 +203,7 @@ func (s *Service) handleHangup(w http.ResponseWriter, r *http.Request) {
 		control.WriteError(w, apiError(http.StatusConflict, "voice_outcome_unknown", "voice generation is already ending or otherwise unresolved; media lease remains quarantined", nil))
 		return
 	}
-	if gatewayUnbound == 0 {
+	if gatewayUnbound == 0 && gatewayUnbindUnknown == 0 {
 		response, gatewayErr := s.callGateway(r.Context(), http.MethodDelete, "/v1/voice/sessions/"+url.PathEscape(gatewayID), nil)
 		if gatewayErr != nil {
 			if persistErr := s.markSession(r.Context(), r.PathValue("session_id"), "quarantined", "gateway_release_unknown", nil, ""); persistErr != nil {
@@ -221,7 +222,7 @@ func (s *Service) handleHangup(w http.ResponseWriter, r *http.Request) {
 			control.WriteError(w, apiError(http.StatusServiceUnavailable, "voice_outcome_unknown", "gateway did not confirm session unbinding; media lease quarantined", nil))
 			return
 		}
-		result, err := s.db.ExecContext(r.Context(), `UPDATE voice_sessions SET gateway_unbound=1,updated_at=? WHERE workspace_id=? AND owner_id=? AND id=? AND generation=? AND state='ending'`, time.Now().UTC().Format(time.RFC3339Nano), p.WorkspaceID, p.SubjectID, r.PathValue("session_id"), generation)
+		result, err := s.db.ExecContext(r.Context(), `UPDATE voice_sessions SET gateway_unbound=1,gateway_unbind_unknown=0,updated_at=? WHERE workspace_id=? AND owner_id=? AND id=? AND generation=? AND state='ending'`, time.Now().UTC().Format(time.RFC3339Nano), p.WorkspaceID, p.SubjectID, r.PathValue("session_id"), generation)
 		if err != nil {
 			control.WriteError(w, safeSessionError(err))
 			return
@@ -232,6 +233,10 @@ func (s *Service) handleHangup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// An unknown DELETE outcome is never sent again automatically because the
+	// gateway has no confirmed idempotency contract. A trusted account-scoped
+	// release may still prove termination on this retry; otherwise quarantine
+	// remains for explicit out-of-band reconciliation.
 	terminationVerified := false
 	var observation AccountTerminationObservation
 	if s.accountMedia != nil {
