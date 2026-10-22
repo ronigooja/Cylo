@@ -159,42 +159,78 @@ func (s *Service) handleHangup(w http.ResponseWriter, r *http.Request) {
 		control.WriteError(w, apiError(http.StatusServiceUnavailable, "voice_outcome_unknown", "gateway did not confirm session unbinding; media lease quarantined", nil))
 		return
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err = s.db.ExecContext(r.Context(), `UPDATE voice_sessions SET state='ended',offer_answer='',ended_at=?,updated_at=? WHERE workspace_id=? AND owner_id=? AND id=?`, now, now, p.WorkspaceID, p.SubjectID, r.PathValue("session_id"))
-	if err != nil {
-		control.WriteError(w, safeSessionError(err))
-		return
-	}
 	terminationVerified := false
+	var observation AccountTerminationObservation
 	if s.accountMedia != nil {
 		capabilities := s.accountMedia.Capabilities()
 		if capabilities.AccountLeaseIdentity && capabilities.AccountScopedTermination && capabilities.TrustedTerminationEvidence {
-			observation, observeErr := s.accountMedia.ObserveTermination(r.Context(), gatewayID)
+			var observeErr error
+			observation, observeErr = s.accountMedia.ObserveTermination(r.Context(), gatewayID)
 			observedAt := observation.ObservedAt.UTC()
 			if observeErr == nil && observation.SessionID == gatewayID && observation.Terminated && observation.AccountID != "" && observation.LeaseID != "" && observation.EvidenceID != "" && !observedAt.IsZero() && !observedAt.After(time.Now().UTC()) {
-				accountHash := sha256.Sum256([]byte(observation.AccountID))
-				leaseHash := sha256.Sum256([]byte(observation.LeaseID))
-				_, err = s.db.ExecContext(r.Context(), `INSERT INTO voice_account_terminations(id,session_id,generation,account_id_hash,lease_id_hash,evidence_id,observed_at,adapter_kind) VALUES(?,?,?,?,?,?,?,'trusted_account_media')`, uuid.NewString(), r.PathValue("session_id"), generation, accountHash[:], leaseHash[:], observation.EvidenceID, observedAt.Format(time.RFC3339Nano))
-				terminationVerified = err == nil
+				terminationVerified = true
 			}
 		}
 	}
-	if terminationVerified {
-		_, err = s.db.ExecContext(r.Context(), `UPDATE voice_pool_state SET blocked=0,reason_code='',source_session_id='',updated_at=?,updated_by='trusted_account_media' WHERE id=1 AND source_session_id=?`, now, r.PathValue("session_id"))
-	} else {
-		_, err = s.db.ExecContext(r.Context(), `UPDATE voice_pool_state SET blocked=1,reason_code='upstream_termination_unverified',source_session_id=?,updated_at=?,updated_by='system' WHERE id=1`, r.PathValue("session_id"), now)
-	}
+	poolBlocked, err := s.completeHangup(r.Context(), p, r.PathValue("session_id"), generation, observation, terminationVerified)
 	if err != nil {
 		control.WriteError(w, safeSessionError(err))
 		return
 	}
 	if terminationVerified {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": "ended", "upstream_termination": "verified", "pool_blocked": false})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "state": "ended", "upstream_termination": "verified", "pool_blocked": poolBlocked})
 		return
 	}
 	// Current Space DELETE unbinds signaling metadata but does not prove the
 	// remote WebRTC peer stopped. Keep the entire hidden-account pool blocked.
-	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "state": "ended", "upstream_termination": "unverified", "pool_blocked": true})
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "state": "ended", "upstream_termination": "unverified", "pool_blocked": poolBlocked})
+}
+
+// completeHangup commits local closure, optional trusted upstream termination
+// evidence, and the pool fence together. Until this transaction commits the
+// session remains ending, so operator reconciliation cannot race an in-flight
+// gateway/termination check and release another generation's account slot.
+func (s *Service) completeHangup(ctx context.Context, principal contracts.Principal, sessionID string, generation int64, observation AccountTerminationObservation, terminationVerified bool) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return true, err
+	}
+	defer tx.Rollback()
+	var state string
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM voice_sessions WHERE workspace_id=? AND owner_id=? AND id=? AND generation=?`, principal.WorkspaceID, principal.SubjectID, sessionID, generation).Scan(&state); err != nil {
+		return true, err
+	}
+	if state != "ending" {
+		return true, apiError(http.StatusConflict, "voice_generation_unresolved", "voice session changed while hangup was being confirmed", nil)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if terminationVerified {
+		accountHash := sha256.Sum256([]byte(observation.AccountID))
+		leaseHash := sha256.Sum256([]byte(observation.LeaseID))
+		if _, err := tx.ExecContext(ctx, `INSERT INTO voice_account_terminations(id,session_id,generation,account_id_hash,lease_id_hash,evidence_id,observed_at,adapter_kind) VALUES(?,?,?,?,?,?,?,'trusted_account_media')`, uuid.NewString(), sessionID, generation, accountHash[:], leaseHash[:], observation.EvidenceID, observation.ObservedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+			return true, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE voice_sessions SET state='ended',offer_answer='',ended_at=?,updated_at=? WHERE workspace_id=? AND owner_id=? AND id=? AND generation=? AND state='ending'`, now, now, principal.WorkspaceID, principal.SubjectID, sessionID, generation); err != nil {
+		return true, err
+	}
+	if terminationVerified {
+		if _, err := tx.ExecContext(ctx, `UPDATE voice_pool_state SET blocked=0,reason_code='',source_session_id='',updated_at=?,updated_by='trusted_account_media' WHERE id=1 AND source_session_id=?`, now, sessionID); err != nil {
+			return true, err
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx, `UPDATE voice_pool_state SET blocked=1,reason_code='upstream_termination_unverified',updated_at=?,updated_by='system' WHERE id=1 AND source_session_id=?`, now, sessionID); err != nil {
+			return true, err
+		}
+	}
+	var blocked int
+	if err := tx.QueryRowContext(ctx, `SELECT blocked FROM voice_pool_state WHERE id=1`).Scan(&blocked); err != nil {
+		return true, err
+	}
+	if err := tx.Commit(); err != nil {
+		return true, err
+	}
+	return blocked != 0, nil
 }
 
 type commitTurnPayload struct {

@@ -267,3 +267,44 @@ func TestUnknownMediaOutcomeBlocksWholePoolUntilOperatorReconciliation(t *testin
 		t.Fatalf("operator reconciliation audit rows=%d err=%v", reconciliations, err)
 	}
 }
+
+func TestEndingMediaCannotBeReconciledBeforeAtomicHangupFinalization(t *testing.T) {
+	ctx := context.Background()
+	store, svc := newVoiceTestService(t, Config{})
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO voice_sessions(id,workspace_id,owner_id,device_id,request_id,request_hash,generation,state,gateway_session_id,created_at,updated_at) VALUES('session-ending','default','user-1','device-1','request-ending',X'01',4,'ending','gateway-session',?,?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `UPDATE voice_pool_state SET blocked=1,reason_code='active_session',source_session_id='session-ending' WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	principal := contracts.Principal{WorkspaceID: "default", SubjectID: "operator", DeviceID: "operator-device", Scopes: []string{"voice:pool:reconcile"}}
+	payload, _ := json.Marshal(reconcilePoolPayload{SessionID: "session-ending", Generation: 4, Reason: "Verified gateway completion evidence", ConfirmedOutOfBandTermination: true})
+	tx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = svc.commandReconcilePool(ctx, tx, control.CommandContext{CommandID: "reconcile-too-early", Principal: principal, AcceptedAt: time.Now().UTC()}, contracts.CommandRequest{Payload: payload})
+	_ = tx.Rollback()
+	var apiErr *control.APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "voice_sessions_active" {
+		t.Fatalf("in-flight ending session did not fence reconciliation: err=%v", err)
+	}
+
+	observation := AccountTerminationObservation{AccountID: "opaque-account", LeaseID: "opaque-lease", SessionID: "gateway-session", Terminated: true, EvidenceID: "evidence-1", ObservedAt: time.Now().UTC()}
+	blocked, err := svc.completeHangup(ctx, contracts.Principal{WorkspaceID: "default", SubjectID: "user-1"}, "session-ending", 4, observation, true)
+	if err != nil || blocked {
+		t.Fatalf("trusted completion did not atomically release the matching pool fence: blocked=%t err=%v", blocked, err)
+	}
+	var state string
+	if err := store.DB().QueryRowContext(ctx, `SELECT state FROM voice_sessions WHERE id='session-ending'`).Scan(&state); err != nil || state != "ended" {
+		t.Fatalf("final state=%q err=%v", state, err)
+	}
+	var blockedDB, evidenceRows int
+	if err := store.DB().QueryRowContext(ctx, `SELECT blocked FROM voice_pool_state WHERE id=1`).Scan(&blockedDB); err != nil || blockedDB != 0 {
+		t.Fatalf("pool fence was not cleared with termination evidence: blocked=%d err=%v", blockedDB, err)
+	}
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM voice_account_terminations WHERE session_id='session-ending' AND generation=4 AND evidence_id='evidence-1'`).Scan(&evidenceRows); err != nil || evidenceRows != 1 {
+		t.Fatalf("trusted termination evidence rows=%d err=%v", evidenceRows, err)
+	}
+}
