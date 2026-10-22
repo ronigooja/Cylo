@@ -167,6 +167,40 @@ final class ClientContractTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: secondURL.path))
     }
 
+    @MainActor
+    func testCanceledPrepareTaskCleansLateFileAndCanBeRetried() async throws {
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let gate = AsyncTestGate()
+        var shouldPause = true
+        var producedURL: URL?
+        model.exportDownloadOverrideForTesting = { scope in
+            if shouldPause {
+                shouldPause = false
+                await gate.pause()
+            }
+            let url = directory.appendingPathComponent("task-cancelled.json")
+            try Data("{}".utf8).write(to: url)
+            producedURL = url
+            return ScopedExportArtifact(fileURL: url, filename: "cylo-export-task-cancelled.json", scope: scope, snapshotCursor: "1")
+        }
+
+        let task = Task { await model.prepareExport(scope: "personal", expectedConnectionEpoch: model.connectionEpoch) }
+        await gate.waitUntilStarted()
+        task.cancel()
+        await gate.resume()
+        await task.value
+
+        XCTAssertNil(model.exportArtifact)
+        XCTAssertFalse(model.exportStatus == "Preparing the authorized export…")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(producedURL).path))
+        await model.prepareExport(scope: "personal", expectedConnectionEpoch: model.connectionEpoch)
+        XCTAssertEqual(model.exportArtifact?.filename, "cylo-export-task-cancelled.json")
+        model.cancelExport()
+    }
+
     func testConnectionGenerationRejectsResponsesAfterOriginOrCredentialSwitch() throws {
         let serverA = try XCTUnwrap(URL(string: "https://server-a.example"))
         let serverB = try XCTUnwrap(URL(string: "https://server-b.example"))

@@ -780,6 +780,9 @@ public final class CyloAppModel: ObservableObject {
                   generation == connectionGeneration.value,
                   testDownload != nil || capturedAPI === self.api else {
                 try? FileManager.default.removeItem(at: artifact.fileURL)
+                if requestID == exportRequestID {
+                    exportStatus = "Export canceled. The prepared temporary file was removed."
+                }
                 return
             }
             exportArtifact = artifact
