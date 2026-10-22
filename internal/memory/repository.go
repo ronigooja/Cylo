@@ -301,6 +301,9 @@ func (r *Repository) DeleteTx(ctx context.Context, tx *sql.Tx, in DeleteInput) (
 	if err := clearMemoryClaimLocalArtifactsTx(ctx, tx, in.WorkspaceID, c.ID, deletedAt.Format(time.RFC3339Nano)); err != nil {
 		return Claim{}, err
 	}
+	if err := invalidateExportTempsTx(ctx, tx, in.WorkspaceID, globalSequence, deletedAt.Format(time.RFC3339Nano)); err != nil {
+		return Claim{}, err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_revision_sources WHERE claim_id=?`, c.ID); err != nil {
 		return Claim{}, err
 	}
@@ -336,7 +339,7 @@ func (r *Repository) DeleteTx(ctx context.Context, tx *sql.Tx, in DeleteInput) (
 		}
 	}
 	for _, target := range cleanupTargets {
-		if target == "claim" || target == "source_links" || target == "proposals" || target == "source_ledger" {
+		if target == "claim" || target == "source_links" || target == "proposals" || target == "cache" || target == "source_ledger" {
 			continue
 		}
 		id := uuid.NewString()
@@ -356,6 +359,13 @@ func (r *Repository) DeleteTx(ctx context.Context, tx *sql.Tx, in DeleteInput) (
 }
 
 func clearMemoryClaimLocalArtifactsTx(ctx context.Context, tx *sql.Tx, workspace, claimID, deletedAt string) error {
+	// Context manifests are derived, short-lived caches. Invalidate the whole
+	// workspace in the same transaction as the tombstone so no cache entry can
+	// retain a deleted claim after the local cache checkpoint advances. The
+	// shared embedding model cache is intentionally not claim-owned.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_context_manifests WHERE workspace_id=?`, workspace); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE memory_proposals SET status='deleted',content='',version=version+1,decided_at=?
 WHERE workspace_id=? AND status='pending' AND EXISTS (
   SELECT 1 FROM memory_revision_sources rs WHERE rs.workspace_id=memory_proposals.workspace_id
@@ -376,7 +386,7 @@ WHERE s.workspace_id=? AND EXISTS (
 }
 
 func completeLocalDeletionCheckpointsTx(ctx context.Context, tx *sql.Tx, sequence int64, now string) error {
-	for _, target := range []string{"claim", "source_links", "proposals", "source_ledger"} {
+	for _, target := range []string{"claim", "source_links", "proposals", "cache", "source_ledger"} {
 		_, err := tx.ExecContext(ctx, `INSERT INTO cylo_deletion_reconciliation_checkpoints(target,completed_sequence,updated_at,last_error) VALUES(?,?,?,'')
 ON CONFLICT(target) DO UPDATE SET completed_sequence=max(completed_sequence,excluded.completed_sequence),updated_at=excluded.updated_at,last_error=''`, target, sequence, now)
 		if err != nil && strings.Contains(err.Error(), "no such table") {
@@ -387,6 +397,17 @@ ON CONFLICT(target) DO UPDATE SET completed_sequence=max(completed_sequence,excl
 		}
 	}
 	return nil
+}
+
+func invalidateExportTempsTx(ctx context.Context, tx *sql.Tx, workspace string, sequence int64, now string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE cylo_export_temp_registry SET status='invalidated',invalidation_sequence=?,updated_at=?,last_error=''
+WHERE workspace_id=? AND status='active' AND created_deletion_sequence<?`, sequence, now, workspace, sequence)
+	if err != nil && strings.Contains(err.Error(), "no such table") {
+		// Older isolated memory-only fixtures do not register the control-plane
+		// export migration. Production migration installs this table before use.
+		return nil
+	}
+	return err
 }
 
 func (r *Repository) Search(ctx context.Context, p contracts.Principal, query string, filter SearchFilter) (SearchResult, error) {

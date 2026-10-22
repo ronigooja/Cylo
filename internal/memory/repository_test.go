@@ -3,11 +3,13 @@ package memory
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Cylo/internal/control"
 	"github.com/ronigooja/Cylo/internal/storage"
 )
 
@@ -103,8 +105,64 @@ func TestMemoryChineseVersionConflictAndDeletion(t *testing.T) {
 	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_jobs WHERE entity_id=? AND kind='delete_cleanup' AND status='pending'`, first.ID).Scan(&jobs); err != nil {
 		t.Fatal(err)
 	}
-	if jobs != 5 {
-		t.Fatalf("delete cleanup jobs=%d, want 5 external cleanup targets", jobs)
+	if jobs != 4 {
+		t.Fatalf("delete cleanup jobs=%d, want 4 external cleanup targets", jobs)
+	}
+}
+
+func TestClaimDeletionInvalidatesWorkspaceContextCacheTransactionally(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, storage.Config{Path: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err = storage.RegisterCoreMigrations(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = RegisterMigrations(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewRepositoryWithStore(store)
+	scope := Scope{Kind: ScopePersonal, PrincipalID: "cache-user"}
+	claim := writeMemory(t, ctx, store.DB(), repo, scope, "cached claim", "cache-source", 0)
+	manifest := ContextManifest{ID: "cache-manifest", WorkspaceID: "default", RecipientID: scope.PrincipalID, Entries: []ContextEntry{{ClaimID: claim.ID, Revision: claim.Revision}}}
+	body, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB().ExecContext(ctx, `INSERT INTO memory_context_manifests(id,workspace_id,task_id,recipient_id,manifest,created_at) VALUES(?,?,'',?,?,?)`, manifest.ID, manifest.WorkspaceID, manifest.RecipientID, body, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err = store.DB().ExecContext(ctx, `INSERT INTO cylo_export_temp_registry(export_id,workspace_id,owner_id,export_scope,created_deletion_sequence,status,invalidation_sequence,created_at,updated_at) VALUES('active-export','default',?,'personal',0,'active',0,?,?)`, scope.PrincipalID, createdAt, createdAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = runDelete(ctx, store.DB(), repo, DeleteInput{WorkspaceID: "default", ActorID: scope.PrincipalID, ClaimID: claim.ID, Expected: claim.Revision, ReasonCode: "user_requested"}); err != nil {
+		t.Fatal(err)
+	}
+	var manifests, completed int
+	var exportStatus string
+	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM memory_context_manifests WHERE workspace_id='default'`).Scan(&manifests); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.DB().QueryRowContext(ctx, `SELECT completed_sequence FROM cylo_deletion_reconciliation_checkpoints WHERE target='cache'`).Scan(&completed); err != nil {
+		t.Fatal(err)
+	}
+	if manifests != 0 || completed != 1 {
+		t.Fatalf("workspace cache manifests=%d, cache checkpoint=%d; want 0 and 1", manifests, completed)
+	}
+	if err = store.DB().QueryRowContext(ctx, `SELECT status FROM cylo_export_temp_registry WHERE export_id='active-export'`).Scan(&exportStatus); err != nil || exportStatus != "invalidated" {
+		t.Fatalf("active export status=%q err=%v; deletion must invalidate it transactionally", exportStatus, err)
+	}
+	if err = store.DB().QueryRowContext(ctx, `SELECT completed_sequence FROM cylo_deletion_reconciliation_checkpoints WHERE target='export_temp'`).Scan(&completed); err != nil || completed != 0 {
+		t.Fatalf("export-temp checkpoint advanced before physical cleanup: sequence=%d err=%v", completed, err)
 	}
 }
 
