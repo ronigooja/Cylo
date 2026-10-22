@@ -105,6 +105,8 @@ def purge_expired(directory: Path, key: bytes, retention_days: int = 30, now: da
 def read_backup_delete_manifest(path: Path | None, journal_path: Path, journal_metadata: dict[str, Any]) -> dict[str, Any]:
     """Require the configured manifest to cover the exact frozen journal head."""
     journal_records = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
+    if not journal_records and journal_metadata.get("snapshot_sequence", 0) != 0:
+        fail("trusted deletion snapshot has records but its journal is empty")
     if path is None:
         if journal_records:
             fail("backup deletion manifest is not configured while the deletion journal has records")
