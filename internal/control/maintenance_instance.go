@@ -161,7 +161,7 @@ SELECT target,0,strftime('%Y-%m-%dT%H:%M:%fZ','now'),'adapter_missing' FROM (
 	}}); err != nil {
 		return err
 	}
-	return store.RegisterMigration(storage.Migration{Namespace: "instance", Version: 1003, Name: "authenticated_restore_deletion_progress", Up: func(ctx context.Context, tx *sql.Tx) error {
+	if err := store.RegisterMigration(storage.Migration{Namespace: "instance", Version: 1003, Name: "authenticated_restore_deletion_progress", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `CREATE TABLE cylo_restore_deletion_progress (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
   snapshot_lineage_id TEXT NOT NULL,
@@ -178,6 +178,24 @@ SELECT target,0,strftime('%Y-%m-%dT%H:%M:%fZ','now'),'adapter_missing' FROM (
   applied_sequence INTEGER NOT NULL CHECK(applied_sequence>=0),
   activated_generation INTEGER NOT NULL DEFAULT 0 CHECK(activated_generation>=0)
 )`)
+		return err
+	}}); err != nil {
+		return err
+	}
+	return store.RegisterMigration(storage.Migration{Namespace: "instance", Version: 1004, Name: "private_export_temp_registry", Up: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `CREATE TABLE cylo_export_temp_registry (
+  export_id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+  owner_id TEXT NOT NULL,
+  export_scope TEXT NOT NULL CHECK(export_scope IN ('personal','workspace')),
+  created_deletion_sequence INTEGER NOT NULL CHECK(created_deletion_sequence>=0),
+  status TEXT NOT NULL CHECK(status IN ('active','invalidated','cleaned')),
+  invalidation_sequence INTEGER NOT NULL DEFAULT 0 CHECK(invalidation_sequence>=0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_error TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX cylo_export_temp_scope ON cylo_export_temp_registry(workspace_id,status,created_deletion_sequence);`)
 		return err
 	}})
 }

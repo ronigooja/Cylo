@@ -39,6 +39,9 @@ func restoreDeletionWorkerRoute(method, path string) bool {
 		return false
 	}
 	const prefix = "/runner/v1/memory/deletion-jobs/"
+	if path == "/runner/v1/memory/export-temp/cleanup" || path == "/runner/v1/memory/backup-delete-manifest/cleanup" {
+		return true
+	}
 	if path == prefix+"claim" {
 		return true
 	}

@@ -354,6 +354,9 @@ func replayMemoryDeletionTx(ctx context.Context, tx *sql.Tx, record storage.Dele
 	if err := clearMemoryClaimLocalArtifactsTx(ctx, tx, record.WorkspaceID, record.EntityID, record.DeletedAt); err != nil {
 		return err
 	}
+	if err := invalidateExportTempsTx(ctx, tx, record.WorkspaceID, record.Sequence, record.DeletedAt); err != nil {
+		return err
+	}
 	var err error
 	if errors.Is(queryErr, sql.ErrNoRows) {
 		// The authority row may have been physically removed by an earlier
@@ -394,7 +397,7 @@ func replayMemoryDeletionTx(ctx context.Context, tx *sql.Tx, record storage.Dele
 		}
 	}
 	for _, target := range record.CleanupTargets {
-		if target == "claim" || target == "source_links" || target == "proposals" || target == "source_ledger" {
+		if target == "claim" || target == "source_links" || target == "proposals" || target == "cache" || target == "source_ledger" {
 			continue
 		}
 		payload := fmt.Sprintf(`{"claim_id":%q,"target":%q,"deletion_sequence":%d}`, record.EntityID, target, record.Sequence)

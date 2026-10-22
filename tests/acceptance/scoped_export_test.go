@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -617,5 +618,78 @@ func seedExportMemory(t *testing.T, db *sql.DB, id, scope, scopeID, principal, k
 		if _, err := db.Exec(`INSERT INTO memory_revisions(claim_id,revision,content,authority_kind,status,recorded_at,actor_id) VALUES(?,?,'','user_confirmed','tombstoned',?,'export-fixture')`, id, revision, at); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestExportTempCleanupRouteUsesCurrentDeletionLease(t *testing.T) {
+	ctx := context.Background()
+	runnerToken := reviewToken(t)
+	databasePath := filepath.Join(t.TempDir(), "cleanup.db")
+	store, err := storage.Open(ctx, storage.Config{Path: databasePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err = storage.RegisterCoreMigrations(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = memory.RegisterMigrations(store); err != nil {
+		t.Fatal(err)
+	}
+	server, err := control.NewServer(store, control.Config{RunnerToken: runnerToken, RunnerID: "cleanup-runner", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"memory:jobs:complete"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = control.RegisterExportRoutes(server); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	deletedAt := now.Format(time.RFC3339Nano)
+	leaseUntil := now.Add(time.Minute).Format(time.RFC3339Nano)
+	if _, err = store.DB().Exec(`INSERT INTO memory_deletion_events(ledger_generation,event_type,workspace_id,claim_id,revision,deleted_at,instance_lineage_id,instance_generation,entity_kind,entity_target_version,instance_deletion_sequence) VALUES(1,'claim_deleted','default','claim-1',2,?,'lineage-1',1,'memory_claim',2,1)`, deletedAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB().Exec(`INSERT INTO memory_jobs(id,workspace_id,kind,entity_id,entity_version,target,payload,status,attempts,available_at,lease_owner,lease_until,last_error_code,created_at,updated_at) VALUES('cleanup-job','default','delete_cleanup','claim-1',2,'export_temp','{}','leased',1,?,'cleanup-runner',?,'',?,?)`, deletedAt, leaseUntil, deletedAt, deletedAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB().Exec(`INSERT INTO cylo_export_temp_registry(export_id,workspace_id,owner_id,export_scope,created_deletion_sequence,status,invalidation_sequence,created_at,updated_at) VALUES('route-export','default','owner','personal',0,'invalidated',1,?,?)`, deletedAt, deletedAt); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := databasePath + ".exports"
+	if err = os.Mkdir(rootPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"route-export.data.json", "route-export.archive.zip"} {
+		if err = os.WriteFile(filepath.Join(rootPath, name), []byte("fixture"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := map[string]any{"job_id": "cleanup-job", "workspace_id": "default", "entity_id": "claim-1", "entity_version": 2, "attempt": 1}
+	response := reviewRequest(server.Handler(), http.MethodPost, "/runner/v1/memory/export-temp/cleanup", runnerToken, "", body)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"completed"`) {
+		t.Fatalf("cleanup route=%d %s", response.Code, response.Body.String())
+	}
+	for _, name := range []string{"route-export.data.json", "route-export.archive.zip"} {
+		if _, err = os.Stat(filepath.Join(rootPath, name)); !os.IsNotExist(err) {
+			t.Fatalf("cleanup left %s: %v", name, err)
+		}
+	}
+	var status string
+	if err = store.DB().QueryRow(`SELECT status FROM memory_jobs WHERE id='cleanup-job'`).Scan(&status); err != nil || status != "leased" {
+		t.Fatalf("cleanup route completed the job itself: status=%q err=%v", status, err)
+	}
+	var checkpoint int64
+	if err = store.DB().QueryRow(`SELECT completed_sequence FROM cylo_deletion_reconciliation_checkpoints WHERE target='export_temp'`).Scan(&checkpoint); err != nil || checkpoint != 0 {
+		t.Fatalf("cleanup route advanced checkpoint before worker completion: sequence=%d err=%v", checkpoint, err)
+	}
+	invalidBody := map[string]any{"job_id": "cleanup-job", "workspace_id": "default", "entity_id": "claim-1", "entity_version": 2, "attempt": 2}
+	if bad := reviewRequest(server.Handler(), http.MethodPost, "/runner/v1/memory/export-temp/cleanup", runnerToken, "", invalidBody); bad.Code != http.StatusConflict {
+		t.Fatalf("stale cleanup attempt=%d body=%s", bad.Code, bad.Body.String())
 	}
 }

@@ -35,8 +35,13 @@ func RegisterExportRoutes(s *Server) error {
 	if s == nil {
 		return errors.New("control server is required")
 	}
-	return s.RegisterAuthenticatedRoutes(func(mux *http.ServeMux) {
+	if err := s.RegisterAuthenticatedRoutes(func(mux *http.ServeMux) {
 		mux.HandleFunc("GET /v1/export", s.handleScopedExport)
+	}); err != nil {
+		return err
+	}
+	return s.RegisterRunnerRoutes(func(mux *http.ServeMux) {
+		mux.HandleFunc("POST /runner/v1/memory/export-temp/cleanup", s.handleExportTempCleanup)
 	})
 }
 
@@ -140,14 +145,13 @@ func (s *Server) handleScopedExport(w http.ResponseWriter, r *http.Request) {
 		writeExportFailure(w)
 		return
 	}
-	f, err := os.CreateTemp("", "cylo-export-data-*.json")
+	lease, err := s.beginExportTemp(r.Context(), p, scope, exportID)
 	if err != nil {
 		writeExportFailure(w)
 		return
 	}
-	path := f.Name()
-	defer os.Remove(path)
-	defer f.Close()
+	defer lease.closeAndClean(s.store.DB())
+	f := lease.file
 	h := sha256.New()
 	output := &exportFile{file: f, hash: h}
 
@@ -209,13 +213,11 @@ func (s *Server) handleScopedExport(w http.ResponseWriter, r *http.Request) {
 		writeExportFailure(w)
 		return
 	}
-	archiveFile, err := os.CreateTemp("", "cylo-export-*.zip")
+	archiveFile, err := lease.createArchive()
 	if err != nil {
 		writeExportFailure(w)
 		return
 	}
-	archivePath := archiveFile.Name()
-	defer os.Remove(archivePath)
 	defer archiveFile.Close()
 	archiveHash := sha256.New()
 	archiveOut := &boundedHashWriter{writer: io.MultiWriter(archiveFile, archiveHash), limit: maxScopedArchiveBytes}
@@ -316,6 +318,10 @@ func (s *Server) handleScopedExport(w http.ResponseWriter, r *http.Request) {
 		writeExportFailure(w)
 		return
 	}
+	if invalidated, checkErr := lease.invalidated(r.Context(), s.store.DB()); checkErr != nil || invalidated {
+		writeError(w, apiError(http.StatusConflict, "export_snapshot_stale", "export was invalidated during preparation; retry the request", nil))
+		return
+	}
 	w.Header().Set("Content-Type", "application/vnd.cylo.export+zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="cylo-export-`+exportID+`.zip"`)
 	w.Header().Set("Cache-Control", "no-store")
@@ -324,7 +330,27 @@ func (s *Server) handleScopedExport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Cylo-Manifest-SHA256", hex.EncodeToString(manifestHash[:]))
 	w.Header().Set("Content-Length", strconv.FormatInt(archiveOut.count, 10))
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, archiveFile)
+	copyRegisteredExport(w, r, lease, s.store.DB(), archiveFile)
+}
+
+func copyRegisteredExport(w http.ResponseWriter, r *http.Request, lease *exportTempLease, db *sql.DB, src io.Reader) {
+	buf := make([]byte, 32<<10)
+	for {
+		invalidated, err := lease.invalidated(r.Context(), db)
+		if err != nil || invalidated {
+			return
+		}
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			written, writeErr := w.Write(buf[:n])
+			if writeErr != nil || written != n {
+				return
+			}
+		}
+		if readErr != nil {
+			return
+		}
+	}
 }
 
 type boundedHashWriter struct {
