@@ -137,6 +137,25 @@ func TestMaintenanceRESTEncryptedRestoreDrill(t *testing.T) {
 		t.Fatalf("backup artifact count=%d err=%v", len(entries), err)
 	}
 	artifact := filepath.Join(backupDir, entries[0].Name())
+	maintenance := filepath.Join(tmp, "cylo-maintenance")
+	build := exec.Command("go", "build", "-o", maintenance, "./cmd/cylo-maintenance")
+	build.Dir = repo
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build maintenance CLI: %v\n%s", err, output)
+	}
+	latestLedger := filepath.Join(tmp, "latest.deletion-ledger")
+	latestBytes, err := os.ReadFile(db + ".deletion-ledger")
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(latestLedger, latestBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	latestHead := filepath.Join(tmp, "latest-deletion-head.json")
+	deletionHead := exec.Command(maintenance, "deletion-head", "--database", db, "--output", latestHead)
+	if output, err := deletionHead.CombinedOutput(); err != nil {
+		t.Fatalf("write current deletion head: %v\n%s", err, output)
+	}
 	corrupt := filepath.Join(tmp, "corrupt.cylo-backup")
 	artifactBytes, err := os.ReadFile(artifact)
 	if err != nil {
@@ -147,21 +166,15 @@ func TestMaintenanceRESTEncryptedRestoreDrill(t *testing.T) {
 		t.Fatal(err)
 	}
 	badRestore := filepath.Join(tmp, "bad-restore")
-	if runPythonExpectFailure(t, python, repo, "tools/cylo_restore.py", "--artifact", corrupt, "--key-file", keyFile, "--restore-directory", badRestore) == nil {
+	if runPythonExpectFailure(t, python, repo, "tools/cylo_restore.py", "--artifact", corrupt, "--key-file", keyFile, "--latest-deletion-ledger", latestLedger, "--latest-deletion-head-file", latestHead, "--restore-directory", badRestore) == nil {
 		t.Fatal("tampered encrypted archive was accepted")
 	}
 	if _, err = os.Lstat(badRestore); !os.IsNotExist(err) {
 		t.Fatalf("tampered archive created a staged restore path: %v", err)
 	}
 	restore := filepath.Join(tmp, "restore")
-	runPython(t, python, repo, "tools/cylo_restore.py", "--artifact", artifact, "--key-file", keyFile, "--restore-directory", restore)
+	runPython(t, python, repo, "tools/cylo_restore.py", "--artifact", artifact, "--key-file", keyFile, "--latest-deletion-ledger", latestLedger, "--latest-deletion-head-file", latestHead, "--restore-directory", restore)
 	pendingDB := filepath.Join(restore, "data", "cylo.sqlite.restore-pending")
-	maintenance := filepath.Join(tmp, "cylo-maintenance")
-	build := exec.Command("go", "build", "-o", maintenance, "./cmd/cylo-maintenance")
-	build.Dir = repo
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build maintenance CLI: %v\n%s", err, output)
-	}
 	proofKey := make([]byte, 32)
 	if _, err = rand.Read(proofKey); err != nil {
 		t.Fatal(err)

@@ -83,6 +83,10 @@ func RegisterDerived(s *control.Server, store *storage.Store, config DerivedConf
 		mux.HandleFunc("POST /runner/v1/memory/jobs/{job_id}/fail", svc.handleFail)
 		mux.HandleFunc("POST /runner/v1/memory/jobs/{job_id}/model-calls/reserve", svc.handleModelCallReserve)
 		mux.HandleFunc("POST /runner/v1/memory/jobs/{job_id}/model-calls/{call_id}/finalize", svc.handleModelCallFinalize)
+		mux.HandleFunc("POST /runner/v1/memory/deletion-jobs/claim", svc.handleDeletionClaim)
+		mux.HandleFunc("POST /runner/v1/memory/deletion-jobs/{job_id}/validate", svc.handleDeletionValidate)
+		mux.HandleFunc("POST /runner/v1/memory/deletion-jobs/{job_id}/complete", svc.handleDeletionComplete)
+		mux.HandleFunc("POST /runner/v1/memory/deletion-jobs/{job_id}/fail", svc.handleDeletionFail)
 	})
 }
 
@@ -186,6 +190,97 @@ func (s *derivedService) handleClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": jobs})
+}
+
+func (s *derivedService) handleDeletionClaim(w http.ResponseWriter, r *http.Request) {
+	principal, ok := control.RunnerPrincipalFromContext(r.Context())
+	if !ok || principal.RunnerID == "" || !exactRunnerHasScope(principal, derivedClaimScope) {
+		control.WriteError(w, control.NewAPIError(http.StatusForbidden, "forbidden", "runner memory deletion claim scope required", nil))
+		return
+	}
+	var req derivedClaimRequest
+	if err := decodeJSON(r, &req); err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	limit := req.Limit
+	if limit <= 0 || limit > s.cfg.MaxBatch {
+		limit = s.cfg.MaxBatch
+	}
+	jobs, err := s.claimDeletionCleanup(r.Context(), principal, limit)
+	if err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": jobs})
+}
+
+// Claim only tombstone-cleanup envelopes. This route never materializes a
+// claim/source or calls reconcileTx, so it is safe while derived reads are gated.
+func (s *derivedService) claimDeletionCleanup(ctx context.Context, p contracts.RunnerPrincipal, limit int) ([]derivedJob, error) {
+	workspaces := exactRunnerWorkspaces(p)
+	if len(workspaces) == 0 {
+		return nil, control.NewAPIError(http.StatusForbidden, "forbidden", "runner has no exact workspace allowlist", nil)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	nowText := now.Format(time.RFC3339Nano)
+	jobs := make([]derivedJob, 0, limit)
+	for _, workspace := range workspaces {
+		if len(jobs) >= limit {
+			break
+		}
+		rows, queryErr := tx.QueryContext(ctx, `SELECT id,workspace_id,kind,entity_id,entity_version,target,payload,attempts FROM memory_jobs
+WHERE workspace_id=? AND kind='delete_cleanup' AND attempts<? AND ((status IN ('pending','retry') AND available_at<=?) OR (status='leased' AND lease_until<=?))
+ORDER BY available_at,created_at,id LIMIT ?`, workspace, s.cfg.MaxAttempts, nowText, nowText, limit-len(jobs))
+		if queryErr != nil {
+			return nil, queryErr
+		}
+		var candidates []derivedJob
+		for rows.Next() {
+			var job derivedJob
+			var payload []byte
+			if queryErr = rows.Scan(&job.ID, &job.WorkspaceID, &job.Kind, &job.EntityID, &job.EntityVersion, &job.Target, &payload, &job.Attempt); queryErr != nil {
+				_ = rows.Close()
+				return nil, queryErr
+			}
+			job.Payload = append(job.Payload[:0], payload...)
+			candidates = append(candidates, job)
+		}
+		if queryErr = rows.Err(); queryErr != nil {
+			_ = rows.Close()
+			return nil, queryErr
+		}
+		if queryErr = rows.Close(); queryErr != nil {
+			return nil, queryErr
+		}
+		for _, job := range candidates {
+			leaseUntil := now.Add(s.cfg.LeaseDuration)
+			result, updateErr := tx.ExecContext(ctx, `UPDATE memory_jobs SET status='leased',attempts=attempts+1,lease_owner=?,lease_until=?,updated_at=?
+WHERE id=? AND workspace_id=? AND kind='delete_cleanup' AND attempts=? AND ((status IN ('pending','retry') AND available_at<=?) OR (status='leased' AND lease_until<=?))`, p.RunnerID, leaseUntil.Format(time.RFC3339Nano), nowText, job.ID, workspace, job.Attempt, nowText, nowText)
+			if updateErr != nil {
+				return nil, updateErr
+			}
+			changed, updateErr := result.RowsAffected()
+			if updateErr != nil || changed != 1 {
+				if updateErr != nil {
+					return nil, updateErr
+				}
+				continue
+			}
+			job.Attempt++
+			job.LeaseUntil = leaseUntil
+			jobs = append(jobs, job)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return jobs, nil
 }
 
 func (s *derivedService) claim(ctx context.Context, p contracts.RunnerPrincipal, limit int) ([]derivedJob, error) {
@@ -687,6 +782,29 @@ func (s *derivedService) handleComplete(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *derivedService) handleDeletionComplete(w http.ResponseWriter, r *http.Request) {
+	p, ok := control.RunnerPrincipalFromContext(r.Context())
+	if !ok || p.RunnerID == "" || !exactRunnerHasScope(p, derivedCompleteScope) {
+		control.WriteError(w, control.NewAPIError(http.StatusForbidden, "forbidden", "runner deletion completion scope required", nil))
+		return
+	}
+	if err := s.requireDeletionJob(r.Context(), p, r.PathValue("job_id")); err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	var req derivedLeaseRequest
+	if err := decodeJSON(r, &req); err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	result, err := s.finish(r.Context(), p, r.PathValue("job_id"), req.Attempt, "", false, true)
+	if err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *derivedService) handleValidate(w http.ResponseWriter, r *http.Request) {
 	p, ok := control.RunnerPrincipalFromContext(r.Context())
 	if !ok || p.RunnerID == "" || !exactRunnerHasScope(p, derivedClaimScope) {
@@ -706,6 +824,30 @@ func (s *derivedService) handleValidate(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *derivedService) handleDeletionValidate(w http.ResponseWriter, r *http.Request) {
+	p, ok := control.RunnerPrincipalFromContext(r.Context())
+	if !ok || p.RunnerID == "" || !exactRunnerHasScope(p, derivedClaimScope) {
+		control.WriteError(w, control.NewAPIError(http.StatusForbidden, "forbidden", "runner deletion validation scope required", nil))
+		return
+	}
+	id := r.PathValue("job_id")
+	if err := s.requireDeletionJob(r.Context(), p, id); err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	var req derivedLeaseRequest
+	if err := decodeJSON(r, &req); err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	result, err := s.validate(r.Context(), p, id, req.Attempt)
+	if err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *derivedService) validate(ctx context.Context, p contracts.RunnerPrincipal, id string, attempt int) (derivedValidation, error) {
 	if id == "" || attempt < 1 {
 		return derivedValidation{}, control.NewAPIError(http.StatusBadRequest, "invalid_request", "job ID and positive lease attempt are required", nil)
@@ -716,15 +858,17 @@ func (s *derivedService) validate(ctx context.Context, p contracts.RunnerPrincip
 	}
 	defer tx.Rollback()
 	var job derivedJob
+	var payload []byte
 	var status, owner string
 	var leaseUntil sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT id,workspace_id,kind,entity_id,entity_version,target,payload,attempts,status,lease_owner,lease_until FROM memory_jobs WHERE id=?`, id).Scan(&job.ID, &job.WorkspaceID, &job.Kind, &job.EntityID, &job.EntityVersion, &job.Target, &job.Payload, &job.Attempt, &status, &owner, &leaseUntil)
+	err = tx.QueryRowContext(ctx, `SELECT id,workspace_id,kind,entity_id,entity_version,target,payload,attempts,status,lease_owner,lease_until FROM memory_jobs WHERE id=?`, id).Scan(&job.ID, &job.WorkspaceID, &job.Kind, &job.EntityID, &job.EntityVersion, &job.Target, &payload, &job.Attempt, &status, &owner, &leaseUntil)
 	if errors.Is(err, sql.ErrNoRows) {
 		return derivedValidation{}, control.NewAPIError(http.StatusNotFound, "not_found", "memory job not found", nil)
 	}
 	if err != nil {
 		return derivedValidation{}, err
 	}
+	job.Payload = append(job.Payload[:0], payload...)
 	if !exactRunnerHasWorkspace(p, job.WorkspaceID) || !exactRunnerHasScope(p, derivedClaimScope) {
 		return derivedValidation{}, control.NewAPIError(http.StatusForbidden, "forbidden", "runner cannot validate this workspace job", nil)
 	}
@@ -786,6 +930,46 @@ func (s *derivedService) handleFail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *derivedService) handleDeletionFail(w http.ResponseWriter, r *http.Request) {
+	p, ok := control.RunnerPrincipalFromContext(r.Context())
+	if !ok || p.RunnerID == "" || !exactRunnerHasScope(p, derivedCompleteScope) {
+		control.WriteError(w, control.NewAPIError(http.StatusForbidden, "forbidden", "runner deletion completion scope required", nil))
+		return
+	}
+	if err := s.requireDeletionJob(r.Context(), p, r.PathValue("job_id")); err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	var req derivedFailRequest
+	if err := decodeJSON(r, &req); err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	if !safeMemoryErrorCode.MatchString(req.ErrorCode) {
+		control.WriteError(w, control.NewAPIError(http.StatusBadRequest, "invalid_request", "error_code must be a short safe identifier", nil))
+		return
+	}
+	result, err := s.finish(r.Context(), p, r.PathValue("job_id"), req.Attempt, req.ErrorCode, req.Permanent, false)
+	if err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *derivedService) requireDeletionJob(ctx context.Context, p contracts.RunnerPrincipal, id string) error {
+	var workspace, kind string
+	if err := s.db.QueryRowContext(ctx, `SELECT workspace_id,kind FROM memory_jobs WHERE id=?`, id).Scan(&workspace, &kind); errors.Is(err, sql.ErrNoRows) {
+		return control.NewAPIError(http.StatusNotFound, "not_found", "memory deletion job not found", nil)
+	} else if err != nil {
+		return err
+	}
+	if kind != "delete_cleanup" || !exactRunnerHasWorkspace(p, workspace) {
+		return control.NewAPIError(http.StatusForbidden, "forbidden", "deletion-only route accepts only an authorized cleanup job", nil)
+	}
+	return nil
 }
 
 func (s *derivedService) finish(ctx context.Context, p contracts.RunnerPrincipal, id string, attempt int, code string, permanent, complete bool) (derivedJobResult, error) {

@@ -14,10 +14,15 @@ class ControlAPIError(RuntimeError):
 
 
 class ControlAPI:
-    def __init__(self, base_url: str, runner_token: str, timeout: float = 30.0):
+    def __init__(self, base_url: str, runner_token: str, timeout: float = 30.0, deletion_only: bool = False):
         self.base_url = base_url.rstrip("/")
         self.runner_token = runner_token
         self.timeout = timeout
+        self.deletion_only = deletion_only
+
+    @property
+    def _jobs_path(self) -> str:
+        return "/runner/v1/memory/deletion-jobs" if self.deletion_only else "/runner/v1/memory/jobs"
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         request = urllib.request.Request(
@@ -45,23 +50,23 @@ class ControlAPI:
             raise ControlAPIError(503, "control_unavailable") from None
 
     def claim(self, limit: int) -> list[dict[str, Any]]:
-        result = self._post("/runner/v1/memory/jobs/claim", {"limit": limit})
+        result = self._post(self._jobs_path + "/claim", {"limit": limit})
         items = result.get("items", [])
         return items if isinstance(items, list) else []
 
     def validate(self, job: dict[str, Any]) -> dict[str, Any]:
         return self._post(
-            f"/runner/v1/memory/jobs/{job['id']}/validate", {"attempt": int(job["attempt"])}
+            f"{self._jobs_path}/{job['id']}/validate", {"attempt": int(job["attempt"])}
         )
 
     def complete(self, job: dict[str, Any]) -> dict[str, Any]:
         return self._post(
-            f"/runner/v1/memory/jobs/{job['id']}/complete", {"attempt": int(job["attempt"])}
+            f"{self._jobs_path}/{job['id']}/complete", {"attempt": int(job["attempt"])}
         )
 
     def fail(self, job: dict[str, Any], code: str, permanent: bool = False) -> dict[str, Any]:
         return self._post(
-            f"/runner/v1/memory/jobs/{job['id']}/fail",
+            f"{self._jobs_path}/{job['id']}/fail",
             {"attempt": int(job["attempt"]), "error_code": code, "permanent": permanent},
         )
 

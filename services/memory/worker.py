@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import logging
+import os
+import sqlite3
 import time
+from pathlib import Path
 from typing import Any
+
+from qdrant_client import QdrantClient, models
 
 from .config import WorkerConfig
 from .control_api import ControlAPI, ControlAPIError
 from .embedding import LocalEmbedder
 from .mem0_backend import ControlledMem0
-from .stores import QdrantIndex
+from .stores import QdrantIndex, mem0_user_id
 
 LOG = logging.getLogger("cylo.memory.worker")
 
@@ -30,12 +35,19 @@ def configure_logging() -> None:
 class MemoryWorker:
     def __init__(self, config: WorkerConfig):
         self.config = config
-        self.api = ControlAPI(config.control_url, config.runner_token)
-        self.embedder = LocalEmbedder(config.embedder_model, config.embedder_revision, config.embedding_dimensions)
-        self.qdrant = QdrantIndex(
-            config.qdrant_url, config.qdrant_api_key, config.qdrant_collection, config.embedding_dimensions
-        )
-        self.mem0 = ControlledMem0(config, self.embedder, self.api)
+        self.api = ControlAPI(config.control_url, config.runner_token, deletion_only=config.deletion_only)
+        if config.deletion_only:
+            self.embedder = None
+            self.qdrant = None
+            self.mem0 = None
+            self.deletion_adapters = DeletionOnlyAdapters(config)
+        else:
+            self.embedder = LocalEmbedder(config.embedder_model, config.embedder_revision, config.embedding_dimensions)
+            self.qdrant = QdrantIndex(
+                config.qdrant_url, config.qdrant_api_key, config.qdrant_collection, config.embedding_dimensions
+            )
+            self.mem0 = ControlledMem0(config, self.embedder, self.api)
+            self.deletion_adapters = None
 
     def _validate(self, job: dict[str, Any]) -> bool:
         validation = self.api.validate(job)
@@ -46,6 +58,15 @@ class MemoryWorker:
 
     def _process(self, job: dict[str, Any]) -> None:
         kind = job.get("kind")
+        if self.config.deletion_only:
+            if kind != "delete_cleanup":
+                raise PermanentJobError("unsupported_deletion_job")
+            if not self._validate(job):
+                return
+            if job.get("target") not in ("qdrant", "mem0"):
+                raise PermanentJobError("adapter_missing")
+            self.deletion_adapters.delete(job)
+            return
         if kind == "index":
             if not self._validate(job):
                 return
@@ -123,6 +144,77 @@ class PermanentJobError(RuntimeError):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+class DeletionOnlyAdapters:
+    """External delete-only adapters; construction performs no reads or writes."""
+
+    def __init__(self, config: WorkerConfig):
+        self.client = QdrantClient(url=config.qdrant_url, api_key=config.qdrant_api_key, timeout=15.0)
+        self.qdrant_collection = config.qdrant_collection
+        self.mem0_collection = config.mem0_collection
+        self.history_path = Path(os.environ.get("CYLO_MEM0_HISTORY_DB", "/var/lib/cylo/memory/mem0-history.sqlite"))
+
+    def delete(self, job: dict[str, Any]) -> None:
+        workspace = str(job["workspace_id"])
+        claim_id = str(job["entity_id"])
+        target = str(job["target"])
+        if target == "qdrant":
+            self.client.delete(
+                collection_name=self.qdrant_collection,
+                points_selector=models.FilterSelector(
+                    filter=models.Filter(
+                        must=[
+                            models.FieldCondition(key="workspace_id", match=models.MatchValue(value=workspace)),
+                            models.FieldCondition(key="claim_id", match=models.MatchValue(value=claim_id)),
+                            models.FieldCondition(key="revision", range=models.Range(lte=int(job["entity_version"]))),
+                        ]
+                    )
+                ),
+                wait=True,
+            )
+            return
+        if target != "mem0":
+            raise PermanentJobError("adapter_missing")
+        user_id = mem0_user_id(workspace, claim_id)
+        self.client.delete(
+            collection_name=self.mem0_collection,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(must=[models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id))])
+            ),
+            wait=True,
+        )
+        self._purge_mem0_history(user_id, workspace, claim_id)
+
+    def _purge_mem0_history(self, user_id: str, workspace: str, claim_id: str) -> None:
+        if not self.history_path.is_file():
+            raise PermanentJobError("adapter_missing")
+        connection = sqlite3.connect(self.history_path, timeout=5.0)
+        try:
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if not {"cylo_memory_ownership", "history", "messages"} <= tables:
+                raise PermanentJobError("adapter_missing")
+            connection.execute("BEGIN IMMEDIATE")
+            memory_ids = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT memory_id FROM cylo_memory_ownership WHERE user_id=? AND workspace_id=? AND claim_id=?",
+                    (user_id, workspace, claim_id),
+                )
+            ]
+            if memory_ids:
+                connection.executemany("DELETE FROM history WHERE memory_id=?", ((item,) for item in memory_ids))
+            connection.execute("DELETE FROM messages WHERE session_scope=?", (f"user_id={user_id}",))
+            connection.execute(
+                "DELETE FROM cylo_memory_ownership WHERE user_id=? AND workspace_id=? AND claim_id=?",
+                (user_id, workspace, claim_id),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
 
 def main() -> None:

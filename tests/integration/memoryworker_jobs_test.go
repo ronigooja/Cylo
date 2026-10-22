@@ -190,6 +190,64 @@ func TestMemoryWorkerLeaseFenceAndIdempotentCompletion(t *testing.T) {
 	}
 }
 
+func TestDeletionOnlyWorkerRoutesAreAuthenticatedAndTombstoneOnlyBehindRestoreGate(t *testing.T) {
+	store, handler, token := memoryWorkerHarness(t, []string{"memory:jobs:claim", "memory:jobs:complete"}, []string{"default"})
+	if err := control.RegisterInstanceMaintenanceMigration(store); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := store.DB().Exec(`UPDATE cylo_instance_state SET restore_deletion_reconciliation_required=1,derived_retrieval_enabled=0 WHERE singleton=1`); err != nil {
+		t.Fatal(err)
+	}
+	seedMemoryWorkerClaim(t, store.DB(), "default", "tombstoned-claim")
+	if _, err := store.DB().Exec(`UPDATE memory_claims SET status='tombstoned',deleted_at=?,revision=2 WHERE id='tombstoned-claim'`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().Exec(`INSERT INTO memory_tombstones(claim_id,workspace_id,revision,actor_id,reason,deleted_at) VALUES('tombstoned-claim','default',2,'owner','user_requested',?)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().Exec(`INSERT INTO memory_jobs(id,workspace_id,kind,entity_id,entity_version,target,payload,status,attempts,available_at,created_at,updated_at) VALUES('delete-qdrant','default','delete_cleanup','tombstoned-claim',2,'qdrant','{}','pending',0,?,?,?)`, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if response := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/jobs/claim", map[string]any{"limit": 1}); response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ordinary worker route status=%d body=%s; restore gate must remain closed", response.Code, response.Body.String())
+	}
+	if response := memoryWorkerRequest(t, handler, "invalid-token", "/runner/v1/memory/deletion-jobs/claim", map[string]any{"limit": 10}); response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated deletion-only route status=%d body=%s", response.Code, response.Body.String())
+	}
+	response := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/deletion-jobs/claim", map[string]any{"limit": 10})
+	if response.Code != http.StatusOK {
+		t.Fatalf("deletion-only claim status=%d body=%s", response.Code, response.Body.String())
+	}
+	var claimed struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &claimed); err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed.Items) != 1 || claimed.Items[0]["kind"] != "delete_cleanup" || claimed.Items[0]["target"] != "qdrant" || claimed.Items[0]["claim"] != nil || claimed.Items[0]["source"] != nil {
+		t.Fatalf("deletion-only route returned more than a cleanup envelope: %#v", claimed.Items)
+	}
+	validate := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/deletion-jobs/delete-qdrant/validate", map[string]any{"attempt": 1})
+	if validate.Code != http.StatusOK || !strings.Contains(validate.Body.String(), `"allowed":true`) {
+		t.Fatalf("tombstone-backed cleanup validation status=%d body=%s", validate.Code, validate.Body.String())
+	}
+	complete := memoryWorkerRequest(t, handler, token, "/runner/v1/memory/deletion-jobs/delete-qdrant/complete", map[string]any{"attempt": 1})
+	if complete.Code != http.StatusOK {
+		t.Fatalf("deletion-only completion status=%d body=%s", complete.Code, complete.Body.String())
+	}
+	var gate int
+	if err := store.DB().QueryRow(`SELECT restore_deletion_reconciliation_required FROM cylo_instance_state WHERE singleton=1`).Scan(&gate); err != nil {
+		t.Fatal(err)
+	}
+	if gate != 1 {
+		t.Fatalf("worker completion unexpectedly opened restore gate: %d", gate)
+	}
+}
+
 func TestMemoryWorkerModelCallLedgerReservesBeforeDispatchAndAccountsUnknownSafely(t *testing.T) {
 	store, handler, token := memoryWorkerHarnessWithModelBudget(t, []string{"memory:jobs:complete"}, []string{"default"}, time.Minute, 1, 500)
 	seedMemoryWorkerClaim(t, store.DB(), "default", "claim-model-ledger")

@@ -150,7 +150,7 @@ def independent_deletion_journal_metadata(path: Path, instance_state: dict[str, 
             fail(f"independent deletion journal sequence or hash chain is invalid at record {number}")
         if not isinstance(record.get("lineage_id"), str) or not record["lineage_id"] or not isinstance(record.get("generation"), int) or record["generation"] < 1:
             fail(f"independent deletion journal identity is invalid at record {number}")
-        if lineage and (record["lineage_id"] != lineage or record["generation"] < generation or record["generation"] > generation + 1):
+        if lineage and (record["lineage_id"] != lineage or record["generation"] < generation):
             fail(f"independent deletion journal generation is discontinuous at record {number}")
         body_keys = ("sequence", "lineage_id", "generation", "workspace_id", "entity_kind", "entity_id", "entity_version", "actor_id", "reason_code", "deleted_at", "cleanup_targets", "previous_hash")
         if set(record) != set(body_keys) | {"hash"} or not isinstance(record.get("cleanup_targets"), list):
@@ -165,15 +165,17 @@ def independent_deletion_journal_metadata(path: Path, instance_state: dict[str, 
         previous_hash = record["hash"]
         records.append(record)
     expected_sequence = int(instance_state["deletion_sequence"])
+    authority_generation = int(instance_state["generation"])
     if expected_sequence != len(records):
         fail("SQLite authority sequence does not match the independent deletion journal head")
-    if records and (lineage != instance_state["lineage_id"] or generation > int(instance_state["generation"])):
+    if records and (lineage != instance_state["lineage_id"] or generation > authority_generation):
         fail("SQLite authority identity does not match the independent deletion journal")
     return {
         "path": "authority/cylo.sqlite.deletion-ledger",
         "sequence": len(records),
         "lineage_id": lineage or instance_state["lineage_id"],
-        "generation": generation or int(instance_state["generation"]),
+        "generation": authority_generation,
+        "record_generation": generation,
         "head_hash": previous_hash,
         "file_sha256": hashlib.sha256(raw).hexdigest(),
         "snapshot_lineage_id": instance_state["lineage_id"],

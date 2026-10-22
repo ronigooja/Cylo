@@ -130,7 +130,7 @@ WHERE EXISTS (SELECT 1 FROM cylo_instance_migration_source m WHERE m.singleton=1
 	}}); err != nil {
 		return err
 	}
-	return store.RegisterMigration(storage.Migration{Namespace: "instance", Version: 1002, Name: "deletion_lineage_and_reconciliation_checkpoints", Up: func(ctx context.Context, tx *sql.Tx) error {
+	if err := store.RegisterMigration(storage.Migration{Namespace: "instance", Version: 1002, Name: "deletion_lineage_and_reconciliation_checkpoints", Up: func(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `ALTER TABLE cylo_instance_state ADD COLUMN lineage_id TEXT NOT NULL DEFAULT ''`); err != nil {
 			return err
 		}
@@ -157,6 +157,27 @@ SELECT target,0,strftime('%Y-%m-%dT%H:%M:%fZ','now'),'adapter_missing' FROM (
   UNION ALL SELECT 'export_temp' UNION ALL SELECT 'backup_delete_manifest' UNION ALL SELECT 'source_ledger'
 );
 `)
+		return err
+	}}); err != nil {
+		return err
+	}
+	return store.RegisterMigration(storage.Migration{Namespace: "instance", Version: 1003, Name: "authenticated_restore_deletion_progress", Up: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `CREATE TABLE cylo_restore_deletion_progress (
+  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+  snapshot_lineage_id TEXT NOT NULL,
+  snapshot_generation INTEGER NOT NULL CHECK(snapshot_generation>0),
+  snapshot_sequence INTEGER NOT NULL CHECK(snapshot_sequence>=0),
+  snapshot_event_count INTEGER NOT NULL CHECK(snapshot_event_count>=0),
+  snapshot_event_cursor_sum INTEGER NOT NULL CHECK(snapshot_event_cursor_sum>=0),
+  journal_lineage_id TEXT NOT NULL,
+  journal_generation INTEGER NOT NULL CHECK(journal_generation>0),
+  journal_record_generation INTEGER NOT NULL CHECK(journal_record_generation>=0),
+  journal_sequence INTEGER NOT NULL CHECK(journal_sequence>=0),
+  journal_head_sha256 TEXT NOT NULL,
+  journal_file_sha256 TEXT NOT NULL,
+  applied_sequence INTEGER NOT NULL CHECK(applied_sequence>=0),
+  activated_generation INTEGER NOT NULL DEFAULT 0 CHECK(activated_generation>=0)
+)`)
 		return err
 	}})
 }
@@ -260,6 +281,9 @@ func PrepareRestoredInstance(ctx context.Context, store *storage.Store, newID st
 		return InstanceState{}, errors.New("restored database must already be fenced at the expected epoch")
 	}
 	if err = requireQuiescentAuthority(ctx, tx); err != nil {
+		return InstanceState{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM cylo_restore_deletion_progress WHERE singleton=1`); err != nil {
 		return InstanceState{}, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO cylo_instance_migration_source(singleton,old_instance_id,old_epoch) VALUES(1,?,?) ON CONFLICT(singleton) DO UPDATE SET old_instance_id=excluded.old_instance_id,old_epoch=excluded.old_epoch`, current.InstanceID, current.Epoch); err != nil {
