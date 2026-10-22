@@ -24,7 +24,7 @@ class ControlAPI:
     def _jobs_path(self) -> str:
         return "/runner/v1/memory/deletion-jobs" if self.deletion_only else "/runner/v1/memory/jobs"
 
-    def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _post(self, path: str, payload: dict[str, Any], *, expected_status: int | None = None) -> dict[str, Any]:
         request = urllib.request.Request(
             self.base_url + path,
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -36,8 +36,17 @@ class ControlAPI:
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                result = json.loads(response.read().decode("utf-8"))
                 status = getattr(response, "status", 200)
+                if expected_status is not None and status != expected_status:
+                    code = "cleanup_http_status"
+                    if status == 202:
+                        try:
+                            body = json.loads(response.read().decode("utf-8"))
+                            code = str(body.get("code", "cleanup_pending")) if isinstance(body, dict) else "cleanup_pending"
+                        except (ValueError, AttributeError):
+                            code = "cleanup_pending"
+                    raise ControlAPIError(status, code)
+                result = json.loads(response.read().decode("utf-8"))
                 if status == 202:
                     code = str(result.get("code", "cleanup_pending")) if isinstance(result, dict) else "cleanup_pending"
                     raise ControlAPIError(status, code)
@@ -84,7 +93,7 @@ class ControlAPI:
         return self._cleanup("/runner/v1/memory/backup-delete-manifest/cleanup", job)
 
     def _cleanup(self, path: str, job: dict[str, Any]) -> dict[str, Any]:
-        result = self._post(path, self._cleanup_payload(job))
+        result = self._post(path, self._cleanup_payload(job), expected_status=200)
         if result.get("status") != "completed":
             raise ControlAPIError(503, str(result.get("code", "cleanup_incomplete")))
         return result

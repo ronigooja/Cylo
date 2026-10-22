@@ -3,8 +3,13 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import contextlib
+import importlib
+import sys
 import tempfile
+import types
 import unittest
+from unittest.mock import patch
 
 from data_lifecycle.retention import read_backup_delete_manifest
 
@@ -46,6 +51,8 @@ class BackupDeleteManifestTests(unittest.TestCase):
         })
 
     def test_missing_or_stale_manifest_fails_when_journal_has_deletions(self):
+        with self.assertRaisesRegex(RuntimeError, "not configured"):
+            read_backup_delete_manifest(None, self.journal, self.metadata)
         with self.assertRaisesRegex(RuntimeError, "missing"):
             read_backup_delete_manifest(self.root / "absent", self.journal, self.metadata)
         self.write_manifest()
@@ -60,6 +67,46 @@ class BackupDeleteManifestTests(unittest.TestCase):
         link.symlink_to(self.manifest)
         with self.assertRaisesRegex(RuntimeError, "symlink"):
             read_backup_delete_manifest(link, self.journal, self.metadata)
+
+    def test_backup_cli_rejects_deletion_journal_without_configured_manifest(self):
+        database = self.root / "source.sqlite"
+        database.touch()
+        Path(str(database) + ".deletion-ledger").write_text(json.dumps(self.record) + "\n")
+        destination = self.root / "backups"
+        destination.mkdir(mode=0o700)
+        common_stub = types.ModuleType("data_lifecycle.common")
+        for name in (
+            "FORMAT", "CHUNK", "copy_payload_path", "create_archive", "database_fence",
+            "encrypt_file", "file_record", "load_inventory", "private_dir", "read_key",
+            "run_volume_quiesce_adapter", "sqlite_snapshot", "independent_deletion_journal_metadata",
+        ):
+            setattr(common_stub, name, lambda *args, **kwargs: None)
+        arguments = [
+            "cylo-backup", "--database", str(database), "--destination", str(destination),
+            "--key-file", str(self.root / "key"),
+        ]
+        head = {"snapshot_lineage_id": "fixture-lineage", "snapshot_sequence": 1}
+        with patch.dict(sys.modules, {"data_lifecycle.common": common_stub}):
+            cylo_backup = importlib.import_module("cylo_backup")
+        with patch.dict(os.environ, {}, clear=True), patch.object(sys, "argv", arguments), \
+                patch.object(cylo_backup, "private_dir"), patch.object(cylo_backup, "read_key", return_value=b"k" * 32), \
+                patch.object(cylo_backup, "load_inventory", return_value={
+                    "roots": {}, "service_config_paths": [], "artifact_paths": [],
+                    "persistent_volume_paths": [], "secret_refs": [],
+                }), \
+                patch.object(cylo_backup, "database_fence", return_value=contextlib.nullcontext(database)), \
+                patch.object(cylo_backup, "sqlite_snapshot", return_value={"instance_state": None}), \
+                patch.object(cylo_backup, "independent_deletion_journal_metadata", return_value=head):
+            with self.assertRaisesRegex(RuntimeError, "not configured"):
+                cylo_backup.main()
+        self.assertEqual(list(destination.iterdir()), [])
+
+    def test_empty_journal_without_adapter_is_explicitly_not_applicable(self):
+        self.journal.write_text("")
+        self.metadata["snapshot_sequence"] = 0
+        self.assertEqual(read_backup_delete_manifest(None, self.journal, self.metadata), {
+            "baseline": "fixture-lineage", "sequence": 0, "targets": [], "version": 1,
+        })
 
     def test_global_sequences_can_arrive_out_of_order_without_identity_fields(self):
         second = {**self.record, "sequence": 2, "lineage_id": "fixture-lineage", "entity_id": "claim-b", "hash": "c" * 64}

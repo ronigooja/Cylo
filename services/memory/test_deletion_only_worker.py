@@ -4,6 +4,7 @@ import os
 import io
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -114,8 +115,46 @@ class DeletionOnlyWorkerTests(unittest.TestCase):
         }
         worker.run_job(job)
         self.assertEqual(worker.api.calls, [job])
-        self.assertTrue(worker.api.completed)
+        self.assertFalse(worker.api.completed)
         self.assertIsNone(worker.api.failed)
+
+    def test_default_worker_routes_server_owned_cleanup_without_model_adapters(self) -> None:
+        for target, method in (
+            ("export_temp", "cleanup_export_temp"),
+            ("backup_delete_manifest", "cleanup_backup_delete_manifest"),
+        ):
+            with self.subTest(target=target):
+                class FakeAPI:
+                    calls = []
+                    completed = False
+
+                    def __getattr__(self, name):
+                        if name in ("cleanup_export_temp", "cleanup_backup_delete_manifest"):
+                            def cleanup(job):
+                                self.calls.append((name, job))
+                                return {"status": "completed"}
+                            return cleanup
+                        raise AssertionError(f"unexpected control API call: {name}")
+
+                    def complete(self, job):
+                        self.completed = True
+                        return {}
+
+                    def fail(self, job, code, permanent=False):
+                        raise AssertionError(f"cleanup unexpectedly failed: {code}")
+
+                worker = MemoryWorker.__new__(MemoryWorker)
+                worker.config = replace(self.config(), deletion_only=False)
+                worker.api = FakeAPI()
+                worker.qdrant = None
+                worker.mem0 = None
+                worker.embedder = None
+                worker.run_job({
+                    "id": f"cleanup-{target}", "attempt": 1, "kind": "delete_cleanup", "target": target,
+                    "workspace_id": "default", "entity_id": "claim", "entity_version": 2,
+                })
+                self.assertEqual(worker.api.calls[0][0], method)
+                self.assertFalse(worker.api.completed)
 
     def test_pending_cleanup_response_retries_instead_of_completing(self) -> None:
         class FakeAPI:
@@ -232,6 +271,34 @@ class DeletionOnlyWorkerTests(unittest.TestCase):
                     "entity_id": "claim", "entity_version": 2,
                 })
         self.assertEqual((raised.exception.status, raised.exception.code), (202, "export_active"))
+
+    def test_cleanup_requires_exact_http_200_and_completed_json(self) -> None:
+        api = ControlAPI("http://control.invalid", "fixture-token", deletion_only=True)
+        job = {
+            "id": "job-id", "attempt": 1, "workspace_id": "default",
+            "entity_id": "claim", "entity_version": 2,
+        }
+        for status, body in ((201, b'{"status":"completed"}'), (204, b""), (200, b"not-json")):
+            response = io.BytesIO(body)
+            response.status = status
+            with self.subTest(status=status), patch("services.memory.control_api.urllib.request.urlopen", return_value=response):
+                with self.assertRaises((ControlAPIError, ValueError)) as raised:
+                    api.cleanup_backup_delete_manifest(job)
+                if status != 200:
+                    self.assertIsInstance(raised.exception, ControlAPIError)
+                    self.assertEqual(raised.exception.status, status)
+
+        response = io.BytesIO(b'{"status":"completed"}')
+        response.status = 200
+        with patch("services.memory.control_api.urllib.request.urlopen", return_value=response):
+            self.assertEqual(api.cleanup_backup_delete_manifest(job), {"status": "completed"})
+
+        response = io.BytesIO(b'{"status":"pending"}')
+        response.status = 200
+        with patch("services.memory.control_api.urllib.request.urlopen", return_value=response):
+            with self.assertRaises(ControlAPIError) as raised:
+                api.cleanup_backup_delete_manifest(job)
+        self.assertEqual((raised.exception.status, raised.exception.code), (503, "cleanup_incomplete"))
 
     def test_missing_mem0_history_store_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
