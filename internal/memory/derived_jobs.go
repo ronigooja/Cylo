@@ -445,6 +445,9 @@ WHERE rs.workspace_id=? AND rs.claim_id=? AND rs.revision=? AND rs.source_id=? A
 
 func (s *derivedService) reconcileTx(ctx context.Context, tx *sql.Tx, workspace string, now time.Time) error {
 	nowText := now.Format(time.RFC3339Nano)
+	if err := s.reconcileSourceLedgerJobsTx(ctx, tx, workspace, nowText); err != nil {
+		return err
+	}
 	rows, err := tx.QueryContext(ctx, `SELECT c.id,c.revision FROM memory_claims c
 WHERE c.workspace_id=? AND c.deleted_at IS NULL AND c.status IN ('active','conflicted')
 AND NOT EXISTS (SELECT 1 FROM memory_jobs j WHERE j.workspace_id=c.workspace_id AND j.kind='index' AND j.entity_id=c.id AND j.entity_version=c.revision AND j.target='qdrant')
@@ -513,6 +516,111 @@ ORDER BY rs.claim_id,rs.source_id,rs.source_version LIMIT 500`, workspace)
 		}
 	}
 	return nil
+}
+
+const sourceLedgerReconcileBatch = 500
+
+// reconcileSourceLedgerJobsTx performs source-ledger cleanup in the authority
+// transaction. This target is deliberately not dispatched to the Python
+// worker: the claim-owned links and revision history live in this database.
+func (s *derivedService) reconcileSourceLedgerJobsTx(ctx context.Context, tx *sql.Tx, workspace, now string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id,entity_id,entity_version,attempts FROM memory_jobs
+WHERE workspace_id=? AND kind='delete_cleanup' AND target='source_ledger'
+AND status IN ('pending','retry','blocked','leased')
+AND last_error_code NOT IN ('deletion_tombstone_missing','deletion_tombstone_mismatch')
+ORDER BY created_at,id LIMIT ?`, workspace, sourceLedgerReconcileBatch)
+	if err != nil {
+		return err
+	}
+	type item struct {
+		id, claimID string
+		version     int64
+		attempts    int
+	}
+	var jobs []item
+	for rows.Next() {
+		var job item
+		if err := rows.Scan(&job.id, &job.claimID, &job.version, &job.attempts); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, job := range jobs {
+		if _, err := settleSourceLedgerJobTx(ctx, tx, workspace, job.id, job.claimID, job.version, job.attempts, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// settleSourceLedgerJobTx validates the current tombstone fence and performs
+// only claim-owned cleanup. Its job update clears any old worker lease in the
+// same transaction, fencing delayed worker complete/fail requests.
+func settleSourceLedgerJobTx(ctx context.Context, tx *sql.Tx, workspace, jobID, claimID string, jobVersion int64, attempts int, now string) (string, error) {
+	var tombstoneRevision, claimRevision int64
+	var status string
+	var deletedAt sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT t.revision,c.revision,c.status,c.deleted_at FROM memory_tombstones t
+JOIN memory_claims c ON c.workspace_id=t.workspace_id AND c.id=t.claim_id
+WHERE t.workspace_id=? AND t.claim_id=?`, workspace, claimID).Scan(&tombstoneRevision, &claimRevision, &status, &deletedAt)
+	disposition := ""
+	state := "done"
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		disposition, state = "deletion_tombstone_missing", "blocked"
+	case err != nil:
+		return "", err
+	case tombstoneRevision < 1 || claimRevision != tombstoneRevision || status != string(ClaimTombstoned) || !deletedAt.Valid || deletedAt.String == "":
+		disposition, state = "deletion_tombstone_mismatch", "blocked"
+	case jobVersion < 1 || jobVersion > tombstoneRevision:
+		disposition, state = "deletion_tombstone_mismatch", "blocked"
+	case jobVersion < tombstoneRevision:
+		// This job describes an obsolete generation. Completing it says only
+		// that this stale job is settled; it does not claim current erasure.
+		disposition = "stale_generation"
+	default:
+		if _, err = tx.ExecContext(ctx, `DELETE FROM memory_revision_sources WHERE workspace_id=? AND claim_id=? AND revision<?`, workspace, claimID, tombstoneRevision); err != nil {
+			return "", err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM memory_terms WHERE workspace_id=? AND claim_id=? AND revision<?`, workspace, claimID, tombstoneRevision); err != nil {
+			return "", err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM memory_revisions WHERE claim_id=? AND revision<?`, claimID, tombstoneRevision); err != nil {
+			return "", err
+		}
+		var remaining int
+		if err = tx.QueryRowContext(ctx, `SELECT
+(SELECT count(*) FROM memory_revisions WHERE claim_id=? AND revision<?) +
+(SELECT count(*) FROM memory_revision_sources WHERE workspace_id=? AND claim_id=? AND revision<?) +
+(SELECT count(*) FROM memory_terms WHERE workspace_id=? AND claim_id=? AND revision<?)`, claimID, tombstoneRevision, workspace, claimID, tombstoneRevision, workspace, claimID, tombstoneRevision).Scan(&remaining); err != nil {
+			return "", err
+		}
+		if remaining != 0 {
+			return "", fmt.Errorf("source-ledger cleanup verification failed")
+		}
+		disposition = "source_ledger_cleaned"
+	}
+	if state == "done" && disposition == "stale_generation" {
+		var tombstoneRows int
+		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM memory_revisions WHERE claim_id=? AND revision=? AND status='tombstoned' AND content=''`, claimID, tombstoneRevision).Scan(&tombstoneRows); err != nil {
+			return "", err
+		}
+		if tombstoneRows != 1 {
+			disposition, state = "deletion_tombstone_mismatch", "blocked"
+		}
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE memory_jobs SET status=?,lease_owner='',lease_until=NULL,last_error_code=?,updated_at=?
+WHERE id=? AND workspace_id=? AND kind='delete_cleanup' AND target='source_ledger' AND attempts=?
+AND status IN ('pending','retry','blocked','leased')`, state, disposition, now, jobID, workspace, attempts)
+	return disposition, err
 }
 
 func insertDerivedJob(ctx context.Context, tx *sql.Tx, workspace, kind, entityID string, version int64, target string, payload any, now string) error {
@@ -591,6 +699,16 @@ func (s *derivedService) validate(ctx context.Context, p contracts.RunnerPrincip
 	deadline, parseErr := time.Parse(time.RFC3339Nano, leaseUntil.String)
 	if parseErr != nil || !deadline.After(time.Now().UTC()) {
 		return derivedValidation{}, control.NewAPIError(http.StatusConflict, "lease_expired", "memory job lease expired", nil)
+	}
+	if job.Kind == "delete_cleanup" && job.Target == "source_ledger" {
+		disposition, settleErr := settleSourceLedgerJobTx(ctx, tx, job.WorkspaceID, job.ID, job.EntityID, job.EntityVersion, job.Attempt, time.Now().UTC().Format(time.RFC3339Nano))
+		if settleErr != nil {
+			return derivedValidation{}, settleErr
+		}
+		if err := tx.Commit(); err != nil {
+			return derivedValidation{}, err
+		}
+		return derivedValidation{ID: id, Allowed: false, Disposition: disposition}, nil
 	}
 	_, disposition, err := s.materializeTx(ctx, tx, &job)
 	if err != nil {
@@ -671,6 +789,20 @@ func (s *derivedService) finish(ctx context.Context, p contracts.RunnerPrincipal
 	}
 	now := time.Now().UTC()
 	nowText := now.Format(time.RFC3339Nano)
+	if kind == "delete_cleanup" && target == "source_ledger" {
+		disposition, settleErr := settleSourceLedgerJobTx(ctx, tx, workspace, id, entityID, entityVersion, attempt, nowText)
+		if settleErr != nil {
+			return derivedJobResult{}, settleErr
+		}
+		var settledStatus string
+		if err = tx.QueryRowContext(ctx, `SELECT status FROM memory_jobs WHERE id=?`, id).Scan(&settledStatus); err != nil {
+			return derivedJobResult{}, err
+		}
+		if err = tx.Commit(); err != nil {
+			return derivedJobResult{}, err
+		}
+		return derivedJobResult{ID: id, Status: settledStatus, Disposition: disposition}, nil
+	}
 	if complete {
 		job := derivedJob{ID: id, WorkspaceID: workspace, Kind: kind, EntityID: entityID, EntityVersion: entityVersion, Target: target, Payload: payload, Attempt: attempt}
 		_, disposition, err := s.materializeTx(ctx, tx, &job)
