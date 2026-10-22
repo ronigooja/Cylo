@@ -53,6 +53,7 @@ public final class CyloAppModel: ObservableObject {
     var memorySearchOverrideForTesting: ((String) async throws -> MemorySearchResult)?
     var snapshotFetchOverrideForTesting: (() async throws -> Snapshot)?
     var pendingCommandReadOverrideForTesting: (() async throws -> [PendingCommand])?
+    var voiceLocalMediaStopObserverForTesting: (() -> Void)?
 
     func setCapabilityDeploymentsForTesting(_ deployments: [CapabilityDeployment]) {
         capabilityDeployments = deployments
@@ -107,15 +108,51 @@ public final class CyloAppModel: ObservableObject {
     func setSnapshotForTesting(_ snapshot: Snapshot?) {
         self.snapshot = snapshot
     }
+
+    @discardableResult
+    func installVoiceSessionForTesting(_ session: VoiceSessionResponse, api: APIClient) -> UInt64 {
+        let epoch = voiceMediaFence.beginAttempt()
+        voiceSession = session
+        voiceSessionMediaEpoch = epoch
+        voiceSessionMediaClosed = false
+        voiceAPI = api
+        voiceStatus = .active(sessionID: session.voiceSessionId, mediaGeneration: session.generation)
+        return epoch
+    }
+
+    func beginVoiceAttemptForTesting() -> UInt64 {
+        voiceStatus = .connecting
+        return voiceMediaFence.beginAttempt()
+    }
+
+    func canContinueVoiceAttemptForTesting(_ mediaEpoch: UInt64) -> Bool {
+        voiceMediaFence.accepts(mediaEpoch)
+    }
+
+    func handleVoiceMediaLossForTesting(_ loss: VoiceMediaLoss, mediaEpoch: UInt64) async {
+        await handleVoiceMediaLoss(loss, mediaEpoch: mediaEpoch)
+    }
+
+    var voiceHeartbeatActiveForTesting: Bool { voiceHeartbeat.isActive }
+
+    func installVoiceHeartbeatForTesting(_ task: Task<Void, Never>) {
+        voiceHeartbeat.install(task)
+    }
 #endif
     private var configuredServerURL: URL?
     private var voiceTransport: LibWebRTCTransport?
     private var voiceAudioSession: VoiceAudioSessionAdapter?
     private var voiceSession: VoiceSessionResponse?
+    private var voiceMediaFence = VoiceMediaEpochFence()
+    private var voiceMediaEpoch: UInt64 { voiceMediaFence.current }
+    private var voiceSessionMediaEpoch: UInt64?
+    private var voiceSessionMediaClosed = false
+    private var voiceStartMediaLoss: (epoch: UInt64, reason: String)?
+    private var voiceStartInProgress = false
     private var voiceAPI: APIClient?
     private var voiceTurnID: String?
     private var voiceProviderMessageID: String?
-    private var voiceHeartbeatTask: Task<Void, Never>?
+    private let voiceHeartbeat = VoiceHeartbeatLease()
     private var hasLoadedNotificationInbox = false
     private var pendingAPNSTokenHex: String?
     private var lastRegisteredAPNSTokenHex: String?
@@ -578,7 +615,11 @@ public final class CyloAppModel: ObservableObject {
     }
 
     public func startVoice(voice: String? = nil, voiceMode: String? = nil, languageCode: String? = nil) async {
-        guard voiceSession == nil else { return }
+        guard voiceSession == nil, !voiceStartInProgress else { return }
+        voiceStartInProgress = true
+        defer { voiceStartInProgress = false }
+        let mediaEpoch = voiceMediaFence.beginAttempt()
+        voiceStartMediaLoss = nil
         let generation: UInt64
         let api: APIClient
         do {
@@ -595,9 +636,9 @@ public final class CyloAppModel: ObservableObject {
         voiceStatus = .connecting
         do {
             let config = try await api.voiceConfig()
-            guard generation == connectionGeneration.value else { throw CancellationError() }
+            guard generation == connectionGeneration.value, mediaEpoch == voiceMediaEpoch else { throw CancellationError() }
             let pool = try await api.voicePoolStatus()
-            guard generation == connectionGeneration.value else { throw CancellationError() }
+            guard generation == connectionGeneration.value, mediaEpoch == voiceMediaEpoch else { throw CancellationError() }
             voiceConfig = config
             voicePoolStatus = pool
             guard !pool.blocked else { throw CyloError.http(status: 409, code: pool.reasonCode, message: "The voice account pool is quarantined until an operator confirms termination.", details: nil) }
@@ -607,15 +648,26 @@ public final class CyloAppModel: ObservableObject {
             #elseif os(macOS)
             audio = AppleDesktopAudioSessionAdapter()
             #endif
+            voiceAudioSession = audio
+            audio?.onLifecycleEvent = { [weak self] event in
+                Task { @MainActor in
+                    await self?.handleVoiceMediaLoss(.audio(event), mediaEpoch: mediaEpoch)
+                }
+            }
             try audio?.activate()
             let iceServers = config.webRTC.iceServers.map { RTCIceServer(urlStrings: $0.urls) }
             transport = try LibWebRTCTransport(iceServers: iceServers, dataChannelLabel: config.webRTC.dataChannel.label)
+            voiceTransport = transport
             transport?.onDataMessage = { [weak self] data in
-                Task { @MainActor in self?.receiveVoiceData(data, generation: generation) }
+                Task { @MainActor in self?.receiveVoiceData(data, generation: generation, mediaEpoch: mediaEpoch) }
             }
-
+            transport?.onConnectionState = { [weak self] state in
+                Task { @MainActor in
+                    await self?.handleVoiceMediaLoss(VoiceMediaLoss.connection(state), mediaEpoch: mediaEpoch)
+                }
+            }
             let offer = try await transport!.createOffer()
-            guard generation == connectionGeneration.value else { throw CancellationError() }
+            guard generation == connectionGeneration.value, mediaEpoch == voiceMediaEpoch else { throw CancellationError() }
             let created = try await api.createVoiceSession(
                 requestID: UUID().uuidString.lowercased(),
                 offerSDP: offer,
@@ -624,20 +676,20 @@ public final class CyloAppModel: ObservableObject {
                 languageCode: languageCode ?? config.defaults.languageCode
             )
             allocatedSession = created
-            guard generation == connectionGeneration.value else { throw CancellationError() }
+            guard generation == connectionGeneration.value, mediaEpoch == voiceMediaEpoch else { throw CancellationError() }
             guard created.state == "active", !created.answerSdp.isEmpty else { throw CyloError.invalidResponse }
             try await transport!.applyAnswer(created.answerSdp)
-            guard generation == connectionGeneration.value else { throw CancellationError() }
+            guard generation == connectionGeneration.value, mediaEpoch == voiceMediaEpoch else { throw CancellationError() }
             try await transport!.waitUntilConnected()
-            guard generation == connectionGeneration.value else { throw CancellationError() }
+            guard generation == connectionGeneration.value, mediaEpoch == voiceMediaEpoch else { throw CancellationError() }
             let confirmed = try await api.confirmVoiceConnected(sessionID: created.voiceSessionId, generation: created.generation)
-            guard generation == connectionGeneration.value else { throw CancellationError() }
+            guard generation == connectionGeneration.value, mediaEpoch == voiceMediaEpoch else { throw CancellationError() }
             guard confirmed.ok else { throw CyloError.invalidResponse }
 
             voiceSession = created
+            voiceSessionMediaEpoch = mediaEpoch
+            voiceSessionMediaClosed = false
             voiceAPI = api
-            voiceTransport = transport
-            voiceAudioSession = audio
             voiceTurnID = nil
             voiceProviderMessageID = nil
             voiceDraft = ""
@@ -645,69 +697,130 @@ public final class CyloAppModel: ObservableObject {
             voiceStatus = .active(sessionID: created.voiceSessionId, mediaGeneration: created.generation)
             startVoiceHeartbeat(sessionID: created.voiceSessionId, api: api, generation: generation)
         } catch {
-            await transport?.close()
-            try? audio?.deactivate()
+            let attemptWasCurrent = mediaEpoch == voiceMediaEpoch
+            await closeVoiceLocalMedia(mediaEpoch: mediaEpoch)
             var remainsQuarantined = false
             if let allocatedSession {
                 let release = try? await api.hangupVoiceSession(sessionID: allocatedSession.voiceSessionId)
                 remainsQuarantined = release == nil || release?.poolBlocked == true
                 if remainsQuarantined {
                     let latestPool = try? await api.voicePoolStatus()
-                    guard generation == connectionGeneration.value, api === self.api else { return }
-                    voicePoolStatus = latestPool
+                    if generation == connectionGeneration.value, api === self.api { voicePoolStatus = latestPool }
                 }
             }
-            if generation == connectionGeneration.value {
+            let mediaLossReason = voiceStartMediaLoss?.epoch == mediaEpoch ? voiceStartMediaLoss?.reason : nil
+            if generation == connectionGeneration.value, (attemptWasCurrent || voiceStartMediaLoss?.epoch == mediaEpoch) {
                 if remainsQuarantined, let allocatedSession {
                     voiceSession = allocatedSession
+                    voiceSessionMediaEpoch = mediaEpoch
+                    voiceSessionMediaClosed = true
                     voiceAPI = api
-                    voiceStatus = .interrupted(reason: "Voice setup failed and upstream termination is unverified; the pool remains isolated. Retry release after local media has closed. \(userMessage(error))")
+                    voiceStatus = .interrupted(reason: "Local voice media is closed. Server hangup is unconfirmed or the account pool remains quarantined; no new session can start until the pool is cleared. \(mediaLossReason ?? userMessage(error))")
                 } else {
-                    voiceStatus = .unavailable(reason: userMessage(error))
+                    voiceSession = nil
+                    voiceSessionMediaEpoch = nil
+                    voiceSessionMediaClosed = false
+                    voiceAPI = nil
+                    if let mediaLossReason {
+                        voiceStatus = .interrupted(reason: "\(mediaLossReason) Local media is closed. The setup attempt was stopped; this does not prove upstream termination or cancel a task.")
+                    } else {
+                        voiceStatus = .unavailable(reason: userMessage(error))
+                    }
                 }
             }
         }
     }
 
     public func endVoiceSession() async {
-        voiceHeartbeatTask?.cancel()
-        voiceHeartbeatTask = nil
-        let session = voiceSession
-        let api = voiceAPI
-        await voiceTransport?.close()
-        voiceTransport = nil
-        try? voiceAudioSession?.deactivate()
-        voiceAudioSession = nil
-        guard let session, let api else {
+        guard let session = voiceSession, let api = voiceAPI, let mediaEpoch = voiceSessionMediaEpoch else {
+            if voiceStartInProgress {
+                voiceStartMediaLoss = (voiceMediaEpoch, "Voice setup was stopped locally.")
+            }
+            await closeVoiceLocalMedia(mediaEpoch: voiceMediaEpoch)
             voiceSession = nil
+            voiceSessionMediaEpoch = nil
+            voiceSessionMediaClosed = false
+            voiceAPI = nil
             if case .unavailable = voiceStatus {} else { voiceStatus = .idle }
             return
         }
-        let generation = connectionGeneration.value
+        await finishVoiceSession(session, api: api, mediaEpoch: mediaEpoch, lossReason: nil)
+    }
+
+    private func finishVoiceSession(_ session: VoiceSessionResponse, api: APIClient, mediaEpoch: UInt64, lossReason: String?) async {
+        guard voiceSession?.voiceSessionId == session.voiceSessionId,
+              voiceSessionMediaEpoch == mediaEpoch else { return }
+        if let lossReason {
+            voiceStatus = .interrupted(reason: "\(lossReason) Voice controls are stopped while local media closes and server release is checked.")
+        }
+        if !voiceSessionMediaClosed {
+            guard voiceMediaEpoch == mediaEpoch else { return }
+            await closeVoiceLocalMedia(mediaEpoch: mediaEpoch)
+            voiceSessionMediaClosed = true
+        }
         do {
             let result = try await api.hangupVoiceSession(sessionID: session.voiceSessionId)
-            guard generation == connectionGeneration.value, voiceSession?.voiceSessionId == session.voiceSessionId else { return }
+            guard voiceSession?.voiceSessionId == session.voiceSessionId, voiceSessionMediaEpoch == mediaEpoch else { return }
             let latestPool = result.poolBlocked == true ? try? await api.voicePoolStatus() : nil
-            guard generation == connectionGeneration.value, voiceSession?.voiceSessionId == session.voiceSessionId else { return }
+            guard voiceSession?.voiceSessionId == session.voiceSessionId, voiceSessionMediaEpoch == mediaEpoch else { return }
             if result.poolBlocked == true {
                 voicePoolStatus = latestPool
-                voiceStatus = .interrupted(reason: "Local media is closed. The upstream account pool remains quarantined until termination is verified.")
+                voiceStatus = .interrupted(reason: lossReason.map { "\($0) Local media is closed. The server reports upstream termination is unverified; the account pool remains quarantined." } ?? "Local media is closed. The server reports upstream termination is unverified; the account pool remains quarantined.")
                 voiceSession = nil
+                voiceSessionMediaEpoch = nil
+                voiceSessionMediaClosed = false
+                voiceAPI = nil
+            } else if let lossReason {
+                voiceStatus = .interrupted(reason: "\(lossReason) Local media is closed and the server confirmed release of the voice lease. This did not cancel a task.")
+                voiceSession = nil
+                voiceSessionMediaEpoch = nil
+                voiceSessionMediaClosed = false
                 voiceAPI = nil
             } else {
                 voiceStatus = .idle
                 voiceSession = nil
+                voiceSessionMediaEpoch = nil
+                voiceSessionMediaClosed = false
                 voiceAPI = nil
             }
         } catch {
-            guard generation == connectionGeneration.value, voiceSession?.voiceSessionId == session.voiceSessionId else { return }
-            voiceStatus = .interrupted(reason: "Local media is closed, but server release is unconfirmed: \(userMessage(error))")
+            guard voiceSession?.voiceSessionId == session.voiceSessionId, voiceSessionMediaEpoch == mediaEpoch else { return }
+            voiceStatus = .interrupted(reason: "Local media is closed, but server hangup is unconfirmed; the session remains fenced. \(lossReason.map { $0 + " " } ?? "")\(userMessage(error))")
         }
+    }
+
+    private func closeVoiceLocalMedia(mediaEpoch: UInt64) async {
+        guard voiceMediaFence.stop(mediaEpoch) else { return }
+        voiceHeartbeat.cancel()
+        voiceLocalMediaStopObserverForTesting?()
+        let transport = voiceTransport
+        let audio = voiceAudioSession
+        voiceTransport = nil
+        voiceAudioSession = nil
+        transport?.onDataMessage = nil
+        transport?.onConnectionState = nil
+        audio?.onLifecycleEvent = nil
+        await transport?.close()
+        try? audio?.deactivate()
+    }
+
+    private func handleVoiceMediaLoss(_ loss: VoiceMediaLoss, mediaEpoch: UInt64) async {
+        guard mediaEpoch == voiceMediaEpoch else { return }
+        guard let reason = loss.message else { return }
+        if let session = voiceSession, let api = voiceAPI, voiceSessionMediaEpoch == mediaEpoch {
+            await finishVoiceSession(session, api: api, mediaEpoch: mediaEpoch, lossReason: reason)
+            return
+        }
+        voiceStartMediaLoss = (mediaEpoch, reason)
+        voiceStatus = .interrupted(reason: "\(reason) Stopping voice setup and releasing local media.")
+        await closeVoiceLocalMedia(mediaEpoch: mediaEpoch)
     }
 
     public func confirmVoiceDraftAsTask(title: String? = nil) async {
         guard !isBusy, let session = voiceSession, let coordinator, let sourceAPI = api, !voiceDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let turnID = voiceTurnID, voiceDraftRevision > 0 else { return }
+              let turnID = voiceTurnID, voiceDraftRevision > 0,
+              voiceSessionMediaEpoch == voiceMediaEpoch,
+              case .active = voiceStatus else { return }
         let generation = connectionGeneration.value
         let revision = voiceDraftRevision
         let workspaceID = snapshot?.devices.first?.workspaceId
@@ -730,7 +843,7 @@ public final class CyloAppModel: ObservableObject {
         defer { isBusy = false }
         do {
             _ = try await coordinator.submit(kind: "voice.turn.commit", payload: commit, workspaceID: workspaceID, idempotencyKey: commitKey)
-            guard isCurrentConnection(generation, sourceAPI: sourceAPI), voiceSession?.voiceSessionId == session.voiceSessionId else { return }
+            guard isCurrentConnection(generation, sourceAPI: sourceAPI) else { return }
             commandTitleByKey[commitKey] = "Save confirmed voice turn"
             commandStatusByKey[commitKey] = .acceptedAwaitingSnapshot
             await reloadPendingCommandSummaries()
@@ -750,7 +863,7 @@ public final class CyloAppModel: ObservableObject {
             ])
             taskCreateAttempted = true
             let taskOutcome = try await coordinator.submit(kind: "task.create", payload: createTask, workspaceID: workspaceID, idempotencyKey: taskKey)
-            guard isCurrentConnection(generation, sourceAPI: sourceAPI), voiceSession?.voiceSessionId == session.voiceSessionId else { return }
+            guard isCurrentConnection(generation, sourceAPI: sourceAPI) else { return }
             commandTitleByKey[taskKey] = "Create task"
             commandStatusByKey[taskKey] = .acceptedAwaitingSnapshot
             await reloadPendingCommandSummaries()
@@ -1376,24 +1489,29 @@ public final class CyloAppModel: ObservableObject {
     }
 
     private func startVoiceHeartbeat(sessionID: String, api: APIClient, generation: UInt64) {
-        voiceHeartbeatTask?.cancel()
-        voiceHeartbeatTask = Task { [weak self] in
+        let task = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(15))
                 if Task.isCancelled { return }
                 do {
                     _ = try await api.heartbeatVoiceSession(sessionID: sessionID)
                 } catch {
-                    guard let self, generation == self.connectionGeneration.value else { return }
-                    self.voiceStatus = .interrupted(reason: "Voice lease renewal failed: \(self.userMessage(error))")
+                    guard let self,
+                          generation == self.connectionGeneration.value,
+                          let mediaEpoch = self.voiceSessionMediaEpoch else { return }
+                    await self.handleVoiceMediaLoss(.leaseRenewalFailed(self.userMessage(error)), mediaEpoch: mediaEpoch)
                     return
                 }
             }
         }
+        voiceHeartbeat.install(task)
     }
 
-    private func receiveVoiceData(_ data: Data, generation: UInt64) {
-        guard generation == connectionGeneration.value, voiceSession != nil else { return }
+    private func receiveVoiceData(_ data: Data, generation: UInt64, mediaEpoch: UInt64) {
+        guard generation == connectionGeneration.value,
+              mediaEpoch == voiceMediaEpoch,
+              voiceSessionMediaEpoch == mediaEpoch,
+              voiceSession != nil else { return }
         guard let outer = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
         var event = outer
         if outer["type"] as? String == "data_message", let encoded = outer["data"] as? String,

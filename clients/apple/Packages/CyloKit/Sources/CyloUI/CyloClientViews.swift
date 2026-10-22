@@ -178,8 +178,11 @@ private struct ConversationView: View {
                 .font(.caption).foregroundStyle(.orange)
         case let .unavailable(reason), let .interrupted(reason):
             VStack(alignment: .leading, spacing: 6) {
+                if model.canEndVoiceSession {
+                    Button("Retry server hangup", role: .destructive) { Task { await model.endVoiceSession() } }
+                }
                 Button { Task { await model.startVoice() } } label: { Label("Start live voice", systemImage: "mic") }
-                    .disabled(model.isBusy)
+                    .disabled(model.isBusy || model.canEndVoiceSession)
                 Text(reason).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             }
         case .idle:

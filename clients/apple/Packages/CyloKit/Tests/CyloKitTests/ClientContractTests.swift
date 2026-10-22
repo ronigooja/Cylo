@@ -2,6 +2,7 @@ import XCTest
 @testable import CyloKit
 @testable import CyloUI
 import Foundation
+import WebRTC
 
 private final class ExportURLProtocol: URLProtocol {
     static var responseHandler: ((URLRequest) -> (Int, [String: String], Data))?
@@ -975,6 +976,87 @@ final class ClientContractTests: XCTestCase {
         XCTAssertEqual(memoryRefreshCount, 1, "accepted memory receipts reconcile immediately before replay moves to the next row")
         XCTAssertNil(model.exportArtifact)
         XCTAssertFalse(FileManager.default.fileExists(atPath: exportURL.path))
+    }
+
+    func testVoiceMediaEpochFenceRejectsDelayedAndDuplicateLossEvents() throws {
+        var fence = VoiceMediaEpochFence()
+        let first = fence.beginAttempt()
+        XCTAssertTrue(fence.accepts(first))
+        XCTAssertTrue(fence.stop(first), "the first terminal media event claims teardown")
+        XCTAssertFalse(fence.accepts(first), "callbacks after teardown cannot revive the stopped attempt")
+        XCTAssertFalse(fence.stop(first), "a duplicate connection/audio callback cannot repeat teardown or release")
+
+        let second = fence.beginAttempt()
+        XCTAssertGreaterThan(second, first)
+        XCTAssertFalse(fence.stop(first), "a delayed event from the old connection cannot stop the new attempt")
+        XCTAssertTrue(fence.accepts(second))
+    }
+
+    @MainActor
+    func testVoiceAudioInterruptionDuringSetupFencesLateHandshakeAndDuplicateEvents() async throws {
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        var localStopCount = 0
+        model.voiceLocalMediaStopObserverForTesting = { localStopCount += 1 }
+        let startingEpoch = model.beginVoiceAttemptForTesting()
+
+        await model.handleVoiceMediaLossForTesting(.audio(.interrupted), mediaEpoch: startingEpoch)
+        await model.handleVoiceMediaLossForTesting(.audio(.interrupted), mediaEpoch: startingEpoch)
+
+        XCTAssertFalse(model.canContinueVoiceAttemptForTesting(startingEpoch), "a late SDP/connected response cannot reactivate the interrupted attempt")
+        XCTAssertEqual(localStopCount, 1, "the startup interruption claims local teardown once")
+        XCTAssertFalse(model.canEndVoiceSession, "the event does not invent an active server session")
+        guard case .interrupted = model.voiceStatus else { return XCTFail("expected an interrupted voice setup") }
+
+        let nextEpoch = model.beginVoiceAttemptForTesting()
+        XCTAssertTrue(model.canContinueVoiceAttemptForTesting(nextEpoch))
+        XCTAssertFalse(model.canContinueVoiceAttemptForTesting(startingEpoch), "old callbacks remain fenced after a later attempt begins")
+    }
+
+    @MainActor
+    func testVoiceMediaLossStopsHeartbeatAndPreservesTaskWhileHangupQuarantinesPool() async throws {
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let task = TaskRecord(id: "task-live", projectId: nil, title: "Keep this task", goal: "Task state survives voice media loss", source: "user", profileId: nil, status: .active, version: 3, createdAt: "now", updatedAt: "now", acceptedAt: nil, startedAt: nil, finishedAt: nil, result: nil, error: nil, evidence: [], canAcceptResult: false)
+        model.setSnapshotForTesting(Snapshot(serverVersion: "1", eventCursor: "5", projects: [], tasks: [task], approvals: [], devices: [], runs: []))
+        var hangupCount = 0
+        var localStopCount = 0
+        ExportURLProtocol.responseHandler = { request in
+            if request.url?.path == "/v1/voice/sessions/session-1/hangup" {
+                hangupCount += 1
+                return (202, ["Content-Type": "application/json"], Data(#"{"ok":true,"state":"ended","upstream_termination":"unverified","pool_blocked":true}"#.utf8))
+            }
+            if request.url?.path == "/v1/voice/pool/status" {
+                return (200, ["Content-Type": "application/json"], Data(#"{"blocked":true,"reason_code":"upstream_termination_unverified","updated_at":"2026-10-22T12:00:00Z","account_lease_identity":false,"account_scoped_termination":false,"trusted_termination_evidence":false}"#.utf8))
+            }
+            return (404, [:], Data())
+        }
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        let session = VoiceSessionResponse(voiceSessionId: "session-1", generation: 4, state: "active", answerSdp: "")
+        let epoch = model.installVoiceSessionForTesting(session, api: api)
+        let heartbeatStarted = expectation(description: "heartbeat task starts")
+        let heartbeatCancelled = expectation(description: "heartbeat task is canceled on media loss")
+        model.installVoiceHeartbeatForTesting(Task {
+            heartbeatStarted.fulfill()
+            await withTaskCancellationHandler {
+                try? await Task.sleep(for: .seconds(30))
+            } onCancel: {
+                heartbeatCancelled.fulfill()
+            }
+        })
+        model.voiceLocalMediaStopObserverForTesting = { localStopCount += 1 }
+        await fulfillment(of: [heartbeatStarted], timeout: 1)
+
+        await model.handleVoiceMediaLossForTesting(.connection(.disconnected), mediaEpoch: epoch)
+        await model.handleVoiceMediaLossForTesting(.connection(.failed), mediaEpoch: epoch)
+        await fulfillment(of: [heartbeatCancelled], timeout: 1)
+
+        XCTAssertFalse(model.voiceHeartbeatActiveForTesting)
+        XCTAssertEqual(localStopCount, 1, "local media teardown is claimed once")
+        XCTAssertEqual(hangupCount, 1, "duplicate terminal signals issue at most one hangup")
+        XCTAssertEqual(model.tasks.map(\.id), ["task-live"], "media loss does not cancel or rewrite the authoritative task")
+        guard case let .interrupted(reason) = model.voiceStatus else { return XCTFail("expected an interrupted voice status") }
+        XCTAssertTrue(reason.contains("quarantined"))
+        XCTAssertTrue(reason.contains("unverified"))
+        XCTAssertTrue(model.voicePoolStatus?.blocked == true)
     }
 
     private static func commandReceipt(key: String, kind: String, workspaceID: String, resourceID: String, resourceType: String = "task") -> Data {

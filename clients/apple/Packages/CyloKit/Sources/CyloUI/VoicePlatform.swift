@@ -122,7 +122,7 @@ public final class LibWebRTCTransport: NSObject, WebRTCTransport, @unchecked Sen
     public func waitUntilConnected() async throws {
         let deadline = ContinuousClock.now + .seconds(30)
         while (peerConnection.iceConnectionState != .connected && peerConnection.iceConnectionState != .completed) || dataChannel.readyState != .open {
-            if peerConnection.iceConnectionState == .failed || peerConnection.iceConnectionState == .closed || dataChannel.readyState == .closed {
+            if peerConnection.iceConnectionState == .disconnected || peerConnection.iceConnectionState == .failed || peerConnection.iceConnectionState == .closed || dataChannel.readyState == .closed {
                 throw WebRTCTransportError.dataChannelUnavailable
             }
             guard ContinuousClock.now < deadline else { throw WebRTCTransportError.connectionTimedOut }
@@ -186,27 +186,60 @@ extension LibWebRTCTransport: RTCDataChannelDelegate {
 }
 
 public protocol VoiceAudioSessionAdapter: AnyObject {
+    var onLifecycleEvent: (@Sendable (VoiceAudioLifecycleEvent) -> Void)? { get set }
     func activate() throws
     func deactivate() throws
+}
+
+public enum VoiceAudioLifecycleEvent: Sendable {
+    case interrupted
+    case routeUnavailable
 }
 
 #if os(iOS)
 public final class AppleMobileAudioSessionAdapter: VoiceAudioSessionAdapter {
     private let session = AVAudioSession.sharedInstance()
+    public var onLifecycleEvent: (@Sendable (VoiceAudioLifecycleEvent) -> Void)?
+    private var observers: [NSObjectProtocol] = []
 
     public init() {}
 
     public func activate() throws {
+        observeLifecycleEvents()
         try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .defaultToSpeaker])
         try session.setActive(true)
     }
 
     public func deactivate() throws {
+        removeLifecycleObservers()
         try session.setActive(false, options: .notifyOthersOnDeactivation)
     }
+
+    private func observeLifecycleEvents() {
+        guard observers.isEmpty else { return }
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: session, queue: .main) { [weak self] notification in
+            guard let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  AVAudioSession.InterruptionType(rawValue: raw) == .began else { return }
+            self?.onLifecycleEvent?(.interrupted)
+        })
+        observers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: session, queue: .main) { [weak self] notification in
+            guard let raw = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                  AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable else { return }
+            self?.onLifecycleEvent?(.routeUnavailable)
+        })
+    }
+
+    private func removeLifecycleObservers() {
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        observers.removeAll()
+    }
+
+    deinit { removeLifecycleObservers() }
 }
 #elseif os(macOS)
 public final class AppleDesktopAudioSessionAdapter: VoiceAudioSessionAdapter {
+    public var onLifecycleEvent: (@Sendable (VoiceAudioLifecycleEvent) -> Void)?
     public init() {}
 
     public func activate() throws {}
@@ -221,4 +254,61 @@ public enum VoiceIntegrationStatus: Equatable, Sendable {
     case connecting
     case active(sessionID: String, mediaGeneration: Int64)
     case interrupted(reason: String)
+}
+
+enum VoiceMediaLoss {
+    case connection(RTCPeerConnectionState)
+    case audio(VoiceAudioLifecycleEvent)
+    case leaseRenewalFailed(String)
+
+    var message: String? {
+        switch self {
+        case let .connection(state):
+            switch state {
+            case .disconnected: "The WebRTC connection was lost."
+            case .failed: "The WebRTC connection failed."
+            case .closed: "The WebRTC connection closed."
+            default: nil
+            }
+        case .audio(.interrupted): "The system interrupted the voice audio session."
+        case .audio(.routeUnavailable): "The previous voice audio route became unavailable."
+        case let .leaseRenewalFailed(message): "The voice lease heartbeat failed: \(message)"
+        }
+    }
+}
+
+struct VoiceMediaEpochFence {
+    private(set) var current: UInt64 = 0
+
+    mutating func beginAttempt() -> UInt64 {
+        current &+= 1
+        return current
+    }
+
+    func accepts(_ epoch: UInt64) -> Bool {
+        epoch == current
+    }
+
+    mutating func stop(_ epoch: UInt64) -> Bool {
+        guard accepts(epoch) else { return false }
+        current &+= 1
+        return true
+    }
+}
+
+@MainActor
+final class VoiceHeartbeatLease {
+    private var task: Task<Void, Never>?
+
+    var isActive: Bool { task != nil && task?.isCancelled == false }
+
+    func install(_ task: Task<Void, Never>) {
+        self.task?.cancel()
+        self.task = task
+    }
+
+    func cancel() {
+        task?.cancel()
+        task = nil
+    }
 }
