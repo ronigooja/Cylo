@@ -11,15 +11,17 @@ import (
 )
 
 const (
-	aoContainerManagedLabel = "io.cylo.managed"
-	aoContainerRuntimeLabel = "io.cylo.runtime"
-	aoContainerSessionLabel = "io.cylo.ao.session"
-	aoContainerRuntimeValue = "ao-codex-chat"
+	aoContainerManagedLabel    = "io.cylo.managed"
+	aoContainerRuntimeLabel    = "io.cylo.runtime"
+	aoContainerSessionLabel    = "io.cylo.ao.session"
+	aoContainerCodexRuntime    = "ao-codex-chat"
+	aoContainerOpenCodeRuntime = "ao-opencode-acp"
+	aoContainerRuntimeValue    = aoContainerCodexRuntime
 )
 
 type AOContainerSupervisor interface {
-	Find(context.Context, string) (containerID string, found bool, err error)
-	StopAndVerify(context.Context, string, string) (contracts.CapabilityTerminationProof, error)
+	Find(context.Context, string, string) (containerID string, found bool, err error)
+	StopAndVerify(context.Context, string, string, string) (contracts.CapabilityTerminationProof, error)
 }
 
 // DockerAOContainerSupervisor owns the narrow cleanup boundary for AO's
@@ -43,11 +45,12 @@ type aoContainerInspect struct {
 	} `json:"State"`
 }
 
-func (s DockerAOContainerSupervisor) Find(ctx context.Context, sessionID string) (string, bool, error) {
-	if s.Docker == nil || !validAOContainerSessionID(sessionID) {
+func (s DockerAOContainerSupervisor) Find(ctx context.Context, harness, sessionID string) (string, bool, error) {
+	runtimeValue, ok := aoContainerRuntime(harness)
+	if s.Docker == nil || !ok || !validAOContainerSessionID(sessionID) {
 		return "", false, errors.New("AO container supervisor is not configured")
 	}
-	output, err := s.Docker.Run(ctx, "ps", "-aq", "--no-trunc", "--filter", "label="+aoContainerManagedLabel+"=true", "--filter", "label="+aoContainerRuntimeLabel+"="+aoContainerRuntimeValue, "--filter", "label="+aoContainerSessionLabel+"="+sessionID)
+	output, err := s.Docker.Run(ctx, "ps", "-aq", "--no-trunc", "--filter", "label="+aoContainerManagedLabel+"=true", "--filter", "label="+aoContainerRuntimeLabel+"="+runtimeValue, "--filter", "label="+aoContainerSessionLabel+"="+sessionID)
 	if err != nil {
 		return "", false, errors.New("AO container inventory is unavailable")
 	}
@@ -58,7 +61,7 @@ func (s DockerAOContainerSupervisor) Find(ctx context.Context, sessionID string)
 	if len(ids) != 1 {
 		return "", false, errors.New("AO session has an ambiguous supervised container set")
 	}
-	inspection, err := s.inspect(ctx, ids[0], sessionID)
+	inspection, err := s.inspect(ctx, ids[0], harness, sessionID)
 	if err != nil {
 		return "", false, err
 	}
@@ -68,11 +71,12 @@ func (s DockerAOContainerSupervisor) Find(ctx context.Context, sessionID string)
 	return inspection.ID, true, nil
 }
 
-func (s DockerAOContainerSupervisor) StopAndVerify(ctx context.Context, sessionID, expectedID string) (contracts.CapabilityTerminationProof, error) {
-	if s.Docker == nil || !validAOContainerSessionID(sessionID) {
+func (s DockerAOContainerSupervisor) StopAndVerify(ctx context.Context, harness, sessionID, expectedID string) (contracts.CapabilityTerminationProof, error) {
+	runtimeValue, ok := aoContainerRuntime(harness)
+	if s.Docker == nil || !ok || !validAOContainerSessionID(sessionID) {
 		return contracts.CapabilityTerminationProof{}, errors.New("AO container supervisor is not configured")
 	}
-	idsOutput, err := s.Docker.Run(ctx, "ps", "-aq", "--no-trunc", "--filter", "label="+aoContainerManagedLabel+"=true", "--filter", "label="+aoContainerRuntimeLabel+"="+aoContainerRuntimeValue, "--filter", "label="+aoContainerSessionLabel+"="+sessionID)
+	idsOutput, err := s.Docker.Run(ctx, "ps", "-aq", "--no-trunc", "--filter", "label="+aoContainerManagedLabel+"=true", "--filter", "label="+aoContainerRuntimeLabel+"="+runtimeValue, "--filter", "label="+aoContainerSessionLabel+"="+sessionID)
 	if err != nil {
 		return contracts.CapabilityTerminationProof{}, errors.New("AO container inventory is unavailable during termination")
 	}
@@ -83,7 +87,7 @@ func (s DockerAOContainerSupervisor) StopAndVerify(ctx context.Context, sessionI
 	if expectedID == "" || len(ids) > 1 {
 		return contracts.CapabilityTerminationProof{}, errors.New("AO container termination identity is unresolved")
 	}
-	inspection, err := s.inspect(ctx, expectedID, sessionID)
+	inspection, err := s.inspect(ctx, expectedID, harness, sessionID)
 	if err != nil {
 		if errors.Is(err, ErrDockerObjectNotFound) && len(ids) == 0 {
 			return contracts.CapabilityTerminationProof{EffectRef: "docker:" + expectedID, TerminatedAt: time.Now().UTC(), CleanupComplete: true}, nil
@@ -95,7 +99,7 @@ func (s DockerAOContainerSupervisor) StopAndVerify(ctx context.Context, sessionI
 	}
 	_, stopErr := s.Docker.Run(ctx, "stop", "--time", "5", expectedID)
 	if stopErr != nil {
-		if _, err := s.inspect(ctx, expectedID, sessionID); err == nil {
+		if _, err := s.inspect(ctx, expectedID, harness, sessionID); err == nil {
 			if _, removeErr := s.Docker.Run(ctx, "rm", "--force", expectedID); removeErr != nil {
 				return contracts.CapabilityTerminationProof{}, errors.New("AO container could not be force-removed")
 			}
@@ -103,20 +107,24 @@ func (s DockerAOContainerSupervisor) StopAndVerify(ctx context.Context, sessionI
 			return contracts.CapabilityTerminationProof{}, err
 		}
 	}
-	if _, err := s.inspect(ctx, expectedID, sessionID); !errors.Is(err, ErrDockerObjectNotFound) {
+	if _, err := s.inspect(ctx, expectedID, harness, sessionID); !errors.Is(err, ErrDockerObjectNotFound) {
 		if err == nil {
 			return contracts.CapabilityTerminationProof{}, errors.New("AO container remains after stop")
 		}
 		return contracts.CapabilityTerminationProof{}, err
 	}
-	remaining, err := s.Docker.Run(ctx, "ps", "-aq", "--no-trunc", "--filter", "label="+aoContainerManagedLabel+"=true", "--filter", "label="+aoContainerRuntimeLabel+"="+aoContainerRuntimeValue, "--filter", "label="+aoContainerSessionLabel+"="+sessionID)
+	remaining, err := s.Docker.Run(ctx, "ps", "-aq", "--no-trunc", "--filter", "label="+aoContainerManagedLabel+"=true", "--filter", "label="+aoContainerRuntimeLabel+"="+runtimeValue, "--filter", "label="+aoContainerSessionLabel+"="+sessionID)
 	if err != nil || len(splitContainerIDs(string(remaining))) != 0 {
 		return contracts.CapabilityTerminationProof{}, errors.New("AO session still has a container in its PID namespace")
 	}
 	return contracts.CapabilityTerminationProof{EffectRef: "docker:" + expectedID, TerminatedAt: time.Now().UTC(), CleanupComplete: true}, nil
 }
 
-func (s DockerAOContainerSupervisor) inspect(ctx context.Context, id, sessionID string) (aoContainerInspect, error) {
+func (s DockerAOContainerSupervisor) inspect(ctx context.Context, id, harness, sessionID string) (aoContainerInspect, error) {
+	runtimeValue, ok := aoContainerRuntime(harness)
+	if !ok {
+		return aoContainerInspect{}, errors.New("AO container runtime is unsupported")
+	}
 	body, err := s.Docker.Run(ctx, "inspect", "--format", "{{json .}}", id)
 	if err != nil {
 		return aoContainerInspect{}, err
@@ -126,10 +134,21 @@ func (s DockerAOContainerSupervisor) inspect(ctx context.Context, id, sessionID 
 		return aoContainerInspect{}, errors.New("AO container identity could not be decoded")
 	}
 	labels := inspection.Config.Labels
-	if labels[aoContainerManagedLabel] != "true" || labels[aoContainerRuntimeLabel] != aoContainerRuntimeValue || labels[aoContainerSessionLabel] != sessionID {
+	if labels[aoContainerManagedLabel] != "true" || labels[aoContainerRuntimeLabel] != runtimeValue || labels[aoContainerSessionLabel] != sessionID {
 		return aoContainerInspect{}, errors.New("AO container ownership labels do not match")
 	}
 	return inspection, nil
+}
+
+func aoContainerRuntime(harness string) (string, bool) {
+	switch harness {
+	case "codex":
+		return aoContainerCodexRuntime, true
+	case "opencode":
+		return aoContainerOpenCodeRuntime, true
+	default:
+		return "", false
+	}
 }
 
 func splitContainerIDs(output string) []string {

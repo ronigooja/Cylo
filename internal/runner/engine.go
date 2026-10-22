@@ -118,13 +118,21 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 		if !ok || route.ProfileID != claim.ProfileID || route.RuntimeRouteID != claim.RuntimeRouteID || route.ModelRouteID != claim.ModelRouteID || !validAOApprovalMode(route.ApprovalMode) {
 			return e.reportNoEffectTerminal(ctx, claim, "failed", "route_unavailable", "Server-selected runtime route is not available on this runner.")
 		}
-		if e.Containers != nil && route.Harness != "codex" {
-			return e.reportNoEffectTerminal(ctx, claim, "failed", "runtime_unavailable", "This supervised runtime profile currently requires the Codex chat harness.")
+		if !supportedSupervisedRoute(route) {
+			return e.reportNoEffectTerminal(ctx, claim, "failed", "runtime_unavailable", "This runner has no approved supervised runtime profile for the selected AO harness and isolation policy.")
 		}
 		if e.Isolation == nil {
 			return e.reportNoEffectTerminal(ctx, claim, "failed", "isolation_unavailable", "Runtime dispatch is disabled because AO execution isolation has not been verified.")
 		}
-		if err := e.Isolation.Check(ctx, claim); err != nil {
+		var isolationErr error
+		if routeIsolation, ok := e.Isolation.(interface {
+			CheckRoute(context.Context, contracts.JobClaim, Route) error
+		}); ok {
+			isolationErr = routeIsolation.CheckRoute(ctx, claim, route)
+		} else {
+			isolationErr = e.Isolation.Check(ctx, claim)
+		}
+		if isolationErr != nil {
 			return e.reportNoEffectTerminal(ctx, claim, "failed", "isolation_denied", "Runtime dispatch was denied by the configured isolation policy.")
 		}
 		if strings.TrimSpace(claim.Goal) == "" {
@@ -137,7 +145,8 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 			Model:           route.Model,
 			Effort:          route.Effort,
 			// The control plane grant plus the container boundary defines this
-			// worker's authority. Codex auto-accepts inside that configured scope.
+			// worker's authority. The selected harness auto-approves only inside
+			// that configured scope.
 			ApprovalMode: "auto",
 			DisplayName:  workerName(claim),
 			Prompt:       buildPrompt(claim),
@@ -196,7 +205,18 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 			}
 		}
 	}
-	return e.monitor(ctx, claim, entry.Session)
+	return e.monitor(ctx, claim, entry.Session, spec.Harness)
+}
+
+func supportedSupervisedRoute(route Route) bool {
+	switch route.Harness {
+	case "codex":
+		return route.IsolationPolicy == CodexWorkspaceWritePolicy
+	case "opencode":
+		return route.IsolationPolicy == OpenCodeWorkspaceWritePolicy
+	default:
+		return false
+	}
 }
 
 func (e *Engine) validateClaim(claim contracts.JobClaim) error {
@@ -212,7 +232,7 @@ func (e *Engine) validateClaim(claim contracts.JobClaim) error {
 	return nil
 }
 
-func (e *Engine) monitor(ctx context.Context, claim contracts.JobClaim, sessionID string) error {
+func (e *Engine) monitor(ctx context.Context, claim contracts.JobClaim, sessionID, harness string) error {
 	interval := e.PollInterval
 	if interval <= 0 {
 		interval = 3 * time.Second
@@ -226,7 +246,7 @@ func (e *Engine) monitor(ctx context.Context, claim contracts.JobClaim, sessionI
 		if err := e.flush(ctx, claim.RunID); err != nil {
 			return err
 		}
-		if err := e.observeAOContainer(ctx, claim, sessionID); err != nil {
+		if err := e.observeAOContainer(ctx, claim, harness, sessionID); err != nil {
 			return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_container", "The supervised AO container identity or PID namespace could not be verified; the run remains fenced.", nil, nil, "AO container reconciliation is pending", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_container", Status: "unknown", Reference: sessionID}}))
 		}
 		entry, hasEntry, err := e.Journal.Entry(ctx, claim.RunID)
@@ -314,7 +334,7 @@ func (e *Engine) stopAndConfirm(ctx context.Context, claim contracts.JobClaim, s
 	session, kill, err = e.AO.StopWorker(ctx, sessionID)
 	var containerProof *contracts.CapabilityTerminationProof
 	if e.Containers != nil {
-		proof, proofErr := e.stopAndVerifyAOContainer(ctx, claim, sessionID)
+		proof, proofErr := e.stopAndVerifyAOContainer(ctx, claim, entry.Spec.Harness, sessionID)
 		if proofErr != nil {
 			_ = e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "stop_uncertain")
 			return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_container_stop", "AO container PID namespace exit could not be confirmed; the run stays fenced.", nil, nil, "AO container termination is not confirmed", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_container", Status: "pending", Reference: sessionID}}))
@@ -352,7 +372,7 @@ func (e *Engine) stopAndConfirm(ctx context.Context, claim contracts.JobClaim, s
 	if containerProof != nil {
 		effects = append(effects, contracts.ExternalEffect{ID: claim.RunID, Kind: "ao_container_pid_namespace", Status: "terminated", Reference: containerProof.EffectRef})
 	}
-	if err := e.emitWithTerminationProof(ctx, claim, kind, "ao_session", "AO app-server exit and its supervised container PID namespace were verified.", nil, nil, "", effects, proof); err != nil {
+	if err := e.emitWithTerminationProof(ctx, claim, kind, "ao_session", "AO runtime host exit and its supervised container PID namespace were verified.", nil, nil, "", effects, proof); err != nil {
 		return err
 	}
 	return e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "terminated")
@@ -373,11 +393,11 @@ func toContractProof(proof *ao.TerminationProof) *contracts.TerminationProof {
 	return &contracts.TerminationProof{Source: proof.Source, Method: proof.Method, SessionID: proof.SessionID, VerifiedAt: proof.VerifiedAt, CleanupComplete: proof.CleanupComplete}
 }
 
-func (e *Engine) observeAOContainer(ctx context.Context, claim contracts.JobClaim, sessionID string) error {
+func (e *Engine) observeAOContainer(ctx context.Context, claim contracts.JobClaim, harness, sessionID string) error {
 	if e.Containers == nil {
 		return nil
 	}
-	containerID, found, err := e.Containers.Find(ctx, sessionID)
+	containerID, found, err := e.Containers.Find(ctx, harness, sessionID)
 	if err != nil || !found {
 		return err
 	}
@@ -397,7 +417,7 @@ func (e *Engine) observeAOContainer(ctx context.Context, claim contracts.JobClai
 	return nil
 }
 
-func (e *Engine) stopAndVerifyAOContainer(ctx context.Context, claim contracts.JobClaim, sessionID string) (contracts.CapabilityTerminationProof, error) {
+func (e *Engine) stopAndVerifyAOContainer(ctx context.Context, claim contracts.JobClaim, harness, sessionID string) (contracts.CapabilityTerminationProof, error) {
 	entry, ok, err := e.Journal.Entry(ctx, claim.RunID)
 	if err != nil {
 		return contracts.CapabilityTerminationProof{}, err
@@ -407,7 +427,7 @@ func (e *Engine) stopAndVerifyAOContainer(ctx context.Context, claim contracts.J
 	}
 	containerID := entry.Container
 	if containerID == "" {
-		foundID, found, findErr := e.Containers.Find(ctx, sessionID)
+		foundID, found, findErr := e.Containers.Find(ctx, harness, sessionID)
 		if findErr != nil {
 			return contracts.CapabilityTerminationProof{}, findErr
 		}
@@ -421,7 +441,7 @@ func (e *Engine) stopAndVerifyAOContainer(ctx context.Context, claim contracts.J
 	if err := e.checkInstance(ctx, claim, false); err != nil {
 		return contracts.CapabilityTerminationProof{}, err
 	}
-	return e.Containers.StopAndVerify(ctx, sessionID, containerID)
+	return e.Containers.StopAndVerify(ctx, harness, sessionID, containerID)
 }
 
 func (e *Engine) reportStopWithoutSession(ctx context.Context, claim contracts.JobClaim) error {

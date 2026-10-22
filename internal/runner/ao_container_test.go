@@ -10,6 +10,7 @@ import (
 type shortIDDocker struct {
 	id      string
 	removed bool
+	runtime string
 }
 
 func (d *shortIDDocker) Run(_ context.Context, args ...string) ([]byte, error) {
@@ -32,7 +33,7 @@ func (d *shortIDDocker) Run(_ context.Context, args ...string) ([]byte, error) {
 			"Id": d.id,
 			"Config": map[string]any{"Labels": map[string]string{
 				aoContainerManagedLabel: "true",
-				aoContainerRuntimeLabel: aoContainerRuntimeValue,
+				aoContainerRuntimeLabel: d.runtimeValue(),
 				aoContainerSessionLabel: "session-review",
 			}},
 			"HostConfig": map[string]any{"NetworkMode": "none"},
@@ -50,12 +51,39 @@ func (d *shortIDDocker) Run(_ context.Context, args ...string) ([]byte, error) {
 func TestDockerAOContainerSupervisorUsesFullIDForStop(t *testing.T) {
 	docker := &shortIDDocker{id: strings.Repeat("a", 64)}
 	supervisor := DockerAOContainerSupervisor{Docker: docker}
-	id, found, err := supervisor.Find(context.Background(), "session-review")
+	id, found, err := supervisor.Find(context.Background(), "codex", "session-review")
 	if err != nil || !found || id != docker.id {
 		t.Fatalf("Find() = %q, %v, %v", id, found, err)
 	}
-	proof, err := supervisor.StopAndVerify(context.Background(), "session-review", id)
+	proof, err := supervisor.StopAndVerify(context.Background(), "codex", "session-review", id)
 	if err != nil || !proof.CleanupComplete {
 		t.Fatalf("StopAndVerify() failed for full Docker ID: proof=%+v err=%v", proof, err)
 	}
+}
+
+func TestDockerAOContainerSupervisorUsesOpenCodeRuntimeLabel(t *testing.T) {
+	docker := &shortIDDocker{id: strings.Repeat("b", 64), runtime: aoContainerOpenCodeRuntime}
+	supervisor := DockerAOContainerSupervisor{Docker: docker}
+	id, found, err := supervisor.Find(context.Background(), "opencode", "session-review")
+	if err != nil || !found || id != docker.id {
+		t.Fatalf("Find(OpenCode) = %q, %v, %v", id, found, err)
+	}
+	proof, err := supervisor.StopAndVerify(context.Background(), "opencode", "session-review", id)
+	if err != nil || !proof.CleanupComplete || proof.EffectRef != "docker:"+id {
+		t.Fatalf("StopAndVerify(OpenCode) failed for full Docker ID: proof=%+v err=%v", proof, err)
+	}
+}
+
+func TestDockerAOContainerSupervisorRejectsUnregisteredHarness(t *testing.T) {
+	supervisor := DockerAOContainerSupervisor{Docker: &shortIDDocker{id: strings.Repeat("c", 64)}}
+	if _, _, err := supervisor.Find(context.Background(), "registered-by-AO-only", "session-review"); err == nil {
+		t.Fatal("container inventory accepted a harness without an explicit supervisor profile")
+	}
+}
+
+func (d *shortIDDocker) runtimeValue() string {
+	if d.runtime != "" {
+		return d.runtime
+	}
+	return aoContainerCodexRuntime
 }

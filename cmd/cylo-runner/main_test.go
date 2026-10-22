@@ -15,6 +15,17 @@ func TestLoadRoutesRequiresServerMatchingProfile(t *testing.T) {
 	}
 }
 
+func TestLoadRoutesKeepsOpenCodeRuntimeAndModelRouteExplicit(t *testing.T) {
+	routes, err := loadRoutes(`{"worker-opencode":{"profile_id":"worker-opencode","runtime_route_id":"ao-opencode","model_route_id":"cliproxyapi","isolation_policy":"ao-opencode-workspace-write-v1","harness":"opencode","model":"cylo/gpt-6-luna","approval_mode":"auto"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	route := routes["worker-opencode"]
+	if route.Harness != "opencode" || route.IsolationPolicy != "ao-opencode-workspace-write-v1" || route.ModelRouteID != "cliproxyapi" || route.Model != "cylo/gpt-6-luna" {
+		t.Fatalf("OpenCode runtime, isolation, and model route were not preserved independently: %+v", route)
+	}
+}
+
 func TestLoadRoutesRejectsEmptyOrIncompleteRoutes(t *testing.T) {
 	for _, raw := range []string{"", "{}", "[]", `{"worker":{"profile_id":"worker"}}`} {
 		if _, err := loadRoutes(raw); err == nil {

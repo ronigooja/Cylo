@@ -73,14 +73,18 @@ func run(args []string) error {
 	defer journal.Close()
 	docker := runner.ExecDockerCommand{Binary: optionalEnv("CYLO_DOCKER_BINARY", "docker")}
 	codexImage := strings.TrimSpace(os.Getenv("AO_CODEX_CONTAINER_IMAGE"))
+	openCodeImage := strings.TrimSpace(os.Getenv("AO_OPENCODE_CONTAINER_IMAGE"))
 	engine := &runner.Engine{
-		Control:        control,
-		Instance:       control,
-		AO:             agent,
-		Containers:     runner.DockerAOContainerSupervisor{Docker: docker},
-		Journal:        journal,
-		Routes:         routes,
-		Isolation:      runner.SupervisedCodexIsolation{Docker: docker, Image: codexImage},
+		Control:    control,
+		Instance:   control,
+		AO:         agent,
+		Containers: runner.DockerAOContainerSupervisor{Docker: docker},
+		Journal:    journal,
+		Routes:     routes,
+		Isolation: runner.SupervisedRuntimeIsolation{Docker: docker, Profiles: map[string]runner.SupervisedRuntimeProfile{
+			"codex":    {Harness: "codex", IsolationPolicy: runner.CodexWorkspaceWritePolicy, Image: codexImage},
+			"opencode": {Harness: "opencode", IsolationPolicy: runner.OpenCodeWorkspaceWritePolicy, Image: openCodeImage},
+		}},
 		PollInterval:   durationEnv("CYLO_RUNNER_POLL_INTERVAL", 2*time.Second),
 		ObserveTimeout: durationEnv("CYLO_RUNNER_OBSERVE_TIMEOUT", 15*time.Second),
 	}
