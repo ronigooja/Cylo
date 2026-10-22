@@ -684,12 +684,6 @@ func (s *Service) observeDeployment(w http.ResponseWriter, r *http.Request) {
 		if fence != obs.Fence || operation != obs.Operation {
 			return control.NewAPIError(409, "stale_deployment_fence", "observation does not match active authorized attempt", nil)
 		}
-		if cleanupOnly == 1 && (!revokedAt.Valid || operation != "stop") {
-			return control.NewAPIError(409, "cleanup_claim_invalid", "cleanup claim is no longer authorized", nil)
-		}
-		if cleanupOnly == 1 && obs.State == "failed" {
-			return control.NewAPIError(400, "cleanup_must_reconcile", "cleanup failures must remain uncertain until stop is proven", nil)
-		}
 		if !validOperationObservedState(operation, obs.State) {
 			return control.NewAPIError(400, "invalid_observation", "observed state is not valid for this operation", nil)
 		}
@@ -710,6 +704,14 @@ func (s *Service) observeDeployment(w http.ResponseWriter, r *http.Request) {
 			return control.NewAPIError(409, "observation_conflict", "observation ID was reused with different content", nil)
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return err
+		}
+		// An exact durable receipt replay remains acknowledgeable even if later
+		// control-plane state has revoked or replaced the claim's authorization.
+		if cleanupOnly == 1 && (!revokedAt.Valid || operation != "stop") {
+			return control.NewAPIError(409, "cleanup_claim_invalid", "cleanup claim is no longer authorized", nil)
+		}
+		if cleanupOnly == 1 && obs.State == "failed" {
+			return control.NewAPIError(400, "cleanup_must_reconcile", "cleanup failures must remain uncertain until stop is proven", nil)
 		}
 		if jobStatus != "claimed" && jobStatus != "uncertain" {
 			return control.NewAPIError(409, "stale_deployment_fence", "observation does not match active authorized attempt", nil)

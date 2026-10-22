@@ -237,6 +237,10 @@ func TestCapabilityRevocationFencesClaimsAndRequiresProvenCleanup(t *testing.T) 
 	if stateResponse.Code != http.StatusOK || json.Unmarshal(stateResponse.Body.Bytes(), &state) != nil || state["revocation_cleanup_state"] != nil || state["revoked_at"] != nil {
 		t.Fatalf("new request did not clear revocation state: %d %s", stateResponse.Code, stateResponse.Body.String())
 	}
+	cleanupReceiptReplay := reviewRequest(handler, http.MethodPost, "/runner/v1/deployments/"+deploymentID+"/observations", runnerToken, "", stopped)
+	if cleanupReceiptReplay.Code != http.StatusAccepted {
+		t.Fatalf("exact cleanup receipt replay after fresh authorization=%d %s, want accepted", cleanupReceiptReplay.Code, cleanupReceiptReplay.Body.String())
+	}
 	version = receipt.ResourceVersion
 	newAuthorize := reviewRequest(handler, http.MethodPost, "/v1/commands", deviceToken, "rev-new-authorize", contracts.CommandRequest{Kind: "capability.deployment.authorize", ExpectedVersion: &version, Payload: mustJSON(t, map[string]any{"deployment_id": deploymentID, "scope_kind": "workspace", "actions": []string{"install"}, "budget": budget, "expires_at": time.Now().UTC().Add(time.Hour)})})
 	if newAuthorize.Code != http.StatusOK || json.Unmarshal(newAuthorize.Body.Bytes(), &receipt) != nil {
