@@ -249,7 +249,10 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 		if control.DesiredControl != "run" {
 			return fmt.Errorf("unsupported desired control %q", control.DesiredControl)
 		}
-		if entry.Phase == "claimed" || entry.Phase == "create_pending" || entry.Phase == "effect_unknown" {
+		if entry.Phase == "create_pending" || entry.Phase == "create_attempted" || entry.Phase == "effect_unknown" {
+			return e.reportCreateAttemptUnresolved(ctx, claim, entry.Phase)
+		}
+		if entry.Phase == "claimed" || entry.Phase == "dispatch_pending" || entry.Phase == "create_ready" {
 			if authorization, ok := e.Control.(dispatchAuthorizationControl); ok {
 				allowed, reason, checkErr := authorization.CheckDispatchAuthorization(ctx, claim.RunID)
 				if checkErr != nil {
@@ -277,14 +280,24 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 			if err := e.checkInstance(ctx, claim, true); err != nil {
 				return e.reportFailure(ctx, claim, "instance_fence_unavailable", "The active server instance changed or disabled dispatch; AO creation remains fenced.")
 			}
-			if err := e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "create_pending"); err != nil {
+			if err := e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "dispatch_pending"); err != nil {
 				return err
 			}
 			if err := e.emit(ctx, claim, "dispatch_started", "ao_dispatch", "AO worker creation is beginning under the run idempotency key.", nil, nil, ""); err != nil {
 				return err
 			}
+			if err := e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "create_ready"); err != nil {
+				return err
+			}
 			if err := e.checkInstance(ctx, claim, true); err != nil {
 				return e.reportFailure(ctx, claim, "instance_fence_changed", "The active server instance changed before AO creation; the run remains fenced.")
+			}
+			// This write-ahead marker distinguishes a create request that may have
+			// reached AO from a dispatch observation that was durably recorded but
+			// whose create request was never started. After a restart, attempted
+			// creates remain uncertain without a read-only AO lookup.
+			if err := e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "create_attempted"); err != nil {
+				return err
 			}
 			session, err := e.AO.CreateWorker(ctx, spec)
 			if err != nil {
@@ -716,6 +729,16 @@ func (e *Engine) reportDispatchAuthorizationDenied(ctx context.Context, claim co
 		return err
 	}
 	return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_create", "Task authorization changed after AO dispatch began; no new create request was sent and the previous create outcome remains unresolved.", nil, map[string]any{"reason": reason}, "AO worker creation remains uncertain pending read-only reconciliation.", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "unknown"}}))
+}
+
+func (e *Engine) reportCreateAttemptUnresolved(ctx context.Context, claim contracts.JobClaim, journalPhase string) error {
+	// `create_pending` is retained for journals written by older runners. It
+	// predates the write-ahead create_attempted marker, so it cannot prove that
+	// the AO POST was never sent. Never replay it as a new create.
+	if err := e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "effect_unknown"); err != nil {
+		return err
+	}
+	return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_create", "The runner recovered a journaled AO create attempt without a read-only lookup; it did not send another create request and the result remains uncertain.", nil, map[string]any{"journal_phase": journalPhase}, "AO worker creation remains uncertain pending read-only reconciliation.", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "unknown"}}))
 }
 
 func (e *Engine) reportNoEffectTerminal(ctx context.Context, claim contracts.JobClaim, outcome, reason, message string) error {

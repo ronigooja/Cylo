@@ -284,6 +284,29 @@ func TestRevokedAuthorizationAfterDispatchKeepsUnknownWithoutAOReplay(t *testing
 	}
 }
 
+func TestRecoveredCreateAttemptNeverRepostsWithoutReadOnlyLookup(t *testing.T) {
+	for _, phase := range []string{"create_pending", "create_attempted"} {
+		t.Run(phase, func(t *testing.T) {
+			claim := validClaim()
+			agent := &fakeAO{}
+			engine, fake := makeEngine(t, claim, contracts.RunControl{DesiredControl: "run"}, agent, permitIsolation{}, nil)
+			spec := ao.WorkerSpec{ClientRequestID: claim.RunID, ProjectID: claim.AOProjectID, Harness: "codex", DisplayName: "original", Prompt: "original request body"}
+			if _, err := engine.Journal.SaveClaim(context.Background(), claim, spec, phase); err != nil {
+				t.Fatal(err)
+			}
+			if err := engine.Process(context.Background(), claim); !errors.Is(err, ErrOutcomePending) {
+				t.Fatalf("uncertain create recovery error=%v", err)
+			}
+			if agent.createN != 0 {
+				t.Fatalf("recovered %s journal caused %d AO create requests", phase, agent.createN)
+			}
+			if len(fake.observations) != 1 || fake.observations[0].Kind != "effect_unknown" || fake.observations[0].NoEffectProof != nil {
+				t.Fatalf("recovery did not preserve uncertain outcome: %+v", fake.observations)
+			}
+		})
+	}
+}
+
 func TestServerSelectedHarnessMustMatchRunnerRoute(t *testing.T) {
 	claim := validClaim()
 	claim.Harness = "opencode"
@@ -523,6 +546,12 @@ func TestUnknownAOCreateUsesOneAdapterRequestAndStaysFenced(t *testing.T) {
 	}
 	if len(control.observations) != 2 || control.observations[1].Kind != "effect_unknown" || control.observations[1].ExternalEffects[0].Status != "unknown" {
 		t.Fatalf("unknown AO effect was not reported: %+v", control.observations)
+	}
+	if err := engine.Process(context.Background(), claim); !errors.Is(err, ErrOutcomePending) {
+		t.Fatalf("restarting an unknown create should remain fenced: %v", err)
+	}
+	if agent.createN != 1 {
+		t.Fatalf("runner replayed AO create after restart, count=%d", agent.createN)
 	}
 }
 

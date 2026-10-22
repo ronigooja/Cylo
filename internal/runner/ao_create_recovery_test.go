@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
-	"reflect"
 	"testing"
 	"time"
 
@@ -37,7 +36,7 @@ func (a *recoveringAO) StopWorker(ctx context.Context, id string) (ao.Session, a
 	return a.base.StopWorker(ctx, id)
 }
 
-func TestUnknownAOCreateRecoversOriginalSessionAfterJournalRestart(t *testing.T) {
+func TestUnknownAOCreateRemainsFencedAfterJournalRestartWithoutLookup(t *testing.T) {
 	ctx := context.Background()
 	claim := validClaim()
 	journalPath := filepath.Join(t.TempDir(), "runner.db")
@@ -74,7 +73,6 @@ func TestUnknownAOCreateRecoversOriginalSessionAfterJournalRestart(t *testing.T)
 	if persisted.Spec.ClientRequestID != claim.RunID || persisted.Spec.ProjectID != claim.AOProjectID || persisted.Spec.Harness != "codex" {
 		t.Fatalf("journal did not retain original AO request identity: %+v", persisted.Spec)
 	}
-	originalSpec := persisted.Spec
 	if err := firstJournal.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -84,30 +82,30 @@ func TestUnknownAOCreateRecoversOriginalSessionAfterJournalRestart(t *testing.T)
 		t.Fatalf("reopen runner journal: %v", err)
 	}
 	t.Cleanup(func() { _ = secondJournal.Close() })
-	// AO's idempotent endpoint now has the original committed session available
-	// under the same request key. The runner must recover it without changing
-	// the persisted request, then require the normal termination proof.
+	// AO exposes no read-only lookup by clientRequestId. Repeating its create
+	// endpoint could launch a worker if the first POST never reached AO, so the
+	// restart must remain uncertain and make no second POST.
 	agent.base.session = ao.Session{ID: "ao-original-session", Status: "terminated"}
 	agent.base.stopSuccess = true
 	secondControl := &fakeControl{control: contracts.RunControl{DesiredControl: "run", ControlVersion: 1}}
 	engine.Journal = secondJournal
 	engine.Control = secondControl
 
-	if err := engine.Process(ctx, claim); err != nil {
-		t.Fatalf("recovery process: %v", err)
+	if err := engine.Process(ctx, claim); !errors.Is(err, ErrOutcomePending) {
+		t.Fatalf("recovery process error=%v, want unresolved external outcome", err)
 	}
-	if len(agent.createSpec) != 2 || !reflect.DeepEqual(agent.createSpec[1], originalSpec) {
-		t.Fatalf("recovery changed or skipped the original AO request: creates=%+v want second=%+v", agent.createSpec, originalSpec)
+	if len(agent.createSpec) != 1 {
+		t.Fatalf("runner replayed an uncertain AO create after restart: calls=%d", len(agent.createSpec))
 	}
 	final, ok, err := secondJournal.Entry(ctx, claim.RunID)
 	if err != nil || !ok {
 		t.Fatalf("read final journal entry: ok=%v err=%v", ok, err)
 	}
-	if final.Session != "ao-original-session" || final.Phase != "terminated" {
-		t.Fatalf("recovered session was not proof-terminated: session=%q phase=%q", final.Session, final.Phase)
+	if final.Session != "" || final.Phase != "effect_unknown" {
+		t.Fatalf("unknown create was incorrectly resolved: session=%q phase=%q", final.Session, final.Phase)
 	}
-	if len(secondControl.observations) != 2 || secondControl.observations[1].Kind != "runtime_terminated" || secondControl.observations[1].TerminationProof == nil {
-		t.Fatalf("recovery did not report proof-backed termination: %+v", secondControl.observations)
+	if len(secondControl.observations) != 1 || secondControl.observations[0].Kind != "effect_unknown" || secondControl.observations[0].NoEffectProof != nil {
+		t.Fatalf("recovery did not preserve uncertain external outcome: %+v", secondControl.observations)
 	}
 }
 
