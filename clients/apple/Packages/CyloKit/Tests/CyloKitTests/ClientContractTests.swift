@@ -169,8 +169,29 @@ final class ClientContractTests: XCTestCase {
     }
 
     @MainActor
-    private func makeRevocationDeployment(observed: String) throws -> CapabilityDeployment {
-        let data = Data(#"{"items":[{"deployment_id":"deploy-1","workspace_id":"workspace-1","service_id":"service-1","release_digest":"sha256:release","requested_operation":"start","desired_state":"stopped","observed_state":"# + "\(observed)" + #","grant_id":"grant-1","config_ref":"","config_sha256":"","version":8,"created_by":"owner-1","created_at":"2026-10-21T12:00:00Z","updated_at":"2026-10-21T12:01:00Z","latest_attempt_id":"attempt-1","latest_fence":4,"last_error_code":"","revoked_at":null,"revoked_by":null,"revocation_cleanup_state":null}]}"#.utf8)
+    func testRevocationVersionConflictRefreshesInventoryAndDoesNotReportSuccess() async throws {
+        let deployment = try makeRevocationDeployment(observed: "running")
+        let refreshedDeployment = try makeRevocationDeployment(observed: "running", version: 9)
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        model.setCapabilityDeploymentsForTesting([deployment])
+        model.capabilityRevocationSubmitOverrideForTesting = { version, payload in
+            XCTAssertEqual(version, 8)
+            XCTAssertEqual(payload, .object(["deployment_id": .string("deploy-1")]))
+            return false
+        }
+        model.capabilityRevocationRefreshOverrideForTesting = {
+            model.setCapabilityDeploymentsForTesting([refreshedDeployment])
+        }
+
+        let result = await model.revokeCapabilityDeployment(deployment, expectedConnectionEpoch: model.connectionEpoch)
+
+        XCTAssertFalse(result)
+        XCTAssertEqual(model.capabilityDeployments.first?.version, 9)
+        XCTAssertEqual(model.notice, "The deployment version changed. The latest capability inventory has been loaded; review it before trying again.")
+    }
+
+    private func makeRevocationDeployment(observed: String, version: Int64 = 8) throws -> CapabilityDeployment {
+        let data = Data(#"{"items":[{"deployment_id":"deploy-1","workspace_id":"workspace-1","service_id":"service-1","release_digest":"sha256:release","requested_operation":"start","desired_state":"stopped","observed_state":"\#(observed)","grant_id":"grant-1","config_ref":"","config_sha256":"","version":\#(version),"created_by":"owner-1","created_at":"2026-10-21T12:00:00Z","updated_at":"2026-10-21T12:01:00Z","latest_attempt_id":"attempt-1","latest_fence":4,"last_error_code":"","revoked_at":null,"revoked_by":null,"revocation_cleanup_state":null}]}"#.utf8)
         return try XCTUnwrap(CyloJSON.decoder.decode(CapabilityDeploymentList.self, from: data).items.first)
     }
 
