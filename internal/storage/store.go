@@ -20,6 +20,40 @@ type Config struct {
 	Path string
 }
 
+var ErrRestoreDeletionReconciliationRequired = errors.New("restore deletion reconciliation is required")
+
+// CheckRestoreDeletionReconciliationTx reports whether this database is a
+// restored target that still requires deletion reconciliation. Databases
+// without instance maintenance state are standalone stores; a present but
+// incomplete instance state is treated as an error so callers fail closed.
+func CheckRestoreDeletionReconciliationTx(ctx context.Context, tx *sql.Tx) error {
+	if tx == nil {
+		return errors.New("restore gate requires a transaction")
+	}
+	var tableCount int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cylo_instance_state'`).Scan(&tableCount); err != nil {
+		return err
+	}
+	if tableCount == 0 {
+		return nil
+	}
+	var required int
+	err := tx.QueryRowContext(ctx, `SELECT restore_deletion_reconciliation_required FROM cylo_instance_state WHERE singleton=1`).Scan(&required)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("instance state is missing while checking restore gate")
+	}
+	if err != nil {
+		return err
+	}
+	if required != 0 && required != 1 {
+		return errors.New("instance restore gate state is invalid")
+	}
+	if required == 1 {
+		return ErrRestoreDeletionReconciliationRequired
+	}
+	return nil
+}
+
 type Migration struct {
 	Namespace string
 	Version   int

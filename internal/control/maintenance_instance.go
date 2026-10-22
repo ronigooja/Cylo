@@ -21,12 +21,13 @@ import (
 // on every fence and instance replacement; consumers must not cache a prior
 // enabled state across an epoch change.
 type InstanceState struct {
-	InstanceID              string     `json:"instance_id"`
-	Epoch                   int64      `json:"epoch"`
-	DispatchEnabled         bool       `json:"dispatch_enabled"`
-	DerivedRetrievalEnabled bool       `json:"derived_retrieval_enabled"`
-	FenceReason             string     `json:"fence_reason,omitempty"`
-	FencedAt                *time.Time `json:"fenced_at,omitempty"`
+	InstanceID                            string     `json:"instance_id"`
+	Epoch                                 int64      `json:"epoch"`
+	DispatchEnabled                       bool       `json:"dispatch_enabled"`
+	DerivedRetrievalEnabled               bool       `json:"derived_retrieval_enabled"`
+	RestoreDeletionReconciliationRequired bool       `json:"restore_deletion_reconciliation_required"`
+	FenceReason                           string     `json:"fence_reason,omitempty"`
+	FencedAt                              *time.Time `json:"fenced_at,omitempty"`
 }
 
 type MigrationReadiness struct {
@@ -80,7 +81,7 @@ type isolationProofEnvelope struct {
 // 1000 is intentionally isolated in the `instance` migration stream because
 // the storage migration ledger currently assigns a globally unique version.
 func RegisterInstanceMaintenanceMigration(store *storage.Store) error {
-	return store.RegisterMigration(storage.Migration{Namespace: "instance", Version: 1000, Name: "persistent_instance_dispatch_fence", Up: func(ctx context.Context, tx *sql.Tx) error {
+	if err := store.RegisterMigration(storage.Migration{Namespace: "instance", Version: 1000, Name: "persistent_instance_dispatch_fence", Up: func(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `
 CREATE TABLE cylo_instance_state (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
@@ -113,6 +114,19 @@ CREATE TABLE cylo_instance_migration_source (
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		_, err = tx.ExecContext(ctx, `INSERT INTO cylo_instance_state(singleton,instance_id,epoch,dispatch_enabled,derived_retrieval_enabled,fence_reason,fenced_at,updated_at) VALUES(1,?,1,1,1,'','',?)`, id, now)
 		return err
+	}}); err != nil {
+		return err
+	}
+	return store.RegisterMigration(storage.Migration{Namespace: "instance", Version: 1001, Name: "restore_deletion_reconciliation_gate", Up: func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE cylo_instance_state ADD COLUMN restore_deletion_reconciliation_required INTEGER NOT NULL DEFAULT 0 CHECK(restore_deletion_reconciliation_required IN (0,1))`); err != nil {
+			return err
+		}
+		// A migration-source row is created only when PrepareRestoredInstance
+		// prepares a restore target. Backfill those targets closed, including
+		// already-prepared databases that predate this marker.
+		_, err := tx.ExecContext(ctx, `UPDATE cylo_instance_state SET restore_deletion_reconciliation_required=1
+WHERE EXISTS (SELECT 1 FROM cylo_instance_migration_source m WHERE m.singleton=1 AND trim(m.old_instance_id)!='' AND m.old_epoch>0)`)
+		return err
 	}})
 }
 
@@ -126,13 +140,13 @@ func newInstanceID() (string, error) {
 
 func GetInstanceState(ctx context.Context, tx *sql.Tx) (InstanceState, error) {
 	var state InstanceState
-	var dispatch, derived int
+	var dispatch, derived, restoreReconciliationRequired int
 	var reason, fenced string
-	err := tx.QueryRowContext(ctx, `SELECT instance_id,epoch,dispatch_enabled,derived_retrieval_enabled,fence_reason,coalesce(fenced_at,'') FROM cylo_instance_state WHERE singleton=1`).Scan(&state.InstanceID, &state.Epoch, &dispatch, &derived, &reason, &fenced)
+	err := tx.QueryRowContext(ctx, `SELECT instance_id,epoch,dispatch_enabled,derived_retrieval_enabled,restore_deletion_reconciliation_required,fence_reason,coalesce(fenced_at,'') FROM cylo_instance_state WHERE singleton=1`).Scan(&state.InstanceID, &state.Epoch, &dispatch, &derived, &restoreReconciliationRequired, &reason, &fenced)
 	if err != nil {
 		return state, err
 	}
-	state.DispatchEnabled, state.DerivedRetrievalEnabled, state.FenceReason = dispatch == 1, derived == 1, reason
+	state.DispatchEnabled, state.DerivedRetrievalEnabled, state.RestoreDeletionReconciliationRequired, state.FenceReason = dispatch == 1, derived == 1, restoreReconciliationRequired == 1, reason
 	if fenced != "" {
 		parsed, parseErr := time.Parse(time.RFC3339Nano, fenced)
 		if parseErr != nil {
@@ -211,7 +225,7 @@ func PrepareRestoredInstance(ctx context.Context, store *storage.Store, newID st
 	if err != nil {
 		return InstanceState{}, err
 	}
-	if current.Epoch != expectedEpoch || current.DispatchEnabled {
+	if current.Epoch != expectedEpoch || current.DispatchEnabled || current.RestoreDeletionReconciliationRequired {
 		return InstanceState{}, errors.New("restored database must already be fenced at the expected epoch")
 	}
 	if err = requireQuiescentAuthority(ctx, tx); err != nil {
@@ -221,7 +235,7 @@ func PrepareRestoredInstance(ctx context.Context, store *storage.Store, newID st
 		return InstanceState{}, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err = tx.ExecContext(ctx, `UPDATE cylo_instance_state SET instance_id=?,epoch=epoch+1,dispatch_enabled=0,derived_retrieval_enabled=0,fence_reason='restored target awaiting old-instance isolation',fenced_at=?,updated_at=? WHERE singleton=1 AND epoch=?`, newID, now, now, expectedEpoch); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE cylo_instance_state SET instance_id=?,epoch=epoch+1,dispatch_enabled=0,derived_retrieval_enabled=0,restore_deletion_reconciliation_required=1,fence_reason='restored target awaiting old-instance isolation and deletion reconciliation',fenced_at=?,updated_at=? WHERE singleton=1 AND epoch=?`, newID, now, now, expectedEpoch); err != nil {
 		return InstanceState{}, err
 	}
 	state, err := GetInstanceState(ctx, tx)
@@ -329,6 +343,9 @@ func EnableInstance(ctx context.Context, store *storage.Store, expectedEpoch int
 	current, err := GetInstanceState(ctx, tx)
 	if err != nil {
 		return InstanceState{}, err
+	}
+	if current.RestoreDeletionReconciliationRequired {
+		return InstanceState{}, storage.ErrRestoreDeletionReconciliationRequired
 	}
 	if current.Epoch != expectedEpoch || current.DispatchEnabled || proof.oldInstanceID == "" || proof.oldEpoch < 1 || proof.digest == "" || time.Since(proof.verifiedAt) > 24*time.Hour {
 		return InstanceState{}, errors.New("target fence or old-instance isolation proof does not match")

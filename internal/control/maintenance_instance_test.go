@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -31,7 +32,7 @@ func TestPersistentInstanceFenceAndVerifiedRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	state, err := instanceStatus(t, store)
-	if err != nil || !state.DispatchEnabled || state.Epoch != 1 {
+	if err != nil || !state.DispatchEnabled || state.Epoch != 1 || state.RestoreDeletionReconciliationRequired {
 		t.Fatalf("initial state=%#v err=%v", state, err)
 	}
 	fenced, err := FenceInstance(ctx, store, "migration", state.Epoch)
@@ -42,7 +43,7 @@ func TestPersistentInstanceFenceAndVerifiedRestore(t *testing.T) {
 		t.Fatal("stale fence epoch was accepted")
 	}
 	prepared, err := PrepareRestoredInstance(ctx, store, "target-instance", fenced.Epoch)
-	if err != nil || prepared.DispatchEnabled || prepared.DerivedRetrievalEnabled || prepared.InstanceID != "target-instance" || prepared.Epoch != 3 {
+	if err != nil || prepared.DispatchEnabled || prepared.DerivedRetrievalEnabled || !prepared.RestoreDeletionReconciliationRequired || prepared.InstanceID != "target-instance" || prepared.Epoch != 3 {
 		t.Fatalf("prepared state=%#v err=%v", prepared, err)
 	}
 
@@ -55,13 +56,72 @@ func TestPersistentInstanceFenceAndVerifiedRestore(t *testing.T) {
 	if err = RecordIsolationProof(ctx, store, proof); err != nil {
 		t.Fatal(err)
 	}
-	enabled, err := EnableInstance(ctx, store, prepared.Epoch, proof)
-	if err != nil || !enabled.DispatchEnabled || enabled.InstanceID != prepared.InstanceID {
-		t.Fatalf("enabled state=%#v err=%v", enabled, err)
+	if _, err = EnableInstance(ctx, store, prepared.Epoch, proof); !errors.Is(err, storage.ErrRestoreDeletionReconciliationRequired) {
+		t.Fatalf("restore activation without reconciliation returned %v", err)
 	}
-
-	if _, err = PrepareRestoredInstance(ctx, store, "second-target", enabled.Epoch); err == nil {
+	stillClosed, err := instanceStatus(t, store)
+	if err != nil || stillClosed.Epoch != prepared.Epoch || stillClosed.DispatchEnabled || stillClosed.DerivedRetrievalEnabled || !stillClosed.RestoreDeletionReconciliationRequired {
+		t.Fatalf("rejected activation changed target gates: state=%#v err=%v", stillClosed, err)
+	}
+	if _, err = PrepareRestoredInstance(ctx, store, "second-target", prepared.Epoch); err == nil {
 		t.Fatal("active instance was accepted as a restored target")
+	}
+}
+
+func TestRestoreGateMigrationBackfillsPreviouslyPreparedTargets(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, storage.Config{Path: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	legacySchema := `CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL,namespace TEXT NOT NULL DEFAULT '');
+INSERT INTO schema_migrations(version,name,applied_at,namespace) VALUES(1000,'persistent_instance_dispatch_fence','now','instance');
+CREATE TABLE cylo_instance_state(singleton INTEGER PRIMARY KEY,instance_id TEXT NOT NULL,epoch INTEGER NOT NULL,dispatch_enabled INTEGER NOT NULL,derived_retrieval_enabled INTEGER NOT NULL,fence_reason TEXT NOT NULL DEFAULT '',fenced_at TEXT,updated_at TEXT NOT NULL);
+CREATE TABLE cylo_instance_migration_source(singleton INTEGER PRIMARY KEY,old_instance_id TEXT NOT NULL,old_epoch INTEGER NOT NULL);
+INSERT INTO cylo_instance_state(singleton,instance_id,epoch,dispatch_enabled,derived_retrieval_enabled,fence_reason,updated_at) VALUES(1,'old-target',3,0,0,'restored target awaiting isolation','now');
+INSERT INTO cylo_instance_migration_source(singleton,old_instance_id,old_epoch) VALUES(1,'prior-source',2);`
+	if _, err = store.DB().ExecContext(ctx, legacySchema); err != nil {
+		t.Fatal(err)
+	}
+	if err = RegisterInstanceMaintenanceMigration(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	state, err := instanceStatus(t, store)
+	if err != nil || !state.RestoreDeletionReconciliationRequired || state.DispatchEnabled || state.DerivedRetrievalEnabled {
+		t.Fatalf("legacy prepared restore was not backfilled closed: state=%#v err=%v", state, err)
+	}
+}
+
+func TestRestoreGateFailsClosedWhenInstanceSingletonIsMissing(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, storage.Config{Path: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err = storage.RegisterCoreMigrations(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = RegisterInstanceMaintenanceMigration(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB().ExecContext(ctx, `DELETE FROM cylo_instance_state WHERE singleton=1`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := store.DB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err = storage.CheckRestoreDeletionReconciliationTx(ctx, tx); err == nil || errors.Is(err, storage.ErrRestoreDeletionReconciliationRequired) {
+		t.Fatalf("missing instance singleton did not fail closed with a state error: %v", err)
 	}
 }
 

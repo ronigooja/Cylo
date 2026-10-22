@@ -279,6 +279,11 @@ WHERE id=? AND workspace_id=? AND attempts=? AND ((status IN ('pending','retry')
 }
 
 func (s *derivedService) materializeTx(ctx context.Context, tx *sql.Tx, job *derivedJob) (*derivedJob, string, error) {
+	if job.Kind == "index" || job.Kind == "extract" {
+		if err := storage.CheckRestoreDeletionReconciliationTx(ctx, tx); err != nil {
+			return nil, "", err
+		}
+	}
 	out := &derivedJob{ID: job.ID, WorkspaceID: job.WorkspaceID, Kind: job.Kind, EntityID: job.EntityID, EntityVersion: job.EntityVersion, Target: job.Target, Attempt: job.Attempt, LeaseUntil: job.LeaseUntil, Payload: job.Payload}
 	switch job.Kind {
 	case "index", "extract":

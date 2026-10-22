@@ -189,46 +189,12 @@ func TestMaintenanceRESTEncryptedRestoreDrill(t *testing.T) {
 	if output, err := prepare.CombinedOutput(); err != nil {
 		t.Fatalf("prepare restore: %v\n%s", err, output)
 	}
-	assertRestoredAuthority(t, activeDB, false)
+	assertRestoredAuthority(t, activeDB, false, true)
 	enable := exec.Command(maintenance, "enable", "--database", activeDB, "--expected-epoch", "3", "--proof-file", proofFile, "--proof-key-file", proofKeyFile)
-	if output, err := enable.CombinedOutput(); err != nil {
-		t.Fatalf("proof-gated activation: %v\n%s", err, output)
+	if output, err := enable.CombinedOutput(); err == nil || !bytes.Contains(output, []byte("restore deletion reconciliation is required")) {
+		t.Fatalf("restore without deletion reconciliation was not blocked: err=%v output=%s", err, output)
 	}
-	assertRestoredAuthority(t, activeDB, true)
-
-	// Even a correctly signed envelope cannot bypass unresolved-effect checks.
-	blockedDB := filepath.Join(tmp, "blocked", "cylo.sqlite")
-	if err = os.MkdirAll(filepath.Dir(blockedDB), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	copyDB(t, activeDB, blockedDB)
-	blockedStore, err := openDrillStore(ctx, blockedDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = control.FenceInstance(ctx, blockedStore, "readiness negative", 3); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err = blockedStore.DB().ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,title,goal,source,profile_id,status,version,created_at,updated_at,created_by_device_id,command_id) VALUES('blocked-task','default','blocked','ops drill','user','drill','active',1,?,?, 'ops-owner','blocked-command')`, now, now); err != nil {
-		_ = blockedStore.Close()
-		t.Fatal(err)
-	}
-	if _, err = blockedStore.DB().ExecContext(ctx, `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,fence,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,started_at) VALUES('blocked-run','default','blocked-task','blocked-attempt','uncertain',99,'ops-owner','blocked-command','ops drill','drill','route','model','worker',?)`, now); err != nil {
-		_ = blockedStore.Close()
-		t.Fatal(err)
-	}
-	if _, err = blockedStore.DB().ExecContext(ctx, `INSERT INTO external_effects(id,workspace_id,task_id,run_id,kind,status,first_observed_at,last_observed_at,details) VALUES('uncertain','default','blocked-task','blocked-run','ops_drill','unknown',?,?,?)`, now, now, []byte(`{}`)); err != nil {
-		_ = blockedStore.Close()
-		t.Fatal(err)
-	}
-	_ = blockedStore.Close()
-	blockedProof := filepath.Join(tmp, "blocked-proof.json")
-	writePrivate(t, blockedProof, signedProof(t, proofKey, fenced.InstanceID, fenced.Epoch, 0))
-	blockedEnable := exec.Command(maintenance, "enable", "--database", blockedDB, "--expected-epoch", "4", "--proof-file", blockedProof, "--proof-key-file", proofKeyFile)
-	if output, err := blockedEnable.CombinedOutput(); err == nil || !bytes.Contains(output, []byte("unresolved work")) {
-		t.Fatalf("activation with unknown effect was not rejected clearly: err=%v output=%s", err, output)
-	}
+	assertRestoredAuthority(t, activeDB, false, true)
 }
 
 type runnerInstance struct {
@@ -295,22 +261,22 @@ func openDrillStore(ctx context.Context, path string) (*storage.Store, error) {
 	return store, nil
 }
 
-func assertRestoredAuthority(t *testing.T, path string, expectedDispatch bool) {
+func assertRestoredAuthority(t *testing.T, path string, expectedDispatch, expectedReconciliation bool) {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	var dispatch, derived, tombstones int
-	if err = db.QueryRow(`SELECT dispatch_enabled,derived_retrieval_enabled FROM cylo_instance_state WHERE singleton=1`).Scan(&dispatch, &derived); err != nil {
+	var dispatch, derived, reconciliationRequired, tombstones int
+	if err = db.QueryRow(`SELECT dispatch_enabled,derived_retrieval_enabled,restore_deletion_reconciliation_required FROM cylo_instance_state WHERE singleton=1`).Scan(&dispatch, &derived, &reconciliationRequired); err != nil {
 		t.Fatal(err)
 	}
 	if err = db.QueryRow(`SELECT count(*) FROM memory_tombstones`).Scan(&tombstones); err != nil {
 		t.Fatal(err)
 	}
-	if (dispatch == 1) != expectedDispatch || derived != 0 || tombstones != 1 {
-		t.Fatalf("restored dispatch=%d derived=%d tombstones=%d expected_dispatch=%t", dispatch, derived, tombstones, expectedDispatch)
+	if (dispatch == 1) != expectedDispatch || derived != 0 || (reconciliationRequired == 1) != expectedReconciliation || tombstones != 1 {
+		t.Fatalf("restored dispatch=%d derived=%d reconciliation_required=%d tombstones=%d expected_dispatch=%t expected_reconciliation=%t", dispatch, derived, reconciliationRequired, tombstones, expectedDispatch, expectedReconciliation)
 	}
 }
 

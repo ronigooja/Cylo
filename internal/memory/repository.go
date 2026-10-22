@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ronigooja/Cylo/contracts"
 	"github.com/ronigooja/Cylo/internal/control"
+	"github.com/ronigooja/Cylo/internal/storage"
 )
 
 var (
@@ -241,6 +242,9 @@ func (r *Repository) Search(ctx context.Context, p contracts.Principal, query st
 		return SearchResult{}, err
 	}
 	defer tx.Rollback()
+	if err := storage.CheckRestoreDeletionReconciliationTx(ctx, tx); err != nil {
+		return SearchResult{}, err
+	}
 	at := time.Now().UTC()
 	if filter.At != nil {
 		at = filter.At.UTC()
@@ -352,6 +356,9 @@ func (r *Repository) AssembleContext(ctx context.Context, principal contracts.Pr
 			return ContextManifest{}, nil, err
 		}
 		defer tx.Rollback()
+		if err := storage.CheckRestoreDeletionReconciliationTx(ctx, tx); err != nil {
+			return ContextManifest{}, nil, err
+		}
 		var projectID string
 		if err := tx.QueryRowContext(ctx, `SELECT coalesce(project_id,'') FROM tasks WHERE workspace_id=? AND id=?`, principal.WorkspaceID, taskID).Scan(&projectID); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -421,6 +428,9 @@ func (r *Repository) AssembleContext(ctx context.Context, principal contracts.Pr
 		return ContextManifest{}, nil, err
 	}
 	defer tx.Rollback()
+	if err := storage.CheckRestoreDeletionReconciliationTx(ctx, tx); err != nil {
+		return ContextManifest{}, nil, err
+	}
 	if err := r.SaveContext(ctx, tx, manifest); err != nil {
 		return ContextManifest{}, nil, err
 	}

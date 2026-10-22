@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ronigooja/Cylo/contracts"
 	"github.com/ronigooja/Cylo/internal/control"
+	"github.com/ronigooja/Cylo/internal/storage"
 )
 
 type rememberPayload struct {
@@ -339,6 +340,8 @@ func featureError(status int, code, message string, details any) error {
 
 func mapMemoryError(err error) error {
 	switch {
+	case errors.Is(err, storage.ErrRestoreDeletionReconciliationRequired):
+		return featureError(http.StatusServiceUnavailable, "restore_deletion_reconciliation_required", "restored instance is closed until deletion reconciliation is completed", nil)
 	case errors.Is(err, ErrVersionConflict):
 		return featureError(http.StatusConflict, "version_conflict", "memory revision is stale", nil)
 	case errors.Is(err, ErrNotFound):

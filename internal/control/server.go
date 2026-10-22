@@ -487,11 +487,11 @@ func (s *Server) Handler() http.Handler {
 	s.sealed = true
 	s.mu.Unlock()
 	root := http.NewServeMux()
-	root.HandleFunc("POST /v1/bootstrap", s.handleBootstrap)
-	root.HandleFunc("POST /v1/pairings", s.handlePairingCreate)
-	root.Handle("GET /v1/pairings/{pairing_id}", s.deviceAuth(http.HandlerFunc(s.handlePairingStatus)))
-	root.Handle("/v1/", s.deviceAuth(s.device))
-	root.Handle("/runner/v1/", s.runnerAuth(s.runner))
+	root.Handle("POST /v1/bootstrap", s.restoreDeletionGate(http.HandlerFunc(s.handleBootstrap)))
+	root.Handle("POST /v1/pairings", s.restoreDeletionGate(http.HandlerFunc(s.handlePairingCreate)))
+	root.Handle("GET /v1/pairings/{pairing_id}", s.deviceAuth(s.restoreDeletionGate(http.HandlerFunc(s.handlePairingStatus))))
+	root.Handle("/v1/", s.deviceAuth(s.restoreDeletionGate(s.device)))
+	root.Handle("/runner/v1/", s.runnerAuth(s.restoreDeletionGate(s.runner)))
 	root.Handle("/healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}))
