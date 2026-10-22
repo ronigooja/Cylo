@@ -86,8 +86,9 @@ public final class APIClient: @unchecked Sendable {
         try authorize(&request)
 
         let download = try await downloadBounded(request, using: session, maximumBytes: Int64(Self.maximumExportBytes))
+        let downloadLease = download.lease
         let downloadURL = download.fileURL
-        defer { try? FileManager.default.removeItem(at: downloadURL) }
+        defer { downloadLease.cleanup() }
         let response = download.response
         guard (200..<300).contains(response.statusCode) else {
             let data = try Data(contentsOf: downloadURL)
