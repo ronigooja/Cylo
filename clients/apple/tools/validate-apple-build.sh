@@ -176,6 +176,7 @@ if ! run_logged "unsigned universal macOS app build" "$OUTPUT_ROOT/macos-xcodebu
     -derivedDataPath "$OUTPUT_ROOT/macos-derived" \
     -clonedSourcePackagesDirPath "$XCODE_PACKAGE_ROOT" \
     -packageCachePath "$OUTPUT_ROOT/package-cache" \
+    -resultBundlePath "$OUTPUT_ROOT/macos-app-target.xcresult" \
     CODE_SIGNING_ALLOWED=NO build; then
     record "FAIL unsigned universal macOS app build"
     exit 1
