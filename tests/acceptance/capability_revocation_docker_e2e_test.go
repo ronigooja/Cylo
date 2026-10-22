@@ -48,28 +48,56 @@ func TestDockerBackedCapabilityRevocationLifecycle(t *testing.T) {
 	}, http.StatusCreated, nil)
 
 	manifest := capabilityServiceManifest(image, "--directory", "/tmp")
-	manifest.Mounts = []contracts.CapabilityMount{{VolumeID: "revocation-persistent-data", Target: "/data", ReadOnly: true}}
+	manifest.Mounts = []contracts.CapabilityMount{{VolumeID: "revocation-persistent-data-" + reviewToken(t), Target: "/data", ReadOnly: true}}
 	release := submitCapabilityRelease(t, httpServer.Client(), httpServer.URL, deviceToken, manifest, "revoke-release")
 	deployment, version := requestCapabilityDeployment(t, httpServer.Client(), httpServer.URL, deviceToken, "local-revocable-service", release, "install", nil, "revoke-install-request")
 	containerName := "cylo-cap-" + capabilityShortHash(deployment)
 	volumeName := "cylo-vol-" + capabilityShortHash("default\x00"+manifest.Mounts[0].VolumeID)
+	assertDockerObjectAbsent(t, ctx, "inspect", containerName)
+	assertDockerObjectAbsent(t, ctx, "volume", "inspect", volumeName)
+	var containerID string
+	var volumeCreatedAt string
 	t.Cleanup(func() {
-		_ = exec.Command("docker", "rm", "--force", containerName).Run()
-		_ = exec.Command("docker", "volume", "rm", volumeName).Run()
+		if raw, err := exec.Command("docker", "inspect", "--format", "{{json .}}", containerName).Output(); err == nil {
+			var inspected struct {
+				ID     string `json:"Id"`
+				Config struct {
+					Labels map[string]string `json:"Labels"`
+				} `json:"Config"`
+			}
+			if json.Unmarshal(raw, &inspected) == nil && inspected.ID != "" && (containerID == "" || inspected.ID == containerID) && inspected.Config.Labels["io.cylo.managed"] == "true" && inspected.Config.Labels["io.cylo.deployment"] == capabilityShortHash(deployment) && inspected.Config.Labels["io.cylo.workspace"] == capabilityShortHash("default") {
+				_ = exec.Command("docker", "rm", "--force", inspected.ID).Run()
+			}
+		}
+		if raw, err := exec.Command("docker", "volume", "inspect", volumeName).Output(); err == nil {
+			var inspected []struct {
+				Name      string            `json:"Name"`
+				CreatedAt string            `json:"CreatedAt"`
+				Labels    map[string]string `json:"Labels"`
+			}
+			if json.Unmarshal(raw, &inspected) == nil && len(inspected) == 1 && inspected[0].Name == volumeName && (volumeCreatedAt == "" || inspected[0].CreatedAt == volumeCreatedAt) && inspected[0].Labels["io.cylo.workspace"] == capabilityShortHash("default") && inspected[0].Labels["io.cylo.volume"] == capabilityShortHash(manifest.Mounts[0].VolumeID) {
+				_ = exec.Command("docker", "volume", "rm", volumeName).Run()
+			}
+		}
 	})
 	version = authorizeCapabilityDeployment(t, httpServer.Client(), httpServer.URL, deviceToken, deployment, version, "install", manifest.Budget, "revoke-install-authorize")
 	if err := runCapabilityRunnerOnce(t, runnerBinary, httpServer.URL, runnerToken, journalPath); err != nil {
 		t.Fatalf("runner process failed to install synthetic service: %v", err)
 	}
-	version = assertCapabilityDeploymentState(t, httpServer.Client(), httpServer.URL, deviceToken, deployment, "running", version)
-	containerID := capabilityDockerOutput(t, ctx, "inspect", "--format", "{{.Id}}", containerName)
+	containerID = capabilityDockerOutput(t, ctx, "inspect", "--format", "{{.Id}}", containerName)
 	if got := capabilityDockerOutput(t, ctx, "inspect", "--format", "{{.State.Running}}", containerName); got != "true" {
 		t.Fatalf("synthetic service was not running before revocation: %q", got)
 	}
-	volumeID := capabilityDockerOutput(t, ctx, "volume", "inspect", "--format", "{{.Name}}", volumeName)
-	if volumeID != volumeName {
-		t.Fatalf("persistent volume name=%q, want %q", volumeID, volumeName)
+	var volumeIdentity []struct {
+		Name      string            `json:"Name"`
+		CreatedAt string            `json:"CreatedAt"`
+		Labels    map[string]string `json:"Labels"`
 	}
+	if err := json.Unmarshal([]byte(capabilityDockerOutput(t, ctx, "volume", "inspect", volumeName)), &volumeIdentity); err != nil || len(volumeIdentity) != 1 || volumeIdentity[0].Name != volumeName || volumeIdentity[0].CreatedAt == "" || volumeIdentity[0].Labels["io.cylo.workspace"] != capabilityShortHash("default") || volumeIdentity[0].Labels["io.cylo.volume"] != capabilityShortHash(manifest.Mounts[0].VolumeID) {
+		t.Fatalf("could not capture this run's persistent volume identity: %+v err=%v", volumeIdentity, err)
+	}
+	volumeCreatedAt = volumeIdentity[0].CreatedAt
+	version = assertCapabilityDeploymentState(t, httpServer.Client(), httpServer.URL, deviceToken, deployment, "running", version)
 
 	var revokeReceipt contracts.CommandReceipt
 	capabilityHTTP(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/v1/commands", deviceToken, "revoke-running-service", contracts.CommandRequest{
@@ -89,9 +117,11 @@ func TestDockerBackedCapabilityRevocationLifecycle(t *testing.T) {
 	blocked := contracts.CommandRequest{Kind: "capability.deployment.request", ExpectedVersion: &version, Payload: jsonRaw(t, map[string]string{"service_id": "local-revocable-service", "release_digest": release, "operation": "install"})}
 	capabilityHTTP(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/v1/commands", deviceToken, "revoke-blocked-request", blocked, http.StatusConflict, nil)
 
-	// Simulate the runner losing its HTTP receipt after it has stopped Docker.
-	// A new runner process must replay its journaled observation and receive the
-	// control-plane ACK without dispatching another Docker operation.
+	// Interrupt the receipt submission after Docker has stopped the container
+	// but before the test HTTP handler accepts it. A new runner process must
+	// replay its journaled observation and receive the ACK without dispatching
+	// another Docker operation. Committed duplicate receipt replay is covered by
+	// the HTTP integration test.
 	faults.failNextDeploymentObservation.Store(true)
 	if err := runCapabilityRunnerOnce(t, runnerBinary, httpServer.URL, runnerToken, journalPath); err == nil {
 		t.Fatal("runner unexpectedly received the deliberately interrupted cleanup receipt")
@@ -116,8 +146,8 @@ func TestDockerBackedCapabilityRevocationLifecycle(t *testing.T) {
 	if confirmedState.ObservedState != "stopped" || confirmedState.CleanupState == nil || *confirmedState.CleanupState != "confirmed" {
 		t.Fatalf("replayed runner receipt did not confirm cleanup: %+v", confirmedState)
 	}
-	if got := capabilityDockerOutput(t, ctx, "volume", "inspect", "--format", "{{.Name}}", volumeName); got != volumeID {
-		t.Fatalf("revocation removed or replaced persistent volume: before=%s after=%s", volumeID, got)
+	if got := capabilityDockerOutput(t, ctx, "volume", "inspect", "--format", "{{.Name}}", volumeName); got != volumeName {
+		t.Fatalf("revocation removed or replaced persistent volume: before=%s after=%s", volumeName, got)
 	}
 	_, nextVersion := requestCapabilityDeployment(t, httpServer.Client(), httpServer.URL, deviceToken, "local-revocable-service", release, "install", &version, "revoke-after-confirmation")
 	_ = nextVersion
@@ -130,6 +160,18 @@ func TestDockerBackedCapabilityRevocationLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	capabilityHTTP(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/runner/v1/deployments/"+deployment+"/observations", runnerToken, "", cleanupObservation, http.StatusAccepted, nil)
+}
+
+func assertDockerObjectAbsent(t *testing.T, ctx context.Context, args ...string) {
+	t.Helper()
+	output, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	if err == nil {
+		t.Fatalf("test resource already exists; preserving it: docker %s returned %s", strings.Join(args, " "), strings.TrimSpace(string(output)))
+	}
+	message := strings.ToLower(string(output))
+	if !strings.Contains(message, "no such") && !strings.Contains(message, "not found") {
+		t.Fatalf("could not prove test resource is absent; preserving it: docker %s: %v (%s)", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
 }
 
 func capabilityDockerOutput(t *testing.T, ctx context.Context, args ...string) string {
