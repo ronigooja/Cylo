@@ -793,6 +793,33 @@ final class ClientContractTests: XCTestCase {
         XCTAssertEqual(remaining.map(\.idempotencyKey), [key])
     }
 
+    func testUnknownWorkspaceNeverPostsLegacyPendingCommand() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = try CommandJournal(fileURL: directory.appendingPathComponent("commands.json"))
+        let key = "legacy-unbound-\(UUID().uuidString.lowercased())"
+        try await journal.append(PendingCommand(idempotencyKey: key, kind: "task.create", expectedVersion: nil, payload: .object(["title": .string("Unbound")]), createdAt: "now", workspaceID: nil, expectedResourceType: "task", expectedResourceID: nil))
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        var requestCount = 0
+        ExportURLProtocol.responseHandler = { _ in requestCount += 1; return (404, [:], Data()) }
+        let coordinator = CommandCoordinator(api: api, journal: journal)
+        do {
+            _ = try await coordinator.retryPending(idempotencyKey: key, currentWorkspaceID: nil)
+            XCTFail("An unknown workspace cannot authorize a pending command")
+        } catch {
+            guard case .pendingCommandWorkspaceMismatch = error else { return XCTFail("Unexpected error: \(error)") }
+        }
+
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        await model.recoverPendingCommandsForTesting(api: api, journal: journal, workspaceID: nil)
+
+        XCTAssertEqual(requestCount, 0)
+        let remaining = try await journal.all()
+        XCTAssertEqual(remaining.map(\.idempotencyKey), [key])
+        XCTAssertEqual(model.pendingCommandSummaries.first?.state, .differentWorkspace)
+    }
+
     func testPendingReceiptLookupNetworkFailureDoesNotResubmitOrDropJournalRow() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -862,6 +889,53 @@ final class ClientContractTests: XCTestCase {
         XCTAssertEqual(model.pendingCommandSummaries.first?.state, .needsReview)
         let remaining = try await journal.all()
         XCTAssertTrue(remaining.isEmpty, "a conflict is final for the original immutable command")
+    }
+
+    @MainActor
+    func testDelayedOldJournalReadCannotReplaceSummariesAfterConnectionChanges() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let oldJournal = try CommandJournal(fileURL: directory.appendingPathComponent("old-commands.json"))
+        let newJournal = try CommandJournal(fileURL: directory.appendingPathComponent("new-commands.json"))
+        let oldCommand = PendingCommand(idempotencyKey: "old-connection", kind: "task.create", expectedVersion: nil, payload: .object(["title": .string("Old task")]), createdAt: "now", workspaceID: "workspace-1", expectedResourceType: "task", expectedResourceID: nil)
+        try await oldJournal.append(oldCommand)
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        await model.preparePendingCheckForTesting(api: api, journal: oldJournal, snapshot: Snapshot(serverVersion: "1", eventCursor: "1", projects: [], tasks: [], approvals: [], devices: [], runs: []))
+        let readStarted = expectation(description: "old journal read started")
+        var resumeRead: CheckedContinuation<[PendingCommand], Never>!
+        model.pendingCommandReadOverrideForTesting = {
+            await withCheckedContinuation { continuation in
+                resumeRead = continuation
+                readStarted.fulfill()
+            }
+        }
+
+        let staleReload = Task { await model.reloadPendingCommandSummariesForTesting() }
+        await fulfillment(of: [readStarted], timeout: 2)
+        model.replacePendingCheckConnectionForTesting(api: api, journal: newJournal)
+        resumeRead([oldCommand])
+        await staleReload.value
+
+        XCTAssertTrue(model.pendingCommandSummaries.isEmpty)
+    }
+
+    @MainActor
+    func testAppendForTaskMissingFromLatestSnapshotDoesNotCreateAnotherTask() async throws {
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        let task = TaskRecord(id: "task-removed", projectId: nil, title: "Existing task", goal: "Existing goal", source: "user", profileId: nil, status: .active, version: 2, createdAt: "now", updatedAt: "now", acceptedAt: nil, startedAt: nil, finishedAt: nil, result: nil, error: nil, evidence: [], canAcceptResult: false)
+        let snapshot = Snapshot(serverVersion: "1", eventCursor: "1", projects: [], tasks: [task], approvals: [], devices: [], runs: [])
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        await model.preparePendingCheckForTesting(api: api, journal: try CommandJournal(fileURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)), snapshot: snapshot)
+        model.setSnapshotForTesting(Snapshot(serverVersion: "2", eventCursor: "2", projects: [], tasks: [], approvals: [], devices: [], runs: []))
+        var requestCount = 0
+        ExportURLProtocol.responseHandler = { _ in requestCount += 1; return (500, [:], Data()) }
+
+        await model.append(to: task, content: "Continue the existing task")
+
+        XCTAssertEqual(requestCount, 0)
+        XCTAssertTrue(model.notice?.contains("finished") == true || model.notice?.contains("unavailable") == true)
     }
 
     @MainActor

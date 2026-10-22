@@ -52,6 +52,7 @@ public final class CyloAppModel: ObservableObject {
     var exportDownloadOverrideForTesting: ((String) async throws -> ScopedExportArtifact)?
     var memorySearchOverrideForTesting: ((String) async throws -> MemorySearchResult)?
     var snapshotFetchOverrideForTesting: (() async throws -> Snapshot)?
+    var pendingCommandReadOverrideForTesting: (() async throws -> [PendingCommand])?
 
     func setCapabilityDeploymentsForTesting(_ deployments: [CapabilityDeployment]) {
         capabilityDeployments = deployments
@@ -75,6 +76,7 @@ public final class CyloAppModel: ObservableObject {
 
     func recoverPendingCommandsForTesting(api: APIClient, journal: CommandJournal, expectedGeneration: UInt64? = nil, workspaceID: String? = "workspace-1") async {
         self.api = api
+        self.journal = journal
         let testCoordinator = CommandCoordinator(api: api, journal: journal)
         coordinator = testCoordinator
         await recoverPendingCommands(expectedGeneration: expectedGeneration ?? connectionGeneration.value, sourceAPI: api, coordinator: testCoordinator, workspaceID: workspaceID)
@@ -87,6 +89,23 @@ public final class CyloAppModel: ObservableObject {
         self.snapshot = snapshot
         snapshotFetchOverrideForTesting = { snapshot }
         await reloadPendingCommandSummaries()
+    }
+
+    func replacePendingCheckConnectionForTesting(api: APIClient, journal: CommandJournal) {
+        connectionGeneration.advance()
+        connectionEpoch = connectionGeneration.value
+        pendingCommandSummaries = []
+        self.api = api
+        self.journal = journal
+        coordinator = CommandCoordinator(api: api, journal: journal)
+    }
+
+    func reloadPendingCommandSummariesForTesting() async {
+        await reloadPendingCommandSummaries()
+    }
+
+    func setSnapshotForTesting(_ snapshot: Snapshot?) {
+        self.snapshot = snapshot
     }
 #endif
     private var configuredServerURL: URL?
@@ -779,7 +798,11 @@ public final class CyloAppModel: ObservableObject {
     }
 
     public func append(to task: TaskRecord, content: String) async {
-        guard let currentTask = self.task(id: task.id), currentTask.status.canAcceptEntries else {
+        guard let currentTask = self.task(id: task.id) else {
+            notice = "This task is unavailable in the latest snapshot. Refresh it or choose New task before sending."
+            return
+        }
+        guard currentTask.status.canAcceptEntries else {
             notice = "This task is finished and cannot accept more entries. Choose New task to start separate work."
             return
         }
@@ -1528,11 +1551,19 @@ public final class CyloAppModel: ObservableObject {
 
     private func reloadPendingCommandSummaries() async {
         guard let journal else { pendingCommandSummaries = []; return }
-        let commands = (try? await journal.all()) ?? []
+        let expectedGeneration = connectionGeneration.value
+        let sourceAPI = api
+        let commands: [PendingCommand]
+        if let readOverride = pendingCommandReadOverrideForTesting {
+            commands = (try? await readOverride()) ?? []
+        } else {
+            commands = (try? await journal.all()) ?? []
+        }
+        guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI), self.journal === journal else { return }
         let currentWorkspaceID = snapshot?.devices.first?.workspaceId
         var summaries = commands.map { command in
             let state: PendingCommandSummary.State
-            if command.workspaceID != currentWorkspaceID { state = .differentWorkspace }
+            if command.workspaceID == nil || currentWorkspaceID == nil || command.workspaceID != currentWorkspaceID { state = .differentWorkspace }
             else { state = commandStatusByKey[command.idempotencyKey] ?? .waitingForConfirmation }
             let title = commandTitleByKey[command.idempotencyKey] ?? pendingCommandTitle(kind: command.kind, payload: command.payload)
             return PendingCommandSummary(id: command.idempotencyKey, title: title, state: state)

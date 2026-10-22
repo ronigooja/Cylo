@@ -87,7 +87,7 @@ private struct ConversationView: View {
             } else {
                 ContentUnavailableView("Start a conversation", systemImage: "bubble.left.and.bubble.right", description: Text("Send a request to create a durable task, or choose an existing task below."))
             }
-            if !model.tasks.isEmpty {
+            if !model.tasks.isEmpty || selectedTaskID != nil {
                 Picker("Continue a task", selection: $selectedTaskID) {
                     Text("New task").tag(String?.none)
                     ForEach(model.tasks) { task in Text(task.title).tag(Optional(task.id)) }
@@ -104,9 +104,10 @@ private struct ConversationView: View {
 
     private var composer: some View {
         let selectedTask = model.task(id: selectedTaskID)
-        let canAppend = selectedTask?.status.canAcceptEntries ?? true
+        let missingSelectedTask = selectedTaskID != nil && selectedTask == nil
+        let canAppend = missingSelectedTask ? false : (selectedTask?.status.canAcceptEntries ?? true)
         return VStack(alignment: .leading, spacing: 8) {
-            if selectedTask == nil, !model.projects.isEmpty {
+            if selectedTaskID == nil, !model.projects.isEmpty {
                 Picker("Project", selection: $projectID) {
                     Text("Unassigned").tag("")
                     ForEach(model.projects) { project in Text(project.name).tag(project.id) }
@@ -132,7 +133,10 @@ private struct ConversationView: View {
                 } label: { Label("Send", systemImage: "arrow.up.circle.fill") }
                     .disabled(model.isBusy || !canAppend || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            if !canAppend {
+            if missingSelectedTask {
+                Text("This selected task is unavailable in the latest snapshot. Refresh it or choose New task before sending.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if !canAppend {
                 Text("This task is finished and cannot accept more entries. Choose New task to start separate work.")
                     .font(.caption).foregroundStyle(.secondary)
             }

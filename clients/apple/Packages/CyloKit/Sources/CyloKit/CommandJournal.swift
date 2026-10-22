@@ -155,7 +155,7 @@ public actor CommandCoordinator {
         let commands = try await journal.all()
         var outcomes: [CommandOutcome] = []
         for command in commands {
-            guard !enforceWorkspace || command.workspaceID == currentWorkspaceID else {
+            guard !enforceWorkspace || (command.workspaceID != nil && currentWorkspaceID != nil && command.workspaceID == currentWorkspaceID) else {
                 await onWorkspaceMismatch(command)
                 continue
             }
@@ -175,7 +175,9 @@ public actor CommandCoordinator {
         guard let command = try await journal.all().first(where: { $0.idempotencyKey == idempotencyKey }) else {
             throw CyloError.persistence("The saved action is no longer pending.")
         }
-        guard command.workspaceID == currentWorkspaceID else { throw CyloError.pendingCommandWorkspaceMismatch }
+        guard let commandWorkspaceID = command.workspaceID,
+              let currentWorkspaceID,
+              commandWorkspaceID == currentWorkspaceID else { throw CyloError.pendingCommandWorkspaceMismatch }
         return try await deliver(command, checkReceiptFirst: true)
     }
 
