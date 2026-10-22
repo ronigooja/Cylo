@@ -162,11 +162,6 @@ func (s *Server) handleScopedExport(w http.ResponseWriter, r *http.Request) {
 		writeExportFailure(w)
 		return
 	}
-	permissionFingerprint, err := exportAuthorizationFingerprint(r.Context(), tx, p, scope)
-	if err != nil {
-		writeExportFailure(w)
-		return
-	}
 	instanceLineage, instanceGeneration, deletionSequence, err := exportInstanceAuthority(r.Context(), tx)
 	if err != nil {
 		writeExportFailure(w)
@@ -181,6 +176,13 @@ func (s *Server) handleScopedExport(w http.ResponseWriter, r *http.Request) {
 			writeError(w, apiError(http.StatusRequestEntityTooLarge, "export_field_too_large", "an authorized export field exceeds the 1 MiB per-field limit", nil))
 			return
 		}
+		writeExportFailure(w)
+		return
+	}
+	// Run scalar-only field length checks before permission fingerprinting,
+	// which inspects revision contents and would otherwise materialize them.
+	permissionFingerprint, err := exportAuthorizationFingerprint(r.Context(), tx, p, scope)
+	if err != nil {
 		writeExportFailure(w)
 		return
 	}
