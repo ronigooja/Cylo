@@ -17,17 +17,21 @@ from data_lifecycle.common import (
     file_record, load_inventory, private_dir, read_key, run_volume_quiesce_adapter,
     sqlite_snapshot, independent_deletion_journal_metadata,
 )
+from data_lifecycle.retention import purge_expired, register_backup
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--destination", type=Path, required=True, help="private backup directory")
+    parser.add_argument("--retention-days", type=int, default=30, help="retain registered backups for this many days (default: 30)")
     parser.add_argument("--key-file", type=Path, required=True, help="32-byte deployment-managed key, mode 0600")
     parser.add_argument("--data-root", action="append", default=[], metavar="ID=PATH", help="allowed source root; repeat for configs/artifacts/volumes")
     parser.add_argument("--inventory", type=Path, help="JSON list of relative managed paths and secret references")
     parser.add_argument("--volume-quiesce-adapter", type=Path, help="absolute executable that confirms persistent volumes are quiesced")
     args = parser.parse_args()
+    if args.retention_days < 1:
+        parser.error("--retention-days must be a positive whole number of days")
 
     inventory = load_inventory(args.inventory)
     roots = parse_roots(args.data_root, inventory["roots"])
@@ -42,7 +46,8 @@ def main() -> int:
     key = read_key(args.key_file)
     destination = args.destination.absolute()
     private_dir(destination)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    created_at = datetime.now(timezone.utc)
+    timestamp = created_at.strftime("%Y%m%dT%H%M%SZ")
     artifact = destination / f"cylo-{timestamp}-{secrets.token_hex(4)}.cylo-backup"
     with database_fence(args.database) as source_db:
         with tempfile.TemporaryDirectory(prefix="cylo-backup-", dir=destination) as tmp:
@@ -83,8 +88,14 @@ def main() -> int:
                 },
                 "secret_refs": inventory["secret_refs"],
                 "files": records,
+                "backup_delete_manifest": {
+                    "baseline": journal_record["snapshot_lineage_id"],
+                    "sequence": journal_record["snapshot_sequence"],
+                    "targets": sorted({target for line in journal_target.read_text(encoding="utf-8").splitlines() for target in json.loads(line).get("cleanup_targets", [])}),
+                    "version": 1,
+                },
                 "encryption": {"algorithm": "AES-256-GCM", "kdf": "scrypt", "scrypt_n": 2**18, "scrypt_r": 8, "scrypt_p": 1},
-                "retention_days": 30,
+                "retention_days": args.retention_days,
             }
             (stage / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
             os.chmod(stage / "manifest.json", 0o600)
@@ -94,6 +105,11 @@ def main() -> int:
             encrypt_file(tar_path, temp_artifact, key)
             os.link(temp_artifact, artifact)
             temp_artifact.unlink()
+            register_backup(destination, artifact, created_at, {
+                "snapshot_lineage_id": journal_record["snapshot_lineage_id"],
+                "snapshot_sequence": journal_record["snapshot_sequence"],
+                "cleanup_targets": manifest["backup_delete_manifest"]["targets"],
+            }, key)
             dfd = os.open(destination, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             try:
                 os.fsync(dfd)
@@ -101,7 +117,7 @@ def main() -> int:
                 os.close(dfd)
     print(f"backup created: {artifact}")
     print(f"encrypted bytes: {artifact.stat().st_size}")
-    removed = prune(destination, 30)
+    removed = purge_expired(destination, key, args.retention_days)
     if removed:
         print(f"expired backups removed: {removed}")
     return 0
@@ -129,16 +145,6 @@ def resolve_root(path: str) -> Path:
     if not resolved.is_dir():
         raise ValueError("data roots must resolve to existing directories")
     return resolved
-
-
-def prune(destination: Path, retention_days: int) -> int:
-    cutoff = datetime.now(timezone.utc).timestamp() - retention_days * 86400
-    removed = 0
-    for artifact in destination.glob("cylo-*.cylo-backup"):
-        if artifact.is_file() and not artifact.is_symlink() and artifact.stat().st_mtime < cutoff:
-            artifact.unlink()
-            removed += 1
-    return removed
 
 
 def validate_entry(entry: dict, roots: dict[str, Path]):
