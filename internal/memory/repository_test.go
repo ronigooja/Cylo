@@ -112,13 +112,15 @@ func TestClaimDeletionLedgerIsAtomicAndMonotonic(t *testing.T) {
 	ctx := context.Background()
 	store, repo := newMemoryTestRepo(t)
 	scope := Scope{Kind: ScopePersonal, PrincipalID: "ledger-user"}
+	secondScope := Scope{Kind: ScopePersonal, PrincipalID: "ledger-user-2"}
 	first := writeMemory(t, ctx, store.DB(), repo, scope, "first claim", "ledger-source-1", 0)
-	second := writeMemory(t, ctx, store.DB(), repo, scope, "second claim", "ledger-source-2", 0)
+	second := writeMemory(t, ctx, store.DB(), repo, secondScope, "second claim", "ledger-source-2", 0)
 
 	tx, err := store.DB().BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer tx.Rollback()
 	if _, err = repo.DeleteTx(ctx, tx, DeleteInput{WorkspaceID: "default", ActorID: scope.PrincipalID, ClaimID: first.ID, Expected: first.Revision, ReasonCode: "user_requested"}); err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +141,7 @@ func TestClaimDeletionLedgerIsAtomicAndMonotonic(t *testing.T) {
 	if _, err = runDelete(ctx, store.DB(), repo, DeleteInput{WorkspaceID: "default", ActorID: scope.PrincipalID, ClaimID: first.ID, Expected: first.Revision, ReasonCode: "user_requested"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("repeated delete error=%v, want ErrNotFound", err)
 	}
-	if _, err = runDelete(ctx, store.DB(), repo, DeleteInput{WorkspaceID: "default", ActorID: scope.PrincipalID, ClaimID: second.ID, Expected: second.Revision, ReasonCode: "user_requested"}); err != nil {
+	if _, err = runDelete(ctx, store.DB(), repo, DeleteInput{WorkspaceID: "default", ActorID: secondScope.PrincipalID, ClaimID: second.ID, Expected: second.Revision, ReasonCode: "user_requested"}); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := store.DB().QueryContext(ctx, `SELECT sequence,event_type,workspace_id,claim_id,revision,deleted_at FROM memory_deletion_events ORDER BY sequence`)
