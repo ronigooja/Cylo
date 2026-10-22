@@ -2,7 +2,9 @@ package acceptance
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -17,6 +19,10 @@ import (
 )
 
 func newHangupHarness(t *testing.T, gatewayHandler http.Handler) (*storage.Store, http.Handler, string) {
+	return newHangupHarnessWithMedia(t, gatewayHandler, nil)
+}
+
+func newHangupHarnessWithMedia(t *testing.T, gatewayHandler http.Handler, media voice.AccountMediaLifecycle) (*storage.Store, http.Handler, string) {
 	t.Helper()
 	ctx := context.Background()
 	store, err := storage.Open(ctx, storage.Config{Path: filepath.Join(t.TempDir(), "voice-hangup.db")})
@@ -37,7 +43,7 @@ func newHangupHarness(t *testing.T, gatewayHandler http.Handler) (*storage.Store
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := voice.Register(server, store, voice.Config{GatewayURL: gateway.URL, GatewayAPIKey: "test-key", HTTPClient: gateway.Client()}); err != nil {
+	if err := voice.Register(server, store, voice.Config{GatewayURL: gateway.URL, GatewayAPIKey: "test-key", HTTPClient: gateway.Client(), AccountMediaLifecycle: media}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Migrate(ctx); err != nil {
@@ -58,8 +64,24 @@ func newHangupHarness(t *testing.T, gatewayHandler http.Handler) (*storage.Store
 	return store, server.Handler(), deviceToken
 }
 
+type retryAccountMedia struct{ releases atomic.Int32 }
+
+func (r *retryAccountMedia) Capabilities() voice.AccountMediaCapabilities {
+	return voice.AccountMediaCapabilities{AccountLeaseIdentity: true, AccountScopedTermination: true, TrustedTerminationEvidence: true}
+}
+
+func (r *retryAccountMedia) ReleaseAccountLease(_ context.Context, lease voice.AccountLeaseReference, _ string) (voice.AccountTerminationObservation, error) {
+	if lease.LeaseID != "test-lease" || lease.Generation != 8 || lease.SessionID != "gateway-session" || lease.SessionGeneration != 1 {
+		return voice.AccountTerminationObservation{}, fmt.Errorf("unexpected account lease release reference")
+	}
+	if r.releases.Add(1) == 1 {
+		return voice.AccountTerminationObservation{}, fmt.Errorf("temporary release uncertainty")
+	}
+	return voice.AccountTerminationObservation{AccountID: "test-account", LeaseID: lease.LeaseID, LeaseGeneration: lease.Generation, SessionID: lease.SessionID, SessionGeneration: lease.SessionGeneration, Terminated: true, EvidenceID: "retry-evidence", ObservedAt: time.Now().UTC()}, nil
+}
+
 func hangupRequest(handler http.Handler, token string) *httptest.ResponseRecorder {
-	return reviewRequest(handler, http.MethodPost, "/v1/voice/sessions/hangup-session/hangup", token, "", map[string]bool{"media_closed": true})
+	return reviewRequest(handler, http.MethodPost, "/v1/voice/sessions/hangup-session/hangup", token, "", map[string]any{"media_closed": true, "generation": 1, "account_lease_generation": 0})
 }
 
 type gatedAccountMedia struct {
@@ -71,14 +93,17 @@ func (g gatedAccountMedia) Capabilities() voice.AccountMediaCapabilities {
 	return voice.AccountMediaCapabilities{AccountLeaseIdentity: true, AccountScopedTermination: true, TrustedTerminationEvidence: true}
 }
 
-func (g gatedAccountMedia) ObserveTermination(ctx context.Context, sessionID string) (voice.AccountTerminationObservation, error) {
+func (g gatedAccountMedia) ReleaseAccountLease(ctx context.Context, lease voice.AccountLeaseReference, idempotencyKey string) (voice.AccountTerminationObservation, error) {
+	if lease.LeaseID != "test-lease" || lease.Generation != 8 || lease.SessionID != "gateway-session" || lease.SessionGeneration != 3 || idempotencyKey == "" {
+		return voice.AccountTerminationObservation{}, fmt.Errorf("unexpected account lease release reference")
+	}
 	close(g.entered)
 	select {
 	case <-g.resume:
 	case <-ctx.Done():
 		return voice.AccountTerminationObservation{}, ctx.Err()
 	}
-	return voice.AccountTerminationObservation{AccountID: "test-account", LeaseID: "test-lease", SessionID: sessionID, Terminated: true, EvidenceID: "test-evidence", ObservedAt: time.Now().UTC()}, nil
+	return voice.AccountTerminationObservation{AccountID: "test-account", LeaseID: lease.LeaseID, LeaseGeneration: lease.Generation, SessionID: lease.SessionID, SessionGeneration: lease.SessionGeneration, Terminated: true, EvidenceID: "test-evidence", ObservedAt: time.Now().UTC()}, nil
 }
 
 func TestVoiceReconciliationCannotRaceInFlightTrustedHangup(t *testing.T) {
@@ -124,7 +149,8 @@ func TestVoiceReconciliationCannotRaceInFlightTrustedHangup(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := store.DB().ExecContext(ctx, `INSERT INTO voice_sessions(id,workspace_id,owner_id,device_id,request_id,request_hash,generation,state,gateway_session_id,created_at,updated_at) VALUES('session-race','default',?,?,'request-race',X'01',3,'active','gateway-session',?,?)`, ownerID, registration.Device.ID, now, now); err != nil {
+	accountHash := sha256.Sum256([]byte("test-account"))
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO voice_sessions(id,workspace_id,owner_id,device_id,request_id,request_hash,generation,state,gateway_session_id,account_lease_id,account_lease_generation,account_id_hash,created_at,updated_at) VALUES('session-race','default',?,?,'request-race',X'01',3,'active','gateway-session','test-lease',8,?,?,?)`, ownerID, registration.Device.ID, accountHash[:], now, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.DB().ExecContext(ctx, `UPDATE voice_pool_state SET blocked=1,reason_code='active_session',source_session_id='session-race' WHERE id=1`); err != nil {
@@ -133,7 +159,7 @@ func TestVoiceReconciliationCannotRaceInFlightTrustedHangup(t *testing.T) {
 
 	hangupResponse := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		hangupResponse <- reviewRequest(handler, http.MethodPost, "/v1/voice/sessions/session-race/hangup", deviceToken, "", map[string]bool{"media_closed": true})
+		hangupResponse <- reviewRequest(handler, http.MethodPost, "/v1/voice/sessions/session-race/hangup", deviceToken, "", map[string]any{"media_closed": true, "generation": 3, "account_lease_id": "test-lease", "account_lease_generation": 8})
 	}()
 	select {
 	case <-adapter.entered:
@@ -213,11 +239,32 @@ func TestConcurrentHangupClaimsSendOneGatewayDelete(t *testing.T) {
 	}
 	var state string
 	var blocked int
-	if err := store.DB().QueryRow(`SELECT state FROM voice_sessions WHERE id='hangup-session'`).Scan(&state); err != nil || state != "ended" {
+	if err := store.DB().QueryRow(`SELECT state FROM voice_sessions WHERE id='hangup-session'`).Scan(&state); err != nil || state != "quarantined" {
 		t.Fatalf("session final state=%q err=%v", state, err)
 	}
 	if err := store.DB().QueryRow(`SELECT blocked FROM voice_pool_state WHERE id=1`).Scan(&blocked); err != nil || blocked != 1 {
 		t.Fatalf("unverified termination did not preserve pool fence: blocked=%d err=%v", blocked, err)
+	}
+}
+
+func TestHangupRejectsStaleMediaGenerationBeforeGatewayRelease(t *testing.T) {
+	var deletes atomic.Int32
+	store, handler, token := newHangupHarness(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		deletes.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer store.Close()
+	for _, body := range []map[string]any{
+		{"media_closed": true, "generation": 2, "account_lease_generation": 0},
+		{"media_closed": true, "generation": 1, "account_lease_id": "wrong-lease", "account_lease_generation": 9},
+	} {
+		response := reviewRequest(handler, http.MethodPost, "/v1/voice/sessions/hangup-session/hangup", token, "", body)
+		if response.Code != http.StatusConflict {
+			t.Fatalf("stale hangup=%d %s, want generation conflict", response.Code, response.Body.String())
+		}
+	}
+	if deletes.Load() != 0 {
+		t.Fatalf("stale hangup sent %d external release requests", deletes.Load())
 	}
 }
 
@@ -273,39 +320,47 @@ func TestHangupRecoveryDoesNotRepeatDeleteFromEndingState(t *testing.T) {
 	}
 }
 
-func TestHangupExplicitQuarantineRetryKeepsPoolFencedWithoutProof(t *testing.T) {
+func TestHangupRetryAfterGatewayUnbindRetriesOnlyAccountRelease(t *testing.T) {
 	var deletes atomic.Int32
-	store, handler, token := newHangupHarness(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if deletes.Add(1) == 1 {
-			w.WriteHeader(http.StatusBadGateway)
-			return
-		}
+	media := &retryAccountMedia{}
+	store, handler, token := newHangupHarnessWithMedia(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		deletes.Add(1)
 		w.WriteHeader(http.StatusNoContent)
-	}))
-	first := hangupRequest(handler, token)
-	if first.Code != http.StatusServiceUnavailable {
-		t.Fatalf("first uncertain gateway release=%d %s, want unavailable", first.Code, first.Body.String())
+	}), media)
+	accountHash := sha256.Sum256([]byte("test-account"))
+	if _, err := store.DB().Exec(`UPDATE voice_sessions SET account_lease_id='test-lease',account_lease_generation=8,account_id_hash=? WHERE id='hangup-session'`, accountHash[:]); err != nil {
+		t.Fatal(err)
+	}
+	request := func() *httptest.ResponseRecorder {
+		return reviewRequest(handler, http.MethodPost, "/v1/voice/sessions/hangup-session/hangup", token, "", map[string]any{"media_closed": true, "generation": 1, "account_lease_id": "test-lease", "account_lease_generation": 8})
+	}
+	first := request()
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first unverified account release=%d %s, want accepted quarantine", first.Code, first.Body.String())
 	}
 	var state, reason string
 	var blocked int
 	if err := store.DB().QueryRow(`SELECT state FROM voice_sessions WHERE id='hangup-session'`).Scan(&state); err != nil || state != "quarantined" {
 		t.Fatalf("uncertain release state=%q err=%v", state, err)
 	}
-	if err := store.DB().QueryRow(`SELECT blocked,reason_code FROM voice_pool_state WHERE id=1`).Scan(&blocked, &reason); err != nil || blocked != 1 || reason != "gateway_release_failed" {
-		t.Fatalf("uncertain release pool state blocked=%d reason=%q err=%v", blocked, reason, err)
+	if err := store.DB().QueryRow(`SELECT blocked,reason_code FROM voice_pool_state WHERE id=1`).Scan(&blocked, &reason); err != nil || blocked != 1 || reason != "upstream_termination_unverified" {
+		t.Fatalf("unverified release pool state blocked=%d reason=%q err=%v", blocked, reason, err)
 	}
-	second := hangupRequest(handler, token)
-	if second.Code != http.StatusAccepted {
-		t.Fatalf("explicit quarantined retry=%d %s, want accepted but still unverified", second.Code, second.Body.String())
+	second := request()
+	if second.Code != http.StatusOK {
+		t.Fatalf("explicit quarantined retry=%d %s, want trusted release", second.Code, second.Body.String())
 	}
-	if got := deletes.Load(); got != 2 {
-		t.Fatalf("gateway DELETE count=%d after explicit quarantine retry, want 2", got)
+	if got := deletes.Load(); got != 1 {
+		t.Fatalf("gateway DELETE count=%d after account release retry, want exactly 1", got)
+	}
+	if got := media.releases.Load(); got != 2 {
+		t.Fatalf("account release calls=%d after retry, want 2", got)
 	}
 	if err := store.DB().QueryRow(`SELECT state FROM voice_sessions WHERE id='hangup-session'`).Scan(&state); err != nil || state != "ended" {
 		t.Fatalf("retry final session state=%q err=%v", state, err)
 	}
-	if err := store.DB().QueryRow(`SELECT blocked FROM voice_pool_state WHERE id=1`).Scan(&blocked); err != nil || blocked != 1 {
-		t.Fatalf("unverified retry cleared pool fence: blocked=%d err=%v", blocked, err)
+	if err := store.DB().QueryRow(`SELECT blocked FROM voice_pool_state WHERE id=1`).Scan(&blocked); err != nil || blocked != 0 {
+		t.Fatalf("trusted account release did not clear pool fence: blocked=%d err=%v", blocked, err)
 	}
 }
 

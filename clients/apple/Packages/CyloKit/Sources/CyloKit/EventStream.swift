@@ -2,7 +2,7 @@ import Foundation
 
 public enum ServerPush: Sendable {
     case event(EventEnvelope)
-    case snapshotRequired(reason: String)
+    case snapshotRequired(reason: String, authority: SnapshotAuthority?)
 }
 
 /// Small, testable parser for the SSE subset used by Cylo (`id`, `event`, and `data`).
@@ -45,7 +45,7 @@ public struct SSEParser {
         let data = Data(dataLines.joined(separator: "\n").utf8)
         if type == "snapshot_required" {
             let failure = (try? decoder.decode(SnapshotRequiredBody.self, from: data))
-            return .snapshotRequired(reason: failure?.reason ?? "The event cursor is no longer available.")
+            return .snapshotRequired(reason: failure?.reason ?? "The event cursor is no longer available.", authority: failure?.authority)
         }
         let envelope = try decoder.decode(EventEnvelope.self, from: data)
         if let id, !id.isEmpty, envelope.cursor != id {
@@ -60,6 +60,7 @@ public struct SSEParser {
 
 private struct SnapshotRequiredBody: Decodable {
     var reason: String
+    var authority: SnapshotAuthority?
 }
 
 public enum CyloJSON {

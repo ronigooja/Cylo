@@ -88,6 +88,13 @@ func TestComposedServerRegistersDerivedWorkerCredentialAndFailsClosedWithoutVoic
 	}
 }
 
+func TestVoiceAccountMediaAdapterRequiresExplicitSecureGatewayConfiguration(t *testing.T) {
+	t.Setenv("CYLO_VOICE_ACCOUNT_MEDIA_ENABLED", "true")
+	if _, err := composeControlServer(nil, control.Config{}, voice.Config{}, capabilities.Config{}, memory.DerivedConfig{}); err == nil {
+		t.Fatal("account media adapter enabled without a configured HTTPS gateway and deployment key")
+	}
+}
+
 func seedComposedMemoryClaim(t *testing.T, db *sql.DB) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)

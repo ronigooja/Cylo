@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"strings"
+
 	"github.com/ronigooja/Cylo/internal/capabilities"
 	"github.com/ronigooja/Cylo/internal/control"
 	"github.com/ronigooja/Cylo/internal/memory"
@@ -9,6 +12,13 @@ import (
 )
 
 func composeControlServer(store *storage.Store, controlConfig control.Config, voiceConfig voice.Config, capabilityConfig capabilities.Config, memoryConfig memory.DerivedConfig) (*control.Server, error) {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("CYLO_VOICE_ACCOUNT_MEDIA_ENABLED")), "true") {
+		adapter, err := voice.NewSpaceAccountMediaAdapter(voiceConfig.GatewayURL, voiceConfig.GatewayAPIKey, voiceConfig.HTTPClient)
+		if err != nil {
+			return nil, err
+		}
+		voiceConfig.AccountMediaLifecycle = adapter
+	}
 	server, err := control.NewServer(store, controlConfig)
 	if err != nil {
 		return nil, err

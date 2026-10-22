@@ -36,8 +36,10 @@ public final class LibWebRTCTransport: NSObject, WebRTCTransport, @unchecked Sen
     private let factory: RTCPeerConnectionFactory
     private let peerConnection: RTCPeerConnection
     private let localAudioTrack: RTCAudioTrack
+    private let localAudioSender: RTCRtpSender?
     private let dataChannel: RTCDataChannel
     private let lock = NSLock()
+    private var isClosed = false
 
     public var onDataMessage: (@Sendable (Data) -> Void)?
     public var onConnectionState: (@Sendable (RTCPeerConnectionState) -> Void)?
@@ -63,7 +65,7 @@ public final class LibWebRTCTransport: NSObject, WebRTCTransport, @unchecked Sen
         let audioSource = factory.audioSource(with: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil))
         localAudioTrack = factory.audioTrack(with: audioSource, trackId: "cylo-microphone")
         localAudioTrack.isEnabled = true
-        _ = connection.add(localAudioTrack, streamIds: ["cylo-audio"])
+        localAudioSender = connection.add(localAudioTrack, streamIds: ["cylo-audio"])
 
         let channelConfig = RTCDataChannelConfiguration()
         channelConfig.isOrdered = true
@@ -136,10 +138,13 @@ public final class LibWebRTCTransport: NSObject, WebRTCTransport, @unchecked Sen
 
     private func closeImmediately() {
         lock.lock()
+        guard !isClosed else { lock.unlock(); return }
+        isClosed = true
         localAudioTrack.isEnabled = false
         dataChannel.delegate = nil
         dataChannel.close()
         peerConnection.delegate = nil
+        if let localAudioSender { _ = peerConnection.removeTrack(localAudioSender) }
         peerConnection.close()
         lock.unlock()
     }
