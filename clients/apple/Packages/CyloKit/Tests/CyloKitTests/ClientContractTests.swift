@@ -793,6 +793,7 @@ final class ClientContractTests: XCTestCase {
         XCTAssertEqual(remaining.map(\.idempotencyKey), [key])
     }
 
+    @MainActor
     func testUnknownWorkspaceNeverPostsLegacyPendingCommand() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -807,7 +808,7 @@ final class ClientContractTests: XCTestCase {
         do {
             _ = try await coordinator.retryPending(idempotencyKey: key, currentWorkspaceID: nil)
             XCTFail("An unknown workspace cannot authorize a pending command")
-        } catch {
+        } catch let error as CyloError {
             guard case .pendingCommandWorkspaceMismatch = error else { return XCTFail("Unexpected error: \(error)") }
         }
 
@@ -817,7 +818,7 @@ final class ClientContractTests: XCTestCase {
         XCTAssertEqual(requestCount, 0)
         let remaining = try await journal.all()
         XCTAssertEqual(remaining.map(\.idempotencyKey), [key])
-        XCTAssertEqual(model.pendingCommandSummaries.first?.state, .differentWorkspace)
+        XCTAssertEqual(model.pendingCommandSummaries.first?.state, .workspaceUnavailable)
     }
 
     func testPendingReceiptLookupNetworkFailureDoesNotResubmitOrDropJournalRow() async throws {
@@ -915,7 +916,7 @@ final class ClientContractTests: XCTestCase {
         let staleReload = Task { await model.reloadPendingCommandSummariesForTesting() }
         await fulfillment(of: [readStarted], timeout: 2)
         model.replacePendingCheckConnectionForTesting(api: api, journal: newJournal)
-        resumeRead([oldCommand])
+        resumeRead.resume(returning: [oldCommand])
         await staleReload.value
 
         XCTAssertTrue(model.pendingCommandSummaries.isEmpty)
