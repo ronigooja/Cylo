@@ -355,11 +355,17 @@ CREATE INDEX push_deliveries_token ON push_deliveries(push_token_id,status);
 	}}); err != nil {
 		return err
 	}
-	return s.RegisterMigration(Migration{Namespace: "core", Version: 6, Name: "task_and_run_harness_snapshot", Up: func(ctx context.Context, tx *sql.Tx) error {
+	if err := s.RegisterMigration(Migration{Namespace: "core", Version: 6, Name: "task_and_run_harness_snapshot", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 ALTER TABLE tasks ADD COLUMN harness TEXT NOT NULL DEFAULT 'codex';
 ALTER TABLE runs ADD COLUMN harness TEXT NOT NULL DEFAULT 'codex';
 `)
+		return err
+	}}); err != nil {
+		return err
+	}
+	return s.RegisterMigration(Migration{Namespace: "core", Version: 7, Name: "run_budget_snapshot", Up: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `ALTER TABLE runs ADD COLUMN budget_snapshot_json BLOB NOT NULL DEFAULT '{}'`)
 		return err
 	}})
 }

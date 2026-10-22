@@ -118,6 +118,12 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	profile := s.cfg.Profiles[chosen.profile]
+	budget := contracts.RunBudgetSnapshot{HardDeadline: time.Now().UTC().Add(30 * time.Minute), MaxModelCalls: 32, MaxInputUnits: 500_000, MaxOutputUnits: 100_000, MaxToolSteps: 128, MaxArtifactBytes: 16 << 20}
+	budgetJSON, err := json.Marshal(budget)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	runID, err = randomID()
 	if err != nil {
 		writeError(w, err)
@@ -154,7 +160,7 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	_, err = tx.ExecContext(r.Context(), `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,control_version,fence,runner_id,authorized_device_id,command_id,goal,profile_id,harness,runtime_route_id,model_route_id,role,isolation_policy,ao_project_id,started_at,task_version,authorization_json,child_policy_json,lineage_root_task_id,lineage_parent_task_id,lineage_depth) VALUES(?,?,?,?,'dispatching','run',1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, runID, chosen.workspace, chosen.id, attemptID, fence, p.RunnerID, chosen.device, chosen.command, chosen.goal, profile.ID, chosen.harness, profile.RuntimeRouteID, profile.ModelRouteID, profile.Role, profile.IsolationPolicy, profile.AOProjectID, now, newVersion, authorizationJSON, policyBytes, chosen.root, nullString(chosen.parent), chosen.depth)
+	_, err = tx.ExecContext(r.Context(), `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,control_version,fence,runner_id,authorized_device_id,command_id,goal,profile_id,harness,runtime_route_id,model_route_id,role,isolation_policy,ao_project_id,started_at,task_version,authorization_json,child_policy_json,lineage_root_task_id,lineage_parent_task_id,lineage_depth,budget_snapshot_json) VALUES(?,?,?,?,'dispatching','run',1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, runID, chosen.workspace, chosen.id, attemptID, fence, p.RunnerID, chosen.device, chosen.command, chosen.goal, profile.ID, chosen.harness, profile.RuntimeRouteID, profile.ModelRouteID, profile.Role, profile.IsolationPolicy, profile.AOProjectID, now, newVersion, authorizationJSON, policyBytes, chosen.root, nullString(chosen.parent), chosen.depth, budgetJSON)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -168,7 +174,7 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	claim := contracts.JobClaim{RunID: runID, TaskID: chosen.id, AttemptID: attemptID, WorkspaceID: chosen.workspace, TaskVersion: newVersion, Goal: chosen.goal, ProfileID: profile.ID, Harness: chosen.harness, RuntimeRouteID: profile.RuntimeRouteID, ModelRouteID: profile.ModelRouteID, IsolationPolicy: profile.IsolationPolicy, Role: profile.Role, AOProjectID: profile.AOProjectID, Authorization: authorization, Fence: fence, LineageRootTaskID: chosen.root, LineageParentTaskID: chosen.parent, LineageDepth: chosen.depth, PregrantCapabilityIDs: append([]string{}, pregrant...)}
+	claim := contracts.JobClaim{RunID: runID, TaskID: chosen.id, AttemptID: attemptID, WorkspaceID: chosen.workspace, TaskVersion: newVersion, Goal: chosen.goal, ProfileID: profile.ID, Harness: chosen.harness, RuntimeRouteID: profile.RuntimeRouteID, ModelRouteID: profile.ModelRouteID, IsolationPolicy: profile.IsolationPolicy, Role: profile.Role, AOProjectID: profile.AOProjectID, Authorization: authorization, Fence: fence, LineageRootTaskID: chosen.root, LineageParentTaskID: chosen.parent, LineageDepth: chosen.depth, PregrantCapabilityIDs: append([]string{}, pregrant...), Budget: budget}
 	if err = tx.Commit(); err != nil {
 		writeError(w, err)
 		return
@@ -204,7 +210,8 @@ func loadClaim(ctx context.Context, tx *sql.Tx, runID string, cfg Config) (contr
 	var fence uint64
 	var aoProject, aoSession string
 	var authJSON []byte
-	err := tx.QueryRowContext(ctx, `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.harness,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json,coalesce(r.lineage_root_task_id,''),coalesce(r.lineage_parent_task_id,''),r.lineage_depth FROM runs r WHERE r.id=?`, runID).Scan(&c.RunID, &c.TaskID, &c.AttemptID, &c.WorkspaceID, &c.TaskVersion, &c.Goal, &c.ProfileID, &c.Harness, &c.RuntimeRouteID, &c.ModelRouteID, &c.Role, &c.IsolationPolicy, &aoProject, &aoSession, &fence, &authJSON, &c.LineageRootTaskID, &c.LineageParentTaskID, &c.LineageDepth)
+	var budgetJSON []byte
+	err := tx.QueryRowContext(ctx, `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.harness,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json,coalesce(r.lineage_root_task_id,''),coalesce(r.lineage_parent_task_id,''),r.lineage_depth,r.budget_snapshot_json FROM runs r WHERE r.id=?`, runID).Scan(&c.RunID, &c.TaskID, &c.AttemptID, &c.WorkspaceID, &c.TaskVersion, &c.Goal, &c.ProfileID, &c.Harness, &c.RuntimeRouteID, &c.ModelRouteID, &c.Role, &c.IsolationPolicy, &aoProject, &aoSession, &fence, &authJSON, &c.LineageRootTaskID, &c.LineageParentTaskID, &c.LineageDepth, &budgetJSON)
 	if err != nil {
 		return c, err
 	}
@@ -216,6 +223,9 @@ func loadClaim(ctx context.Context, tx *sql.Tx, runID string, cfg Config) (contr
 	c.Fence = fence
 	if err := json.Unmarshal(authJSON, &c.Authorization); err != nil {
 		return c, fmt.Errorf("decode persisted run authorization: %w", err)
+	}
+	if err := json.Unmarshal(budgetJSON, &c.Budget); err != nil {
+		return c, fmt.Errorf("decode persisted run budget: %w", err)
 	}
 	if c.LineageParentTaskID != "" {
 		c.PregrantCapabilityIDs = append([]string{}, c.Authorization.CapabilityIDs...)
@@ -259,7 +269,8 @@ func (s *Server) handleCurrentClaims(w http.ResponseWriter, r *http.Request) {
 	for _, id := range ids {
 		var claim contracts.JobClaim
 		var authJSON []byte
-		err = s.store.DB().QueryRowContext(r.Context(), `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.harness,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json,coalesce(r.lineage_root_task_id,''),coalesce(r.lineage_parent_task_id,''),r.lineage_depth FROM runs r WHERE r.id=?`, id).Scan(&claim.RunID, &claim.TaskID, &claim.AttemptID, &claim.WorkspaceID, &claim.TaskVersion, &claim.Goal, &claim.ProfileID, &claim.Harness, &claim.RuntimeRouteID, &claim.ModelRouteID, &claim.Role, &claim.IsolationPolicy, &claim.AOProjectID, &claim.AOSessionID, &claim.Fence, &authJSON, &claim.LineageRootTaskID, &claim.LineageParentTaskID, &claim.LineageDepth)
+		var budgetJSON []byte
+		err = s.store.DB().QueryRowContext(r.Context(), `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.harness,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json,coalesce(r.lineage_root_task_id,''),coalesce(r.lineage_parent_task_id,''),r.lineage_depth,r.budget_snapshot_json FROM runs r WHERE r.id=?`, id).Scan(&claim.RunID, &claim.TaskID, &claim.AttemptID, &claim.WorkspaceID, &claim.TaskVersion, &claim.Goal, &claim.ProfileID, &claim.Harness, &claim.RuntimeRouteID, &claim.ModelRouteID, &claim.Role, &claim.IsolationPolicy, &claim.AOProjectID, &claim.AOSessionID, &claim.Fence, &authJSON, &claim.LineageRootTaskID, &claim.LineageParentTaskID, &claim.LineageDepth, &budgetJSON)
 		if err != nil {
 			writeError(w, err)
 			return
@@ -269,6 +280,10 @@ func (s *Server) handleCurrentClaims(w http.ResponseWriter, r *http.Request) {
 		}
 		if err = json.Unmarshal(authJSON, &claim.Authorization); err != nil {
 			writeError(w, apiError(500, "internal", "persisted run authorization is invalid", nil))
+			return
+		}
+		if err = json.Unmarshal(budgetJSON, &claim.Budget); err != nil {
+			writeError(w, apiError(500, "internal", "persisted run budget is invalid", nil))
 			return
 		}
 		if claim.LineageParentTaskID != "" {
@@ -432,6 +447,34 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if observation.Kind == "create_rejected" {
+		proof := observation.CreateRejection
+		if status != "active" || proof == nil || proof.HTTPStatus < 400 || proof.HTTPStatus >= 500 || proof.ErrorCode == "" || observation.AOProjectID != boundProject || boundSession != "" || observation.AOSessionID != "" || len(observation.ExternalEffects) != 0 || observation.NoEffectProof != nil || observation.TerminationProof != nil {
+			writeError(w, apiError(409, "create_rejection_unproven", "AO create rejection requires an active unbound run and sanitized rejection proof", nil))
+			return
+		}
+		if !allowedAOCreateRejection(proof.ErrorCode) {
+			writeError(w, apiError(409, "create_rejection_unproven", "AO create rejection code is not allowlisted", nil))
+			return
+		}
+		var started, bound, effects int
+		if err = tx.QueryRowContext(r.Context(), `SELECT count(*) FROM runner_observations WHERE run_id=? AND attempt_id=? AND fence=? AND kind='dispatch_started'`, runID, attempt, fence).Scan(&started); err != nil {
+			writeError(w, err)
+			return
+		}
+		if err = tx.QueryRowContext(r.Context(), `SELECT count(*) FROM runner_observations WHERE run_id=? AND attempt_id=? AND fence=? AND kind IN ('dispatch_bound','effect_unknown')`, runID, attempt, fence).Scan(&bound); err != nil {
+			writeError(w, err)
+			return
+		}
+		if err = tx.QueryRowContext(r.Context(), `SELECT count(*) FROM external_effects WHERE run_id=?`, runID).Scan(&effects); err != nil {
+			writeError(w, err)
+			return
+		}
+		if started == 0 || bound != 0 || effects != 0 {
+			writeError(w, apiError(409, "create_rejection_unproven", "run history contains no dispatch start or contains a binding or external effect", nil))
+			return
+		}
+	}
 	now := time.Now().UTC()
 	if observation.OccurredAt.IsZero() {
 		observation.OccurredAt = now
@@ -510,6 +553,14 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		}
 		taskVersion++
 	}
+	if observation.Kind == "create_rejected" {
+		_, err = tx.ExecContext(r.Context(), `UPDATE tasks SET error=?,version=version+1,updated_at=? WHERE id=? AND workspace_id=?`, "ao_worker_create_rejected", now.Format(time.RFC3339Nano), taskID, workspace)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		taskVersion++
+	}
 	for _, effect := range observation.ExternalEffects {
 		details, _ := json.Marshal(effect)
 		if effect.ID == "" || effect.Kind == "" {
@@ -549,6 +600,9 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 			nextRunStatus = "failed"
 			nextTaskStatus = "failed"
 		}
+	case "create_rejected":
+		nextRunStatus = "failed"
+		nextTaskStatus = "failed"
 	case "effect_unknown":
 		nextRunStatus = "uncertain"
 	case "stop_confirmed":
@@ -648,10 +702,18 @@ func statusForTask(runStatus, taskStatus string) string {
 }
 func validObservationKind(k string) bool {
 	switch k {
-	case "dispatch_started", "dispatch_bound", "progress", "result", "failure", "effect_unknown", "stop_confirmed", "runtime_terminated", "no_effect_terminal":
+	case "dispatch_started", "dispatch_bound", "progress", "result", "failure", "effect_unknown", "stop_confirmed", "runtime_terminated", "no_effect_terminal", "create_rejected":
 		return true
 	}
 	return false
+}
+func allowedAOCreateRejection(code string) bool {
+	switch code {
+	case "INVALID_REQUEST", "PROJECT_NOT_FOUND", "PROJECT_ACCESS_DENIED", "UNSUPPORTED_HARNESS", "UNSUPPORTED_MODEL", "WORKER_LIMIT_REACHED", "FORBIDDEN":
+		return true
+	default:
+		return false
+	}
 }
 func raw(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
 func appendEventTx(ctx context.Context, tx *sql.Tx, e contracts.Event) error {

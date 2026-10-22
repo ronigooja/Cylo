@@ -99,6 +99,11 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 		}
 		spec = persisted.Spec
 		phase = ""
+		if persisted.Phase == "create_rejected" {
+			// The rejection receipt is durable before delivery. Replaying a claim
+			// after a lost acknowledgement must never call AO a second time.
+			return e.flush(ctx, claim.RunID)
+		}
 		if persisted.Session != "" {
 			// The local session write precedes dispatch_bound. A crash in that
 			// interval leaves the server claim empty, so preserve the immutable
@@ -117,6 +122,9 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 				return pendingErr
 			}
 			for _, queued := range pending {
+				if queued.Body.Kind == "create_rejected" {
+					return e.flush(ctx, claim.RunID)
+				}
 				if queued.Body.Kind == "no_effect_terminal" {
 					// Replay the exact queued receipt. A second terminal body would
 					// conflict after the first one commits on the control plane.
@@ -127,6 +135,17 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 			// reporting it. If the runner restarted between those writes, fail the
 			// empty request closed instead of attempting AO creation.
 			return e.reportNoEffectTerminal(ctx, claim, "failed", "claim_recovery_incomplete", "The runner recovered an incomplete claim before AO creation; no runtime was created.")
+		}
+		if persisted.Phase == "claimed" {
+			pending, pendingErr := e.Journal.PendingObservations(ctx, claim.RunID)
+			if pendingErr != nil {
+				return pendingErr
+			}
+			for _, queued := range pending {
+				if queued.Body.Kind == "create_rejected" {
+					return e.flush(ctx, claim.RunID)
+				}
+			}
 		}
 	} else {
 		route, ok := e.Routes[claim.ProfileID]
@@ -230,8 +249,12 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 					_ = e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "effect_unknown")
 					return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_create", "AO worker creation could not be reconciled after replaying the identical clientRequestId and request body.", nil, nil, "AO worker create remains unknown", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "unknown"}}))
 				}
-				_ = e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "failed")
-				return e.reportFailure(ctx, claim, "ao_worker_create_failed", "AO rejected worker creation; no session was bound.")
+				var rejected ao.CreateRejectedError
+				if errors.As(err, &rejected) {
+					return e.reportCreateRejected(ctx, claim, rejected)
+				}
+				_ = e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "effect_unknown")
+				return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_create", "AO worker creation response could not prove whether a session was created.", nil, nil, "AO worker create remains unknown", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "unknown"}}))
 			}
 			if err := e.Journal.SetSession(ctx, claim.RunID, claim.AttemptID, claim.Fence, session.ID, "bound"); err != nil {
 				return fmt.Errorf("persist AO session binding: %w", err)
@@ -244,6 +267,34 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 		}
 	}
 	return e.monitor(ctx, claim, entry.Session, effectiveHarness(spec.Harness))
+}
+
+func (e *Engine) reportCreateRejected(ctx context.Context, claim contracts.JobClaim, rejected ao.CreateRejectedError) error {
+	entry, ok, err := e.Journal.Entry(ctx, claim.RunID)
+	if err != nil {
+		return err
+	}
+	if !ok || entry.Claim.AttemptID != claim.AttemptID || entry.Claim.Fence != claim.Fence || entry.Session != "" || entry.Container != "" {
+		return reportUnknown(errors.New("journal cannot prove an unbound AO create rejection"))
+	}
+	proof := &contracts.CreateRejectionProof{HTTPStatus: rejected.Status, ErrorCode: rejected.Code}
+	obsID := observationID(claim.RunID, claim.AttemptID, claim.Fence, "create_rejected", rejected.Code)
+	if exists, acknowledged, err := e.Journal.ObservationExists(ctx, obsID); err != nil {
+		return err
+	} else if exists {
+		if acknowledged {
+			return nil
+		}
+		return e.flush(ctx, claim.RunID)
+	}
+	obs := contracts.RunnerObservation{ObservationID: obsID, RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence, Kind: "create_rejected", OccurredAt: time.Now().UTC(), AOProjectID: claim.AOProjectID, Error: "AO rejected worker creation before creating a session.", CreateRejection: proof, Evidence: []contracts.Evidence{{ID: observationID(claim.RunID, claim.AttemptID, claim.Fence, "create_rejected", rejected.Code), Kind: "create_rejected", Summary: "AO definitively rejected worker creation.", Source: "ao_gateway", CreatedAt: time.Now().UTC(), Verified: false}}}
+	if err := e.Journal.QueueObservation(ctx, claim.RunID, obs); err != nil {
+		return err
+	}
+	if err := e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "create_rejected"); err != nil {
+		return err
+	}
+	return e.flush(ctx, claim.RunID)
 }
 
 func sameRecoveredClaim(persisted, current contracts.JobClaim, journalSession string) bool {
@@ -357,6 +408,20 @@ func (e *Engine) monitor(ctx context.Context, claim contracts.JobClaim, sessionI
 		if hasEntry && entry.Phase == "terminated" {
 			return nil
 		}
+		if hasEntry && entry.Phase == "result_reported" {
+			return e.stopAndConfirm(ctx, claim, sessionID)
+		}
+		if !claim.Budget.HardDeadline.IsZero() && !time.Now().UTC().Before(claim.Budget.HardDeadline) {
+			if !hasEntry || entry.Phase != "budget_exhausted" {
+				if err := e.emit(ctx, claim, "failure", "run_budget", "Run hard deadline was exhausted; the AO runtime is being stopped.", nil, map[string]string{"code": "run_deadline_exceeded"}, "Run deadline exceeded"); err != nil {
+					return err
+				}
+				if err := e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "budget_exhausted"); err != nil {
+					return err
+				}
+			}
+			return e.stopAndConfirm(ctx, claim, sessionID)
+		}
 		control, err := e.Control.Control(ctx, claim.RunID)
 		if err != nil {
 			continue
@@ -374,10 +439,7 @@ func (e *Engine) monitor(ctx context.Context, claim contracts.JobClaim, sessionI
 		if err != nil {
 			continue
 		}
-		if hasEntry && (entry.Phase == "result_reported" || entry.Phase == "stop_pending" || entry.Phase == "stop_uncertain") {
-			if entry.Phase == "result_reported" {
-				return e.stopAndConfirm(ctx, claim, sessionID)
-			}
+		if hasEntry && (entry.Phase == "stop_pending" || entry.Phase == "stop_uncertain") {
 			return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_stop", "A previous AO stop request is unresolved; only read-only reconciliation is permitted.", nil, nil, "AO stop requires manual reconciliation", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_stop", Status: "unknown", Reference: sessionID}}))
 		}
 		if session.Status == "terminated" {

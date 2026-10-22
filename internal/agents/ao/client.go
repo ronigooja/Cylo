@@ -20,6 +20,27 @@ import (
 
 var ErrOutcomeUnknown = errors.New("AO operation outcome is unknown")
 
+// CreateRejectedError is returned only for allowlisted AO errors whose
+// contract guarantees that the requested worker was not created.
+type CreateRejectedError struct {
+	Status int
+	Code   string
+}
+
+func (e CreateRejectedError) Error() string {
+	return fmt.Sprintf("AO worker creation rejected (HTTP %d, %s)", e.Status, e.Code)
+}
+
+var definiteCreateRejections = map[string]bool{
+	"INVALID_REQUEST":       true,
+	"PROJECT_NOT_FOUND":     true,
+	"PROJECT_ACCESS_DENIED": true,
+	"UNSUPPORTED_HARNESS":   true,
+	"UNSUPPORTED_MODEL":     true,
+	"WORKER_LIMIT_REACHED":  true,
+	"FORBIDDEN":             true,
+}
+
 type Config struct {
 	BaseURL string
 	Token   string
@@ -164,9 +185,6 @@ func (c *Client) CreateWorker(ctx context.Context, spec WorkerSpec) (Session, er
 		var response SpawnResponse
 		status, err := c.do(ctx, http.MethodPost, "/api/v1/sessions", encoded, &response)
 		if err == nil {
-			if status < 200 || status >= 300 {
-				return Session{}, fmt.Errorf("AO worker creation rejected (HTTP %d)", status)
-			}
 			if response.Session.ID == "" {
 				// A successful response without the identifier does not prove that AO
 				// failed to create the worker. Replay the identical idempotent request.
@@ -182,6 +200,18 @@ func (c *Client) CreateWorker(ctx context.Context, spec WorkerSpec) (Session, er
 			// the launch yet. Preserve the unknown outcome so the runner retries
 			// this exact request later; a different key could create a duplicate.
 			return Session{}, fmt.Errorf("%w: AO worker creation is still in progress", ErrOutcomeUnknown)
+		}
+		var rejected statusError
+		if errors.As(err, &rejected) && definiteCreateRejections[rejected.code] {
+			return Session{}, CreateRejectedError{Status: rejected.status, Code: rejected.code}
+		}
+		if errors.As(err, &rejected) {
+			// Replaying the same idempotency key and byte-identical body is AO's
+			// reconciliation operation for an unrecognized response.
+			if attempt == 0 && (rejected.status == http.StatusConflict || retryableUnknown(err)) {
+				continue
+			}
+			return Session{}, fmt.Errorf("%w: AO worker creation response was not a recognized no-create rejection", ErrOutcomeUnknown)
 		}
 		// A malformed/truncated 2xx response can follow a successful create. The
 		// endpoint's clientRequestId makes an identical replay safe.
@@ -273,10 +303,16 @@ func (c *Client) do(ctx context.Context, method, endpoint string, body []byte, o
 		code := ""
 		if readErr == nil && len(body) <= maxErrorEnvelopeBytes {
 			var envelope struct {
-				Code string `json:"code"`
+				Code  string `json:"code"`
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
 			}
 			if json.Unmarshal(body, &envelope) == nil {
 				code = envelope.Code
+				if code == "" {
+					code = envelope.Error.Code
+				}
 			}
 		}
 		return response.StatusCode, statusError{status: response.StatusCode, code: code}

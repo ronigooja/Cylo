@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ type fakeControl struct {
 	controlIndex            int
 	observations            []contracts.RunnerObservation
 	loseFirstObservationAck bool
+	loseObservationNumber   int
 }
 
 func (f *fakeControl) Claim(context.Context) (*contracts.JobClaim, error)    { return nil, ErrNoClaim }
@@ -41,8 +43,9 @@ func (f *fakeControl) Observe(_ context.Context, _ string, observation contracts
 	if f.order != nil {
 		*f.order = append(*f.order, "observe:"+observation.Kind)
 	}
-	if f.loseFirstObservationAck {
+	if f.loseFirstObservationAck || f.loseObservationNumber == len(f.observations) {
 		f.loseFirstObservationAck = false
+		f.loseObservationNumber = 0
 		return errors.New("simulated lost observation acknowledgement")
 	}
 	return nil
@@ -162,6 +165,28 @@ func TestProcessJournalsDispatchBeforeAOAndReportsUnverifiedTermination(t *testi
 	terminal := control.observations[len(control.observations)-1]
 	if terminal.TerminationProof == nil || terminal.TerminationProof.Method != "native_process_exit_waited" || terminal.TerminationProof.SessionID != "ao-1" || !terminal.TerminationProof.CleanupComplete {
 		t.Fatalf("terminal observation lacks native termination proof: %+v", terminal.TerminationProof)
+	}
+}
+
+func TestRunHardDeadlineReportsBudgetFailureAndStopsAO(t *testing.T) {
+	claim := validClaim()
+	claim.Budget = contracts.RunBudgetSnapshot{HardDeadline: time.Now().UTC().Add(-time.Second), MaxModelCalls: 1, MaxInputUnits: 1, MaxOutputUnits: 1, MaxToolSteps: 1, MaxArtifactBytes: 1}
+	agent := &fakeAO{session: ao.Session{Status: "terminated"}, stopSuccess: true}
+	engine, control := makeEngine(t, claim, contracts.RunControl{DesiredControl: "run", ControlVersion: 1}, agent, permitIsolation{}, nil)
+	if err := engine.Process(context.Background(), claim); err != nil {
+		t.Fatal(err)
+	}
+	if agent.createN != 1 || agent.stopN != 1 {
+		t.Fatalf("AO create=%d stop=%d", agent.createN, agent.stopN)
+	}
+	foundFailure := false
+	for _, observation := range control.observations {
+		if observation.Kind == "failure" && strings.Contains(observation.Error, "deadline") {
+			foundFailure = true
+		}
+	}
+	if !foundFailure {
+		t.Fatalf("deadline exhaustion was not reported: %+v", control.observations)
 	}
 }
 

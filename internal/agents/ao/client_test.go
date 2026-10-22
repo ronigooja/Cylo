@@ -62,7 +62,7 @@ func TestCreateWorkerUsesSameIdempotentRequestAfterServerFailure(t *testing.T) {
 	}
 }
 
-func TestCreateWorkerDoesNotRetryDefiniteRejection(t *testing.T) {
+func TestCreateWorkerDoesNotTreatUnrecognizedClientErrorAsDefiniteRejection(t *testing.T) {
 	requests := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
@@ -82,8 +82,45 @@ func TestCreateWorkerDoesNotRetryDefiniteRejection(t *testing.T) {
 	if strings.Contains(err.Error(), "details must not escape") || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("AO error exposed response details or credentials: %v", err)
 	}
-	if errors.Is(err, ErrOutcomeUnknown) {
-		t.Fatalf("definite validation rejection classified as unknown: %v", err)
+	if !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("unrecognized AO rejection must remain uncertain: %v", err)
+	}
+}
+
+func TestCreateWorkerReturnsSanitizedAllowlistedRejection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"code":"INVALID_REQUEST","message":"private details"}`)
+	}))
+	defer srv.Close()
+	client, err := New(Config{BaseURL: srv.URL, Token: "fixture-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.CreateWorker(context.Background(), WorkerSpec{ClientRequestID: "run-1", ProjectID: "p", Harness: "codex", DisplayName: "test", Prompt: "test"})
+	var rejected CreateRejectedError
+	if !errors.As(err, &rejected) || rejected.Status != http.StatusBadRequest || rejected.Code != "INVALID_REQUEST" {
+		t.Fatalf("error=%v, want sanitized allowlisted rejection", err)
+	}
+	if strings.Contains(err.Error(), "private details") || strings.Contains(err.Error(), "fixture-token") {
+		t.Fatalf("unsafe rejection detail: %v", err)
+	}
+}
+
+func TestCreateWorkerRecognizesNestedForbiddenRejection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"error":{"code":"FORBIDDEN","message":"private"}}`)
+	}))
+	defer srv.Close()
+	client, err := New(Config{BaseURL: srv.URL, Token: "fixture-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.CreateWorker(context.Background(), WorkerSpec{ClientRequestID: "run-1", ProjectID: "p", Harness: "codex", DisplayName: "test", Prompt: "test"})
+	var rejected CreateRejectedError
+	if !errors.As(err, &rejected) || rejected.Code != "FORBIDDEN" || rejected.Status != http.StatusForbidden {
+		t.Fatalf("error=%v", err)
 	}
 }
 
@@ -199,7 +236,7 @@ func TestAOErrorEnvelopeCodeIsIgnoredWhenMalformedOrOversized(t *testing.T) {
 				ClientRequestID: "run-safe-error", ProjectID: "safe-fixture", Harness: "opencode",
 				DisplayName: "bounded fixture", Prompt: "local fixture only",
 			})
-			if err == nil || errors.Is(err, ErrOutcomeUnknown) || strings.Contains(err.Error(), "padding") || strings.Contains(err.Error(), "secret") {
+			if err == nil || !errors.Is(err, ErrOutcomeUnknown) || strings.Contains(err.Error(), "padding") || strings.Contains(err.Error(), "secret") {
 				t.Fatalf("unsafe/incorrect error classification: %v", err)
 			}
 		})

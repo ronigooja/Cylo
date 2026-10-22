@@ -205,26 +205,38 @@ type JobAuthorization struct {
 }
 
 type JobClaim struct {
-	RunID                 string           `json:"run_id"`
-	TaskID                string           `json:"task_id"`
-	AttemptID             string           `json:"attempt_id"`
-	WorkspaceID           string           `json:"workspace_id"`
-	TaskVersion           int64            `json:"task_version"`
-	Goal                  string           `json:"goal"`
-	ProfileID             string           `json:"profile_id"`
-	Harness               string           `json:"harness"`
-	RuntimeRouteID        string           `json:"runtime_route_id"`
-	ModelRouteID          string           `json:"model_route_id"`
-	IsolationPolicy       string           `json:"isolation_policy"`
-	Role                  string           `json:"role"`
-	AOProjectID           string           `json:"ao_project_id,omitempty"`
-	AOSessionID           string           `json:"ao_session_id,omitempty"`
-	Authorization         JobAuthorization `json:"authorization"`
-	Fence                 uint64           `json:"fence"`
-	LineageRootTaskID     string           `json:"lineage_root_task_id,omitempty"`
-	LineageParentTaskID   string           `json:"lineage_parent_task_id,omitempty"`
-	LineageDepth          int              `json:"lineage_depth"`
-	PregrantCapabilityIDs []string         `json:"pregrant_capability_ids"`
+	RunID                 string            `json:"run_id"`
+	TaskID                string            `json:"task_id"`
+	AttemptID             string            `json:"attempt_id"`
+	WorkspaceID           string            `json:"workspace_id"`
+	TaskVersion           int64             `json:"task_version"`
+	Goal                  string            `json:"goal"`
+	ProfileID             string            `json:"profile_id"`
+	Harness               string            `json:"harness"`
+	RuntimeRouteID        string            `json:"runtime_route_id"`
+	ModelRouteID          string            `json:"model_route_id"`
+	IsolationPolicy       string            `json:"isolation_policy"`
+	Role                  string            `json:"role"`
+	AOProjectID           string            `json:"ao_project_id,omitempty"`
+	AOSessionID           string            `json:"ao_session_id,omitempty"`
+	Authorization         JobAuthorization  `json:"authorization"`
+	Fence                 uint64            `json:"fence"`
+	LineageRootTaskID     string            `json:"lineage_root_task_id,omitempty"`
+	LineageParentTaskID   string            `json:"lineage_parent_task_id,omitempty"`
+	LineageDepth          int               `json:"lineage_depth"`
+	PregrantCapabilityIDs []string          `json:"pregrant_capability_ids"`
+	Budget                RunBudgetSnapshot `json:"budget"`
+}
+
+// RunBudgetSnapshot is immutable for a run and is copied into its claim. Usage
+// counters are enforced by the authoritative control-plane ledger.
+type RunBudgetSnapshot struct {
+	HardDeadline     time.Time `json:"hard_deadline"`
+	MaxModelCalls    int64     `json:"max_model_calls"`
+	MaxInputUnits    int64     `json:"max_input_units"`
+	MaxOutputUnits   int64     `json:"max_output_units"`
+	MaxToolSteps     int64     `json:"max_tool_steps"`
+	MaxArtifactBytes int64     `json:"max_artifact_bytes"`
 }
 
 type ChildTaskBudget struct {
@@ -270,20 +282,28 @@ type ExternalEffect struct {
 }
 
 type RunnerObservation struct {
-	ObservationID    string            `json:"observation_id"`
-	RunID            string            `json:"run_id"`
-	AttemptID        string            `json:"attempt_id"`
-	Fence            uint64            `json:"fence"`
-	Kind             string            `json:"kind"`
-	OccurredAt       time.Time         `json:"occurred_at"`
-	AOProjectID      string            `json:"ao_project_id,omitempty"`
-	AOSessionID      string            `json:"ao_session_id,omitempty"`
-	Evidence         []Evidence        `json:"evidence"`
-	Result           json.RawMessage   `json:"result,omitempty"`
-	Error            string            `json:"error,omitempty"`
-	ExternalEffects  []ExternalEffect  `json:"external_effects"`
-	TerminationProof *TerminationProof `json:"termination_proof,omitempty"`
-	NoEffectProof    *NoEffectProof    `json:"no_effect_proof,omitempty"`
+	ObservationID    string                `json:"observation_id"`
+	RunID            string                `json:"run_id"`
+	AttemptID        string                `json:"attempt_id"`
+	Fence            uint64                `json:"fence"`
+	Kind             string                `json:"kind"`
+	OccurredAt       time.Time             `json:"occurred_at"`
+	AOProjectID      string                `json:"ao_project_id,omitempty"`
+	AOSessionID      string                `json:"ao_session_id,omitempty"`
+	Evidence         []Evidence            `json:"evidence"`
+	Result           json.RawMessage       `json:"result,omitempty"`
+	Error            string                `json:"error,omitempty"`
+	ExternalEffects  []ExternalEffect      `json:"external_effects"`
+	TerminationProof *TerminationProof     `json:"termination_proof,omitempty"`
+	NoEffectProof    *NoEffectProof        `json:"no_effect_proof,omitempty"`
+	CreateRejection  *CreateRejectionProof `json:"create_rejection,omitempty"`
+}
+
+// CreateRejectionProof is a sanitized AO response contract proving that AO
+// rejected creation before committing a session.
+type CreateRejectionProof struct {
+	HTTPStatus int    `json:"http_status"`
+	ErrorCode  string `json:"error_code"`
 }
 
 // NoEffectProof is the runner journal receipt for a run that ended before AO
