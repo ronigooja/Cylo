@@ -176,6 +176,13 @@ func (c *Client) CreateWorker(ctx context.Context, spec WorkerSpec) (Session, er
 			return response.Session, nil
 		}
 		lastErr = err
+		var incomplete statusError
+		if errors.As(err, &incomplete) && incomplete.status == http.StatusConflict && incomplete.code == "CLIENT_REQUEST_INCOMPLETE" {
+			// AO has durably claimed this idempotency key, but has not committed
+			// the launch yet. Preserve the unknown outcome so the runner retries
+			// this exact request later; a different key could create a duplicate.
+			return Session{}, fmt.Errorf("%w: AO worker creation is still in progress", ErrOutcomeUnknown)
+		}
 		// A malformed/truncated 2xx response can follow a successful create. The
 		// endpoint's clientRequestId makes an identical replay safe.
 		if !retryableUnknown(err) {
@@ -261,7 +268,18 @@ func (c *Client) do(ctx context.Context, method, endpoint string, body []byte, o
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return response.StatusCode, statusError{status: response.StatusCode}
+		const maxErrorEnvelopeBytes = 64 << 10
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, maxErrorEnvelopeBytes+1))
+		code := ""
+		if readErr == nil && len(body) <= maxErrorEnvelopeBytes {
+			var envelope struct {
+				Code string `json:"code"`
+			}
+			if json.Unmarshal(body, &envelope) == nil {
+				code = envelope.Code
+			}
+		}
+		return response.StatusCode, statusError{status: response.StatusCode, code: code}
 	}
 	if out == nil || response.StatusCode == http.StatusNoContent {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
@@ -274,7 +292,10 @@ func (c *Client) do(ctx context.Context, method, endpoint string, body []byte, o
 	return response.StatusCode, nil
 }
 
-type statusError struct{ status int }
+type statusError struct {
+	status int
+	code   string
+}
 
 func (e statusError) Error() string { return fmt.Sprintf("AO HTTP status %d", e.status) }
 

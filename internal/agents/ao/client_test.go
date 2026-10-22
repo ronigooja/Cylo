@@ -9,7 +9,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestCreateWorkerUsesSameIdempotentRequestAfterServerFailure(t *testing.T) {
@@ -78,6 +81,128 @@ func TestCreateWorkerDoesNotRetryDefiniteRejection(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "details must not escape") || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("AO error exposed response details or credentials: %v", err)
+	}
+	if errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("definite validation rejection classified as unknown: %v", err)
+	}
+}
+
+func TestCreateWorkerTimeoutThenIncompleteReplayIsUnknownAndKeepsRequest(t *testing.T) {
+	var requests atomic.Int64
+	var mu sync.Mutex
+	var firstBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestNumber := requests.Add(1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			return
+		}
+		if requestNumber == 1 {
+			mu.Lock()
+			firstBody = body
+			mu.Unlock()
+			<-r.Context().Done()
+			return
+		}
+		mu.Lock()
+		originalBody := append([]byte(nil), firstBody...)
+		mu.Unlock()
+		if string(body) != string(originalBody) {
+			t.Errorf("replay body changed: first=%s replay=%s", originalBody, body)
+		}
+		var request map[string]any
+		if err := json.Unmarshal(body, &request); err != nil || request["clientRequestId"] != "run-timeout" {
+			t.Errorf("replay identity changed: %#v (%v)", request, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"error":"conflict","code":"CLIENT_REQUEST_INCOMPLETE","message":"do not expose this"}`)
+	}))
+	defer srv.Close()
+	client, err := New(Config{BaseURL: srv.URL, Token: "fixture-token", Client: &http.Client{Timeout: 25 * time.Millisecond}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.CreateWorker(context.Background(), WorkerSpec{
+		ClientRequestID: "run-timeout", ProjectID: "safe-fixture", Harness: "opencode",
+		DisplayName: "bounded fixture", Prompt: "local fixture only",
+	})
+	if !errors.Is(err, ErrOutcomeUnknown) || requests.Load() != 2 {
+		t.Fatalf("error=%v requests=%d, want unknown after same-key incomplete replay", err, requests.Load())
+	}
+	if strings.Contains(err.Error(), "do not expose this") || strings.Contains(err.Error(), "fixture-token") {
+		t.Fatalf("unsafe error detail escaped: %v", err)
+	}
+}
+
+func TestCreateWorkerIncompleteReplayCanReturnCommittedOriginalSession(t *testing.T) {
+	var requests atomic.Int64
+	var mu sync.Mutex
+	var firstBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestNumber := requests.Add(1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			return
+		}
+		if requestNumber == 1 {
+			mu.Lock()
+			firstBody = body
+			mu.Unlock()
+			<-r.Context().Done()
+			return
+		}
+		mu.Lock()
+		originalBody := append([]byte(nil), firstBody...)
+		mu.Unlock()
+		if string(body) != string(originalBody) {
+			t.Errorf("replay body changed")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"session":{"id":"ao-original-session","status":"working"}}`)
+	}))
+	defer srv.Close()
+	client, err := New(Config{BaseURL: srv.URL, Token: "fixture-token", Client: &http.Client{Timeout: 25 * time.Millisecond}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := client.CreateWorker(context.Background(), WorkerSpec{
+		ClientRequestID: "run-committed", ProjectID: "safe-fixture", Harness: "opencode",
+		DisplayName: "bounded fixture", Prompt: "local fixture only",
+	})
+	if err != nil || session.ID != "ao-original-session" || requests.Load() != 2 {
+		t.Fatalf("session=%q error=%v requests=%d", session.ID, err, requests.Load())
+	}
+}
+
+func TestAOErrorEnvelopeCodeIsIgnoredWhenMalformedOrOversized(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "malformed", body: `{"code":"CLIENT_REQUEST_INCOMPLETE"`},
+		{name: "oversized", body: `{"code":"CLIENT_REQUEST_INCOMPLETE","padding":"` + strings.Repeat("x", 64<<10) + `"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusConflict)
+				_, _ = io.WriteString(w, test.body)
+			}))
+			defer srv.Close()
+			client, err := New(Config{BaseURL: srv.URL, Token: "secret"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.CreateWorker(context.Background(), WorkerSpec{
+				ClientRequestID: "run-safe-error", ProjectID: "safe-fixture", Harness: "opencode",
+				DisplayName: "bounded fixture", Prompt: "local fixture only",
+			})
+			if err == nil || errors.Is(err, ErrOutcomeUnknown) || strings.Contains(err.Error(), "padding") || strings.Contains(err.Error(), "secret") {
+				t.Fatalf("unsafe/incorrect error classification: %v", err)
+			}
+		})
 	}
 }
 
