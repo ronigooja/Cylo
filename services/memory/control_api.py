@@ -37,12 +37,16 @@ class ControlAPI:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 result = json.loads(response.read().decode("utf-8"))
+                status = getattr(response, "status", 200)
+                if status == 202:
+                    code = str(result.get("code", "cleanup_pending")) if isinstance(result, dict) else "cleanup_pending"
+                    raise ControlAPIError(status, code)
                 return result if isinstance(result, dict) else {}
         except urllib.error.HTTPError as exc:
             code = "http_error"
             try:
                 body = json.loads(exc.read().decode("utf-8"))
-                code = str(body.get("error", {}).get("code", code))
+                code = str(body.get("code") or body.get("error", {}).get("code", code))
             except (ValueError, AttributeError):
                 pass
             raise ControlAPIError(exc.code, code) from None
@@ -72,6 +76,28 @@ class ControlAPI:
 
     def propose(self, proposal: dict[str, Any]) -> dict[str, Any]:
         return self._post("/runner/v1/memory/proposals", proposal)
+
+    def cleanup_export_temp(self, job: dict[str, Any]) -> dict[str, Any]:
+        return self._cleanup("/runner/v1/memory/export-temp/cleanup", job)
+
+    def cleanup_backup_delete_manifest(self, job: dict[str, Any]) -> dict[str, Any]:
+        return self._cleanup("/runner/v1/memory/backup-delete-manifest/cleanup", job)
+
+    def _cleanup(self, path: str, job: dict[str, Any]) -> dict[str, Any]:
+        result = self._post(path, self._cleanup_payload(job))
+        if result.get("status") != "completed":
+            raise ControlAPIError(503, str(result.get("code", "cleanup_incomplete")))
+        return result
+
+    @staticmethod
+    def _cleanup_payload(job: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "workspace_id": str(job["workspace_id"]),
+            "entity_id": str(job["entity_id"]),
+            "entity_version": int(job["entity_version"]),
+            "attempt": int(job["attempt"]),
+            "job_id": str(job["id"]),
+        }
 
     def reserve_model_call(
         self,

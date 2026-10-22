@@ -63,9 +63,15 @@ class MemoryWorker:
                 raise PermanentJobError("unsupported_deletion_job")
             if not self._validate(job):
                 return
-            if job.get("target") not in ("qdrant", "mem0"):
+            target = job.get("target")
+            if target in ("qdrant", "mem0"):
+                self.deletion_adapters.delete(job)
+            elif target == "export_temp":
+                self.api.cleanup_export_temp(job)
+            elif target == "backup_delete_manifest":
+                self.api.cleanup_backup_delete_manifest(job)
+            else:
                 raise PermanentJobError("adapter_missing")
-            self.deletion_adapters.delete(job)
             return
         if kind == "index":
             if not self._validate(job):
@@ -115,6 +121,15 @@ class MemoryWorker:
             return
         except ControlAPIError as exc:
             if exc.status == 409:
+                return
+            if exc.status == 202:
+                self.api.fail(job, exc.code, permanent=False)
+                return
+            if exc.code == "adapter_missing":
+                self.api.fail(job, exc.code, permanent=True)
+                return
+            if exc.status >= 500 and exc.code not in ("http_error", "control_unavailable"):
+                self.api.fail(job, exc.code, permanent=False)
                 return
             self.api.fail(job, "control_unavailable" if exc.status >= 500 else "control_rejected")
             return

@@ -29,14 +29,15 @@ const (
 // conservative defaults. Runner identity and authority are always taken from
 // authenticated request context, never from the request body.
 type DerivedConfig struct {
-	LeaseDuration    time.Duration
-	MaxAttempts      int
-	MaxBatch         int
-	RetryBase        time.Duration
-	RetryMax         time.Duration
-	ExtractorID      string
-	ModelCallLimit   int
-	ModelTokenBudget int
+	LeaseDuration            time.Duration
+	MaxAttempts              int
+	MaxBatch                 int
+	RetryBase                time.Duration
+	RetryMax                 time.Duration
+	ExtractorID              string
+	ModelCallLimit           int
+	ModelTokenBudget         int
+	BackupDeleteManifestPath string
 }
 
 func (c DerivedConfig) withDefaults() DerivedConfig {
@@ -74,6 +75,7 @@ func RegisterDerived(s *control.Server, store *storage.Store, config DerivedConf
 		return errorsf("derived memory registration requires control server and storage")
 	}
 	cfg := config.withDefaults()
+	cfg.BackupDeleteManifestPath = strings.TrimSpace(cfg.BackupDeleteManifestPath)
 	journal, _ := storage.NewDeletionJournal(store.Path())
 	svc := &derivedService{db: store.DB(), cfg: cfg, deletionJournal: journal}
 	return s.RegisterRunnerRoutes(func(mux *http.ServeMux) {
@@ -87,6 +89,7 @@ func RegisterDerived(s *control.Server, store *storage.Store, config DerivedConf
 		mux.HandleFunc("POST /runner/v1/memory/deletion-jobs/{job_id}/validate", svc.handleDeletionValidate)
 		mux.HandleFunc("POST /runner/v1/memory/deletion-jobs/{job_id}/complete", svc.handleDeletionComplete)
 		mux.HandleFunc("POST /runner/v1/memory/deletion-jobs/{job_id}/fail", svc.handleDeletionFail)
+		mux.HandleFunc("POST /runner/v1/memory/backup-delete-manifest/cleanup", svc.handleBackupDeleteManifestCleanup)
 	})
 }
 

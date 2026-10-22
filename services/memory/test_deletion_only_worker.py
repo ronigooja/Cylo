@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import os
+import io
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from .config import WorkerConfig
-from .control_api import ControlAPI
+from .control_api import ControlAPI, ControlAPIError
 from .worker import DeletionOnlyAdapters, MemoryWorker, PermanentJobError
 
 
@@ -59,7 +60,7 @@ class DeletionOnlyWorkerTests(unittest.TestCase):
 
         self.assertEqual(post.call_args_list[0].args[0], "/runner/v1/memory/deletion-jobs/claim")
 
-    def test_unsupported_cleanup_target_is_left_as_adapter_missing(self) -> None:
+    def test_unknown_cleanup_target_is_left_as_adapter_missing(self) -> None:
         class FakeAPI:
             failed: tuple[dict, str, bool] | None = None
 
@@ -77,10 +78,160 @@ class DeletionOnlyWorkerTests(unittest.TestCase):
         worker.config = self.config()
         worker.api = FakeAPI()
         worker.deletion_adapters = None
-        worker.run_job({"id": "cleanup-1", "kind": "delete_cleanup", "target": "export_temp"})
+        worker.run_job({"id": "cleanup-1", "kind": "delete_cleanup", "target": "unknown_target"})
 
         self.assertIsNotNone(worker.api.failed)
         self.assertEqual(worker.api.failed[1:], ("adapter_missing", True))
+
+    def test_backup_manifest_target_completes_only_after_control_api_success(self) -> None:
+        class FakeAPI:
+            completed = False
+            failed = None
+            calls = []
+
+            def validate(self, job):
+                return {"allowed": True}
+
+            def cleanup_backup_delete_manifest(self, job):
+                self.calls.append(job)
+                return {"status": "completed"}
+
+            def complete(self, job):
+                self.completed = True
+                return {}
+
+            def fail(self, job, code, permanent=False):
+                self.failed = (code, permanent)
+                return {}
+
+        worker = MemoryWorker.__new__(MemoryWorker)
+        worker.config = self.config()
+        worker.api = FakeAPI()
+        worker.deletion_adapters = None
+        job = {
+            "id": "cleanup-backup", "attempt": 1, "kind": "delete_cleanup", "target": "backup_delete_manifest",
+            "workspace_id": "default", "entity_id": "claim", "entity_version": 2,
+        }
+        worker.run_job(job)
+        self.assertEqual(worker.api.calls, [job])
+        self.assertTrue(worker.api.completed)
+        self.assertIsNone(worker.api.failed)
+
+    def test_pending_cleanup_response_retries_instead_of_completing(self) -> None:
+        class FakeAPI:
+            completed = False
+            failed = None
+
+            def validate(self, job):
+                return {"allowed": True}
+
+            def cleanup_export_temp(self, job):
+                raise ControlAPIError(202, "export_active")
+
+            def complete(self, job):
+                self.completed = True
+                return {}
+
+            def fail(self, job, code, permanent=False):
+                self.failed = (code, permanent)
+                return {}
+
+        worker = MemoryWorker.__new__(MemoryWorker)
+        worker.config = self.config()
+        worker.api = FakeAPI()
+        worker.deletion_adapters = None
+        worker.run_job({
+            "id": "cleanup-export", "attempt": 1, "kind": "delete_cleanup", "target": "export_temp",
+            "workspace_id": "default", "entity_id": "claim", "entity_version": 2,
+        })
+        self.assertFalse(worker.api.completed)
+        self.assertEqual(worker.api.failed, ("export_active", False))
+
+    def test_export_registry_errors_remain_pending_with_stable_code(self) -> None:
+        class FakeAPI:
+            completed = False
+            failed = None
+
+            def validate(self, job):
+                return {"allowed": True}
+
+            def cleanup_export_temp(self, job):
+                raise ControlAPIError(503, "registry_unavailable")
+
+            def complete(self, job):
+                self.completed = True
+                return {}
+
+            def fail(self, job, code, permanent=False):
+                self.failed = (code, permanent)
+                return {}
+
+        worker = MemoryWorker.__new__(MemoryWorker)
+        worker.config = self.config()
+        worker.api = FakeAPI()
+        worker.deletion_adapters = None
+        worker.run_job({
+            "id": "cleanup-export", "attempt": 1, "kind": "delete_cleanup", "target": "export_temp",
+            "workspace_id": "default", "entity_id": "claim", "entity_version": 2,
+        })
+        self.assertFalse(worker.api.completed)
+        self.assertEqual(worker.api.failed, ("registry_unavailable", False))
+
+    def test_unregistered_export_artifact_retries_with_stable_code(self) -> None:
+        class FakeAPI:
+            completed = False
+            failed = None
+
+            def validate(self, job):
+                return {"allowed": True}
+
+            def cleanup_export_temp(self, job):
+                raise ControlAPIError(503, "unregistered_artifact")
+
+            def complete(self, job):
+                self.completed = True
+                return {}
+
+            def fail(self, job, code, permanent=False):
+                self.failed = (code, permanent)
+                return {}
+
+        worker = MemoryWorker.__new__(MemoryWorker)
+        worker.config = self.config()
+        worker.api = FakeAPI()
+        worker.deletion_adapters = None
+        worker.run_job({
+            "id": "cleanup-export", "attempt": 1, "kind": "delete_cleanup", "target": "export_temp",
+            "workspace_id": "default", "entity_id": "claim", "entity_version": 2,
+        })
+        self.assertFalse(worker.api.completed)
+        self.assertEqual(worker.api.failed, ("unregistered_artifact", False))
+
+    def test_backup_manifest_endpoint_payload_is_job_bound(self) -> None:
+        api = ControlAPI("http://control.invalid", "fixture-token", deletion_only=True)
+        job = {
+            "id": "job-id", "attempt": 4, "workspace_id": "default",
+            "entity_id": "claim-id", "entity_version": 5,
+        }
+        with patch.object(api, "_post", return_value={"status": "completed"}) as post:
+            api.cleanup_backup_delete_manifest(job)
+        self.assertEqual(post.call_args.args[0], "/runner/v1/memory/backup-delete-manifest/cleanup")
+        self.assertEqual(post.call_args.args[1], {
+            "workspace_id": "default", "entity_id": "claim-id", "entity_version": 5,
+            "attempt": 4, "job_id": "job-id",
+        })
+
+    def test_control_api_preserves_pending_response_code(self) -> None:
+        api = ControlAPI("http://control.invalid", "fixture-token", deletion_only=True)
+        response = io.BytesIO(b'{"status":"pending","code":"export_active"}')
+        response.status = 202
+        with patch("services.memory.control_api.urllib.request.urlopen", return_value=response):
+            with self.assertRaises(ControlAPIError) as raised:
+                api.cleanup_export_temp({
+                    "id": "job-id", "attempt": 1, "workspace_id": "default",
+                    "entity_id": "claim", "entity_version": 2,
+                })
+        self.assertEqual((raised.exception.status, raised.exception.code), (202, "export_active"))
 
     def test_missing_mem0_history_store_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
