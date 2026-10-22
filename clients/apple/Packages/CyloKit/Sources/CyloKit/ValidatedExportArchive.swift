@@ -189,6 +189,7 @@ struct ExportManifest: Decodable {
     let workspaceId: String
     let subjectId: String
     let scope: String
+    let exportId: String
     let authority: ExportAuthority
     let integrity: ExportIntegrity
 }
@@ -198,6 +199,10 @@ struct ExportAuthority: Decodable {
     let generation: Int64
     let deletionSequence: String
     let snapshotEventCursor: String
+    let validatedThroughCursor: String
+    let exportAuditEventCursor: String
+    let exportAuditEventId: String
+    let exportAuditEventType: String
     let source: String
 }
 

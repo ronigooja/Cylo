@@ -28,6 +28,7 @@ public final class CyloAppModel: ObservableObject {
     @Published public private(set) var voiceDraftRevision: Int64 = 0
     @Published public private(set) var exportArtifact: ScopedExportArtifact?
     @Published public private(set) var exportStatus: String?
+    private var exportArtifactConnectionEpoch: UInt64?
     @Published public private(set) var pendingCommandSummaries: [PendingCommandSummary] = []
 
     private let defaults: UserDefaults
@@ -62,6 +63,7 @@ public final class CyloAppModel: ObservableObject {
 
     func setExportArtifactForTesting(_ artifact: ScopedExportArtifact?) {
         exportArtifact = artifact
+        exportArtifactConnectionEpoch = artifact == nil ? nil : connectionGeneration.value
     }
 
     func setMemoryClaimsForTesting(_ claims: [MemoryClaim]) {
@@ -1051,6 +1053,7 @@ public final class CyloAppModel: ObservableObject {
                 return
             }
             exportArtifact = artifact
+            exportArtifactConnectionEpoch = generation
             unownedArtifactURL = nil
             exportStatus = "Export prepared by the server. Choose Save to select where to keep the file."
         } catch {
@@ -1064,6 +1067,7 @@ public final class CyloAppModel: ObservableObject {
         guard let artifact = exportArtifact else { return }
         try? FileManager.default.removeItem(at: artifact.fileURL)
         exportArtifact = nil
+        exportArtifactConnectionEpoch = nil
         if saved { exportStatus = "Export saved on this device." }
         else if let error, (error as NSError).code != NSUserCancelledError { exportStatus = "The export could not be saved: \(error.localizedDescription)" }
         else { exportStatus = "Saving was canceled. The prepared temporary file was removed." }
@@ -1077,9 +1081,38 @@ public final class CyloAppModel: ObservableObject {
         exportStatus = status
     }
 
+    public func validateExportForSave(expectedConnectionEpoch: UInt64) async -> Bool {
+        guard let artifact = exportArtifact,
+              expectedConnectionEpoch == connectionGeneration.value,
+              exportArtifactConnectionEpoch == expectedConnectionEpoch,
+              api != nil else {
+            cancelExport(status: "The export is no longer authorized on this connection. Prepare a fresh copy.")
+            return false
+        }
+        do {
+            try await refreshSnapshot()
+        } catch {
+            if exportArtifact?.fileURL == artifact.fileURL {
+                cancelExport(status: "Could not recheck server authority. The prepared export was removed.")
+            }
+            return false
+        }
+        guard expectedConnectionEpoch == connectionGeneration.value,
+              exportArtifactConnectionEpoch == expectedConnectionEpoch,
+              exportArtifact?.fileURL == artifact.fileURL,
+              Self.exportAuthorityMatches(artifact, snapshot: snapshot) else {
+            if exportArtifact?.fileURL == artifact.fileURL {
+                cancelExport(status: "Server authority changed. The prepared export was removed.")
+            }
+            return false
+        }
+        return true
+    }
+
     private func discardExportArtifact() {
         if let artifact = exportArtifact { try? FileManager.default.removeItem(at: artifact.fileURL) }
         exportArtifact = nil
+        exportArtifactConnectionEpoch = nil
     }
 
     public func projectName(_ id: String?) -> String {
@@ -1248,8 +1281,13 @@ public final class CyloAppModel: ObservableObject {
             else { throw CyloError.invalidServerURL }
         }
         catch {
-            if generation == connectionGeneration.value, Self.isAccessDenied(error) {
-                clearMemoryAndPreparedExport(status: "Server access changed; cached memory and the prepared export were cleared.")
+            if generation == connectionGeneration.value {
+                if exportArtifact != nil {
+                    cancelExport(status: "Could not confirm current server authority. The prepared export was removed.")
+                }
+                if Self.isAccessDenied(error) {
+                    clearMemoryAndPreparedExport(status: "Server access changed; cached memory and the prepared export were cleared.")
+                }
             }
             throw error
         }
@@ -1655,6 +1693,9 @@ public final class CyloAppModel: ObservableObject {
         guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI), !Task.isCancelled else { return }
         switch push {
         case let .event(envelope):
+            if let artifact = exportArtifact, !Self.matchesExportAudit(envelope, artifact: artifact) {
+                cancelExport(status: "A server change may have changed export access. The prepared copy was removed.")
+            }
             let memoryChanged = envelope.aggregateType == "memory" && ["memory.revised", "memory.deleted", "memory.proposal_accepted"].contains(envelope.type)
             if memoryChanged {
                 await handleMemoryOrAuthorizationChange(status: "Server memory changed; prepare a fresh export.")
@@ -1803,11 +1844,30 @@ public final class CyloAppModel: ObservableObject {
 
     private static func exportAuthorityMatches(_ artifact: ScopedExportArtifact, snapshot: Snapshot?) -> Bool {
         guard let snapshot else { return false }
-        guard let authority = snapshot.authority else { return artifact.snapshotCursor == snapshot.eventCursor }
+        guard let authority = snapshot.authority else {
+            return artifact.validatedThroughCursor.isEmpty && artifact.snapshotCursor == snapshot.eventCursor
+        }
+        if !artifact.validatedThroughCursor.isEmpty {
+            guard !artifact.exportID.isEmpty,
+                  artifact.exportAuditEventID == artifact.exportID,
+                  artifact.exportAuditEventType == "data.export.prepared",
+                  artifact.exportAuditEventCursor == artifact.validatedThroughCursor,
+                  let dataCursor = UInt64(artifact.snapshotCursor), dataCursor < UInt64.max,
+                  String(dataCursor + 1) == artifact.validatedThroughCursor else { return false }
+        }
         return artifact.instanceLineageID == authority.instanceLineageId
             && artifact.generation == authority.generation
             && artifact.deletionSequence == authority.deletionSequence
-            && artifact.snapshotCursor == snapshot.eventCursor
+            && (artifact.validatedThroughCursor.isEmpty ? artifact.snapshotCursor : artifact.validatedThroughCursor) == snapshot.eventCursor
+    }
+
+    private static func matchesExportAudit(_ event: EventEnvelope, artifact: ScopedExportArtifact) -> Bool {
+        !artifact.exportID.isEmpty
+            && event.eventId == artifact.exportAuditEventID
+            && event.cursor == artifact.exportAuditEventCursor
+            && event.type == artifact.exportAuditEventType
+            && event.aggregateType == "data_export"
+            && event.aggregateId == artifact.exportID
     }
 
     private static func cleanupExpiredExportTemporaries() {
