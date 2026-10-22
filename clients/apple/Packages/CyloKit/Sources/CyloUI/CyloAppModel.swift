@@ -744,7 +744,11 @@ public final class CyloAppModel: ObservableObject {
     }
 
     public func append(to task: TaskRecord, content: String) async {
-        await send(kind: "task.append", expectedVersion: task.version, payload: .object(["task_id": .string(task.id), "content": .string(content)]))
+        guard let currentTask = self.task(id: task.id), currentTask.status.canAcceptEntries else {
+            notice = "This task is finished and cannot accept more entries. Choose New task to start separate work."
+            return
+        }
+        await send(kind: "task.append", expectedVersion: currentTask.version, payload: .object(["task_id": .string(currentTask.id), "content": .string(content)]))
     }
 
     public func stop(_ task: TaskRecord, reason: String? = nil) async {

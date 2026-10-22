@@ -53,6 +53,11 @@ public struct TaskRecord: Codable, Equatable, Identifiable, Sendable {
 public enum TaskStatus: String, Codable, CaseIterable, Sendable {
     case queued, active, waiting, awaitingUser = "awaiting_user", paused, complete, failed, canceled
 
+    /// The control plane rejects appended entries after a task reaches a terminal state.
+    public var canAcceptEntries: Bool {
+        self != .complete && self != .failed && self != .canceled
+    }
+
     public var label: String {
         switch self {
         case .queued: "Queued"

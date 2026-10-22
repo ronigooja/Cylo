@@ -86,14 +86,14 @@ private struct ConversationView: View {
                 TaskConversation(task: task, model: model)
             } else {
                 ContentUnavailableView("Start a conversation", systemImage: "bubble.left.and.bubble.right", description: Text("Send a request to create a durable task, or choose an existing task below."))
-                if !model.tasks.isEmpty {
-                    Picker("Continue a task", selection: $selectedTaskID) {
-                        Text("Choose a task").tag(String?.none)
-                        ForEach(model.tasks) { task in Text(task.title).tag(Optional(task.id)) }
-                    }
-                    .pickerStyle(.menu)
-                    .padding(.horizontal)
+            }
+            if !model.tasks.isEmpty {
+                Picker("Continue a task", selection: $selectedTaskID) {
+                    Text("New task").tag(String?.none)
+                    ForEach(model.tasks) { task in Text(task.title).tag(Optional(task.id)) }
                 }
+                .pickerStyle(.menu)
+                .padding(.horizontal)
             }
             composer
         }
@@ -102,8 +102,10 @@ private struct ConversationView: View {
     }
 
     private var composer: some View {
+        let selectedTask = model.task(id: selectedTaskID)
+        let canAppend = selectedTask?.status.canAcceptEntries ?? true
         VStack(alignment: .leading, spacing: 8) {
-            if model.task(id: selectedTaskID) == nil, !model.projects.isEmpty {
+            if selectedTask == nil, !model.projects.isEmpty {
                 Picker("Project", selection: $projectID) {
                     Text("Unassigned").tag("")
                     ForEach(model.projects) { project in Text(project.name).tag(project.id) }
@@ -114,19 +116,24 @@ private struct ConversationView: View {
                 TextField("Describe work for Cylo…", text: $draft, axis: .vertical)
                     .lineLimit(2...6)
                     .textFieldStyle(.roundedBorder)
+                    .disabled(!canAppend)
                 Button {
                     let message = draft.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !message.isEmpty else { return }
                     draft = ""
                     Task {
-                        if let task = model.task(id: selectedTaskID) {
+                        if let task = selectedTask {
                             await model.append(to: task, content: message)
                         } else {
                             await model.createTask(goal: message, title: String(message.prefix(72)), projectID: projectID.isEmpty ? nil : projectID)
                         }
                     }
                 } label: { Label("Send", systemImage: "arrow.up.circle.fill") }
-                    .disabled(model.isBusy || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(model.isBusy || !canAppend || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            if !canAppend {
+                Text("This task is finished and cannot accept more entries. Choose New task to start separate work.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             voiceControls
         }
