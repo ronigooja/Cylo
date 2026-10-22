@@ -1,9 +1,17 @@
 import unittest
 import sqlite3
 import tempfile
+import json
 from pathlib import Path
 
-from data_lifecycle.common import load_inventory, sqlite_snapshot
+from data_lifecycle.common import (
+    FORMAT,
+    deletion_ledger_metadata,
+    file_record,
+    load_inventory,
+    sqlite_snapshot,
+    verify_manifest,
+)
 
 
 class LoadInventoryTests(unittest.TestCase):
@@ -31,7 +39,7 @@ class SnapshotDeletionLineageTests(unittest.TestCase):
                     CREATE TABLE cylo_instance_state(singleton INTEGER PRIMARY KEY, instance_id TEXT, epoch INTEGER, dispatch_enabled INTEGER, derived_retrieval_enabled INTEGER, fence_reason TEXT, fenced_at TEXT);
                     INSERT INTO cylo_instance_state VALUES(1,'source-a',7,1,1,'','');
                     CREATE TABLE memory_deletion_ledger_state(singleton INTEGER PRIMARY KEY, ledger_id TEXT, ledger_generation INTEGER, baseline_kind TEXT, initialized_at TEXT);
-                    INSERT INTO memory_deletion_ledger_state VALUES(1,'ledger-a',1,'legacy_snapshot_only','2026-10-22T00:00:00Z');
+                    INSERT INTO memory_deletion_ledger_state VALUES(1,'11111111-1111-4111-8111-111111111111',1,'legacy_snapshot_only','2026-10-22T00:00:00Z');
                     CREATE TABLE memory_deletion_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, ledger_generation INTEGER, event_type TEXT, workspace_id TEXT, claim_id TEXT, revision INTEGER, deleted_at TEXT);
                     INSERT INTO memory_deletion_events VALUES(1,1,'claim_deleted','default','claim-a',2,'2026-10-22T00:01:00Z');
                     INSERT INTO memory_deletion_events VALUES(2,1,'claim_deleted','default','claim-b',4,'2026-10-22T00:02:00Z');
@@ -43,7 +51,7 @@ class SnapshotDeletionLineageTests(unittest.TestCase):
             self.assertEqual(
                 metadata["deletion_ledger"],
                 {
-                    "ledger_id": "ledger-a",
+                    "ledger_id": "11111111-1111-4111-8111-111111111111",
                     "generation": 1,
                     "baseline_kind": "legacy_snapshot_only",
                     "initialized_at": "2026-10-22T00:00:00Z",
@@ -60,13 +68,136 @@ class SnapshotDeletionLineageTests(unittest.TestCase):
                 db.executescript(
                     """
                     CREATE TABLE memory_deletion_ledger_state(singleton INTEGER PRIMARY KEY, ledger_id TEXT, ledger_generation INTEGER, baseline_kind TEXT, initialized_at TEXT);
-                    INSERT INTO memory_deletion_ledger_state VALUES(1,'ledger-a',1,'legacy_snapshot_only','now');
+                    INSERT INTO memory_deletion_ledger_state VALUES(1,'11111111-1111-4111-8111-111111111111',1,'legacy_snapshot_only','2026-10-22T00:00:00Z');
                     CREATE TABLE memory_deletion_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, ledger_generation INTEGER, event_type TEXT, workspace_id TEXT, claim_id TEXT, revision INTEGER, deleted_at TEXT);
-                    INSERT INTO memory_deletion_events VALUES(2,1,'claim_deleted','default','claim-b',4,'now');
+                    INSERT INTO memory_deletion_events VALUES(2,1,'claim_deleted','default','claim-b',4,'2026-10-22T00:01:00Z');
                     """
                 )
             with self.assertRaisesRegex(RuntimeError, "not contiguous"):
                 sqlite_snapshot(source, snapshot)
+
+
+class RestoreDeletionLedgerMetadataTests(unittest.TestCase):
+    def make_payload(self, base: Path, *, with_ledger: bool = True) -> tuple[Path, dict]:
+        payload = base / "payload"
+        (payload / "authority").mkdir(parents=True)
+        database_path = payload / "authority" / "cylo.sqlite"
+        with sqlite3.connect(database_path) as db:
+            if with_ledger:
+                db.executescript(
+                    """
+                    CREATE TABLE memory_deletion_ledger_state(singleton INTEGER PRIMARY KEY, ledger_id TEXT, ledger_generation INTEGER, baseline_kind TEXT, initialized_at TEXT);
+                    INSERT INTO memory_deletion_ledger_state VALUES(1,'22222222-2222-4222-8222-222222222222',1,'legacy_snapshot_only','2026-10-22T00:00:00Z');
+                    CREATE TABLE memory_deletion_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, ledger_generation INTEGER, event_type TEXT, workspace_id TEXT, claim_id TEXT, revision INTEGER, deleted_at TEXT);
+                    INSERT INTO memory_deletion_events VALUES(1,1,'claim_deleted','default','claim-a',2,'2026-10-22T00:01:00Z');
+                    """
+                )
+            ledger_metadata = deletion_ledger_metadata(db)
+        manifest = {
+            "format": FORMAT,
+            "schema_version": 1,
+            "database": {
+                "integrity": "ok",
+                "migrations": [],
+                "deletion_ledger": ledger_metadata,
+            },
+            "files": [file_record(database_path, "authority", "authority/cylo.sqlite")],
+        }
+        (payload / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        return payload, manifest
+
+    def test_restore_recomputes_and_accepts_matching_ledger_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            payload, _ = self.make_payload(Path(directory))
+            verified = verify_manifest(payload)
+            self.assertEqual(verified["database"]["deletion_ledger"]["watermark"], 1)
+
+    def test_restore_rejects_manifest_watermark_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            payload, manifest = self.make_payload(Path(directory))
+            manifest["database"]["deletion_ledger"]["watermark"] = 0
+            (payload / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "does not match SQLite"):
+                verify_manifest(payload)
+
+    def test_restore_rejects_missing_or_wrongly_typed_ledger_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            payload, manifest = self.make_payload(Path(directory))
+            del manifest["database"]["deletion_ledger"]
+            (payload / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "missing or malformed"):
+                verify_manifest(payload)
+
+        with tempfile.TemporaryDirectory() as directory:
+            payload, manifest = self.make_payload(Path(directory))
+            manifest["database"]["deletion_ledger"]["generation"] = True
+            (payload / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "invalid field types"):
+                verify_manifest(payload)
+
+    def test_restore_rejects_malformed_database_ledger_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            payload, _ = self.make_payload(Path(directory))
+            database_path = payload / "authority" / "cylo.sqlite"
+            with sqlite3.connect(database_path) as db:
+                db.execute("UPDATE memory_deletion_events SET ledger_generation=2")
+            manifest = json.loads((payload / "manifest.json").read_text(encoding="utf-8"))
+            manifest["files"] = [file_record(database_path, "authority", "authority/cylo.sqlite")]
+            (payload / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "malformed event"):
+                verify_manifest(payload)
+
+    def test_restore_rejects_unsupported_database_ledger_baseline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            payload, _ = self.make_payload(Path(directory))
+            database_path = payload / "authority" / "cylo.sqlite"
+            with sqlite3.connect(database_path) as db:
+                db.execute("UPDATE memory_deletion_ledger_state SET baseline_kind='future_baseline'")
+            manifest = json.loads((payload / "manifest.json").read_text(encoding="utf-8"))
+            manifest["files"] = [file_record(database_path, "authority", "authority/cylo.sqlite")]
+            (payload / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "baseline is unsupported"):
+                verify_manifest(payload)
+
+    def test_restore_rejects_ledger_tables_missing_after_migration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            payload, manifest = self.make_payload(Path(directory))
+            database_path = payload / "authority" / "cylo.sqlite"
+            with sqlite3.connect(database_path) as db:
+                db.executescript(
+                    """
+                    DROP TABLE memory_deletion_events;
+                    DROP TABLE memory_deletion_ledger_state;
+                    CREATE TABLE schema_migrations(namespace TEXT, version INTEGER, name TEXT);
+                    INSERT INTO schema_migrations VALUES('memory',102,'memory_claim_deletion_ledger_v1');
+                    """
+                )
+            manifest["database"]["migrations"] = [
+                {"namespace": "memory", "version": 102, "name": "memory_claim_deletion_ledger_v1"}
+            ]
+            manifest["database"].pop("deletion_ledger")
+            manifest["files"] = [file_record(database_path, "authority", "authority/cylo.sqlite")]
+            (payload / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "missing after their migration"):
+                verify_manifest(payload)
+
+    def test_restore_accepts_legacy_database_only_as_explicit_missing_ledger(self):
+        with tempfile.TemporaryDirectory() as directory:
+            payload, manifest = self.make_payload(Path(directory), with_ledger=False)
+            verified = verify_manifest(payload)
+            self.assertIsNone(verified["database"]["deletion_ledger"])
+
+            manifest["database"]["deletion_ledger"] = {
+                "ledger_id": "22222222-2222-4222-8222-222222222222",
+                "generation": 1,
+                "baseline_kind": "legacy_snapshot_only",
+                "initialized_at": "2026-10-22T00:00:00Z",
+                "watermark": 0,
+                "event_count": 0,
+            }
+            (payload / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "legacy SQLite database"):
+                verify_manifest(payload)
 
 
 if __name__ == "__main__":
