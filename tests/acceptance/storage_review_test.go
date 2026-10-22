@@ -255,6 +255,10 @@ func TestReviewLegacyNamespaceBackfillRollsBackOnHistoryGap(t *testing.T) {
 	if _, err := s.DB().ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=2`); err != nil {
 		t.Fatal(err)
 	}
+	var preBackfillRows int
+	if err := s.DB().QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&preBackfillRows); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.DB().ExecContext(ctx, `CREATE TABLE schema_migrations_legacy (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +281,7 @@ func TestReviewLegacyNamespaceBackfillRollsBackOnHistoryGap(t *testing.T) {
 	if err := s.DB().QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE namespace<>''`).Scan(&named); err != nil {
 		t.Fatal(err)
 	}
-	if blank != 6 || named != 0 {
-		t.Fatalf("failed validation partially backfilled legacy history: blank=%d named=%d", blank, named)
+	if blank != preBackfillRows || named != 0 {
+		t.Fatalf("failed validation partially backfilled legacy history: blank=%d want=%d named=%d", blank, preBackfillRows, named)
 	}
 }
