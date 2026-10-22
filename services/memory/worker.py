@@ -68,7 +68,7 @@ class MemoryWorker:
                 self.deletion_adapters.delete(job)
             elif target == "export_temp":
                 self.api.cleanup_export_temp(job)
-                return True
+                return False
             elif target == "backup_delete_manifest":
                 self.api.cleanup_backup_delete_manifest(job)
                 return True
@@ -76,10 +76,12 @@ class MemoryWorker:
                 raise PermanentJobError("adapter_missing")
             return False
         if kind == "delete_cleanup" and job.get("target") in ("export_temp", "backup_delete_manifest"):
-            # These server-side cleanup adapters persist their own completion and
-            # checkpoint after performing the trusted cleanup action.
+            # Backup-manifest cleanup also commits the deletion job. Export-temp
+            # cleanup only removes the registered file; its caller must complete
+            # the leased job through the generic completion route.
             if job["target"] == "export_temp":
                 self.api.cleanup_export_temp(job)
+                return False
             else:
                 self.api.cleanup_backup_delete_manifest(job)
             return True
