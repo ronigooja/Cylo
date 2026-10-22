@@ -15,7 +15,8 @@ func Register(s *control.Server, store *storage.Store) error {
 	if err := RegisterMigrations(store); err != nil {
 		return err
 	}
-	service := &Service{repo: NewRepository(store.DB()), db: store.DB()}
+	repository := NewRepositoryWithStore(store)
+	service := &Service{repo: repository, db: store.DB()}
 	for kind, handler := range map[string]control.CommandHandler{
 		"memory.remember":         service.commandRemember,
 		"memory.delete":           service.commandDelete,

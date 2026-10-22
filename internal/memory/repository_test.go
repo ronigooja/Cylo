@@ -103,8 +103,8 @@ func TestMemoryChineseVersionConflictAndDeletion(t *testing.T) {
 	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM memory_jobs WHERE entity_id=? AND kind='delete_cleanup' AND status='pending'`, first.ID).Scan(&jobs); err != nil {
 		t.Fatal(err)
 	}
-	if jobs != 6 {
-		t.Fatalf("delete cleanup jobs=%d, want 6 targets", jobs)
+	if jobs != 5 {
+		t.Fatalf("delete cleanup jobs=%d, want 5 external cleanup targets", jobs)
 	}
 }
 

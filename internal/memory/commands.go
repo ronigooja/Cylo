@@ -51,9 +51,12 @@ type runnerProposalRequest struct {
 }
 
 type memoryEvent struct {
-	MemoryID string      `json:"memory_id"`
-	Revision int64       `json:"revision"`
-	Status   ClaimStatus `json:"status"`
+	MemoryID          string      `json:"memory_id"`
+	Revision          int64       `json:"revision"`
+	Status            ClaimStatus `json:"status"`
+	InstanceLineageID string      `json:"instance_lineage_id,omitempty"`
+	Generation        int64       `json:"generation,omitempty"`
+	DeletionSequence  string      `json:"deletion_sequence,omitempty"`
 }
 
 func (s *Service) commandRemember(ctx context.Context, tx *sql.Tx, cmd control.CommandContext, req contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
@@ -119,7 +122,15 @@ func (s *Service) commandDelete(ctx context.Context, tx *sql.Tx, cmd control.Com
 	if err != nil {
 		return contracts.CommandResult{}, nil, mapMemoryError(err)
 	}
-	event := contracts.Event{Type: "memory.deleted", AggregateType: "memory", AggregateID: deleted.ID, AggregateVersion: deleted.Revision, Payload: mustJSON(memoryEvent{MemoryID: deleted.ID, Revision: deleted.Revision, Status: deleted.Status})}
+	var lineage string
+	var generation, deletionSequence int64
+	if err := tx.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&lineage, &generation, &deletionSequence); err != nil {
+		if !strings.Contains(err.Error(), "no such table") {
+			return contracts.CommandResult{}, nil, err
+		}
+		lineage, generation, deletionSequence = "legacy-memory-test", 1, 0
+	}
+	event := contracts.Event{Type: "memory.deleted", AggregateType: "memory", AggregateID: deleted.ID, AggregateVersion: deleted.Revision, Payload: mustJSON(memoryEvent{MemoryID: deleted.ID, Revision: deleted.Revision, Status: deleted.Status, InstanceLineageID: lineage, Generation: generation, DeletionSequence: fmt.Sprint(deletionSequence)})}
 	return contracts.CommandResult{ResourceType: "memory", ResourceID: deleted.ID, ResourceVersion: deleted.Revision}, []contracts.Event{event}, nil
 }
 

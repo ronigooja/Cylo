@@ -216,6 +216,10 @@ func restoreMarkerInAncestors(databasePath string) (bool, error) {
 
 func (s *Store) DB() *sql.DB { return s.db }
 
+// Path returns the canonical authoritative database path used to derive
+// protected sidecar resources such as the deletion journal.
+func (s *Store) Path() string { return s.path }
+
 func (s *Store) Close() error {
 	var errs []error
 	if s.db != nil {

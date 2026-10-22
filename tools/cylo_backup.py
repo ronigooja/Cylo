@@ -15,7 +15,7 @@ import tempfile
 from data_lifecycle.common import (
     FORMAT, CHUNK, copy_payload_path, create_archive, database_fence, encrypt_file,
     file_record, load_inventory, private_dir, read_key, run_volume_quiesce_adapter,
-    sqlite_snapshot,
+    sqlite_snapshot, independent_deletion_journal_metadata,
 )
 
 
@@ -50,6 +50,12 @@ def main() -> int:
             stage.mkdir(mode=0o700)
             (stage / "authority").mkdir(mode=0o700)
             db_record = sqlite_snapshot(source_db, stage / "authority" / "cylo.sqlite")
+            sidecar = Path(str(source_db) + ".deletion-ledger")
+            journal_record = independent_deletion_journal_metadata(sidecar, db_record.get("instance_state"))
+            journal_target = stage / "authority" / "cylo.sqlite.deletion-ledger"
+            journal_target.write_bytes(sidecar.read_bytes() if sidecar.exists() else b"")
+            os.chmod(journal_target, 0o600)
+            db_record["trusted_deletion_head"] = journal_record
             entries = []
             for role in ("service_config_paths", "artifact_paths", "persistent_volume_paths"):
                 for entry in inventory[role]:

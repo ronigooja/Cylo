@@ -189,12 +189,16 @@ func TestMaintenanceRESTEncryptedRestoreDrill(t *testing.T) {
 	if output, err := prepare.CombinedOutput(); err != nil {
 		t.Fatalf("prepare restore: %v\n%s", err, output)
 	}
-	assertRestoredAuthority(t, activeDB, false, true)
-	enable := exec.Command(maintenance, "enable", "--database", activeDB, "--expected-epoch", "3", "--proof-file", proofFile, "--proof-key-file", proofKeyFile)
-	if output, err := enable.CombinedOutput(); err == nil || !bytes.Contains(output, []byte("restore deletion reconciliation is required")) {
-		t.Fatalf("restore without deletion reconciliation was not blocked: err=%v output=%s", err, output)
+	reconcile := exec.Command(maintenance, "reconcile-deletions", "--database", activeDB, "--restore-state", filepath.Join(restore, "restore-state.json"))
+	if output, err := reconcile.CombinedOutput(); err != nil {
+		t.Fatalf("reconcile trusted deletion head: %v\n%s", err, output)
 	}
-	assertRestoredAuthority(t, activeDB, false, true)
+	assertRestoredAuthority(t, activeDB, false, true, false)
+	enable := exec.Command(maintenance, "enable", "--database", activeDB, "--expected-epoch", "3", "--proof-file", proofFile, "--proof-key-file", proofKeyFile)
+	if output, err := enable.CombinedOutput(); err != nil {
+		t.Fatalf("enable after verified zero-head reconciliation: %v\n%s", err, output)
+	}
+	assertRestoredAuthority(t, activeDB, true, true, false)
 }
 
 type runnerInstance struct {
@@ -261,7 +265,7 @@ func openDrillStore(ctx context.Context, path string) (*storage.Store, error) {
 	return store, nil
 }
 
-func assertRestoredAuthority(t *testing.T, path string, expectedDispatch, expectedReconciliation bool) {
+func assertRestoredAuthority(t *testing.T, path string, expectedDispatch, expectedDerived, expectedReconciliation bool) {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
 	if err != nil {
@@ -275,7 +279,7 @@ func assertRestoredAuthority(t *testing.T, path string, expectedDispatch, expect
 	if err = db.QueryRow(`SELECT count(*) FROM memory_tombstones`).Scan(&tombstones); err != nil {
 		t.Fatal(err)
 	}
-	if (dispatch == 1) != expectedDispatch || derived != 0 || (reconciliationRequired == 1) != expectedReconciliation || tombstones != 1 {
+	if (dispatch == 1) != expectedDispatch || (derived == 1) != expectedDerived || (reconciliationRequired == 1) != expectedReconciliation || tombstones != 1 {
 		t.Fatalf("restored dispatch=%d derived=%d reconciliation_required=%d tombstones=%d expected_dispatch=%t expected_reconciliation=%t", dispatch, derived, reconciliationRequired, tombstones, expectedDispatch, expectedReconciliation)
 	}
 }

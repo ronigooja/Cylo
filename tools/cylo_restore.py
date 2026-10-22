@@ -88,13 +88,18 @@ def main() -> int:
         payload, manifest = unpack_verified(args.artifact, key, Path(tmp))
         # Check the deletion ledger is present and authentic before making the staged copy
         # available to a server or any derived retrieval service.
-        deletion = manifest.get("database", {}).get("deletion_record_counts", {})
+        database_manifest = manifest.get("database", {})
+        deletion = manifest.get("database", {}).get("deletion_ledger")
+        trusted_head = database_manifest.get("trusted_deletion_head")
         source_db = payload / "authority" / "cylo.sqlite"
+        source_journal = payload / "authority" / "cylo.sqlite.deletion-ledger"
         staged = Path(tmp) / "new-instance"
         staged.mkdir(mode=0o700)
         (staged / "data").mkdir(mode=0o700)
         shutil.copyfile(source_db, staged / "data" / "cylo.sqlite.restore-pending")
         os.chmod(staged / "data" / "cylo.sqlite.restore-pending", 0o600)
+        shutil.copyfile(source_journal, staged / "data" / "cylo.sqlite.restore-pending.deletion-ledger")
+        os.chmod(staged / "data" / "cylo.sqlite.restore-pending.deletion-ledger", 0o600)
         # Keep the restore-only closed state inside the database so renaming
         # the staged file cannot bypass the adjacent restore-state.json.
         with sqlite3.connect(staged / "data" / "cylo.sqlite.restore-pending") as database:
@@ -115,6 +120,17 @@ def main() -> int:
             "requires_old_instance_isolation": True,
             "requires_deletion_reconciliation_before_derived_reads": bool(deletion),
             "deletion_records_verified": deletion,
+            "trusted_deletion_head": {
+                "snapshot_lineage_id": trusted_head["snapshot_lineage_id"],
+                "snapshot_generation": trusted_head["snapshot_generation"],
+                "snapshot_sequence": trusted_head["snapshot_sequence"],
+                "snapshot_event_count": trusted_head["snapshot_event_count"],
+                "snapshot_event_cursor_sum": trusted_head["snapshot_event_cursor_sum"],
+                "journal_lineage_id": trusted_head["lineage_id"],
+                "journal_generation": trusted_head["generation"],
+                "journal_sequence": trusted_head["sequence"],
+                "journal_head_sha256": trusted_head["head_hash"],
+            } if isinstance(trusted_head, dict) else None,
         }
         (staged / "restore-state.json").write_text(json.dumps(restored, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         os.chmod(staged / "restore-state.json", 0o600)
@@ -126,7 +142,7 @@ def main() -> int:
             os.close(parent_fd)
     print(f"restore staged: {target}")
     print("dispatch enabled: false (install the database with `cylo-maintenance prepare-restore` before starting a server)")
-    print(f"managed paths: {managed_count}; deletion ledger tables: {len(deletion)}")
+    print(f"managed paths: {managed_count}; deletion ledger tables: {len(deletion or {})}")
     return 0
 
 

@@ -117,7 +117,7 @@ CREATE TABLE cylo_instance_migration_source (
 	}}); err != nil {
 		return err
 	}
-	return store.RegisterMigration(storage.Migration{Namespace: "instance", Version: 1001, Name: "restore_deletion_reconciliation_gate", Up: func(ctx context.Context, tx *sql.Tx) error {
+	if err := store.RegisterMigration(storage.Migration{Namespace: "instance", Version: 1001, Name: "restore_deletion_reconciliation_gate", Up: func(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `ALTER TABLE cylo_instance_state ADD COLUMN restore_deletion_reconciliation_required INTEGER NOT NULL DEFAULT 0 CHECK(restore_deletion_reconciliation_required IN (0,1))`); err != nil {
 			return err
 		}
@@ -126,6 +126,37 @@ CREATE TABLE cylo_instance_migration_source (
 		// already-prepared databases that predate this marker.
 		_, err := tx.ExecContext(ctx, `UPDATE cylo_instance_state SET restore_deletion_reconciliation_required=1
 WHERE EXISTS (SELECT 1 FROM cylo_instance_migration_source m WHERE m.singleton=1 AND trim(m.old_instance_id)!='' AND m.old_epoch>0)`)
+		return err
+	}}); err != nil {
+		return err
+	}
+	return store.RegisterMigration(storage.Migration{Namespace: "instance", Version: 1002, Name: "deletion_lineage_and_reconciliation_checkpoints", Up: func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE cylo_instance_state ADD COLUMN lineage_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE cylo_instance_state ADD COLUMN generation INTEGER NOT NULL DEFAULT 1 CHECK(generation>0)`); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE cylo_instance_state ADD COLUMN deletion_sequence INTEGER NOT NULL DEFAULT 0 CHECK(deletion_sequence>=0)`); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE cylo_instance_state SET lineage_id=instance_id WHERE lineage_id=''`); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `
+CREATE TABLE cylo_deletion_reconciliation_checkpoints (
+  target TEXT PRIMARY KEY,
+  completed_sequence INTEGER NOT NULL CHECK(completed_sequence>=0),
+  updated_at TEXT NOT NULL,
+  last_error TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO cylo_deletion_reconciliation_checkpoints(target,completed_sequence,updated_at,last_error)
+SELECT target,0,strftime('%Y-%m-%dT%H:%M:%fZ','now'),'adapter_missing' FROM (
+  SELECT 'claim' AS target UNION ALL SELECT 'source_links' UNION ALL SELECT 'proposals'
+  UNION ALL SELECT 'mem0' UNION ALL SELECT 'qdrant' UNION ALL SELECT 'cache'
+  UNION ALL SELECT 'export_temp' UNION ALL SELECT 'backup_delete_manifest' UNION ALL SELECT 'source_ledger'
+);
+`)
 		return err
 	}})
 }

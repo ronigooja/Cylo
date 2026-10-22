@@ -24,9 +24,85 @@ var (
 	ErrInvalidSource   = errors.New("memory source is unavailable or inaccessible")
 )
 
-type Repository struct{ db *sql.DB }
+type Repository struct {
+	db              *sql.DB
+	deletionJournal *storage.DeletionJournal
+}
 
 func NewRepository(db *sql.DB) *Repository { return &Repository{db: db} }
+
+func NewRepositoryWithStore(store *storage.Store) *Repository {
+	if store == nil {
+		return &Repository{}
+	}
+	journal, _ := storage.NewDeletionJournal(store.Path())
+	return &Repository{db: store.DB(), deletionJournal: journal}
+}
+
+func (r *Repository) replayPendingDeletionsTx(ctx context.Context, tx *sql.Tx) error {
+	if r == nil || r.deletionJournal == nil {
+		return nil
+	}
+	var lineage string
+	var generation, sequence int64
+	if err := tx.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&lineage, &generation, &sequence); err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return nil
+		}
+		return err
+	}
+	return replayPendingDeletionJournalTx(ctx, tx, r.deletionJournal, lineage, generation, &sequence)
+}
+
+func journalledDeletionVersionsTx(ctx context.Context, tx *sql.Tx, journal *storage.DeletionJournal) (map[string]int64, error) {
+	versions := map[string]int64{}
+	if journal == nil {
+		return versions, nil
+	}
+	var lineage string
+	if err := tx.QueryRowContext(ctx, `SELECT lineage_id FROM cylo_instance_state WHERE singleton=1`).Scan(&lineage); err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return versions, nil
+		}
+		return nil, err
+	}
+	records, err := journal.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("read independent deletion journal: %w", err)
+	}
+	for _, record := range records {
+		if record.LineageID != lineage || record.EntityKind != "memory_claim" {
+			continue
+		}
+		key := record.WorkspaceID + "\x00" + record.EntityID
+		if record.EntityVersion > versions[key] {
+			versions[key] = record.EntityVersion
+		}
+	}
+	return versions, nil
+}
+
+func sourceHasJournalledDeletionTx(ctx context.Context, tx *sql.Tx, journal *storage.DeletionJournal, workspace, sourceID string, sourceVersion int64) (bool, error) {
+	versions, err := journalledDeletionVersionsTx(ctx, tx, journal)
+	if err != nil || len(versions) == 0 {
+		return false, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT claim_id FROM memory_revision_sources WHERE workspace_id=? AND source_id=? AND source_version=?`, workspace, sourceID, sourceVersion)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var claimID string
+		if err := rows.Scan(&claimID); err != nil {
+			return false, err
+		}
+		if versions[workspace+"\x00"+claimID] > 0 {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
 
 type WriteInput struct {
 	WorkspaceID       string
@@ -185,6 +261,22 @@ func (r *Repository) DeleteTx(ctx context.Context, tx *sql.Tx, in DeleteInput) (
 	if in.Expected < 1 || in.ActorID == "" || in.ReasonCode != "user_requested" {
 		return Claim{}, errors.New("delete requires expected revision, actor, and user_requested reason")
 	}
+	var lineageID string
+	var generation, currentSequence int64
+	if err := tx.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&lineageID, &generation, &currentSequence); err != nil {
+		if !strings.Contains(err.Error(), "no such table") {
+			return Claim{}, fmt.Errorf("read deletion instance lineage: %w", err)
+		}
+		lineageID, generation, currentSequence = "legacy-memory-test", 1, 0
+	}
+	// A sidecar append intentionally precedes the SQLite tombstone. If the
+	// authority transaction later rolls back, replay that durable intent before
+	// allowing another delete to allocate a sequence.
+	if r.deletionJournal != nil && lineageID != "legacy-memory-test" {
+		if err := replayPendingDeletionJournalTx(ctx, tx, r.deletionJournal, lineageID, generation, &currentSequence); err != nil {
+			return Claim{}, err
+		}
+	}
 	var c Claim
 	var validFrom, validTo sql.NullString
 	err := tx.QueryRowContext(ctx, `SELECT id,workspace_id,scope_kind,scope_id,principal_id,subject,claim_key,authority_kind,status,revision,valid_from,valid_to FROM memory_claims WHERE workspace_id=? AND id=? AND deleted_at IS NULL`, in.WorkspaceID, in.ClaimID).Scan(
@@ -199,6 +291,16 @@ func (r *Repository) DeleteTx(ctx context.Context, tx *sql.Tx, in DeleteInput) (
 		return Claim{}, ErrVersionConflict
 	}
 	deletedAt := time.Now().UTC()
+	cleanupTargets := []string{"claim", "source_links", "proposals", "mem0", "qdrant", "cache", "export_temp", "backup_delete_manifest", "source_ledger"}
+	globalSequence := currentSequence + 1
+	if r.deletionJournal != nil {
+		if _, err := r.deletionJournal.Append(storage.DeletionRecord{Sequence: globalSequence, LineageID: lineageID, Generation: generation, WorkspaceID: in.WorkspaceID, EntityKind: "memory_claim", EntityID: c.ID, EntityVersion: c.Revision + 1, ActorID: in.ActorID, ReasonCode: in.ReasonCode, DeletedAt: deletedAt.Format(time.RFC3339Nano), CleanupTargets: cleanupTargets}); err != nil {
+			return Claim{}, fmt.Errorf("durable deletion journal append failed: %w", err)
+		}
+	}
+	if err := clearMemoryClaimLocalArtifactsTx(ctx, tx, in.WorkspaceID, c.ID, deletedAt.Format(time.RFC3339Nano)); err != nil {
+		return Claim{}, err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_revision_sources WHERE claim_id=?`, c.ID); err != nil {
 		return Claim{}, err
 	}
@@ -224,17 +326,67 @@ func (r *Repository) DeleteTx(ctx context.Context, tx *sql.Tx, in DeleteInput) (
 	if err := tx.QueryRowContext(ctx, `SELECT ledger_generation FROM memory_deletion_ledger_state WHERE singleton=1`).Scan(&ledgerGeneration); err != nil {
 		return Claim{}, fmt.Errorf("read memory deletion ledger generation: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO memory_deletion_events(ledger_generation,event_type,workspace_id,claim_id,revision,deleted_at) VALUES(?,'claim_deleted',?,?,?,?)`, ledgerGeneration, in.WorkspaceID, c.ID, c.Revision, deletedAt.Format(time.RFC3339Nano)); err != nil {
+	_, err = tx.ExecContext(ctx, `INSERT INTO memory_deletion_events(ledger_generation,event_type,workspace_id,claim_id,revision,deleted_at,instance_lineage_id,instance_generation,entity_kind,entity_target_version,instance_deletion_sequence) VALUES(?,'claim_deleted',?,?,?,?,?,?, 'memory_claim',?,?)`, ledgerGeneration, in.WorkspaceID, c.ID, c.Revision, deletedAt.Format(time.RFC3339Nano), lineageID, generation, c.Revision, globalSequence)
+	if err != nil {
 		return Claim{}, fmt.Errorf("append memory claim deletion event: %w", err)
 	}
-	for _, target := range []string{"mem0", "qdrant", "cache", "exports", "backups", "source_ledger"} {
+	if _, err := tx.ExecContext(ctx, `UPDATE cylo_instance_state SET deletion_sequence=? WHERE singleton=1 AND generation=? AND deletion_sequence=?`, globalSequence, generation, currentSequence); err != nil {
+		if !strings.Contains(err.Error(), "no such table") {
+			return Claim{}, fmt.Errorf("advance instance deletion sequence: %w", err)
+		}
+	}
+	for _, target := range cleanupTargets {
+		if target == "claim" || target == "source_links" || target == "proposals" || target == "source_ledger" {
+			continue
+		}
 		id := uuid.NewString()
-		payload, _ := json.Marshal(map[string]string{"claim_id": c.ID, "target": target})
+		payloadValue := map[string]any{"claim_id": c.ID, "target": target, "deletion_sequence": globalSequence}
+		if target == "backup_delete_manifest" {
+			payloadValue["expire_after_days"] = 30
+		}
+		payload, _ := json.Marshal(payloadValue)
 		if _, err := tx.ExecContext(ctx, `INSERT INTO memory_jobs(id,workspace_id,kind,entity_id,entity_version,target,payload,status,available_at,created_at,updated_at) VALUES(?,?, 'delete_cleanup', ?, ?, ?, ?, 'pending', ?, ?, ?) ON CONFLICT(workspace_id,kind,entity_id,entity_version,target) DO NOTHING`, id, in.WorkspaceID, c.ID, c.Revision, target, payload, deletedAt.Format(time.RFC3339Nano), deletedAt.Format(time.RFC3339Nano), deletedAt.Format(time.RFC3339Nano)); err != nil {
 			return Claim{}, err
 		}
 	}
+	if err := completeLocalDeletionCheckpointsTx(ctx, tx, globalSequence, deletedAt.Format(time.RFC3339Nano)); err != nil {
+		return Claim{}, err
+	}
 	return c, nil
+}
+
+func clearMemoryClaimLocalArtifactsTx(ctx context.Context, tx *sql.Tx, workspace, claimID, deletedAt string) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE memory_proposals SET status='deleted',content='',version=version+1,decided_at=?
+WHERE workspace_id=? AND status='pending' AND EXISTS (
+  SELECT 1 FROM memory_revision_sources rs WHERE rs.workspace_id=memory_proposals.workspace_id
+    AND rs.claim_id=? AND rs.source_id=memory_proposals.source_id AND rs.source_version=memory_proposals.source_version
+)`, deletedAt, workspace, claimID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE memory_sources AS s SET deleted_at=?
+WHERE s.workspace_id=? AND EXISTS (
+  SELECT 1 FROM memory_revision_sources rs WHERE rs.workspace_id=s.workspace_id AND rs.claim_id=? AND rs.source_id=s.id AND rs.source_version=s.version
+) AND NOT EXISTS (
+  SELECT 1 FROM memory_revision_sources other
+  JOIN memory_claims c ON c.workspace_id=other.workspace_id AND c.id=other.claim_id
+  WHERE other.workspace_id=s.workspace_id AND other.source_id=s.id AND other.source_version=s.version
+    AND other.claim_id!=? AND c.deleted_at IS NULL AND c.status IN ('active','conflicted')
+)`, deletedAt, workspace, claimID, claimID)
+	return err
+}
+
+func completeLocalDeletionCheckpointsTx(ctx context.Context, tx *sql.Tx, sequence int64, now string) error {
+	for _, target := range []string{"claim", "source_links", "proposals", "source_ledger"} {
+		_, err := tx.ExecContext(ctx, `INSERT INTO cylo_deletion_reconciliation_checkpoints(target,completed_sequence,updated_at,last_error) VALUES(?,?,?,'')
+ON CONFLICT(target) DO UPDATE SET completed_sequence=max(completed_sequence,excluded.completed_sequence),updated_at=excluded.updated_at,last_error=''`, target, sequence, now)
+		if err != nil && strings.Contains(err.Error(), "no such table") {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *Repository) Search(ctx context.Context, p contracts.Principal, query string, filter SearchFilter) (SearchResult, error) {
@@ -263,6 +415,10 @@ WHERE c.workspace_id=? AND c.deleted_at IS NULL AND c.status IN ('active','confl
 		return SearchResult{}, err
 	}
 	terms := tokenize(query)
+	journalled, err := journalledDeletionVersionsTx(ctx, tx, r.deletionJournal)
+	if err != nil {
+		return SearchResult{}, err
+	}
 	type candidate struct {
 		claim   Claim
 		content string
@@ -293,6 +449,9 @@ WHERE c.workspace_id=? AND c.deleted_at IS NULL AND c.status IN ('active','confl
 	result := SearchResult{Items: []Claim{}, Missing: []string{}, Conflicts: []string{}}
 	for _, candidate := range candidates {
 		c, content := candidate.claim, candidate.content
+		if c.Revision <= journalled[c.WorkspaceID+"\x00"+c.ID] {
+			continue
+		}
 		allowed, err := mayAccessScope(ctx, tx, p, c.Scope)
 		if err != nil {
 			return SearchResult{}, err

@@ -8,17 +8,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ronigooja/Cylo/internal/capabilities"
 	"github.com/ronigooja/Cylo/internal/control"
 	"github.com/ronigooja/Cylo/internal/memory"
 	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Cylo/internal/voice"
 )
 
 func TestIndependentStagedRestoreCannotServeAuthorityBeforePrepare(t *testing.T) {
 	ctx := context.Background()
 	source, _, token, subject, _ := scopedExportServer(t)
-	if err := control.RegisterInstanceMaintenanceMigration(source); err != nil {
-		t.Fatal(err)
-	}
 	if err := source.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -47,6 +46,12 @@ func TestIndependentStagedRestoreCannotServeAuthorityBeforePrepare(t *testing.T)
 		t.Fatal(err)
 	}
 	if err = memory.Register(server, target); err != nil {
+		t.Fatal(err)
+	}
+	if err = voice.RegisterMigrations(target); err != nil {
+		t.Fatal(err)
+	}
+	if err = capabilities.RegisterMigrations(target); err != nil {
 		t.Fatal(err)
 	}
 	if err = control.RegisterExportRoutes(server); err != nil {

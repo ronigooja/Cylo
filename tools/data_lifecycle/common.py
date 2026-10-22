@@ -105,14 +105,83 @@ def sqlite_snapshot(source: Path, destination: Path) -> dict[str, Any]:
                 deletion[table] = int(dst.execute(f'SELECT count(*) FROM "{safe}"').fetchone()[0])
         instance_state = None
         if "cylo_instance_state" in tables:
-            row = dst.execute("SELECT instance_id,epoch,dispatch_enabled,derived_retrieval_enabled,fence_reason,fenced_at FROM cylo_instance_state WHERE singleton=1").fetchone()
+            columns = {r[1] for r in dst.execute("PRAGMA table_info(cylo_instance_state)")}
+            required = {"instance_id", "epoch", "dispatch_enabled", "derived_retrieval_enabled", "fence_reason", "fenced_at", "lineage_id", "generation", "deletion_sequence"}
+            if not required <= columns:
+                fail("instance deletion baseline schema is unavailable")
+            row = dst.execute("SELECT instance_id,epoch,dispatch_enabled,derived_retrieval_enabled,fence_reason,fenced_at,lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1").fetchone()
             if row is not None:
-                instance_state = {"instance_id": row[0], "epoch": int(row[1]), "dispatch_enabled": bool(row[2]), "derived_retrieval_enabled": bool(row[3]), "fence_reason": row[4], "fenced_at": row[5]}
+                event_count, event_cursor_sum = 0, 0
+                if "events" in tables:
+                    event_count, event_cursor_sum = map(int, dst.execute("SELECT count(*),coalesce(sum(cursor),0) FROM events").fetchone())
+                instance_state = {"instance_id": row[0], "epoch": int(row[1]), "dispatch_enabled": bool(row[2]), "derived_retrieval_enabled": bool(row[3]), "fence_reason": row[4], "fenced_at": row[5], "lineage_id": row[6], "generation": int(row[7]), "deletion_sequence": int(row[8]), "event_count": event_count, "event_cursor_sum": event_cursor_sum}
+            else:
+                fail("instance deletion baseline singleton is missing")
         deletion_ledger = deletion_ledger_metadata(dst)
         return {"integrity": "ok", "migrations": migrations, "deletion_record_counts": deletion, "instance_state": instance_state, "deletion_ledger": deletion_ledger}
     finally:
         dst.close()
         src.close()
+
+
+def independent_deletion_journal_metadata(path: Path, instance_state: dict[str, Any] | None) -> dict[str, Any]:
+    """Validate the sidecar's continuous identity and bind it to SQLite's head."""
+    if instance_state is None:
+        fail("backup has no verifiable instance deletion baseline")
+    if path.is_symlink():
+        fail("independent deletion journal cannot be a symlink")
+    if path.exists():
+        st = path.stat()
+        if not stat.S_ISREG(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o600 or st.st_uid != os.getuid():
+            fail("independent deletion journal must be a private current-user-owned regular file")
+        raw = path.read_bytes()
+    else:
+        raw = b""
+    records = []
+    previous_hash = ""
+    lineage = ""
+    generation = 0
+    for number, line in enumerate(raw.splitlines(), 1):
+        try:
+            record = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            fail(f"independent deletion journal record {number} is invalid: {exc}")
+        if not isinstance(record, dict) or record.get("sequence") != number or record.get("previous_hash", "") != previous_hash or not isinstance(record.get("hash"), str) or not record["hash"]:
+            fail(f"independent deletion journal sequence or hash chain is invalid at record {number}")
+        if not isinstance(record.get("lineage_id"), str) or not record["lineage_id"] or not isinstance(record.get("generation"), int) or record["generation"] < 1:
+            fail(f"independent deletion journal identity is invalid at record {number}")
+        if lineage and (record["lineage_id"] != lineage or record["generation"] < generation or record["generation"] > generation + 1):
+            fail(f"independent deletion journal generation is discontinuous at record {number}")
+        body_keys = ("sequence", "lineage_id", "generation", "workspace_id", "entity_kind", "entity_id", "entity_version", "actor_id", "reason_code", "deleted_at", "cleanup_targets", "previous_hash")
+        if set(record) != set(body_keys) | {"hash"} or not isinstance(record.get("cleanup_targets"), list):
+            fail(f"independent deletion journal record {number} has an unsupported schema")
+        body = {key: record[key] for key in body_keys}
+        encoded = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+        encoded = encoded.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029").encode("utf-8")
+        if hashlib.sha256(encoded).hexdigest() != record["hash"]:
+            fail(f"independent deletion journal hash mismatch at record {number}")
+        lineage = record["lineage_id"]
+        generation = record["generation"]
+        previous_hash = record["hash"]
+        records.append(record)
+    expected_sequence = int(instance_state["deletion_sequence"])
+    if expected_sequence != len(records):
+        fail("SQLite authority sequence does not match the independent deletion journal head")
+    if records and (lineage != instance_state["lineage_id"] or generation > int(instance_state["generation"])):
+        fail("SQLite authority identity does not match the independent deletion journal")
+    return {
+        "path": "authority/cylo.sqlite.deletion-ledger",
+        "sequence": len(records),
+        "lineage_id": lineage or instance_state["lineage_id"],
+        "generation": generation or int(instance_state["generation"]),
+        "head_hash": previous_hash,
+        "file_sha256": hashlib.sha256(raw).hexdigest(),
+        "snapshot_lineage_id": instance_state["lineage_id"],
+        "snapshot_generation": int(instance_state["generation"]),
+        "snapshot_sequence": expected_sequence,
+        "snapshot_event_count": int(instance_state["event_count"]),
+        "snapshot_event_cursor_sum": int(instance_state["event_cursor_sum"]),
+    }
 
 
 def deletion_ledger_metadata(connection: sqlite3.Connection) -> dict[str, Any] | None:
@@ -427,6 +496,9 @@ def verify_manifest(payload: Path) -> dict[str, Any]:
     db = payload / "authority" / "cylo.sqlite"
     if not db.is_file():
         fail("backup does not contain authoritative SQLite database")
+    sidecar = payload / "authority" / "cylo.sqlite.deletion-ledger"
+    if not sidecar.is_file():
+        fail("backup does not contain the independent deletion journal")
     conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
     try:
         database_manifest = raw.get("database")
@@ -450,6 +522,18 @@ def verify_manifest(payload: Path) -> dict[str, Any]:
         ):
             fail("memory deletion ledger tables are missing after their migration")
         validate_deletion_ledger_manifest(ledger_metadata, database_manifest)
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "cylo_instance_state" not in tables:
+            fail("backup has no verifiable instance deletion baseline")
+        state = conn.execute("SELECT lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1").fetchone()
+        if state is None:
+            fail("backup instance deletion baseline singleton is missing")
+        event_count, event_sum = map(int, conn.execute("SELECT count(*),coalesce(sum(cursor),0) FROM events").fetchone()) if "events" in tables else (0, 0)
+        instance_state = {"lineage_id": state[0], "generation": int(state[1]), "deletion_sequence": int(state[2]), "event_count": event_count, "event_cursor_sum": event_sum}
+        trusted_head = database_manifest.get("trusted_deletion_head")
+        actual_head = independent_deletion_journal_metadata(sidecar, instance_state)
+        if trusted_head != actual_head:
+            fail("backup trusted deletion head does not match the SQLite snapshot and sidecar")
     finally:
         conn.close()
     return raw

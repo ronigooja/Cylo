@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ronigooja/Cylo/internal/capabilities"
@@ -33,7 +34,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: cylo-maintenance status|fence|prepare-restore|enable")
+		return errors.New("usage: cylo-maintenance status|fence|prepare-restore|reconcile-deletions|enable")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -85,6 +86,27 @@ func run(args []string) error {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(state)
+	case "reconcile-deletions":
+		flags := flag.NewFlagSet("reconcile-deletions", flag.ContinueOnError)
+		database := flags.String("database", "", "restored authoritative database path")
+		restoreStatePath := flags.String("restore-state", "", "private restore-state file written by cylo-restore.py")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		trusted, err := readTrustedDeletionHead(*restoreStatePath)
+		if err != nil {
+			return err
+		}
+		store, err := openStore(ctx, *database)
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		result, err := memory.ReconcileDeletionJournalWithTrustedHead(ctx, store, trusted)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(result)
 	case "prepare-restore":
 		flags := flag.NewFlagSet("prepare-restore", flag.ContinueOnError)
 		database := flags.String("database", "", "restored database path ending in .restore-pending")
@@ -168,6 +190,40 @@ func run(args []string) error {
 	}
 }
 
+func readTrustedDeletionHead(path string) (memory.TrustedDeletionHead, error) {
+	var trusted memory.TrustedDeletionHead
+	if path == "" {
+		return trusted, errors.New("--restore-state is required for deletion reconciliation")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return trusted, err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		return trusted, errors.New("restore-state must be a regular file with mode 0600")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(stat.Uid) != os.Getuid() {
+		return trusted, errors.New("restore-state must be owned by the maintenance user")
+	}
+	var envelope struct {
+		RestoreState struct {
+			TrustedDeletionHead *memory.TrustedDeletionHead `json:"trusted_deletion_head"`
+		} `json:"restore_state"`
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return trusted, err
+	}
+	if err = json.Unmarshal(data, &envelope); err != nil {
+		return trusted, fmt.Errorf("parse protected restore-state: %w", err)
+	}
+	if envelope.RestoreState.TrustedDeletionHead == nil {
+		return trusted, errors.New("restore-state has no authenticated deletion head")
+	}
+	return *envelope.RestoreState.TrustedDeletionHead, nil
+}
+
 func openStore(ctx context.Context, database string) (*storage.Store, error) {
 	if strings.TrimSpace(database) == "" {
 		return nil, errors.New("--database is required")
@@ -239,7 +295,7 @@ func moveDatabaseFamily(source, destination string) error {
 	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 		return err
 	}
-	for _, suffix := range []string{"", "-wal", "-shm"} {
+	for _, suffix := range []string{"", "-wal", "-shm", ".deletion-ledger"} {
 		from, to := source+suffix, destination+suffix
 		if _, err := os.Lstat(from); errors.Is(err, os.ErrNotExist) {
 			continue
