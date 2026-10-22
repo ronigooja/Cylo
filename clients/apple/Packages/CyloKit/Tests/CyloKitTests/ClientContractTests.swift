@@ -171,6 +171,7 @@ final class ClientContractTests: XCTestCase {
         }
         let client = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
         let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        defer { model.cancelExport() }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -490,12 +491,12 @@ final class ClientContractTests: XCTestCase {
         let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
         let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try Data("prepared export".utf8).write(to: fileURL)
-        model.setExportArtifactForTesting(ScopedExportArtifact(fileURL: fileURL, filename: "cylo-export-one.json", scope: "personal", snapshotCursor: "5", exportID: "export-one", validatedThroughCursor: "6", exportAuditEventCursor: "6", exportAuditEventID: "event-export", exportAuditEventType: "data.export.prepared"))
+        model.setExportArtifactForTesting(ScopedExportArtifact(fileURL: fileURL, filename: "cylo-export-one.json", scope: "personal", snapshotCursor: "5", exportID: "export-one", validatedThroughCursor: "6", exportAuditEventCursor: "6", exportAuditEventID: "export-one", exportAuditEventType: "data.export.prepared"))
         model.snapshotFetchOverrideForTesting = {
             Snapshot(serverVersion: "srv-1", eventCursor: "6", projects: [], tasks: [], approvals: [], devices: [], runs: [], authority: SnapshotAuthority(instanceLineageId: "", generation: 0, deletionSequence: "0"))
         }
 
-        await model.handleEventForTesting(EventEnvelope(schemaVersion: 1, eventId: "event-export", cursor: "6", type: "data.export.prepared", occurredAt: "2026-10-21T12:00:00Z", workspaceId: "workspace-1", subjectId: "subject-1", aggregateType: "data_export", aggregateId: "export-one", aggregateVersion: 1, payload: .object([:])))
+        await model.handleEventForTesting(EventEnvelope(schemaVersion: 1, eventId: "export-one", cursor: "6", type: "data.export.prepared", occurredAt: "2026-10-21T12:00:00Z", workspaceId: "workspace-1", subjectId: "subject-1", aggregateType: "data_export", aggregateId: "export-one", aggregateVersion: 1, payload: .object([:])))
 
         XCTAssertNotNil(model.exportArtifact)
         XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.path))
