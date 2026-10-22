@@ -40,15 +40,6 @@ func (s *derivedService) handleBackupDeleteManifestCleanup(w http.ResponseWriter
 		control.WriteError(w, err)
 		return
 	}
-	validation, err := s.validate(r.Context(), p, job.ID, request.Attempt)
-	if err != nil {
-		control.WriteError(w, err)
-		return
-	}
-	if !validation.Allowed {
-		control.WriteError(w, control.NewAPIError(http.StatusConflict, "deletion_cleanup_not_allowed", "deletion cleanup is not currently authorized", map[string]string{"disposition": validation.Disposition}))
-		return
-	}
 	if s.cfg.BackupDeleteManifestPath == "" {
 		control.WriteError(w, control.NewAPIError(http.StatusServiceUnavailable, "adapter_missing", "backup deletion manifest is not configured", nil))
 		return
@@ -63,11 +54,26 @@ func (s *derivedService) handleBackupDeleteManifestCleanup(w http.ResponseWriter
 		control.WriteError(w, control.NewAPIError(http.StatusServiceUnavailable, "adapter_missing", "trusted backup deletion journal is unavailable", nil))
 		return
 	}
-	for _, record := range records {
-		if err = control.AppendBackupDeleteManifest(s.cfg.BackupDeleteManifestPath, record, trustedJournal); err != nil {
+	if job.Status == "done" && job.Attempt == request.Attempt && job.LeaseOwner == p.RunnerID {
+		if err = s.appendBackupManifestRecords(records, trustedJournal); err != nil {
 			control.WriteError(w, control.NewAPIError(http.StatusServiceUnavailable, "adapter_missing", "backup deletion manifest could not be durably updated", nil))
 			return
 		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "completed"})
+		return
+	}
+	validation, err := s.validate(r.Context(), p, job.ID, request.Attempt)
+	if err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	if !validation.Allowed {
+		control.WriteError(w, control.NewAPIError(http.StatusConflict, "deletion_cleanup_not_allowed", "deletion cleanup is not currently authorized", map[string]string{"disposition": validation.Disposition}))
+		return
+	}
+	if err = s.appendBackupManifestRecords(records, trustedJournal); err != nil {
+		control.WriteError(w, control.NewAPIError(http.StatusServiceUnavailable, "adapter_missing", "backup deletion manifest could not be durably updated", nil))
+		return
 	}
 	result, err := s.finish(r.Context(), p, job.ID, request.Attempt, "", false, true)
 	if err != nil {
@@ -81,8 +87,18 @@ func (s *derivedService) handleBackupDeleteManifestCleanup(w http.ResponseWriter
 	writeJSON(w, http.StatusOK, map[string]string{"status": "completed"})
 }
 
+func (s *derivedService) appendBackupManifestRecords(records, trustedJournal []storage.DeletionRecord) error {
+	for _, record := range records {
+		if err := control.AppendBackupDeleteManifest(s.cfg.BackupDeleteManifestPath, record, trustedJournal); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type backupManifestJob struct {
 	ID, WorkspaceID, EntityID, Target string
+	Status, LeaseOwner                string
 	EntityVersion                     int64
 	Payload                           []byte
 	Attempt                           int
@@ -92,7 +108,7 @@ func (s *derivedService) loadBackupManifestJob(ctx context.Context, p contracts.
 	var job backupManifestJob
 	var kind string
 	var payload []byte
-	err := s.db.QueryRowContext(ctx, `SELECT id,workspace_id,kind,entity_id,entity_version,target,payload,attempts FROM memory_jobs WHERE id=?`, request.JobID).Scan(&job.ID, &job.WorkspaceID, &kind, &job.EntityID, &job.EntityVersion, &job.Target, &payload, &job.Attempt)
+	err := s.db.QueryRowContext(ctx, `SELECT id,workspace_id,kind,entity_id,entity_version,target,payload,attempts,status,lease_owner FROM memory_jobs WHERE id=?`, request.JobID).Scan(&job.ID, &job.WorkspaceID, &kind, &job.EntityID, &job.EntityVersion, &job.Target, &payload, &job.Attempt, &job.Status, &job.LeaseOwner)
 	if errors.Is(err, sql.ErrNoRows) {
 		return job, 0, control.NewAPIError(http.StatusNotFound, "not_found", "memory deletion job not found", nil)
 	}

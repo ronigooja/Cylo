@@ -56,35 +56,45 @@ class MemoryWorker:
         LOG.info("job skipped by current authority validation: kind=%s disposition=%s", job.get("kind"), validation.get("disposition", "stale"))
         return False
 
-    def _process(self, job: dict[str, Any]) -> None:
+    def _process(self, job: dict[str, Any]) -> bool:
         kind = job.get("kind")
         if self.config.deletion_only:
             if kind != "delete_cleanup":
                 raise PermanentJobError("unsupported_deletion_job")
-            if not self._validate(job):
-                return
             target = job.get("target")
             if target in ("qdrant", "mem0"):
+                if not self._validate(job):
+                    return False
                 self.deletion_adapters.delete(job)
             elif target == "export_temp":
                 self.api.cleanup_export_temp(job)
+                return True
             elif target == "backup_delete_manifest":
                 self.api.cleanup_backup_delete_manifest(job)
+                return True
             else:
                 raise PermanentJobError("adapter_missing")
-            return
+            return False
+        if kind == "delete_cleanup" and job.get("target") in ("export_temp", "backup_delete_manifest"):
+            # These server-side cleanup adapters persist their own completion and
+            # checkpoint after performing the trusted cleanup action.
+            if job["target"] == "export_temp":
+                self.api.cleanup_export_temp(job)
+            else:
+                self.api.cleanup_backup_delete_manifest(job)
+            return True
         if kind == "index":
             if not self._validate(job):
-                return
+                return False
             self.qdrant.upsert_claim(job, self.embedder)
-            return
+            return False
         if kind == "extract":
             if not self._validate(job):
-                return
+                return False
             candidates = self.mem0.extract(job)
             for candidate in candidates:
                 if not self._validate(job):
-                    return
+                    return False
                 claim = job.get("claim") or {}
                 source = job.get("source") or {}
                 self.api.propose(
@@ -99,23 +109,23 @@ class MemoryWorker:
                         "content": candidate["content"],
                     }
                 )
-            return
+            return False
         if kind == "delete_cleanup":
             if not self._validate(job):
-                return
+                return False
             target = str(job.get("target", ""))
             if target == "qdrant":
                 self.qdrant.delete_generation(job["workspace_id"], job["entity_id"], int(job["entity_version"]))
-                return
+                return False
             if target == "mem0":
                 self.mem0.delete_claim(job["workspace_id"], job["entity_id"])
-                return
+                return False
             raise PermanentJobError("adapter_missing")
         raise PermanentJobError("unsupported_job_kind")
 
     def run_job(self, job: dict[str, Any]) -> None:
         try:
-            self._process(job)
+            completed_by_adapter = self._process(job)
         except PermanentJobError as exc:
             self.api.fail(job, exc.code, permanent=True)
             return
@@ -140,7 +150,8 @@ class MemoryWorker:
             )
             self.api.fail(job, "derived_store_error")
             return
-        self.api.complete(job)
+        if not completed_by_adapter:
+            self.api.complete(job)
 
     def run_forever(self) -> None:
         while True:

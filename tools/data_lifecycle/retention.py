@@ -106,10 +106,12 @@ def read_backup_delete_manifest(path: Path | None, journal_path: Path, journal_m
     """Require the configured manifest to cover the exact frozen journal head."""
     journal_records = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
     if path is None:
+        if journal_records:
+            fail("backup deletion manifest is not configured while the deletion journal has records")
         return {
             "baseline": journal_metadata["snapshot_lineage_id"],
-            "sequence": journal_metadata["snapshot_sequence"],
-            "targets": sorted({target for record in journal_records for target in record["cleanup_targets"]}),
+            "sequence": 0,
+            "targets": [],
             "version": 1,
         }
     manifest_path = Path(path).absolute()
