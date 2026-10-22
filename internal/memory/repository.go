@@ -220,6 +220,13 @@ func (r *Repository) DeleteTx(ctx context.Context, tx *sql.Tx, in DeleteInput) (
 	if _, err := tx.ExecContext(ctx, `INSERT INTO memory_tombstones(claim_id,workspace_id,revision,actor_id,reason,deleted_at) VALUES(?,?,?,?,?,?)`, c.ID, in.WorkspaceID, c.Revision, in.ActorID, in.ReasonCode, deletedAt.Format(time.RFC3339Nano)); err != nil {
 		return Claim{}, err
 	}
+	var ledgerGeneration int
+	if err := tx.QueryRowContext(ctx, `SELECT ledger_generation FROM memory_deletion_ledger_state WHERE singleton=1`).Scan(&ledgerGeneration); err != nil {
+		return Claim{}, fmt.Errorf("read memory deletion ledger generation: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO memory_deletion_events(ledger_generation,event_type,workspace_id,claim_id,revision,deleted_at) VALUES(?,'claim_deleted',?,?,?,?)`, ledgerGeneration, in.WorkspaceID, c.ID, c.Revision, deletedAt.Format(time.RFC3339Nano)); err != nil {
+		return Claim{}, fmt.Errorf("append memory claim deletion event: %w", err)
+	}
 	for _, target := range []string{"mem0", "qdrant", "cache", "exports", "backups", "source_ledger"} {
 		id := uuid.NewString()
 		payload, _ := json.Marshal(map[string]string{"claim_id": c.ID, "target": target})

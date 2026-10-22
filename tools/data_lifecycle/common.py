@@ -102,7 +102,31 @@ def sqlite_snapshot(source: Path, destination: Path) -> dict[str, Any]:
             row = dst.execute("SELECT instance_id,epoch,dispatch_enabled,derived_retrieval_enabled,fence_reason,fenced_at FROM cylo_instance_state WHERE singleton=1").fetchone()
             if row is not None:
                 instance_state = {"instance_id": row[0], "epoch": int(row[1]), "dispatch_enabled": bool(row[2]), "derived_retrieval_enabled": bool(row[3]), "fence_reason": row[4], "fenced_at": row[5]}
-        return {"integrity": "ok", "migrations": migrations, "deletion_record_counts": deletion, "instance_state": instance_state}
+        deletion_ledger = None
+        if "memory_deletion_ledger_state" in tables and "memory_deletion_events" in tables:
+            ledger = dst.execute(
+                "SELECT ledger_id,ledger_generation,baseline_kind,initialized_at FROM memory_deletion_ledger_state WHERE singleton=1"
+            ).fetchone()
+            if ledger is None:
+                fail("memory deletion ledger metadata is missing from SQLite snapshot")
+            count, minimum, watermark = dst.execute(
+                "SELECT count(*),coalesce(min(sequence),0),coalesce(max(sequence),0) FROM memory_deletion_events"
+            ).fetchone()
+            if count != watermark or (count > 0 and minimum != 1):
+                fail("memory deletion ledger sequence is not contiguous in SQLite snapshot")
+            sequence_row = dst.execute("SELECT seq FROM sqlite_sequence WHERE name='memory_deletion_events'").fetchone()
+            sequence_high_water = int(sequence_row[0]) if sequence_row is not None else 0
+            if sequence_high_water != watermark:
+                fail("memory deletion ledger sequence high-water does not match its events")
+            deletion_ledger = {
+                "ledger_id": ledger[0],
+                "generation": int(ledger[1]),
+                "baseline_kind": ledger[2],
+                "initialized_at": ledger[3],
+                "watermark": int(watermark),
+                "event_count": int(count),
+            }
+        return {"integrity": "ok", "migrations": migrations, "deletion_record_counts": deletion, "instance_state": instance_state, "deletion_ledger": deletion_ledger}
     finally:
         dst.close()
         src.close()

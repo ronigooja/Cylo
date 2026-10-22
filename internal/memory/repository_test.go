@@ -108,6 +108,68 @@ func TestMemoryChineseVersionConflictAndDeletion(t *testing.T) {
 	}
 }
 
+func TestClaimDeletionLedgerIsAtomicAndMonotonic(t *testing.T) {
+	ctx := context.Background()
+	store, repo := newMemoryTestRepo(t)
+	scope := Scope{Kind: ScopePersonal, PrincipalID: "ledger-user"}
+	first := writeMemory(t, ctx, store.DB(), repo, scope, "first claim", "ledger-source-1", 0)
+	second := writeMemory(t, ctx, store.DB(), repo, scope, "second claim", "ledger-source-2", 0)
+
+	tx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repo.DeleteTx(ctx, tx, DeleteInput{WorkspaceID: "default", ActorID: scope.PrincipalID, ClaimID: first.ID, Expected: first.Revision, ReasonCode: "user_requested"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM memory_deletion_events`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("rolled back delete left %d ledger events", count)
+	}
+
+	if _, err = runDelete(ctx, store.DB(), repo, DeleteInput{WorkspaceID: "default", ActorID: scope.PrincipalID, ClaimID: first.ID, Expected: first.Revision, ReasonCode: "user_requested"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = runDelete(ctx, store.DB(), repo, DeleteInput{WorkspaceID: "default", ActorID: scope.PrincipalID, ClaimID: first.ID, Expected: first.Revision, ReasonCode: "user_requested"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("repeated delete error=%v, want ErrNotFound", err)
+	}
+	if _, err = runDelete(ctx, store.DB(), repo, DeleteInput{WorkspaceID: "default", ActorID: scope.PrincipalID, ClaimID: second.ID, Expected: second.Revision, ReasonCode: "user_requested"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.DB().QueryContext(ctx, `SELECT sequence,event_type,workspace_id,claim_id,revision,deleted_at FROM memory_deletion_events ORDER BY sequence`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for want := int64(1); rows.Next(); want++ {
+		var sequence, revision int64
+		var eventType, workspace, claim, deletedAt string
+		if err = rows.Scan(&sequence, &eventType, &workspace, &claim, &revision, &deletedAt); err != nil {
+			t.Fatal(err)
+		}
+		if sequence != want || eventType != "claim_deleted" || workspace != "default" || revision != 2 || deletedAt == "" {
+			t.Fatalf("ledger event %d has unexpected fields: sequence=%d type=%q workspace=%q revision=%d deleted_at=%q", want, sequence, eventType, workspace, revision, deletedAt)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	var ledgerID, baseline string
+	var generation int
+	if err = store.DB().QueryRowContext(ctx, `SELECT ledger_id,ledger_generation,baseline_kind FROM memory_deletion_ledger_state WHERE singleton=1`).Scan(&ledgerID, &generation, &baseline); err != nil {
+		t.Fatal(err)
+	}
+	if ledgerID == "" || generation != 1 || baseline != "legacy_snapshot_only" {
+		t.Fatalf("unexpected ledger identity/baseline: id=%q generation=%d baseline=%q", ledgerID, generation, baseline)
+	}
+}
+
 func TestInferredClaimCannotBePromotedAndChineseTokenizerKeepsShortTerms(t *testing.T) {
 	c := Claim{ID: "candidate", WorkspaceID: "default", Scope: Scope{Kind: ScopeWorkspace}, Subject: "项目", Key: "数据库", Content: "SQLite", Authority: AuthorityModelInferred, Status: ClaimActive, Revision: 1,
 		Sources: []Source{{ID: "source", Version: 1, Scope: Scope{Kind: ScopeWorkspace}, Kind: "event", Reference: "event-1", Producer: "extractor"}}}

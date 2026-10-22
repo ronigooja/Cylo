@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/google/uuid"
 	"github.com/ronigooja/Cylo/internal/storage"
 )
 
@@ -182,6 +183,56 @@ CREATE TABLE memory_model_calls (
 );
 CREATE INDEX memory_model_calls_job ON memory_model_calls(workspace_id,job_id,created_at,id);
 `)
+			return err
+		},
+	}); err != nil {
+		return err
+	}
+	if err := store.RegisterMigration(storage.Migration{
+		Namespace: "memory",
+		Version:   102,
+		Name:      "memory_claim_deletion_ledger_v1",
+		Up: func(ctx context.Context, tx *sql.Tx) error {
+			ledgerID := uuid.NewString()
+			_, err := tx.ExecContext(ctx, `
+CREATE TABLE memory_deletion_ledger_state (
+  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+  ledger_id TEXT NOT NULL UNIQUE,
+  ledger_generation INTEGER NOT NULL CHECK(ledger_generation=1),
+  baseline_kind TEXT NOT NULL CHECK(baseline_kind='legacy_snapshot_only'),
+  initialized_at TEXT NOT NULL
+);
+CREATE TABLE memory_deletion_events (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  ledger_generation INTEGER NOT NULL CHECK(ledger_generation=1),
+  event_type TEXT NOT NULL CHECK(event_type='claim_deleted'),
+  workspace_id TEXT NOT NULL,
+  claim_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK(revision > 0),
+  deleted_at TEXT NOT NULL,
+  UNIQUE(workspace_id,claim_id,revision)
+);
+CREATE TRIGGER memory_deletion_ledger_state_no_update
+BEFORE UPDATE ON memory_deletion_ledger_state BEGIN
+  SELECT RAISE(ABORT, 'memory deletion ledger identity is immutable');
+END;
+CREATE TRIGGER memory_deletion_ledger_state_no_delete
+BEFORE DELETE ON memory_deletion_ledger_state BEGIN
+  SELECT RAISE(ABORT, 'memory deletion ledger identity is immutable');
+END;
+CREATE TRIGGER memory_deletion_events_no_update
+BEFORE UPDATE ON memory_deletion_events BEGIN
+  SELECT RAISE(ABORT, 'memory deletion ledger events are append-only');
+END;
+CREATE TRIGGER memory_deletion_events_no_delete
+BEFORE DELETE ON memory_deletion_events BEGIN
+  SELECT RAISE(ABORT, 'memory deletion ledger events are append-only');
+END;
+`)
+			if err != nil {
+				return err
+			}
+			_, err = tx.ExecContext(ctx, `INSERT INTO memory_deletion_ledger_state(singleton,ledger_id,ledger_generation,baseline_kind,initialized_at) VALUES(1,?,1,'legacy_snapshot_only',strftime('%Y-%m-%dT%H:%M:%fZ','now'))`, ledgerID)
 			return err
 		},
 	}); err != nil {
