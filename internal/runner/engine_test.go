@@ -312,6 +312,64 @@ func TestRecoveredClaimSessionMustMatchJournalSession(t *testing.T) {
 	}
 }
 
+func TestRecoveredJournalSessionReplaysPendingBindingWhenServerClaimIsEmpty(t *testing.T) {
+	ctx := context.Background()
+	claim := validClaim()
+	var order []string
+	agent := &fakeAO{order: &order, session: ao.Session{Status: "terminated"}, stopSuccess: true}
+	engine, control := makeEngine(t, claim, contracts.RunControl{DesiredControl: "run"}, agent, permitIsolation{}, &order)
+	spec := ao.WorkerSpec{ClientRequestID: claim.RunID, ProjectID: claim.AOProjectID, Harness: "codex", Model: "gpt-6.1-sol", ApprovalMode: "auto", DisplayName: "worker", Prompt: "fixture"}
+	if _, err := engine.Journal.SaveClaim(ctx, claim, spec, "create_pending"); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Journal.SetSession(ctx, claim.RunID, claim.AttemptID, claim.Fence, "journal-session", "bound"); err != nil {
+		t.Fatal(err)
+	}
+	// Model the process dying after persisting the session and binding receipt,
+	// while the control plane still returns an empty session on its claim.
+	control.loseFirstObservationAck = true
+	if err := engine.emitWithEffects(ctx, claim, "dispatch_bound", "ao_session", "AO worker session id was returned and durably journaled.", nil, nil, "", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "created", Reference: "journal-session"}}); err == nil {
+		t.Fatal("expected simulated lost binding acknowledgement")
+	}
+	control.observations = nil
+	if err := engine.Process(ctx, claim); err != nil {
+		t.Fatalf("recover pending binding and session: %v", err)
+	}
+	if agent.createN != 0 {
+		t.Fatal("runner created a second AO runtime while recovering the journaled session")
+	}
+	if len(control.observations) < 2 || control.observations[0].Kind != "dispatch_bound" || control.observations[0].AOSessionID != "journal-session" {
+		t.Fatalf("journaled binding was not replayed before session work: %+v", control.observations)
+	}
+	if got := indexOf(order, "observe:dispatch_bound"); got < 0 || got > indexOf(order, "get-session") && indexOf(order, "get-session") >= 0 {
+		t.Fatalf("binding was not observed before session reconciliation: %v", order)
+	}
+}
+
+func TestRecoveredJournalSessionSynthesizesMissingBindingReceipt(t *testing.T) {
+	ctx := context.Background()
+	claim := validClaim()
+	var order []string
+	agent := &fakeAO{order: &order, session: ao.Session{Status: "terminated"}, stopSuccess: true}
+	engine, control := makeEngine(t, claim, contracts.RunControl{DesiredControl: "run"}, agent, permitIsolation{}, &order)
+	spec := ao.WorkerSpec{ClientRequestID: claim.RunID, ProjectID: claim.AOProjectID, Harness: "codex", Model: "gpt-6.1-sol", ApprovalMode: "auto", DisplayName: "worker", Prompt: "fixture"}
+	if _, err := engine.Journal.SaveClaim(ctx, claim, spec, "create_pending"); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Journal.SetSession(ctx, claim.RunID, claim.AttemptID, claim.Fence, "journal-session", "bound"); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Process(ctx, claim); err != nil {
+		t.Fatalf("recover session without a queued binding receipt: %v", err)
+	}
+	if agent.createN != 0 {
+		t.Fatal("runner created a second AO runtime while recovering the journaled session")
+	}
+	if len(control.observations) < 2 || control.observations[0].Kind != "dispatch_bound" || control.observations[0].AOSessionID != "journal-session" {
+		t.Fatalf("runner did not synthesize the missing durable binding receipt: %+v", control.observations)
+	}
+}
+
 func TestNoEffectReceiptReplaysExactlyAfterLostAcknowledgement(t *testing.T) {
 	claim := validClaim()
 	agent := &fakeAO{}

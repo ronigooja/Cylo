@@ -89,6 +89,8 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 	}
 	var spec ao.WorkerSpec
 	phase := "claimed"
+	replayBoundSession := false
+	boundObservationPending := false
 	if hasPersisted {
 		// Recovery must preserve the exact original AO request even if the
 		// currently configured route has since changed or been removed.
@@ -97,6 +99,18 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 		}
 		spec = persisted.Spec
 		phase = ""
+		if persisted.Session != "" {
+			// The local session write precedes dispatch_bound. A crash in that
+			// interval leaves the server claim empty, so preserve the immutable
+			// journal identity and replay the binding before any session work.
+			if claim.AOSessionID != "" && claim.AOSessionID != persisted.Session {
+				return errors.New("server AO session conflicts with runner journal binding")
+			}
+			if spec.ClientRequestID != claim.RunID || spec.ProjectID != claim.AOProjectID || spec.Harness != effectiveHarness(claim.Harness) {
+				return errors.New("runner journal AO request identity does not match the fenced server claim")
+			}
+			replayBoundSession = claim.AOSessionID == ""
+		}
 		if persisted.Phase == "claimed" && spec.ClientRequestID == "" && persisted.Session == "" && persisted.Container == "" {
 			pending, pendingErr := e.Journal.PendingObservations(ctx, claim.RunID)
 			if pendingErr != nil {
@@ -160,8 +174,28 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 	if err != nil {
 		return fmt.Errorf("journal runner claim: %w", err)
 	}
+	if replayBoundSession {
+		pending, pendingErr := e.Journal.PendingObservations(ctx, claim.RunID)
+		if pendingErr != nil {
+			return pendingErr
+		}
+		for _, queued := range pending {
+			if queued.Body.Kind != "dispatch_bound" {
+				continue
+			}
+			if queued.Body.AOProjectID != claim.AOProjectID || queued.Body.AOSessionID != entry.Session || queued.Body.RunID != claim.RunID || queued.Body.AttemptID != claim.AttemptID || queued.Body.Fence != claim.Fence {
+				return errors.New("pending AO session binding conflicts with runner journal identity")
+			}
+			boundObservationPending = true
+		}
+	}
 	if err := e.flush(ctx, claim.RunID); err != nil {
 		return err
+	}
+	if replayBoundSession && !boundObservationPending {
+		if err := e.replayBoundSession(ctx, claim, entry.Session); err != nil {
+			return err
+		}
 	}
 	if entry.Session == "" {
 		control, err := e.Control.Control(ctx, claim.RunID)
@@ -225,13 +259,51 @@ func sameRecoveredClaim(persisted, current contracts.JobClaim, journalSession st
 	current.Harness = effectiveHarness(current.Harness)
 	// A recovered current claim may include the AO session assigned after the
 	// local claim was first journaled. Accept only the same session durably
-	// recorded with this run; foreign or missing session bindings fail closed.
-	if current.AOSessionID != journalSession || persisted.AOSessionID != "" && persisted.AOSessionID != current.AOSessionID {
+	// recorded with this run; foreign session bindings fail closed, while an
+	// empty server claim can recover the journaled session after a lost bind.
+	if current.AOSessionID != "" && current.AOSessionID != journalSession || persisted.AOSessionID != "" && persisted.AOSessionID != journalSession {
 		return false
 	}
 	persisted.AOSessionID = ""
 	current.AOSessionID = ""
 	return reflect.DeepEqual(persisted, current)
+}
+
+// replayBoundSession records a deterministic binding receipt when the journal
+// has a session but the server claim still has none and no queued receipt can
+// be replayed. Its stable id and body also make a lost acknowledgement safe.
+func (e *Engine) replayBoundSession(ctx context.Context, claim contracts.JobClaim, sessionID string) error {
+	if sessionID == "" || claim.RunID == "" || claim.AOProjectID == "" {
+		return errors.New("runner journal AO session binding is incomplete")
+	}
+	obsID := observationID(claim.RunID, claim.AttemptID, claim.Fence, "dispatch_bound", sessionID)
+	if exists, acknowledged, err := e.Journal.ObservationExists(ctx, obsID); err != nil {
+		return err
+	} else if exists {
+		if acknowledged {
+			return nil
+		}
+		return e.flush(ctx, claim.RunID)
+	}
+	const summary = "AO worker session id was returned and durably journaled."
+	const source = "ao_session"
+	occurredAt := time.Now().UTC()
+	observation := contracts.RunnerObservation{
+		ObservationID: obsID,
+		RunID:         claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence,
+		Kind: "dispatch_bound", OccurredAt: occurredAt,
+		AOProjectID: claim.AOProjectID, AOSessionID: sessionID,
+		Evidence: []contracts.Evidence{{
+			ID:   observationID(claim.RunID, claim.AttemptID, claim.Fence, "dispatch_bound", source),
+			Kind: "dispatch_bound", Summary: summary, Source: source,
+			CreatedAt: occurredAt, Verified: false,
+		}},
+		ExternalEffects: []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "created", Reference: sessionID}},
+	}
+	if err := e.Journal.QueueObservation(ctx, claim.RunID, observation); err != nil {
+		return err
+	}
+	return e.flush(ctx, claim.RunID)
 }
 
 func supportedSupervisedRoute(route Route) bool {
