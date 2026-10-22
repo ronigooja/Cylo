@@ -278,7 +278,8 @@ func (s *Service) completeHangup(ctx context.Context, principal contracts.Princi
 	}
 	defer tx.Rollback()
 	var state string
-	if err := tx.QueryRowContext(ctx, `SELECT state FROM voice_sessions WHERE workspace_id=? AND owner_id=? AND id=? AND generation=?`, principal.WorkspaceID, principal.SubjectID, sessionID, generation).Scan(&state); err != nil {
+	var gatewayUnbindUnknown int
+	if err := tx.QueryRowContext(ctx, `SELECT state,gateway_unbind_unknown FROM voice_sessions WHERE workspace_id=? AND owner_id=? AND id=? AND generation=?`, principal.WorkspaceID, principal.SubjectID, sessionID, generation).Scan(&state, &gatewayUnbindUnknown); err != nil {
 		return true, err
 	}
 	if state != "ending" {
@@ -297,7 +298,11 @@ func (s *Service) completeHangup(ctx context.Context, principal contracts.Princi
 			return true, err
 		}
 	} else {
-		if _, err := tx.ExecContext(ctx, `UPDATE voice_sessions SET state='quarantined',last_error_code='upstream_termination_unverified',offer_answer='',ended_at=NULL,updated_at=? WHERE workspace_id=? AND owner_id=? AND id=? AND generation=? AND state='ending'`, now, principal.WorkspaceID, principal.SubjectID, sessionID, generation); err != nil {
+		reason := "upstream_termination_unverified"
+		if gatewayUnbindUnknown != 0 {
+			reason = "gateway_unbind_unknown"
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE voice_sessions SET state='quarantined',last_error_code=?,offer_answer='',ended_at=NULL,updated_at=? WHERE workspace_id=? AND owner_id=? AND id=? AND generation=? AND state='ending'`, reason, now, principal.WorkspaceID, principal.SubjectID, sessionID, generation); err != nil {
 			return true, err
 		}
 	}
@@ -306,7 +311,11 @@ func (s *Service) completeHangup(ctx context.Context, principal contracts.Princi
 			return true, err
 		}
 	} else {
-		if _, err := tx.ExecContext(ctx, `UPDATE voice_pool_state SET blocked=1,reason_code='upstream_termination_unverified',updated_at=?,updated_by='system' WHERE id=1 AND source_session_id=?`, now, sessionID); err != nil {
+		reason := "upstream_termination_unverified"
+		if gatewayUnbindUnknown != 0 {
+			reason = "gateway_unbind_unknown"
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE voice_pool_state SET blocked=1,reason_code=?,updated_at=?,updated_by='system' WHERE id=1 AND source_session_id=?`, reason, now, sessionID); err != nil {
 			return true, err
 		}
 	}

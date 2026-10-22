@@ -342,11 +342,11 @@ func TestHangupUnknownGatewayDeleteOutcomeIsNotAutomaticallyRetried(t *testing.T
 	if got := deletes.Load(); got != 1 {
 		t.Fatalf("gateway DELETE count after uncertain outcome=%d, want exactly one attempt", got)
 	}
-	if err := store.DB().QueryRow(`SELECT state FROM voice_sessions WHERE id='hangup-session'`).Scan(&state); err != nil || state != "quarantined" {
-		t.Fatalf("retry finalized unverified gateway outcome: state=%q err=%v", state, err)
+	if err := store.DB().QueryRow(`SELECT state,last_error_code FROM voice_sessions WHERE id='hangup-session'`).Scan(&state, &reason); err != nil || state != "quarantined" || reason != "gateway_unbind_unknown" {
+		t.Fatalf("retry finalized or obscured unverified gateway outcome: state=%q reason=%q err=%v", state, reason, err)
 	}
-	if err := store.DB().QueryRow(`SELECT blocked FROM voice_pool_state WHERE id=1`).Scan(&blocked); err != nil || blocked != 1 {
-		t.Fatalf("unknown gateway outcome lost pool quarantine: blocked=%d err=%v", blocked, err)
+	if err := store.DB().QueryRow(`SELECT blocked,reason_code FROM voice_pool_state WHERE id=1`).Scan(&blocked, &reason); err != nil || blocked != 1 || reason != "gateway_unbind_unknown" {
+		t.Fatalf("unknown gateway outcome lost its pool quarantine reason: blocked=%d reason=%q err=%v", blocked, reason, err)
 	}
 }
 
