@@ -1059,6 +1059,51 @@ final class ClientContractTests: XCTestCase {
         XCTAssertTrue(model.voicePoolStatus?.blocked == true)
     }
 
+    @MainActor
+    func testDelayedOldHeartbeatFailureCannotTearDownNewVoiceSession() async throws {
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        let old = VoiceSessionResponse(voiceSessionId: "session-old", generation: 2, state: "active", answerSdp: "")
+        let oldEpoch = model.installVoiceSessionForTesting(old, api: api)
+        let current = VoiceSessionResponse(voiceSessionId: "session-current", generation: 3, state: "active", answerSdp: "")
+        let currentEpoch = model.installVoiceSessionForTesting(current, api: api)
+        var localStopCount = 0
+        model.voiceLocalMediaStopObserverForTesting = { localStopCount += 1 }
+
+        await model.handleVoiceHeartbeatFailureForTesting(sessionID: old.voiceSessionId, api: api, mediaEpoch: oldEpoch, generation: 0, message: "late timeout")
+
+        XCTAssertEqual(currentEpoch, oldEpoch + 1)
+        XCTAssertTrue(model.canEndVoiceSession)
+        XCTAssertEqual(localStopCount, 0)
+        guard case let .active(sessionID, generation) = model.voiceStatus else { return XCTFail("the newer voice session must remain active") }
+        XCTAssertEqual(sessionID, current.voiceSessionId)
+        XCTAssertEqual(generation, current.generation)
+    }
+
+    @MainActor
+    func testConcurrentRetryCannotSendSecondVoiceHangup() async throws {
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        let session = VoiceSessionResponse(voiceSessionId: "session-retry", generation: 5, state: "active", answerSdp: "")
+        _ = model.installVoiceSessionForTesting(session, api: api)
+        let gate = AsyncTestGate()
+        var hangupCount = 0
+        model.voiceHangupOverrideForTesting = { _ in
+            hangupCount += 1
+            await gate.pause()
+            return VoiceOperationResponse(ok: true, state: "ended", upstreamTermination: "verified", poolBlocked: false)
+        }
+
+        let first = Task { await model.endVoiceSession() }
+        await gate.waitUntilStarted()
+        await model.endVoiceSession()
+        XCTAssertEqual(hangupCount, 1, "a retry while the first hangup is pending cannot issue a second POST")
+        await gate.resume()
+        await first.value
+        XCTAssertEqual(hangupCount, 1)
+        XCTAssertFalse(model.canEndVoiceSession)
+    }
+
     private static func commandReceipt(key: String, kind: String, workspaceID: String, resourceID: String, resourceType: String = "task") -> Data {
         Data("{\"command_id\":\"command-1\",\"idempotency_key\":\"\(key)\",\"workspace_id\":\"\(workspaceID)\",\"kind\":\"\(kind)\",\"status\":\"accepted\",\"resource_type\":\"\(resourceType)\",\"resource_id\":\"\(resourceID)\",\"resource_version\":1,\"accepted_at\":\"2026-10-22T12:00:00Z\",\"event_cursor\":\"8\"}".utf8)
     }

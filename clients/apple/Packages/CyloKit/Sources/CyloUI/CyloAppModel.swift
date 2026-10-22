@@ -54,6 +54,7 @@ public final class CyloAppModel: ObservableObject {
     var snapshotFetchOverrideForTesting: (() async throws -> Snapshot)?
     var pendingCommandReadOverrideForTesting: (() async throws -> [PendingCommand])?
     var voiceLocalMediaStopObserverForTesting: (() -> Void)?
+    var voiceHangupOverrideForTesting: ((String) async throws -> VoiceOperationResponse)?
 
     func setCapabilityDeploymentsForTesting(_ deployments: [CapabilityDeployment]) {
         capabilityDeployments = deployments
@@ -138,6 +139,10 @@ public final class CyloAppModel: ObservableObject {
     func installVoiceHeartbeatForTesting(_ task: Task<Void, Never>) {
         voiceHeartbeat.install(task)
     }
+
+    func handleVoiceHeartbeatFailureForTesting(sessionID: String, api: APIClient, mediaEpoch: UInt64, generation: UInt64, message: String) async {
+        await handleVoiceHeartbeatFailure(sessionID: sessionID, api: api, mediaEpoch: mediaEpoch, generation: generation, message: message)
+    }
 #endif
     private var configuredServerURL: URL?
     private var voiceTransport: LibWebRTCTransport?
@@ -149,6 +154,7 @@ public final class CyloAppModel: ObservableObject {
     private var voiceSessionMediaClosed = false
     private var voiceStartMediaLoss: (epoch: UInt64, reason: String)?
     private var voiceStartInProgress = false
+    private var voiceHangupInFlightSessionID: String?
     private var voiceAPI: APIClient?
     private var voiceTurnID: String?
     private var voiceProviderMessageID: String?
@@ -749,7 +755,8 @@ public final class CyloAppModel: ObservableObject {
 
     private func finishVoiceSession(_ session: VoiceSessionResponse, api: APIClient, mediaEpoch: UInt64, lossReason: String?) async {
         guard voiceSession?.voiceSessionId == session.voiceSessionId,
-              voiceSessionMediaEpoch == mediaEpoch else { return }
+              voiceSessionMediaEpoch == mediaEpoch,
+              voiceHangupInFlightSessionID != session.voiceSessionId else { return }
         if let lossReason {
             voiceStatus = .interrupted(reason: "\(lossReason) Voice controls are stopped while local media closes and server release is checked.")
         }
@@ -758,8 +765,23 @@ public final class CyloAppModel: ObservableObject {
             await closeVoiceLocalMedia(mediaEpoch: mediaEpoch)
             voiceSessionMediaClosed = true
         }
+        voiceHangupInFlightSessionID = session.voiceSessionId
+        defer {
+            if voiceHangupInFlightSessionID == session.voiceSessionId {
+                voiceHangupInFlightSessionID = nil
+            }
+        }
         do {
-            let result = try await api.hangupVoiceSession(sessionID: session.voiceSessionId)
+            let result: VoiceOperationResponse
+            #if DEBUG
+            if let voiceHangupOverrideForTesting {
+                result = try await voiceHangupOverrideForTesting(session.voiceSessionId)
+            } else {
+                result = try await api.hangupVoiceSession(sessionID: session.voiceSessionId)
+            }
+            #else
+            result = try await api.hangupVoiceSession(sessionID: session.voiceSessionId)
+            #endif
             guard voiceSession?.voiceSessionId == session.voiceSessionId, voiceSessionMediaEpoch == mediaEpoch else { return }
             let latestPool = result.poolBlocked == true ? try? await api.voicePoolStatus() : nil
             guard voiceSession?.voiceSessionId == session.voiceSessionId, voiceSessionMediaEpoch == mediaEpoch else { return }
@@ -792,7 +814,9 @@ public final class CyloAppModel: ObservableObject {
     private func closeVoiceLocalMedia(mediaEpoch: UInt64) async {
         guard voiceMediaFence.stop(mediaEpoch) else { return }
         voiceHeartbeat.cancel()
+        #if DEBUG
         voiceLocalMediaStopObserverForTesting?()
+        #endif
         let transport = voiceTransport
         let audio = voiceAudioSession
         voiceTransport = nil
@@ -1489,6 +1513,7 @@ public final class CyloAppModel: ObservableObject {
     }
 
     private func startVoiceHeartbeat(sessionID: String, api: APIClient, generation: UInt64) {
+        guard let mediaEpoch = voiceSessionMediaEpoch, voiceMediaEpoch == mediaEpoch else { return }
         let task = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(15))
@@ -1497,14 +1522,34 @@ public final class CyloAppModel: ObservableObject {
                     _ = try await api.heartbeatVoiceSession(sessionID: sessionID)
                 } catch {
                     guard let self,
+                          !Task.isCancelled,
                           generation == self.connectionGeneration.value,
-                          let mediaEpoch = self.voiceSessionMediaEpoch else { return }
-                    await self.handleVoiceMediaLoss(.leaseRenewalFailed(self.userMessage(error)), mediaEpoch: mediaEpoch)
+                          self.voiceAPI === api,
+                          self.voiceSession?.voiceSessionId == sessionID,
+                          self.voiceSessionMediaEpoch == mediaEpoch,
+                          self.voiceMediaEpoch == mediaEpoch else { return }
+                    await self.handleVoiceHeartbeatFailure(
+                        sessionID: sessionID,
+                        api: api,
+                        mediaEpoch: mediaEpoch,
+                        generation: generation,
+                        message: self.userMessage(error)
+                    )
                     return
                 }
             }
         }
         voiceHeartbeat.install(task)
+    }
+
+    private func handleVoiceHeartbeatFailure(sessionID: String, api: APIClient, mediaEpoch: UInt64, generation: UInt64, message: String) async {
+        guard !Task.isCancelled,
+              generation == connectionGeneration.value,
+              voiceAPI === api,
+              voiceSession?.voiceSessionId == sessionID,
+              voiceSessionMediaEpoch == mediaEpoch,
+              voiceMediaEpoch == mediaEpoch else { return }
+        await handleVoiceMediaLoss(.leaseRenewalFailed(message), mediaEpoch: mediaEpoch)
     }
 
     private func receiveVoiceData(_ data: Data, generation: UInt64, mediaEpoch: UInt64) {
