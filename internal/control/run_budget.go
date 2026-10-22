@@ -65,12 +65,32 @@ func (s *Server) handleRunBudgetReserve(w http.ResponseWriter, r *http.Request) 
 			writeError(w, apiError(http.StatusInternalServerError, "internal", "persisted run budget ledger is invalid", nil))
 			return
 		}
+		authorizedNow := false
+		authorizationReason := ""
+		if status == "dispatching" || status == "active" {
+			authorization, authErr := s.TaskDispatchAuthorizationTx(r.Context(), tx, r.PathValue("run_id"), time.Now().UTC())
+			if authErr != nil {
+				writeError(w, authErr)
+				return
+			}
+			authorizedNow = authorization.Allowed
+			authorizationReason = authorization.ReasonCode
+			if !authorizedNow {
+				desired = "stop"
+				if authorizationReason != "" {
+					if err := appendBudgetEventTx(r, tx, workspace, r.PathValue("run_id"), req.AttemptID, req.Fence, "run.dispatch_authorization_rejected", map[string]any{"reason": authorizationReason, "reservation_id": req.ReservationID}); err != nil {
+						writeError(w, err)
+						return
+					}
+				}
+			}
+		}
 		consumed, e := budgetConsumedTx(r, tx, r.PathValue("run_id"))
 		if e != nil {
 			writeError(w, e)
 			return
 		}
-		receipt := contracts.RunBudgetReceipt{ReservationID: req.ReservationID, Status: existingStatus, Allowed: existingStatus != "rejected", StopRequested: desired == "stop", Reserved: reserved, Actual: actual, Consumed: consumed}
+		receipt := contracts.RunBudgetReceipt{ReservationID: req.ReservationID, Status: existingStatus, Allowed: existingStatus != "rejected" && authorizedNow && desired == "run", StopRequested: desired == "stop", Reserved: reserved, Actual: actual, Consumed: consumed}
 		if err := tx.Commit(); err != nil {
 			writeError(w, err)
 			return
@@ -87,7 +107,21 @@ func (s *Server) handleRunBudgetReserve(w http.ResponseWriter, r *http.Request) 
 		writeError(w, err)
 		return
 	}
-	allowed := (status == "dispatching" || status == "active") && desired == "run" && budgetWithinLimits(addBudgetUsage(consumed, req.Usage), limits)
+	authorized := false
+	authorizationReason := ""
+	if status == "dispatching" || status == "active" {
+		authorization, authErr := s.TaskDispatchAuthorizationTx(r.Context(), tx, r.PathValue("run_id"), time.Now().UTC())
+		if authErr != nil {
+			writeError(w, authErr)
+			return
+		}
+		authorized = authorization.Allowed
+		authorizationReason = authorization.ReasonCode
+		if !authorized {
+			desired = "stop"
+		}
+	}
+	allowed := (status == "dispatching" || status == "active") && desired == "run" && authorized && budgetWithinLimits(addBudgetUsage(consumed, req.Usage), limits)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	state := "reserved"
 	if !allowed {
@@ -104,6 +138,11 @@ func (s *Server) handleRunBudgetReserve(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		desired = "stop"
+	} else if !allowed && authorizationReason != "" {
+		if err := appendBudgetEventTx(r, tx, workspace, r.PathValue("run_id"), req.AttemptID, req.Fence, "run.dispatch_authorization_rejected", map[string]any{"reason": authorizationReason, "reservation_id": req.ReservationID}); err != nil {
+			writeError(w, err)
+			return
+		}
 	}
 	if err = appendBudgetEventTx(r, tx, workspace, r.PathValue("run_id"), req.AttemptID, req.Fence, "run.budget_reserved", map[string]any{"reservation_id": req.ReservationID, "status": state, "usage": req.Usage}); err != nil {
 		writeError(w, err)

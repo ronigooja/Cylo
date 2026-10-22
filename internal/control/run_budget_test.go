@@ -87,6 +87,34 @@ func TestBudgetReserveIsIdempotentAcrossConcurrentRetries(t *testing.T) {
 	}
 }
 
+func TestBudgetReservationReplayRechecksCurrentRunControl(t *testing.T) {
+	server, closeStore := budgetTestServer(t, contracts.RunBudgetSnapshot{MaxModelCalls: 2, MaxInputUnits: 100})
+	defer closeStore()
+	request := contracts.RunBudgetReserveRequest{AttemptID: "budget-attempt", Fence: 91, ReservationID: "provider-call-1", Usage: contracts.RunBudgetUsage{ModelCalls: 1}}
+	first := budgetPrincipalRequest(server.handleRunBudgetReserve, request, "budget-run")
+	if first.Code != http.StatusOK {
+		t.Fatalf("initial reserve status=%d body=%s", first.Code, first.Body.String())
+	}
+	if _, err := server.store.DB().Exec(`UPDATE runs SET desired_control='stop' WHERE id='budget-run'`); err != nil {
+		t.Fatal(err)
+	}
+	replay := budgetPrincipalRequest(server.handleRunBudgetReserve, request, "budget-run")
+	if replay.Code != http.StatusOK {
+		t.Fatalf("replay status=%d body=%s", replay.Code, replay.Body.String())
+	}
+	var receipt contracts.RunBudgetReceipt
+	if err := json.Unmarshal(replay.Body.Bytes(), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Allowed || !receipt.StopRequested || receipt.Consumed.ModelCalls != 1 {
+		t.Fatalf("replay ignored current stop or changed ledger: %+v", receipt)
+	}
+	var count int
+	if err := server.store.DB().QueryRow(`SELECT count(*) FROM run_budget_reservations WHERE run_id='budget-run'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("replay reservation count=%d err=%v", count, err)
+	}
+}
+
 func TestUnknownBudgetSettlementKeepsReservationAndExhaustionRequestsStop(t *testing.T) {
 	server, closeStore := budgetTestServer(t, contracts.RunBudgetSnapshot{MaxModelCalls: 1, MaxInputUnits: 100, MaxOutputUnits: 100, MaxToolSteps: 10, MaxArtifactBytes: 1000})
 	defer closeStore()
