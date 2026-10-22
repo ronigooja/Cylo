@@ -1,6 +1,7 @@
 package capabilities
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/base64"
@@ -168,7 +169,7 @@ func TestRunnerDeploymentClaimAndFencedObservation(t *testing.T) {
 	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
 		t.Fatal(err)
 	}
-	server, err := control.NewServer(store, control.Config{RunnerToken: runnerToken, RunnerID: "runner-test", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"capability:deploy"}, Profiles: map[string]control.RuntimeProfile{
+	server, err := control.NewServer(store, control.Config{RunnerToken: runnerToken, RunnerID: "runner-test", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"capability:deploy", "runner:observe"}, Profiles: map[string]control.RuntimeProfile{
 		"worker-profile": {ID: "worker-profile", AOProjectID: "ao-project", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "strict"},
 		"super-profile":  {ID: "super-profile", AOProjectID: "ao-project", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "super", AOAgentKind: "worker", IsolationPolicy: "strict"},
 	}})
@@ -534,6 +535,125 @@ func TestRunnerDeploymentClaimAndFencedObservation(t *testing.T) {
 	if badResp.Code != http.StatusConflict {
 		t.Fatalf("stale fence status=%d body=%s", badResp.Code, badResp.Body.String())
 	}
+	for i, fixture := range []struct {
+		id, eventKind string
+	}{
+		{"rejected", "run.create_rejected"},
+		{"runtime-failed", "run.runtime_terminated"},
+		{"stopped", "run.stop_confirmed"},
+		{"awaiting-user", "run.runtime_terminated"},
+	} {
+		taskID := "service-task-" + fixture.id
+		triggerRunID := "service-trigger-" + fixture.id
+		runID := "run-" + fixture.id
+		fence := uint64(i + 2)
+		insertCapabilityTerminalTriggerFixture(t, store, dep.ResourceID, taskID, triggerRunID, runID, fence)
+		if fixture.eventKind == "run.stop_confirmed" {
+			if _, err = store.DB().ExecContext(ctx, `UPDATE runs SET desired_control='stop' WHERE id=?`, runID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		postCapabilityRunTerminalObservation(t, handler, runnerToken, runID, fixture.eventKind, fence)
+	}
+	tx = begin(t, store.DB())
+	if err = processTriggerEvents(ctx, tx, "default", time.Now().UTC()); err != nil {
+		tx.Rollback()
+		t.Fatalf("terminal run event processing: %v", err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	for _, fixture := range []struct {
+		id, want string
+	}{
+		{"rejected", "failed"},
+		{"runtime-failed", "failed"},
+		{"stopped", "canceled"},
+		{"awaiting-user", "waiting"},
+	} {
+		var state string
+		if err = store.DB().QueryRowContext(ctx, `SELECT state FROM capability_trigger_runs WHERE trigger_run_id=?`, "service-trigger-"+fixture.id).Scan(&state); err != nil || state != fixture.want {
+			t.Fatalf("run terminal event %s mapped trigger state=%q, want %q (err=%v)", fixture.id, state, fixture.want, err)
+		}
+	}
+	var activeSlots int
+	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM capability_trigger_runs WHERE trigger_id=(SELECT trigger_id FROM capability_trigger_runs WHERE trigger_run_id=?) AND state IN ('claimed','running','uncertain','waiting')`, "service-trigger-awaiting-user").Scan(&activeSlots); err != nil || activeSlots != 1 {
+		t.Fatalf("awaiting_user released concurrency slot: active=%d err=%v", activeSlots, err)
+	}
+}
+
+func insertCapabilityTerminalTriggerFixture(t *testing.T, store *storage.Store, deployment, taskID, triggerRunID, runID string, fence uint64) {
+	t.Helper()
+	ctx := context.Background()
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,title,goal,source,profile_id,status,version,created_at,updated_at,created_by_device_id,command_id,owner_subject_id) SELECT ?,workspace_id,'terminal fixture','terminal fixture','service',profile_id,'active',1,?,?,created_by_device_id,?,owner_subject_id FROM tasks WHERE source='service' ORDER BY created_at LIMIT 1`, taskID, at, at, "terminal-command-"+taskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO capability_trigger_runs(trigger_run_id,trigger_id,workspace_id,deployment_id,trigger_key,dedupe_key,mode,state,task_id,created_at,updated_at) SELECT ?,trigger_id,workspace_id,deployment_id,trigger_key,?,'worker','uncertain',?,?,? FROM capability_trigger_definitions WHERE deployment_id=? AND mode='worker' LIMIT 1`, triggerRunID, "terminal-dedupe-"+taskID, taskID, at, at, deployment); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,ao_project_id,started_at) VALUES(?,?,?,?,'dispatching',?,'runner-test','device',?,'terminal trigger fixture','worker-profile','runtime','model','worker','ao-project',?)`, runID, "default", taskID, "attempt-"+runID, fence, "command-"+runID, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func postCapabilityRunTerminalObservation(t *testing.T, handler http.Handler, token, runID, eventKind string, fence uint64) {
+	t.Helper()
+	post := func(obs contracts.RunnerObservation) {
+		body, err := json.Marshal(obs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/runner/v1/runs/"+runID+"/observations", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Idempotency-Key", obs.ObservationID)
+		resp := httptest.NewRecorder()
+		handler.ServeHTTP(resp, req)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("runner observation %s status=%d body=%s", obs.Kind, resp.Code, resp.Body.String())
+		}
+	}
+	base := contracts.RunnerObservation{RunID: runID, AttemptID: "attempt-" + runID, Fence: fence, OccurredAt: time.Now().UTC(), AOProjectID: "ao-project", Evidence: []contracts.Evidence{}, ExternalEffects: []contracts.ExternalEffect{}}
+	started := base
+	started.ObservationID = "obs-start-" + runID
+	started.Kind = "dispatch_started"
+	post(started)
+	if eventKind == "run.create_rejected" {
+		terminal := base
+		terminal.ObservationID = "obs-terminal-" + runID
+		terminal.Kind = "create_rejected"
+		terminal.CreateRejection = &contracts.CreateRejectionProof{HTTPStatus: 400, ErrorCode: "INVALID_REQUEST"}
+		post(terminal)
+		return
+	}
+	bound := base
+	bound.ObservationID = "obs-bound-" + runID
+	bound.Kind = "dispatch_bound"
+	bound.AOSessionID = "ao-session-" + runID
+	post(bound)
+	if eventKind == "run.runtime_terminated" {
+		if strings.Contains(runID, "awaiting-user") {
+			result := base
+			result.ObservationID = "obs-result-" + runID
+			result.Kind = "result"
+			result.AOSessionID = bound.AOSessionID
+			result.Result = json.RawMessage(`{"answer":"ready for review"}`)
+			post(result)
+		}
+		terminal := base
+		terminal.ObservationID = "obs-terminal-" + runID
+		terminal.Kind = "runtime_terminated"
+		terminal.AOSessionID = bound.AOSessionID
+		terminal.TerminationProof = &contracts.TerminationProof{Source: "ao_chat_stop", Method: "native_process_exit_waited", SessionID: bound.AOSessionID, VerifiedAt: time.Now().UTC(), CleanupComplete: true}
+		post(terminal)
+		return
+	}
+	terminal := base
+	terminal.ObservationID = "obs-terminal-" + runID
+	terminal.Kind = "stop_confirmed"
+	terminal.AOSessionID = bound.AOSessionID
+	terminal.TerminationProof = &contracts.TerminationProof{Source: "ao_chat_stop", Method: "native_process_exit_waited", SessionID: bound.AOSessionID, VerifiedAt: time.Now().UTC(), CleanupComplete: true}
+	post(terminal)
 }
 
 func begin(t *testing.T, db *sql.DB) *sql.Tx {
