@@ -107,8 +107,15 @@ ALTER TABLE voice_sessions ADD COLUMN account_id_hash BLOB NOT NULL DEFAULT '';`
 	}}); err != nil {
 		return err
 	}
-	return store.RegisterMigration(storage.Migration{Namespace: "voice", Version: 203, Name: "voice_gateway_unbind_receipt", Up: func(ctx context.Context, tx *sql.Tx) error {
+	if err := store.RegisterMigration(storage.Migration{Namespace: "voice", Version: 203, Name: "voice_gateway_unbind_receipt", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `ALTER TABLE voice_sessions ADD COLUMN gateway_unbound INTEGER NOT NULL DEFAULT 0 CHECK(gateway_unbound IN (0,1))`)
+		return err
+	}}); err != nil {
+		return err
+	}
+	return store.RegisterMigration(storage.Migration{Namespace: "voice", Version: 204, Name: "voice_gateway_unbind_unknown_fence", Up: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `ALTER TABLE voice_sessions ADD COLUMN gateway_unbind_unknown INTEGER NOT NULL DEFAULT 0 CHECK(gateway_unbind_unknown IN (0,1));
+UPDATE voice_sessions SET gateway_unbind_unknown=1 WHERE state='quarantined' AND last_error_code IN ('gateway_release_unknown','gateway_release_failed')`)
 		return err
 	}})
 }

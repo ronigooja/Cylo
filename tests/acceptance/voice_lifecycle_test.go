@@ -320,6 +320,36 @@ func TestHangupRecoveryDoesNotRepeatDeleteFromEndingState(t *testing.T) {
 	}
 }
 
+func TestHangupUnknownGatewayDeleteOutcomeIsNotAutomaticallyRetried(t *testing.T) {
+	var deletes atomic.Int32
+	store, handler, token := newHangupHarness(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		deletes.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	first := hangupRequest(handler, token)
+	if first.Code != http.StatusServiceUnavailable {
+		t.Fatalf("first uncertain gateway release=%d %s, want unavailable", first.Code, first.Body.String())
+	}
+	var state, reason string
+	var unknown, blocked int
+	if err := store.DB().QueryRow(`SELECT state,last_error_code,gateway_unbind_unknown FROM voice_sessions WHERE id='hangup-session'`).Scan(&state, &reason, &unknown); err != nil || state != "quarantined" || reason != "gateway_release_failed" || unknown != 1 {
+		t.Fatalf("uncertain release state=%q reason=%q unknown=%d err=%v", state, reason, unknown, err)
+	}
+	second := hangupRequest(handler, token)
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("quarantined retry=%d %s, want accepted but still isolated", second.Code, second.Body.String())
+	}
+	if got := deletes.Load(); got != 1 {
+		t.Fatalf("gateway DELETE count after uncertain outcome=%d, want exactly one attempt", got)
+	}
+	if err := store.DB().QueryRow(`SELECT state FROM voice_sessions WHERE id='hangup-session'`).Scan(&state); err != nil || state != "quarantined" {
+		t.Fatalf("retry finalized unverified gateway outcome: state=%q err=%v", state, err)
+	}
+	if err := store.DB().QueryRow(`SELECT blocked FROM voice_pool_state WHERE id=1`).Scan(&blocked); err != nil || blocked != 1 {
+		t.Fatalf("unknown gateway outcome lost pool quarantine: blocked=%d err=%v", blocked, err)
+	}
+}
+
 func TestHangupRetryAfterGatewayUnbindRetriesOnlyAccountRelease(t *testing.T) {
 	var deletes atomic.Int32
 	media := &retryAccountMedia{}
