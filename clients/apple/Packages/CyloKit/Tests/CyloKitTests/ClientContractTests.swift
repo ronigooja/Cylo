@@ -200,6 +200,25 @@ final class ClientContractTests: XCTestCase {
         }
     }
 
+    func testAbandonedDownloadCleanupPreservesActiveFileLock() throws {
+        let directory = BoundedDownloadDelegate.temporaryDirectory
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let stem = "cylo-download-test-\(UUID().uuidString.lowercased())"
+        let lockURL = directory.appendingPathComponent(stem + ".lock")
+        let temporaryURL = directory.appendingPathComponent(stem + ".tmp")
+        try Data("private archive bytes".utf8).write(to: temporaryURL)
+        let activeLock = try DownloadFileLock(fileURL: lockURL, create: true)
+
+        APIClient.cleanupAbandonedExportDownloads()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: temporaryURL.path), "cleanup must skip another active download lock")
+
+        activeLock.release(removeFile: false)
+        APIClient.cleanupAbandonedExportDownloads()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: temporaryURL.path), "cleanup must remove a crash-left archive after its lock is released")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lockURL.path))
+    }
+
     func testScopedExportStreamsArchivesLargerThan64MiB() async throws {
         let contents = Data(repeating: 0x61, count: 65 * 1024 * 1024)
         let (package, headers) = exportPackage(contents: contents)
