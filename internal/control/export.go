@@ -1,6 +1,7 @@
 package control
 
 import (
+	"archive/zip"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -15,9 +16,19 @@ import (
 	"time"
 
 	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Cylo/internal/storage"
 )
 
-const maxScopedExportBytes int64 = 64 << 20
+// Export data is written to a private temporary file in bounded chunks. The
+// 64 MiB compatibility boundary is no longer an in-memory cap; packages above
+// it still stream to disk and are stopped at the hard 1 GiB archive bound.
+const maxScopedExportBytes int64 = 1 << 30
+const maxScopedArchiveBytes int64 = 1 << 30
+
+// Individual text fields are checked with SQLite length() before JSON values
+// are materialized. This caps the largest Go/SQLite row value while allowing
+// multi-row exports to exceed the old 64 MiB in-memory threshold.
+const maxScopedExportFieldBytes int64 = 1 << 20
 
 // RegisterExportRoutes adds the permission-scoped authoritative-data export.
 func RegisterExportRoutes(s *Server) error {
@@ -40,6 +51,8 @@ type exportCounter struct {
 	Memories     int64 `json:"memories"`
 	Revisions    int64 `json:"memory_revisions"`
 	Sources      int64 `json:"memory_sources"`
+	VoiceLinks   int64 `json:"voice_associations"`
+	Capabilities int64 `json:"capability_authorizations"`
 }
 
 type exportFile struct {
@@ -127,7 +140,7 @@ func (s *Server) handleScopedExport(w http.ResponseWriter, r *http.Request) {
 		writeExportFailure(w)
 		return
 	}
-	f, err := os.CreateTemp("", "cylo-export-*.json")
+	f, err := os.CreateTemp("", "cylo-export-data-*.json")
 	if err != nil {
 		writeExportFailure(w)
 		return
@@ -154,13 +167,30 @@ func (s *Server) handleScopedExport(w http.ResponseWriter, r *http.Request) {
 		writeExportFailure(w)
 		return
 	}
-	counters := exportCounter{}
-	if err = writeExportDocument(r.Context(), tx, output, p, scope, exportID, cursor, &counters); err != nil {
-		if errors.Is(err, errExportTooLarge) {
-			writeError(w, apiError(http.StatusRequestEntityTooLarge, "export_too_large", "authorized export exceeds the 64 MiB limit", nil))
+	instanceLineage, instanceGeneration, deletionSequence, err := exportInstanceAuthority(r.Context(), tx)
+	if err != nil {
+		writeExportFailure(w)
+		return
+	}
+	if err = verifyDeletionJournalHead(s.store.Path(), instanceLineage, instanceGeneration, deletionSequence); err != nil {
+		writeError(w, apiError(http.StatusServiceUnavailable, "deletion_journal_unavailable", "deletion journal is not continuous with authoritative state", nil))
+		return
+	}
+	if err = validateExportFieldBounds(r.Context(), tx, p, scope); err != nil {
+		if errors.Is(err, errExportFieldTooLarge) {
+			writeError(w, apiError(http.StatusRequestEntityTooLarge, "export_field_too_large", "an authorized export field exceeds the 1 MiB per-field limit", nil))
 			return
 		}
 		writeExportFailure(w)
+		return
+	}
+	counters := exportCounter{}
+	if err = writeExportDocument(r.Context(), tx, output, p, scope, exportID, cursor, &counters); err != nil {
+		if errors.Is(err, errExportTooLarge) {
+			writeError(w, apiError(http.StatusRequestEntityTooLarge, "export_too_large", "authorized export exceeds the bounded 1 GiB limit", nil))
+			return
+		}
+		writeError(w, apiError(http.StatusInternalServerError, "export_failed", err.Error(), nil))
 		return
 	}
 	if err = tx.Commit(); err != nil {
@@ -168,6 +198,51 @@ func (s *Server) handleScopedExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err = f.Sync(); err != nil {
+		writeExportFailure(w)
+		return
+	}
+	manifest := buildExportManifest(exportID, p, scope, cursor, instanceLineage, instanceGeneration, deletionSequence, counters, output.count, hex.EncodeToString(h.Sum(nil)))
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		writeExportFailure(w)
+		return
+	}
+	archiveFile, err := os.CreateTemp("", "cylo-export-*.zip")
+	if err != nil {
+		writeExportFailure(w)
+		return
+	}
+	archivePath := archiveFile.Name()
+	defer os.Remove(archivePath)
+	defer archiveFile.Close()
+	archiveHash := sha256.New()
+	archiveOut := &boundedHashWriter{writer: io.MultiWriter(archiveFile, archiveHash), limit: maxScopedArchiveBytes}
+	zipWriter := zip.NewWriter(archiveOut)
+	manifestEntry, err := zipWriter.CreateHeader(&zip.FileHeader{Name: "manifest.json", Method: zip.Store})
+	if err == nil {
+		_, err = manifestEntry.Write(manifestBytes)
+	}
+	if err == nil {
+		var dataEntry io.Writer
+		dataEntry, err = zipWriter.CreateHeader(&zip.FileHeader{Name: "data.json", Method: zip.Store})
+		if err == nil {
+			if _, err = f.Seek(0, io.SeekStart); err == nil {
+				_, err = io.Copy(dataEntry, f)
+			}
+		}
+	}
+	if closeErr := zipWriter.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		if errors.Is(err, errExportTooLarge) {
+			writeError(w, apiError(http.StatusRequestEntityTooLarge, "export_too_large", "export archive exceeds the configured bounded streaming limit", nil))
+			return
+		}
+		writeExportFailure(w)
+		return
+	}
+	if err = archiveFile.Sync(); err != nil {
 		writeExportFailure(w)
 		return
 	}
@@ -199,11 +274,21 @@ func (s *Server) handleScopedExport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiError(http.StatusConflict, "export_snapshot_stale", "authoritative permissions changed while preparing the export; retry the request", nil))
 		return
 	}
-	if _, err = f.Seek(0, io.SeekStart); err != nil {
+	currentLineage, currentGeneration, currentDeletionSequence, stateErr := exportInstanceAuthority(r.Context(), auditTx)
+	if stateErr != nil || currentLineage != instanceLineage || currentGeneration != instanceGeneration || currentDeletionSequence != deletionSequence {
+		writeError(w, apiError(http.StatusConflict, "export_snapshot_stale", "deletion or restore state changed while preparing the export; retry the request", nil))
+		return
+	}
+	if verifyDeletionJournalHead(s.store.Path(), currentLineage, currentGeneration, currentDeletionSequence) != nil {
+		writeError(w, apiError(http.StatusConflict, "export_snapshot_stale", "deletion journal changed while preparing the export; retry the request", nil))
+		return
+	}
+	if _, err = archiveFile.Seek(0, io.SeekStart); err != nil {
 		writeExportFailure(w)
 		return
 	}
-	auditPayload, marshalErr := json.Marshal(map[string]any{"schema_version": 1, "scope": scope, "bytes": output.count, "sha256": hex.EncodeToString(h.Sum(nil)), "counts": counters})
+	manifestHash := sha256.Sum256(manifestBytes)
+	auditPayload, marshalErr := json.Marshal(map[string]any{"schema_version": 2, "scope": scope, "archive_bytes": archiveOut.count, "archive_sha256": hex.EncodeToString(archiveHash.Sum(nil)), "manifest_sha256": hex.EncodeToString(manifestHash[:]), "counts": counters})
 	if marshalErr != nil {
 		writeExportFailure(w)
 		return
@@ -219,13 +304,180 @@ func (s *Server) handleScopedExport(w http.ResponseWriter, r *http.Request) {
 		writeExportFailure(w)
 		return
 	}
-	w.Header().Set("Content-Type", "application/vnd.cylo.export+json; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="cylo-export-`+exportID+`.json"`)
+	w.Header().Set("Content-Type", "application/vnd.cylo.export+zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="cylo-export-`+exportID+`.zip"`)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Length", strconv.FormatInt(output.count, 10))
+	w.Header().Set("X-Cylo-Archive-SHA256", hex.EncodeToString(archiveHash.Sum(nil)))
+	w.Header().Set("X-Cylo-Manifest-SHA256", hex.EncodeToString(manifestHash[:]))
+	w.Header().Set("Content-Length", strconv.FormatInt(archiveOut.count, 10))
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, f)
+	_, _ = io.Copy(w, archiveFile)
+}
+
+type boundedHashWriter struct {
+	writer io.Writer
+	limit  int64
+	count  int64
+}
+
+func (w *boundedHashWriter) Write(p []byte) (int, error) {
+	if int64(len(p)) > w.limit-w.count {
+		return 0, errExportTooLarge
+	}
+	n, err := w.writer.Write(p)
+	w.count += int64(n)
+	return n, err
+}
+
+func exportInstanceAuthority(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}) (string, int64, int64, error) {
+	var lineage string
+	var generation, deletionSequence int64
+	err := q.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&lineage, &generation, &deletionSequence)
+	return lineage, generation, deletionSequence, err
+}
+
+func verifyDeletionJournalHead(databasePath, lineage string, generation, sequence int64) error {
+	if databasePath == ":memory:" {
+		return nil
+	}
+	journal, err := storage.NewDeletionJournal(databasePath)
+	if err != nil {
+		return err
+	}
+	records, err := journal.ReadAll()
+	if err != nil {
+		return err
+	}
+	if int64(len(records)) != sequence {
+		return errors.New("deletion journal head does not match authority snapshot")
+	}
+	if len(records) > 0 {
+		last := records[len(records)-1]
+		if last.LineageID != lineage || last.Generation > generation {
+			return errors.New("deletion journal identity does not match authority snapshot")
+		}
+	}
+	return nil
+}
+
+func buildExportManifest(id string, p contracts.Principal, scope string, cursor int64, lineage string, generation, deletionSequence int64, counts exportCounter, dataBytes int64, dataHash string) map[string]any {
+	return map[string]any{
+		"format": "cylo.authority-export", "schema_version": 2, "export_id": id,
+		"created_at": time.Now().UTC().Format(time.RFC3339Nano), "workspace_id": p.WorkspaceID, "subject_id": p.SubjectID, "scope": scope,
+		"authority":   map[string]any{"instance_lineage_id": lineage, "generation": generation, "deletion_sequence": strconv.FormatInt(deletionSequence, 10), "snapshot_event_cursor": strconv.FormatInt(cursor, 10), "source": "sqlite_authority"},
+		"content":     map[string]any{"inventory": []string{"projects", "tasks", "task_dependencies", "task_entries", "approvals", "runs", "evidence", "memory_claims", "memory_revisions", "memory_sources", "voice_associations", "capability_authorizations"}, "counts": counts},
+		"permissions": map[string]any{"scope": scope, "row_visibility": "principal_authorized", "secret_values": "excluded"},
+		"artifacts":   map[string]any{"bytes": "referenced_not_included", "voice_audio_bytes": "omitted"},
+		"derived":     map[string]any{"mem0": "not_included_rebuildable", "qdrant": "not_included_rebuildable", "cache": "not_included"},
+		"omissions":   []string{"backup_credentials_external_volume", "service_configuration_secret_values", "large_artifact_bytes", "voice_audio_bytes", "raw_voice_turn_transcripts"},
+		"integrity":   map[string]any{"data_bytes": dataBytes, "data_sha256": dataHash},
+		"streaming":   map[string]any{"memory_threshold_bytes": int64(64 << 20), "archive_hard_limit_bytes": maxScopedArchiveBytes, "max_field_bytes": maxScopedExportFieldBytes},
+	}
+}
+
+var errExportFieldTooLarge = errors.New("export field exceeds configured size limit")
+
+// Validate the byte lengths of user-controlled text while SQLite only returns
+// scalar lengths. This runs before json_object or Go JSON encoding can copy a
+// large field into an intermediate value.
+func validateExportFieldBounds(ctx context.Context, tx *sql.Tx, p contracts.Principal, scope string) error {
+	visible := exportVisibilityPredicate()
+	queries := []struct {
+		sql  string
+		args []any
+	}{
+		{`SELECT coalesce(max(max(length(CAST(p.name AS BLOB)),length(CAST(p.description AS BLOB)))),0) FROM projects p WHERE p.workspace_id=?1 AND p.status='active' AND ` + visible.project, []any{p.WorkspaceID, p.SubjectID}},
+		{`SELECT coalesce(max(max(length(CAST(t.title AS BLOB)),length(CAST(t.goal AS BLOB)),length(CAST(t.source AS BLOB)),length(CAST(t.result AS BLOB)),length(CAST(t.error AS BLOB)))),0) FROM tasks t WHERE t.workspace_id=?1 AND ` + visible.task, []any{p.WorkspaceID, p.SubjectID}},
+		{`SELECT coalesce(max(length(CAST(e.content AS BLOB))),0) FROM task_entries e JOIN tasks t ON t.id=e.task_id AND t.workspace_id=e.workspace_id WHERE e.workspace_id=?1 AND ` + visible.taskOnT, []any{p.WorkspaceID, p.SubjectID}},
+		{`SELECT coalesce(max(length(CAST(a.prompt AS BLOB))),0) FROM approvals a JOIN tasks t ON t.id=a.task_id AND t.workspace_id=a.workspace_id WHERE a.workspace_id=?1 AND ` + visible.taskOnT, []any{p.WorkspaceID, p.SubjectID}},
+		{`SELECT coalesce(max(max(length(CAST(e.summary AS BLOB)),length(CAST(e.source AS BLOB)))),0) FROM evidence e JOIN tasks t ON t.id=e.task_id AND t.workspace_id=e.workspace_id WHERE e.workspace_id=?1 AND ` + visible.taskOnT, []any{p.WorkspaceID, p.SubjectID}},
+	}
+	for _, query := range queries {
+		var size int64
+		if err := tx.QueryRowContext(ctx, query.sql, query.args...).Scan(&size); err != nil {
+			return err
+		}
+		if size > maxScopedExportFieldBytes {
+			return errExportFieldTooLarge
+		}
+	}
+	claims, err := tx.QueryContext(ctx, `SELECT id,scope_kind,scope_id,principal_id,length(CAST(subject AS BLOB)),length(CAST(claim_key AS BLOB)) FROM memory_claims WHERE workspace_id=? AND deleted_at IS NULL AND status!='tombstoned'`, p.WorkspaceID)
+	if err != nil {
+		return err
+	}
+	for claims.Next() {
+		var id, kind, scopeID, owner string
+		var subjectBytes, keyBytes int64
+		if err = claims.Scan(&id, &kind, &scopeID, &owner, &subjectBytes, &keyBytes); err != nil {
+			claims.Close()
+			return err
+		}
+		allowed, accessErr := exportMemoryScopeAllowed(ctx, tx, p, kind, scopeID, owner)
+		if accessErr != nil {
+			claims.Close()
+			return accessErr
+		}
+		if !allowed || (scope == "personal" && kind != "personal") || (scope == "workspace" && kind == "personal") {
+			continue
+		}
+		if subjectBytes > maxScopedExportFieldBytes || keyBytes > maxScopedExportFieldBytes {
+			claims.Close()
+			return errExportFieldTooLarge
+		}
+		var revisionBytes int64
+		if err = tx.QueryRowContext(ctx, `SELECT coalesce(max(length(CAST(content AS BLOB))),0) FROM memory_revisions WHERE claim_id=?`, id).Scan(&revisionBytes); err != nil {
+			claims.Close()
+			return err
+		}
+		if revisionBytes > maxScopedExportFieldBytes {
+			claims.Close()
+			return errExportFieldTooLarge
+		}
+		sources, sourceErr := tx.QueryContext(ctx, `SELECT s.scope_kind,s.scope_id,s.principal_id,length(CAST(s.reference AS BLOB)),length(CAST(s.content_hash AS BLOB)),length(CAST(s.producer AS BLOB)) FROM memory_revision_sources rs JOIN memory_sources s ON s.workspace_id=rs.workspace_id AND s.id=rs.source_id AND s.version=rs.source_version WHERE rs.claim_id=? AND rs.workspace_id=? AND s.deleted_at IS NULL`, id, p.WorkspaceID)
+		if sourceErr != nil {
+			claims.Close()
+			return sourceErr
+		}
+		for sources.Next() {
+			var sourceKind, sourceScope, sourceOwner string
+			var referenceBytes, hashBytes, producerBytes int64
+			if sourceErr = sources.Scan(&sourceKind, &sourceScope, &sourceOwner, &referenceBytes, &hashBytes, &producerBytes); sourceErr != nil {
+				break
+			}
+			sourceAllowed, accessErr := exportMemoryScopeAllowed(ctx, tx, p, sourceKind, sourceScope, sourceOwner)
+			if accessErr != nil {
+				sourceErr = accessErr
+				break
+			}
+			if sourceAllowed && (referenceBytes > maxScopedExportFieldBytes || hashBytes > maxScopedExportFieldBytes || producerBytes > maxScopedExportFieldBytes) {
+				sourceErr = errExportFieldTooLarge
+				break
+			}
+		}
+		if sourceErr == nil {
+			sourceErr = sources.Err()
+		}
+		closeErr := sources.Close()
+		if sourceErr != nil {
+			claims.Close()
+			return sourceErr
+		}
+		if closeErr != nil {
+			claims.Close()
+			return closeErr
+		}
+	}
+	if err = claims.Err(); err != nil {
+		claims.Close()
+		return err
+	}
+	if err = claims.Close(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func writeExportFailure(w http.ResponseWriter) {
@@ -357,20 +609,7 @@ func exportAuthorizationFingerprint(ctx context.Context, q *sql.Tx, p contracts.
 }
 
 func writeExportDocument(ctx context.Context, tx *sql.Tx, out io.Writer, p contracts.Principal, scope, exportID string, cursor int64, counts *exportCounter) error {
-	stamp := time.Now().UTC().Format(time.RFC3339Nano)
-	manifest := map[string]any{
-		"format": "cylo.authority-export", "schema_version": 1, "export_id": exportID,
-		"created_at": stamp, "workspace_id": p.WorkspaceID, "subject_id": p.SubjectID, "scope": scope,
-		"authority": map[string]any{"snapshot_event_cursor": strconv.FormatInt(cursor, 10), "source": "sqlite_authority"},
-		"coverage":  map[string]any{"large_artifacts": "referenced_not_included", "derived_stores": "not_included", "backup_restore": "not_included"},
-	}
-	if _, err := io.WriteString(out, `{"manifest":`); err != nil {
-		return err
-	}
-	if err := writeJSONValue(out, manifest); err != nil {
-		return err
-	}
-	if _, err := io.WriteString(out, `,"projects":`); err != nil {
+	if _, err := io.WriteString(out, `{"projects":`); err != nil {
 		return err
 	}
 	visible := exportVisibilityPredicate()
@@ -412,6 +651,19 @@ func writeExportDocument(ctx context.Context, tx *sql.Tx, out io.Writer, p contr
 		return err
 	}
 	if err := writeRows(ctx, tx, out, &counts.Evidence, `SELECT json_object('id',e.id,'task_id',e.task_id,'run_id',CASE WHEN EXISTS(SELECT 1 FROM runs er WHERE er.workspace_id=e.workspace_id AND er.id=e.run_id AND er.task_id=e.task_id) THEN coalesce(e.run_id,'') ELSE '' END,'kind',e.kind,'summary',e.summary,'source',e.source,'created_at',e.created_at,'verified',e.verified) FROM evidence e JOIN tasks t ON t.id=e.task_id AND t.workspace_id=e.workspace_id WHERE e.workspace_id=?1 AND `+visible.taskOnT+` ORDER BY e.created_at,e.id`, append([]any(nil), args...)); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(out, `,"voice_associations":`); err != nil {
+		return err
+	}
+	if err := writeRows(ctx, tx, out, &counts.VoiceLinks, `SELECT json_object('session_id',l.session_id,'generation',l.generation,'turn_id',l.turn_id,'turn_revision',l.turn_revision,'task_id',l.task_id,'linked_at',l.linked_at) FROM voice_task_links l JOIN tasks t ON t.workspace_id=l.workspace_id AND t.id=l.task_id WHERE l.workspace_id=?1 AND `+visible.taskOnT+` ORDER BY l.linked_at,l.session_id,l.turn_id`, append([]any(nil), args...)); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(out, `,"capability_authorizations":`); err != nil {
+		return err
+	}
+	capabilityQuery := `SELECT json_object('grant_id',g.grant_id,'deployment_id',d.deployment_id,'release_digest',g.release_digest,'scope_kind',g.scope_kind,'scope_id',g.scope_id,'principal_id',g.principal_id,'actions',CAST(g.actions AS TEXT),'budget',CAST(g.budget AS TEXT),'expires_at',g.expires_at,'authorized_by',g.authorized_by,'created_at',g.created_at,'desired_state',d.desired_state,'observed_state',d.observed_state,'version',d.version,'revoked_at',coalesce(g.revoked_at,'')) FROM capability_grants g JOIN capability_deployments d ON d.workspace_id=g.workspace_id AND d.deployment_id=g.deployment_id WHERE g.workspace_id=?1 AND ((?3='personal' AND g.principal_id=?2) OR (?3='workspace' AND (g.scope_kind='workspace' OR g.principal_id=?2 OR (g.scope_kind='project' AND EXISTS(SELECT 1 FROM projects p WHERE p.workspace_id=g.workspace_id AND p.id=g.scope_id AND ` + visible.project + `)) OR (g.scope_kind='task' AND EXISTS(SELECT 1 FROM tasks t WHERE t.workspace_id=g.workspace_id AND t.id=g.scope_id AND ` + visible.task + `))))) ORDER BY g.created_at,g.grant_id`
+	if err := writeRows(ctx, tx, out, &counts.Capabilities, capabilityQuery, []any{p.WorkspaceID, p.SubjectID, scope}); err != nil {
 		return err
 	}
 	if _, err := io.WriteString(out, `,"memory":`); err != nil {

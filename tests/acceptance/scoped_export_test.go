@@ -1,6 +1,8 @@
 package acceptance
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -17,9 +19,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ronigooja/Cylo/internal/capabilities"
 	"github.com/ronigooja/Cylo/internal/control"
 	"github.com/ronigooja/Cylo/internal/memory"
 	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Cylo/internal/voice"
 )
 
 var exportDeviceScopes = []string{"client:read", "client:command", "export:read", "memory:read:personal", "memory:read:workspace"}
@@ -35,11 +39,20 @@ func scopedExportServer(t *testing.T) (*storage.Store, http.Handler, string, str
 	if err = storage.RegisterCoreMigrations(store); err != nil {
 		t.Fatal(err)
 	}
+	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
+		t.Fatal(err)
+	}
 	server, err := control.NewServer(store, control.Config{BootstrapCode: code, DeviceScopes: exportDeviceScopes})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = memory.Register(server, store); err != nil {
+		t.Fatal(err)
+	}
+	if err = voice.RegisterMigrations(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = capabilities.RegisterMigrations(store); err != nil {
 		t.Fatal(err)
 	}
 	if err = control.RegisterExportRoutes(server); err != nil {
@@ -80,16 +93,13 @@ func TestScopedExportHTTPHonorsMembershipMemoryVersionsAndTombstones(t *testing.
 	if personal.Code != http.StatusOK {
 		t.Fatalf("personal export=%d %s", personal.Code, personal.Body.String())
 	}
-	if personal.Header().Get("Content-Type") != "application/vnd.cylo.export+json; charset=utf-8" || !strings.HasPrefix(personal.Header().Get("Content-Disposition"), `attachment; filename="cylo-export-`) || personal.Header().Get("Cache-Control") != "no-store" {
+	if personal.Header().Get("Content-Type") != "application/vnd.cylo.export+zip" || !strings.HasPrefix(personal.Header().Get("Content-Disposition"), `attachment; filename="cylo-export-`) || personal.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("unsafe export response headers: %#v", personal.Header())
 	}
 	if err := assertExportAuditMatchesBody(store.DB(), personal.Body.Bytes(), personal.Header().Get("Content-Length")); err != nil {
 		t.Fatal(err)
 	}
-	var personalDoc map[string]any
-	if err := json.Unmarshal(personal.Body.Bytes(), &personalDoc); err != nil {
-		t.Fatalf("personal export is invalid JSON: %v", err)
-	}
+	manifest, personalDoc := decodeExportPackage(t, personal.Body.Bytes(), personal.Header())
 	personalText := personal.Body.String()
 	for _, mustHave := range []string{"visible-project", "visible-task", "personal-live", "old revision", "current revision", "entry-visible-task"} {
 		if !strings.Contains(personalText, mustHave) {
@@ -101,8 +111,7 @@ func TestScopedExportHTTPHonorsMembershipMemoryVersionsAndTombstones(t *testing.
 			t.Errorf("personal export disclosed %q", mustOmit)
 		}
 	}
-	manifest := personalDoc["manifest"].(map[string]any)
-	if manifest["format"] != "cylo.authority-export" || manifest["schema_version"] != float64(1) || manifest["scope"] != "personal" {
+	if manifest["format"] != "cylo.authority-export" || manifest["schema_version"] != float64(2) || manifest["scope"] != "personal" {
 		t.Fatalf("unstable manifest: %#v", manifest)
 	}
 	memories := personalDoc["memory"].([]any)
@@ -139,8 +148,9 @@ func TestScopedExportHTTPHonorsMembershipMemoryVersionsAndTombstones(t *testing.
 			t.Errorf("workspace export disclosed %q", mustOmit)
 		}
 	}
-	if !strings.Contains(workspace.Body.String(), `"coverage":{"backup_restore":"not_included","derived_stores":"not_included","large_artifacts":"referenced_not_included"}`) {
-		t.Fatal("coverage boundary missing from manifest")
+	workspaceManifest, _ := decodeExportPackage(t, workspace.Body.Bytes(), workspace.Header())
+	if workspaceManifest["omissions"] == nil || workspaceManifest["authority"] == nil || workspaceManifest["integrity"] == nil {
+		t.Fatal("coverage, authority, or integrity metadata missing from manifest")
 	}
 
 	var audits int
@@ -187,16 +197,44 @@ func TestScopedExportSizeLimitAndTemporaryCleanup(t *testing.T) {
 	store, handler, token, subject, device := scopedExportServer(t)
 	at := time.Now().UTC().Format(time.RFC3339Nano)
 	seedExportProjectTask(t, store.DB(), "large-project", "large-task", "default", subject, device, at)
-	if _, err := store.DB().Exec(`UPDATE tasks SET goal=? WHERE id='large-task'`, strings.Repeat("x", 65<<20)); err != nil {
+	largeField := strings.Repeat("x", 520<<10)
+	for i := 0; i < 130; i++ {
+		id := fmt.Sprintf("large-task-%03d", i)
+		if _, err := store.DB().Exec(`INSERT INTO tasks(id,workspace_id,project_id,title,goal,source,profile_id,status,version,created_at,updated_at,accepted_at,created_by_device_id,command_id,owner_subject_id,lineage_root_task_id,lineage_depth,child_policy_json,root_child_limit) VALUES(?,'default','large-project',?,?, 'user','profile','complete',1,?,?,?,?,?,?,?,0,'{}',0)`, id, id, largeField, at, at, at, device, "command-"+id, subject, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	response := reviewRequest(handler, http.MethodGet, "/v1/export?scope=workspace", token, "", nil)
+	if response.Code != http.StatusOK || response.Body.Len() <= 64<<20 {
+		t.Fatalf("streamed export=%d body length=%d body=%s", response.Code, response.Body.Len(), response.Body.String())
+	}
+	decodeExportPackage(t, response.Body.Bytes(), response.Header())
+	leftovers, err := filepath.Glob(filepath.Join(tempRoot, "cylo-export-*"))
+	if err != nil || len(leftovers) != 0 {
+		t.Fatalf("temporary export remains after bounded stream: %v err=%v", leftovers, err)
+	}
+	var audits int
+	if err = store.DB().QueryRow(`SELECT count(*) FROM events WHERE event_type='data.export.prepared'`).Scan(&audits); err != nil || audits != 1 {
+		t.Fatalf("streamed export audit=%d err=%v", audits, err)
+	}
+}
+
+func TestScopedExportRejectsOversizedFieldBeforePreparingArchive(t *testing.T) {
+	tempRoot := t.TempDir()
+	t.Setenv("TMPDIR", tempRoot)
+	store, handler, token, subject, device := scopedExportServer(t)
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	seedExportProjectTask(t, store.DB(), "oversized-project", "oversized-task", "default", subject, device, at)
+	if _, err := store.DB().Exec(`UPDATE tasks SET goal=? WHERE id='oversized-task'`, strings.Repeat("x", (1<<20)+1)); err != nil {
 		t.Fatal(err)
 	}
 	response := reviewRequest(handler, http.MethodGet, "/v1/export?scope=workspace", token, "", nil)
-	if response.Code != http.StatusRequestEntityTooLarge || strings.Contains(response.Body.String(), "xxxxx") {
-		t.Fatalf("oversized export=%d body length=%d", response.Code, response.Body.Len())
+	if response.Code != http.StatusRequestEntityTooLarge || !strings.Contains(response.Body.String(), "export_field_too_large") {
+		t.Fatalf("oversized field export=%d %s", response.Code, response.Body.String())
 	}
 	leftovers, err := filepath.Glob(filepath.Join(tempRoot, "cylo-export-*"))
 	if err != nil || len(leftovers) != 0 {
-		t.Fatalf("temporary export remains after size rejection: %v err=%v", leftovers, err)
+		t.Fatalf("temporary export remains after field-bound rejection: %v err=%v", leftovers, err)
 	}
 	var audits int
 	if err = store.DB().QueryRow(`SELECT count(*) FROM events WHERE event_type='data.export.prepared'`).Scan(&audits); err != nil || audits != 0 {
@@ -257,8 +295,8 @@ func assertExportAuditMatchesBody(db *sql.DB, body []byte, contentLength string)
 	}
 	var event struct {
 		Payload struct {
-			Bytes  int64  `json:"bytes"`
-			SHA256 string `json:"sha256"`
+			Bytes  int64  `json:"archive_bytes"`
+			SHA256 string `json:"archive_sha256"`
 		} `json:"payload"`
 	}
 	if err = json.Unmarshal(raw, &event); err != nil {
@@ -271,6 +309,48 @@ func assertExportAuditMatchesBody(db *sql.DB, body []byte, contentLength string)
 	return nil
 }
 
+func decodeExportPackage(t *testing.T, body []byte, headers http.Header) (map[string]any, map[string]any) {
+	t.Helper()
+	archive, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		t.Fatalf("export ZIP is invalid: %v", err)
+	}
+	if len(archive.File) != 2 || archive.File[0].Name != "manifest.json" || archive.File[1].Name != "data.json" || archive.File[0].Method != zip.Store || archive.File[1].Method != zip.Store {
+		t.Fatalf("unexpected export archive entries: %#v", archive.File)
+	}
+	readEntry := func(file *zip.File) []byte {
+		reader, err := file.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reader.Close()
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	manifestBytes, dataBytes := readEntry(archive.File[0]), readEntry(archive.File[1])
+	archiveHash := sha256.Sum256(body)
+	manifestHash := sha256.Sum256(manifestBytes)
+	if headers.Get("X-Cylo-Archive-SHA256") != hex.EncodeToString(archiveHash[:]) || headers.Get("X-Cylo-Manifest-SHA256") != hex.EncodeToString(manifestHash[:]) {
+		t.Fatal("export package hash headers do not match bytes")
+	}
+	var manifest, data map[string]any
+	if err = json.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatalf("manifest JSON: %v", err)
+	}
+	if err = json.Unmarshal(dataBytes, &data); err != nil {
+		t.Fatalf("data JSON: %v", err)
+	}
+	integrity := manifest["integrity"].(map[string]any)
+	dataHash := sha256.Sum256(dataBytes)
+	if integrity["data_sha256"] != hex.EncodeToString(dataHash[:]) || integrity["data_bytes"] != float64(len(dataBytes)) {
+		t.Fatal("manifest data integrity does not match data.json")
+	}
+	return manifest, data
+}
+
 func TestScopedExportRequiresSeparateExportAndMemoryReadGrants(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
 	store, err := storage.Open(context.Background(), storage.Config{Path: filepath.Join(t.TempDir(), "export-scope.db")})
@@ -281,11 +361,20 @@ func TestScopedExportRequiresSeparateExportAndMemoryReadGrants(t *testing.T) {
 	if err = storage.RegisterCoreMigrations(store); err != nil {
 		t.Fatal(err)
 	}
+	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
+		t.Fatal(err)
+	}
 	server, err := control.NewServer(store, control.Config{BootstrapCode: code, DeviceScopes: []string{"client:read", "memory:read:personal", "memory:read:workspace"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = memory.Register(server, store); err != nil {
+		t.Fatal(err)
+	}
+	if err = voice.RegisterMigrations(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = capabilities.RegisterMigrations(store); err != nil {
 		t.Fatal(err)
 	}
 	if err = control.RegisterExportRoutes(server); err != nil {
@@ -316,11 +405,20 @@ func TestScopedExportKeepsNarrowMemoryGrantNarrow(t *testing.T) {
 	if err = storage.RegisterCoreMigrations(store); err != nil {
 		t.Fatal(err)
 	}
+	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
+		t.Fatal(err)
+	}
 	server, err := control.NewServer(store, control.Config{BootstrapCode: code, DeviceScopes: []string{"client:read", "export:read", "memory:read:project:project-a"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = memory.Register(server, store); err != nil {
+		t.Fatal(err)
+	}
+	if err = voice.RegisterMigrations(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = capabilities.RegisterMigrations(store); err != nil {
 		t.Fatal(err)
 	}
 	if err = control.RegisterExportRoutes(server); err != nil {
@@ -361,11 +459,14 @@ func TestScopedExportConcurrentWritesReturnOneSnapshotOrSafeRetry(t *testing.T) 
 	store, handler, token, subject, deviceID := scopedExportServer(t)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	seedExportProjectTask(t, store.DB(), "concurrent-project", "concurrent-task", "default", subject, deviceID, now)
-	// A large single row gives the writer a repeatable window in which to race
-	// an authoritative update while the HTTP handler is building its on-disk file.
-	large := strings.Repeat("x", 12<<20)
-	if _, err := store.DB().Exec(`UPDATE tasks SET goal=? WHERE id='concurrent-task'`, large); err != nil {
-		t.Fatal(err)
+	// Many bounded rows give the writer a repeatable window in which to race an
+	// authoritative update while the handler builds its on-disk file.
+	large := strings.Repeat("x", 512<<10)
+	for i := 0; i < 24; i++ {
+		id := fmt.Sprintf("concurrent-task-%02d", i)
+		if _, err := store.DB().Exec(`INSERT INTO tasks(id,workspace_id,project_id,title,goal,source,profile_id,status,version,created_at,updated_at,accepted_at,created_by_device_id,command_id,owner_subject_id,lineage_root_task_id,lineage_depth,child_policy_json,root_child_limit) VALUES(?,'default','concurrent-project',?,?, 'user','profile','complete',1,?,?,?,?,?,?,?,0,'{}',0)`, id, id, large, now, now, now, deviceID, "command-"+id, subject, id); err != nil {
+			t.Fatal(err)
+		}
 	}
 	live := httptest.NewServer(handler)
 	t.Cleanup(live.Close)
@@ -411,10 +512,7 @@ func TestScopedExportConcurrentWritesReturnOneSnapshotOrSafeRetry(t *testing.T) 
 		t.Fatal("concurrent fixture did not update")
 	}
 	if resp.StatusCode == http.StatusOK {
-		var document map[string]any
-		if err = json.Unmarshal(body, &document); err != nil {
-			t.Fatalf("successful export was not a complete JSON snapshot: %v", err)
-		}
+		_, document := decodeExportPackage(t, body, resp.Header)
 		tasks := document["tasks"].([]any)
 		if len(tasks) != 1 {
 			t.Fatalf("snapshot task count=%d", len(tasks))
