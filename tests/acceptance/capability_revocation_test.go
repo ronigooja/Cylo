@@ -66,7 +66,7 @@ func TestCapabilityRevocationFencesClaimsAndRequiresProvenCleanup(t *testing.T) 
 	}
 	releaseDigest := page.Items[0].Digest
 
-	request := contracts.CommandRequest{Kind: "capability.deployment.request", Payload: mustJSON(t, map[string]any{"service_id": "revocable", "release_digest": releaseDigest, "operation": "install"})}
+	request := contracts.CommandRequest{Kind: "capability.deployment.request", Payload: mustJSON(t, map[string]any{"service_id": "revocable", "release_digest": releaseDigest, "operation": "start"})}
 	requested := reviewRequest(handler, http.MethodPost, "/v1/commands", deviceToken, "rev-request", request)
 	var receipt contracts.CommandReceipt
 	if requested.Code != http.StatusOK || json.Unmarshal(requested.Body.Bytes(), &receipt) != nil {
@@ -74,7 +74,12 @@ func TestCapabilityRevocationFencesClaimsAndRequiresProvenCleanup(t *testing.T) 
 	}
 	deploymentID, version := receipt.ResourceID, receipt.ResourceVersion
 	budget := manifest.Budget
-	authorized := contracts.CommandRequest{Kind: "capability.deployment.authorize", ExpectedVersion: &version, Payload: mustJSON(t, map[string]any{"deployment_id": deploymentID, "scope_kind": "workspace", "actions": []string{"install"}, "budget": budget, "expires_at": time.Now().UTC().Add(time.Hour)})}
+	// Reproduce a previously stopped deployment whose new start has been
+	// claimed but not yet executed when the owner revokes the grant.
+	if _, err = store.DB().ExecContext(t.Context(), `UPDATE capability_deployments SET observed_state='stopped' WHERE deployment_id=?`, deploymentID); err != nil {
+		t.Fatal(err)
+	}
+	authorized := contracts.CommandRequest{Kind: "capability.deployment.authorize", ExpectedVersion: &version, Payload: mustJSON(t, map[string]any{"deployment_id": deploymentID, "scope_kind": "workspace", "actions": []string{"start"}, "budget": budget, "expires_at": time.Now().UTC().Add(time.Hour)})}
 	authorizeResponse := reviewRequest(handler, http.MethodPost, "/v1/commands", deviceToken, "rev-authorize", authorized)
 	if authorizeResponse.Code != http.StatusOK || json.Unmarshal(authorizeResponse.Body.Bytes(), &receipt) != nil {
 		t.Fatalf("deployment authorize=%d %s", authorizeResponse.Code, authorizeResponse.Body.String())
@@ -103,7 +108,7 @@ func TestCapabilityRevocationFencesClaimsAndRequiresProvenCleanup(t *testing.T) 
 	}
 	claimResponse := reviewRequest(handler, http.MethodPost, "/runner/v1/deployments/claims", runnerToken, "", nil)
 	var active contracts.DeploymentClaim
-	if claimResponse.Code != http.StatusOK || json.Unmarshal(claimResponse.Body.Bytes(), &active) != nil || active.DesiredOp != "install" {
+	if claimResponse.Code != http.StatusOK || json.Unmarshal(claimResponse.Body.Bytes(), &active) != nil || active.DesiredOp != "start" {
 		t.Fatalf("install claim=%d %s", claimResponse.Code, claimResponse.Body.String())
 	}
 	// Make the durable grant expired before revocation. Cleanup remains allowed
@@ -127,6 +132,14 @@ func TestCapabilityRevocationFencesClaimsAndRequiresProvenCleanup(t *testing.T) 
 	if version != 3 {
 		t.Fatalf("revocation version=%d, want 3", version)
 	}
+	secondRevoke := reviewRequest(handler, http.MethodPost, "/v1/commands", deviceToken, "rev-revoke-again", contracts.CommandRequest{Kind: "capability.deployment.revoke", ExpectedVersion: &version, Payload: mustJSON(t, map[string]any{"deployment_id": deploymentID})})
+	if secondRevoke.Code != http.StatusConflict {
+		t.Fatalf("second revoke status=%d %s, want conflict without another cleanup job", secondRevoke.Code, secondRevoke.Body.String())
+	}
+	var cleanupJobs int
+	if err = store.DB().QueryRowContext(t.Context(), `SELECT count(*) FROM capability_deployment_jobs WHERE deployment_id=? AND cleanup_only=1`, deploymentID).Scan(&cleanupJobs); err != nil || cleanupJobs != 1 {
+		t.Fatalf("second revoke created another cleanup job: count=%d err=%v", cleanupJobs, err)
+	}
 	staleVersion := version - 1
 	staleRevoke := reviewRequest(handler, http.MethodPost, "/v1/commands", deviceToken, "rev-stale-version", contracts.CommandRequest{Kind: "capability.deployment.revoke", ExpectedVersion: &staleVersion, Payload: mustJSON(t, map[string]any{"deployment_id": deploymentID})})
 	if staleRevoke.Code != http.StatusConflict {
@@ -134,7 +147,7 @@ func TestCapabilityRevocationFencesClaimsAndRequiresProvenCleanup(t *testing.T) 
 	}
 	stateResponse := reviewRequest(handler, http.MethodGet, "/v1/capabilities/deployments/"+deploymentID, deviceToken, "", nil)
 	var state map[string]any
-	if stateResponse.Code != http.StatusOK || json.Unmarshal(stateResponse.Body.Bytes(), &state) != nil || state["revoked_at"] == nil || state["desired_state"] != "stopped" || state["observed_state"] != "pending" {
+	if stateResponse.Code != http.StatusOK || json.Unmarshal(stateResponse.Body.Bytes(), &state) != nil || state["revoked_at"] == nil || state["desired_state"] != "stopped" || state["observed_state"] != "pending" || state["revocation_cleanup_state"] != "pending" {
 		t.Fatalf("revoked state did not preserve pending cleanup: %d %s", stateResponse.Code, stateResponse.Body.String())
 	}
 	var triggerEnabled int
@@ -169,14 +182,8 @@ func TestCapabilityRevocationFencesClaimsAndRequiresProvenCleanup(t *testing.T) 
 	if blocked.Code != http.StatusConflict {
 		t.Fatalf("new deployment request during cleanup=%d %s, want conflict", blocked.Code, blocked.Body.String())
 	}
-
-	// The old claimed action may report its true result, but cannot overwrite
-	// the revocation or reactivate the schedule trigger.
-	oldObservation := contracts.DeploymentObservation{DeploymentID: active.DeploymentID, AttemptID: active.AttemptID, Fence: active.Fence, ObservationID: "old-install-completed", Operation: "install", State: "running", Health: contracts.CapabilityHealth{State: "healthy", CheckedAt: time.Now().UTC(), EvidenceRef: "health:old-install"}, ObservedAt: time.Now().UTC()}
-	oldReport := reviewRequest(handler, http.MethodPost, "/runner/v1/deployments/"+deploymentID+"/observations", runnerToken, "", oldObservation)
-	if oldReport.Code != http.StatusAccepted {
-		t.Fatalf("old claimed outcome report=%d %s", oldReport.Code, oldReport.Body.String())
-	}
+	// Revocation disabled queued triggers synchronously, before a cleanup claim
+	// has had a chance to run.
 	triggerClaim := reviewRequest(handler, http.MethodPost, "/runner/v1/capability-triggers/claims", runnerToken, "", nil)
 	if triggerClaim.Code != http.StatusNoContent {
 		t.Fatalf("revoked trigger was claimed: %d %s", triggerClaim.Code, triggerClaim.Body.String())
@@ -197,6 +204,10 @@ func TestCapabilityRevocationFencesClaimsAndRequiresProvenCleanup(t *testing.T) 
 	if uncertainResponse.Code != http.StatusAccepted {
 		t.Fatalf("uncertain cleanup report=%d %s", uncertainResponse.Code, uncertainResponse.Body.String())
 	}
+	stateResponse = reviewRequest(handler, http.MethodGet, "/v1/capabilities/deployments/"+deploymentID, deviceToken, "", nil)
+	if stateResponse.Code != http.StatusOK || json.Unmarshal(stateResponse.Body.Bytes(), &state) != nil || state["revocation_cleanup_state"] != "uncertain" || state["observed_state"] != "uncertain" {
+		t.Fatalf("uncertain cleanup state not exposed without false confirmation: %d %s", stateResponse.Code, stateResponse.Body.String())
+	}
 	blocked = reviewRequest(handler, http.MethodPost, "/v1/commands", deviceToken, "rev-still-blocked", contracts.CommandRequest{Kind: "capability.deployment.request", ExpectedVersion: &version, Payload: mustJSON(t, map[string]any{"service_id": "revocable", "release_digest": releaseDigest, "operation": "install"})})
 	if blocked.Code != http.StatusConflict {
 		t.Fatalf("new request after uncertain cleanup=%d, want conflict", blocked.Code)
@@ -207,9 +218,24 @@ func TestCapabilityRevocationFencesClaimsAndRequiresProvenCleanup(t *testing.T) 
 	if stoppedResponse.Code != http.StatusAccepted {
 		t.Fatalf("confirmed cleanup report=%d %s", stoppedResponse.Code, stoppedResponse.Body.String())
 	}
+	stateResponse = reviewRequest(handler, http.MethodGet, "/v1/capabilities/deployments/"+deploymentID, deviceToken, "", nil)
+	if stateResponse.Code != http.StatusOK || json.Unmarshal(stateResponse.Body.Bytes(), &state) != nil || state["revocation_cleanup_state"] != "confirmed" {
+		t.Fatalf("trusted cleanup proof was not exposed as confirmed: %d %s", stateResponse.Code, stateResponse.Body.String())
+	}
+	// Confirmation fences the still-claimed start. A late report cannot
+	// overwrite the stopped proof or reopen the old attempt.
+	oldObservation := contracts.DeploymentObservation{DeploymentID: active.DeploymentID, AttemptID: active.AttemptID, Fence: active.Fence, ObservationID: "old-start-completed", Operation: "start", State: "running", Health: contracts.CapabilityHealth{State: "healthy", CheckedAt: time.Now().UTC(), EvidenceRef: "health:old-start"}, ObservedAt: time.Now().UTC()}
+	oldReport := reviewRequest(handler, http.MethodPost, "/runner/v1/deployments/"+deploymentID+"/observations", runnerToken, "", oldObservation)
+	if oldReport.Code != http.StatusConflict {
+		t.Fatalf("late old start report=%d %s, want stale conflict", oldReport.Code, oldReport.Body.String())
+	}
 	newRequest := reviewRequest(handler, http.MethodPost, "/v1/commands", deviceToken, "rev-new-request", contracts.CommandRequest{Kind: "capability.deployment.request", ExpectedVersion: &version, Payload: mustJSON(t, map[string]any{"service_id": "revocable", "release_digest": releaseDigest, "operation": "install"})})
 	if newRequest.Code != http.StatusOK || json.Unmarshal(newRequest.Body.Bytes(), &receipt) != nil {
 		t.Fatalf("new request after proven cleanup=%d %s", newRequest.Code, newRequest.Body.String())
+	}
+	stateResponse = reviewRequest(handler, http.MethodGet, "/v1/capabilities/deployments/"+deploymentID, deviceToken, "", nil)
+	if stateResponse.Code != http.StatusOK || json.Unmarshal(stateResponse.Body.Bytes(), &state) != nil || state["revocation_cleanup_state"] != nil || state["revoked_at"] != nil {
+		t.Fatalf("new request did not clear revocation state: %d %s", stateResponse.Code, stateResponse.Body.String())
 	}
 	version = receipt.ResourceVersion
 	newAuthorize := reviewRequest(handler, http.MethodPost, "/v1/commands", deviceToken, "rev-new-authorize", contracts.CommandRequest{Kind: "capability.deployment.authorize", ExpectedVersion: &version, Payload: mustJSON(t, map[string]any{"deployment_id": deploymentID, "scope_kind": "workspace", "actions": []string{"install"}, "budget": budget, "expires_at": time.Now().UTC().Add(time.Hour)})})

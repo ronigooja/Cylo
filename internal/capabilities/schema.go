@@ -168,7 +168,7 @@ UPDATE capability_trigger_definitions SET enabled=0;`)
 	}}); err != nil {
 		return err
 	}
-	return store.RegisterMigration(storage.Migration{Namespace: "capabilities", Version: 304, Name: "capability_deployment_revocation_v1", Up: func(ctx context.Context, tx *sql.Tx) error {
+	if err := store.RegisterMigration(storage.Migration{Namespace: "capabilities", Version: 304, Name: "capability_deployment_revocation_v1", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 ALTER TABLE capability_deployments ADD COLUMN revoked_at TEXT;
 ALTER TABLE capability_deployments ADD COLUMN revoked_by TEXT NOT NULL DEFAULT '';
@@ -178,6 +178,12 @@ ALTER TABLE capability_grants ADD COLUMN revoked_by TEXT NOT NULL DEFAULT '';
 ALTER TABLE capability_grants ADD COLUMN revoked_by_device_id TEXT REFERENCES devices(id);
 ALTER TABLE capability_deployment_jobs ADD COLUMN cleanup_only INTEGER NOT NULL DEFAULT 0 CHECK(cleanup_only IN (0,1));
 `)
+		return err
+	}}); err != nil {
+		return err
+	}
+	return store.RegisterMigration(storage.Migration{Namespace: "capabilities", Version: 305, Name: "capability_revocation_cleanup_state_v1", Up: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `ALTER TABLE capability_deployments ADD COLUMN revocation_cleanup_state TEXT CHECK(revocation_cleanup_state IS NULL OR revocation_cleanup_state IN ('pending','uncertain','confirmed'));`)
 		return err
 	}})
 }

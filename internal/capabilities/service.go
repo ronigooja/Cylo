@@ -192,7 +192,7 @@ func (s *Service) requestDeployment(ctx context.Context, tx *sql.Tx, cmd control
 		if _, err := tx.ExecContext(ctx, `UPDATE capability_deployment_jobs SET status='superseded',superseded_by=?,updated_at=? WHERE deployment_id=? AND status='pending'`, id, at, deploymentID); err != nil {
 			return contracts.CommandResult{}, nil, err
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE capability_deployments SET release_digest=?,requested_operation=?,desired_state='awaiting_authorization',config_ref=?,config_sha256=?,revoked_at=NULL,revoked_by='',revoked_by_device_id=NULL,version=version+1,updated_at=? WHERE deployment_id=? AND version=?`, p.ReleaseDigest, p.Operation, p.ConfigRef, p.ConfigSHA256, cmd.AcceptedAt.UTC().Format(time.RFC3339Nano), deploymentID, oldVersion)
+		_, err = tx.ExecContext(ctx, `UPDATE capability_deployments SET release_digest=?,requested_operation=?,desired_state='awaiting_authorization',config_ref=?,config_sha256=?,revoked_at=NULL,revoked_by='',revoked_by_device_id=NULL,revocation_cleanup_state=NULL,version=version+1,updated_at=? WHERE deployment_id=? AND version=?`, p.ReleaseDigest, p.Operation, p.ConfigRef, p.ConfigSHA256, cmd.AcceptedAt.UTC().Format(time.RFC3339Nano), deploymentID, oldVersion)
 		if err != nil {
 			return contracts.CommandResult{}, nil, err
 		}
@@ -227,8 +227,9 @@ func (s *Service) revokeDeployment(ctx context.Context, tx *sql.Tx, cmd control.
 		return contracts.CommandResult{}, nil, control.NewAPIError(403, "device_required", "deployment revocation requires an authenticated device", nil)
 	}
 	var workspace, owner, grantID, digest, configRef, configHash string
+	var revokedAt sql.NullString
 	var version int64
-	err := tx.QueryRowContext(ctx, `SELECT workspace_id,created_by,grant_id,release_digest,config_ref,config_sha256,version FROM capability_deployments WHERE deployment_id=? AND workspace_id=?`, p.DeploymentID, cmd.Principal.WorkspaceID).Scan(&workspace, &owner, &grantID, &digest, &configRef, &configHash, &version)
+	err := tx.QueryRowContext(ctx, `SELECT workspace_id,created_by,grant_id,release_digest,config_ref,config_sha256,version,revoked_at FROM capability_deployments WHERE deployment_id=? AND workspace_id=?`, p.DeploymentID, cmd.Principal.WorkspaceID).Scan(&workspace, &owner, &grantID, &digest, &configRef, &configHash, &version, &revokedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return contracts.CommandResult{}, nil, control.NewAPIError(404, "not_found", "deployment not found", nil)
 	}
@@ -237,6 +238,9 @@ func (s *Service) revokeDeployment(ctx context.Context, tx *sql.Tx, cmd control.
 	}
 	if owner != cmd.Principal.SubjectID {
 		return contracts.CommandResult{}, nil, control.NewAPIError(403, "deployment_owner_required", "only the deployment owner may revoke its grant", nil)
+	}
+	if revokedAt.Valid {
+		return contracts.CommandResult{}, nil, control.NewAPIError(409, "deployment_already_revoked", "deployment grant has already been revoked", map[string]any{"current_version": version})
 	}
 	if req.ExpectedVersion == nil || *req.ExpectedVersion != version {
 		return contracts.CommandResult{}, nil, control.NewAPIError(409, "version_conflict", "deployment version is stale", map[string]any{"current_version": version})
@@ -261,7 +265,7 @@ func (s *Service) revokeDeployment(ctx context.Context, tx *sql.Tx, cmd control.
 			return contracts.CommandResult{}, nil, err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE capability_deployments SET desired_state='stopped',revoked_at=?,revoked_by=?,revoked_by_device_id=?,version=version+1,updated_at=? WHERE deployment_id=? AND version=?`, at, cmd.Principal.SubjectID, cmd.Principal.DeviceID, at, p.DeploymentID, version); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE capability_deployments SET desired_state='stopped',revoked_at=?,revoked_by=?,revoked_by_device_id=?,revocation_cleanup_state='pending',version=version+1,updated_at=? WHERE deployment_id=? AND version=?`, at, cmd.Principal.SubjectID, cmd.Principal.DeviceID, at, p.DeploymentID, version); err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
 	payload, _ := json.Marshal(map[string]string{"deployment_id": p.DeploymentID, "grant_id": grantID, "desired_state": "stopped", "revoked_at": at})
@@ -471,7 +475,7 @@ func (s *Service) claimDeployment(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		if current != nil && current.ClaimState != "uncertain" {
+		if current != nil && current.ClaimState != "uncertain" && (current.CleanupOnly || current.DesiredControl != "stopped") {
 			claim = current
 			return nil
 		}
@@ -520,7 +524,7 @@ func (s *Service) claimDeployment(w http.ResponseWriter, r *http.Request) {
 				if x.op != "stop" || !x.revokedAt.Valid {
 					continue
 				}
-			} else if !x.revokedAt.Valid && (!snapshot.Grant.ExpiresAt.After(time.Now().UTC()) || !contains(snapshot.Grant.Actions, snapshot.DesiredOp)) {
+			} else if x.revokedAt.Valid || !snapshot.Grant.ExpiresAt.After(time.Now().UTC()) || !contains(snapshot.Grant.Actions, snapshot.DesiredOp) {
 				continue
 			}
 			res, err := tx.ExecContext(r.Context(), `UPDATE capability_deployment_jobs SET status='claimed',runner_id=?,claimed_at=?,updated_at=? WHERE attempt_id=? AND fence=? AND status='pending'`, runner.RunnerID, time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano), x.attempt, x.fence)
@@ -733,6 +737,20 @@ func (s *Service) observeDeployment(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		if cleanupOnly == 1 {
+			cleanupState := "uncertain"
+			if state == "stopped" {
+				cleanupState = "confirmed"
+			}
+			if _, err = tx.ExecContext(r.Context(), `UPDATE capability_deployments SET revocation_cleanup_state=? WHERE deployment_id=? AND revoked_at IS NOT NULL AND latest_fence=?`, cleanupState, obs.DeploymentID, obs.Fence); err != nil {
+				return err
+			}
+			if cleanupState == "confirmed" {
+				if _, err = tx.ExecContext(r.Context(), `UPDATE capability_deployment_jobs SET status='superseded',superseded_by=?,updated_at=? WHERE deployment_id=? AND attempt_id<>? AND fence<? AND status IN ('claimed','uncertain')`, obs.AttemptID, obs.ObservedAt.UTC().Format(time.RFC3339Nano), obs.DeploymentID, obs.AttemptID, obs.Fence); err != nil {
+					return err
+				}
+			}
+		}
 		if isTerminalObservation(operation, state) && (cleanupOnly == 1 || !revokedAt.Valid) {
 			desired := desiredStateForObservation(state)
 			if desired != "" {
@@ -787,7 +805,7 @@ func (s *Service) listDeployments(w http.ResponseWriter, r *http.Request) {
 		control.WriteError(w, control.NewAPIError(403, "forbidden", "capability:read scope required", nil))
 		return
 	}
-	rows, err := s.db.QueryContext(r.Context(), `SELECT deployment_id,workspace_id,service_id,release_digest,requested_operation,desired_state,observed_state,grant_id,config_ref,config_sha256,version,created_by,created_at,updated_at,latest_attempt_id,latest_fence,last_error_code,revoked_at,revoked_by FROM capability_deployments WHERE workspace_id=? ORDER BY updated_at DESC`, p.WorkspaceID)
+	rows, err := s.db.QueryContext(r.Context(), `SELECT deployment_id,workspace_id,service_id,release_digest,requested_operation,desired_state,observed_state,grant_id,config_ref,config_sha256,version,created_by,created_at,updated_at,latest_attempt_id,latest_fence,last_error_code,revoked_at,revoked_by,revocation_cleanup_state FROM capability_deployments WHERE workspace_id=? ORDER BY updated_at DESC`, p.WorkspaceID)
 	if err != nil {
 		control.WriteError(w, err)
 		return
@@ -810,7 +828,7 @@ func (s *Service) getDeployment(w http.ResponseWriter, r *http.Request) {
 		control.WriteError(w, control.NewAPIError(403, "forbidden", "capability:read scope required", nil))
 		return
 	}
-	row := s.db.QueryRowContext(r.Context(), `SELECT deployment_id,workspace_id,service_id,release_digest,requested_operation,desired_state,observed_state,grant_id,config_ref,config_sha256,version,created_by,created_at,updated_at,latest_attempt_id,latest_fence,last_error_code,revoked_at,revoked_by FROM capability_deployments WHERE workspace_id=? AND deployment_id=?`, p.WorkspaceID, r.PathValue("deployment_id"))
+	row := s.db.QueryRowContext(r.Context(), `SELECT deployment_id,workspace_id,service_id,release_digest,requested_operation,desired_state,observed_state,grant_id,config_ref,config_sha256,version,created_by,created_at,updated_at,latest_attempt_id,latest_fence,last_error_code,revoked_at,revoked_by,revocation_cleanup_state FROM capability_deployments WHERE workspace_id=? AND deployment_id=?`, p.WorkspaceID, r.PathValue("deployment_id"))
 	v, err := scanDeployment(row)
 	if err != nil {
 		control.WriteError(w, control.NewAPIError(404, "not_found", "deployment not found", nil))
@@ -823,13 +841,13 @@ type scanner interface{ Scan(...any) error }
 
 func scanDeployment(row scanner) (map[string]any, error) {
 	var id, ws, service, digest, op, desired, observed, grant, configRef, configHash, createdBy, created, updated, attempt, lastError, revokedBy string
-	var revokedAt sql.NullString
+	var revokedAt, cleanupState sql.NullString
 	var version, fence int64
-	err := row.Scan(&id, &ws, &service, &digest, &op, &desired, &observed, &grant, &configRef, &configHash, &version, &createdBy, &created, &updated, &attempt, &fence, &lastError, &revokedAt, &revokedBy)
+	err := row.Scan(&id, &ws, &service, &digest, &op, &desired, &observed, &grant, &configRef, &configHash, &version, &createdBy, &created, &updated, &attempt, &fence, &lastError, &revokedAt, &revokedBy, &cleanupState)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"deployment_id": id, "workspace_id": ws, "service_id": service, "release_digest": digest, "requested_operation": op, "desired_state": desired, "observed_state": observed, "grant_id": grant, "config_ref": configRef, "config_sha256": configHash, "version": version, "created_by": createdBy, "created_at": created, "updated_at": updated, "latest_attempt_id": attempt, "latest_fence": fence, "last_error_code": lastError, "revoked_at": nullableText(revokedAt), "revoked_by": nullableString(revokedBy)}, nil
+	return map[string]any{"deployment_id": id, "workspace_id": ws, "service_id": service, "release_digest": digest, "requested_operation": op, "desired_state": desired, "observed_state": observed, "grant_id": grant, "config_ref": configRef, "config_sha256": configHash, "version": version, "created_by": createdBy, "created_at": created, "updated_at": updated, "latest_attempt_id": attempt, "latest_fence": fence, "last_error_code": lastError, "revoked_at": nullableText(revokedAt), "revoked_by": nullableString(revokedBy), "revocation_cleanup_state": nullableText(cleanupState)}, nil
 }
 
 func nullableText(value sql.NullString) any {

@@ -103,6 +103,10 @@ func (e *DeploymentExecutor) Execute(ctx context.Context, claim contracts.Deploy
 	}
 	opCtx, cancel := context.WithTimeout(ctx, time.Duration(deadline)*time.Second)
 	defer cancel()
+	grantExpired := !claim.Grant.ExpiresAt.After(now())
+	if !claim.CleanupOnly && (claim.DesiredControl == "stopped" || grantExpired) {
+		return e.reconcileOnly(opCtx, claim, obs)
+	}
 	fresh, err := e.Fences.BeginDeploymentEffect(ctx, claim.DeploymentID, claim.Fence, fingerprint)
 	if err != nil {
 		obs.State, obs.ErrorCode = cleanupFailure(claim, "failed", "deployment_fence_rejected")
@@ -341,18 +345,26 @@ func (e *DeploymentExecutor) stopCleanupOnly(ctx context.Context, claim contract
 		return obs
 	}
 	if state.State.Running {
-		if _, err = e.Docker.Run(ctx, "stop", "--time", "10", name); err != nil {
+		if _, err = e.Docker.Run(ctx, "stop", "--time", "10", state.ID); err != nil {
 			obs.State, obs.ErrorCode = "uncertain", "docker_termination_unverified"
 			return obs
 		}
 	}
-	return e.reconcileCleanupOnly(ctx, claim, obs)
+	return e.reconcileCleanupOnlyExpected(ctx, claim, obs, state.ID)
 }
 
 func (e *DeploymentExecutor) reconcileCleanupOnly(ctx context.Context, claim contracts.DeploymentClaim, obs contracts.DeploymentObservation) contracts.DeploymentObservation {
+	return e.reconcileCleanupOnlyExpected(ctx, claim, obs, "")
+}
+
+func (e *DeploymentExecutor) reconcileCleanupOnlyExpected(ctx context.Context, claim contracts.DeploymentClaim, obs contracts.DeploymentObservation, expectedID string) contracts.DeploymentObservation {
 	name := deploymentContainerName(claim.DeploymentID)
 	body, err := e.Docker.Run(ctx, "inspect", "--format", "{{json .}}", name)
 	if errors.Is(err, ErrDockerObjectNotFound) {
+		if expectedID != "" {
+			obs.State, obs.ErrorCode = "uncertain", "docker_ownership_unverified"
+			return obs
+		}
 		effect := "docker:" + name
 		obs.State, obs.ExternalEffectRef = "stopped", []string{effect}
 		obs.TerminationProof = &contracts.CapabilityTerminationProof{EffectRef: effect, TerminatedAt: obs.ObservedAt, CleanupComplete: true}
@@ -371,7 +383,7 @@ func (e *DeploymentExecutor) reconcileCleanupOnly(ctx context.Context, claim con
 			Running bool `json:"Running"`
 		} `json:"State"`
 	}
-	if json.Unmarshal(body, &state) != nil || state.ID == "" || !cleanupOwned(state.Config.Labels, claim) || !cleanupFenceAllows(state.Config.Labels, claim) {
+	if json.Unmarshal(body, &state) != nil || state.ID == "" || expectedID != "" && state.ID != expectedID || !cleanupOwned(state.Config.Labels, claim) || !cleanupFenceAllows(state.Config.Labels, claim) {
 		obs.State, obs.ErrorCode = "uncertain", "docker_ownership_unverified"
 		return obs
 	}

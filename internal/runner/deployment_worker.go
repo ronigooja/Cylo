@@ -89,23 +89,36 @@ func (w *DeploymentWorker) Run(ctx context.Context, once bool, interval time.Dur
 		if err != nil {
 			return err
 		}
+		var firstErr error
 		if len(current) > 0 {
-			var firstErr error
 			for _, active := range current {
 				if activeErr := w.Process(ctx, active); activeErr != nil && firstErr == nil {
 					firstErr = activeErr
 				}
 			}
-			return firstErr
 		}
 		claim, err := w.Control.ClaimDeployment(ctx)
 		if err != nil {
+			if firstErr != nil {
+				return firstErr
+			}
 			return err
 		}
 		if claim == nil {
+			if firstErr != nil {
+				return firstErr
+			}
 			return ErrNoDeployment
 		}
-		return w.Process(ctx, *claim)
+		if err := w.Process(ctx, *claim); err != nil && firstErr != nil {
+			return firstErr
+		} else if err != nil {
+			return err
+		}
+		if claim.CleanupOnly {
+			return nil
+		}
+		return firstErr
 	}
 	backoff := interval
 	if backoff < time.Second {

@@ -24,6 +24,7 @@ type fakeDocker struct {
 	ambiguousRun     bool
 	missingContainer bool
 	containerLabels  map[string]string
+	replaceOnStop    bool
 }
 
 func (d *fakeDocker) Run(_ context.Context, args ...string) ([]byte, error) {
@@ -80,6 +81,13 @@ func (d *fakeDocker) Run(_ context.Context, args ...string) ([]byte, error) {
 		return []byte("paused"), nil
 	}
 	if args[0] == "stop" {
+		if d.replaceOnStop {
+			d.replaceOnStop = false
+			d.containerID = "replacement-container"
+			d.containerRunning = true
+			d.containerLabels = map[string]string{"io.cylo.deployment": "different-deployment"}
+			return []byte("stopped original"), nil
+		}
 		d.containerRunning, d.containerPaused = false, false
 		return []byte("stopped"), nil
 	}
@@ -287,19 +295,42 @@ func TestDeploymentExecutorCleanupOnlyProvesMissingContainerWithoutCreatingResou
 	}
 }
 
-func TestDeploymentExecutorAllowsPreviouslyClaimedWorkToReconcileAfterGrantExpiry(t *testing.T) {
+func TestDeploymentExecutorCleanupStopsInspectedIDAndRejectsNameSwap(t *testing.T) {
 	claim := validDeploymentClaim()
-	claim.DesiredOp = "stop"
-	claim.ClaimState = "uncertain"
+	claim.DesiredOp, claim.CleanupOnly = "stop", true
+	claim.Fence = 2
+	claim.Grant.Actions = []string{"install"}
 	claim.Grant.ExpiresAt = time.Now().Add(-time.Hour)
 	labels := deploymentOwnershipLabels(claim)
 	labels["io.cylo.release"] = strings.TrimPrefix(claim.ReleaseDigest, "sha256:")
 	labels["io.cylo.fence"] = "1"
-	labels["io.cylo.attempt"] = labelValue("prior-attempt")
-	docker := &fakeDocker{claim: claim, containerRunning: false, containerID: "container-id", created: true, containerLabels: labels}
+	labels["io.cylo.attempt"] = labelValue("old-install")
+	docker := &fakeDocker{claim: claim, containerRunning: true, containerID: "verified-container", created: true, containerLabels: labels, replaceOnStop: true}
 	obs := (&DeploymentExecutor{Docker: docker, Fences: deploymentTestAuthority(t)}).Execute(context.Background(), claim)
-	if obs.State != "stopped" || obs.TerminationProof == nil {
-		t.Fatalf("expired claimed work was not reconciled from actual state: observation=%+v commands=%v", obs, docker.commands)
+	if obs.State != "uncertain" || len(docker.commands) != 3 || docker.commands[1][0] != "stop" || docker.commands[1][len(docker.commands[1])-1] != "verified-container" {
+		t.Fatalf("cleanup did not fence stop to inspected container ID: observation=%+v commands=%v", obs, docker.commands)
+	}
+}
+
+func TestDeploymentExecutorRejectsNewWorkAfterGrantExpiry(t *testing.T) {
+	claim := validDeploymentClaim()
+	claim.DesiredOp = "install"
+	claim.ClaimState = "uncertain"
+	claim.Grant.ExpiresAt = time.Now().Add(-time.Hour)
+	docker := &fakeDocker{claim: claim, missingContainer: true}
+	obs := (&DeploymentExecutor{Docker: docker, Fences: deploymentTestAuthority(t)}).Execute(context.Background(), claim)
+	if obs.State != "uncertain" || len(docker.commands) != 1 || docker.commands[0][0] != "inspect" {
+		t.Fatalf("expired grant dispatched new work: observation=%+v commands=%v", obs, docker.commands)
+	}
+}
+
+func TestDeploymentExecutorDoesNotDispatchPendingWorkAfterRevocation(t *testing.T) {
+	claim := validDeploymentClaim()
+	claim.DesiredControl = "stopped"
+	docker := &fakeDocker{claim: claim, missingContainer: true}
+	obs := (&DeploymentExecutor{Docker: docker, Fences: deploymentTestAuthority(t)}).Execute(context.Background(), claim)
+	if obs.State != "uncertain" || len(docker.commands) != 1 || docker.commands[0][0] != "inspect" {
+		t.Fatalf("revoked claim dispatched work instead of read-only reconciliation: observation=%+v commands=%v", obs, docker.commands)
 	}
 }
 
