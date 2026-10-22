@@ -565,20 +565,16 @@ ORDER BY created_at,id LIMIT ?`, workspace, sourceLedgerReconcileBatch)
 // only claim-owned cleanup. Its job update clears any old worker lease in the
 // same transaction, fencing delayed worker complete/fail requests.
 func settleSourceLedgerJobTx(ctx context.Context, tx *sql.Tx, workspace, jobID, claimID string, jobVersion int64, attempts int, now string) (string, error) {
-	var tombstoneRevision, claimRevision int64
-	var status string
-	var deletedAt sql.NullString
-	err := tx.QueryRowContext(ctx, `SELECT t.revision,c.revision,c.status,c.deleted_at FROM memory_tombstones t
-JOIN memory_claims c ON c.workspace_id=t.workspace_id AND c.id=t.claim_id
-WHERE t.workspace_id=? AND t.claim_id=?`, workspace, claimID).Scan(&tombstoneRevision, &claimRevision, &status, &deletedAt)
+	tombstoneRevision, found, complete, err := currentCompleteTombstoneTx(ctx, tx, workspace, claimID)
+	if err != nil {
+		return "", err
+	}
 	disposition := ""
 	state := "done"
 	switch {
-	case errors.Is(err, sql.ErrNoRows):
+	case !found:
 		disposition, state = "deletion_tombstone_missing", "blocked"
-	case err != nil:
-		return "", err
-	case tombstoneRevision < 1 || claimRevision != tombstoneRevision || status != string(ClaimTombstoned) || !deletedAt.Valid || deletedAt.String == "":
+	case !complete:
 		disposition, state = "deletion_tombstone_mismatch", "blocked"
 	case jobVersion < 1 || jobVersion > tombstoneRevision:
 		disposition, state = "deletion_tombstone_mismatch", "blocked"
@@ -608,19 +604,44 @@ WHERE t.workspace_id=? AND t.claim_id=?`, workspace, claimID).Scan(&tombstoneRev
 		}
 		disposition = "source_ledger_cleaned"
 	}
-	if state == "done" && disposition == "stale_generation" {
-		var tombstoneRows int
-		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM memory_revisions WHERE claim_id=? AND revision=? AND status='tombstoned' AND content=''`, claimID, tombstoneRevision).Scan(&tombstoneRows); err != nil {
-			return "", err
-		}
-		if tombstoneRows != 1 {
-			disposition, state = "deletion_tombstone_mismatch", "blocked"
-		}
-	}
 	_, err = tx.ExecContext(ctx, `UPDATE memory_jobs SET status=?,lease_owner='',lease_until=NULL,last_error_code=?,updated_at=?
 WHERE id=? AND workspace_id=? AND kind='delete_cleanup' AND target='source_ledger' AND attempts=?
 AND status IN ('pending','retry','blocked','leased')`, state, disposition, now, jobID, workspace, attempts)
 	return disposition, err
+}
+
+// currentCompleteTombstoneTx verifies the complete authoritative tombstone
+// record before either stale-job settlement or destructive source-ledger
+// cleanup. Tombstones are written with an empty revision and no derived rows;
+// their claim, ledger, and revision timestamps must all identify one deletion.
+func currentCompleteTombstoneTx(ctx context.Context, tx *sql.Tx, workspace, claimID string) (int64, bool, bool, error) {
+	var tombstoneRevision int64
+	var claimRevision sql.NullInt64
+	var claimStatus, claimDeletedAt, tombstoneDeletedAt, revisionStatus, revisionContent, revisionRecordedAt sql.NullString
+	var linkedSources, terms int
+	err := tx.QueryRowContext(ctx, `SELECT t.revision,c.revision,c.status,c.deleted_at,t.deleted_at,
+r.status,r.content,r.recorded_at,
+(SELECT count(*) FROM memory_revision_sources rs WHERE rs.workspace_id=t.workspace_id AND rs.claim_id=t.claim_id AND rs.revision=t.revision),
+(SELECT count(*) FROM memory_terms mt WHERE mt.workspace_id=t.workspace_id AND mt.claim_id=t.claim_id AND mt.revision=t.revision)
+FROM memory_tombstones t
+LEFT JOIN memory_claims c ON c.workspace_id=t.workspace_id AND c.id=t.claim_id
+LEFT JOIN memory_revisions r ON r.claim_id=t.claim_id AND r.revision=t.revision
+WHERE t.workspace_id=? AND t.claim_id=?`, workspace, claimID).Scan(
+		&tombstoneRevision, &claimRevision, &claimStatus, &claimDeletedAt, &tombstoneDeletedAt,
+		&revisionStatus, &revisionContent, &revisionRecordedAt, &linkedSources, &terms)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, false, nil
+	}
+	if err != nil {
+		return 0, false, false, err
+	}
+	complete := tombstoneRevision > 0 && claimRevision.Valid && claimRevision.Int64 == tombstoneRevision &&
+		claimStatus.Valid && claimStatus.String == string(ClaimTombstoned) && claimDeletedAt.Valid && claimDeletedAt.String != "" &&
+		tombstoneDeletedAt.Valid && tombstoneDeletedAt.String == claimDeletedAt.String &&
+		revisionStatus.Valid && revisionStatus.String == string(ClaimTombstoned) && revisionContent.Valid && revisionContent.String == "" &&
+		revisionRecordedAt.Valid && revisionRecordedAt.String == claimDeletedAt.String &&
+		linkedSources == 0 && terms == 0
+	return tombstoneRevision, true, complete, nil
 }
 
 func insertDerivedJob(ctx context.Context, tx *sql.Tx, workspace, kind, entityID string, version int64, target string, payload any, now string) error {

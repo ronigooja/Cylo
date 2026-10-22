@@ -209,30 +209,72 @@ func TestSourceLedgerStaleJobDoesNotEraseCurrentGeneration(t *testing.T) {
 	}
 }
 
+func TestSourceLedgerFutureJobDoesNotEraseOrSettle(t *testing.T) {
+	ctx := context.Background()
+	store, repo := newMemoryTestRepo(t)
+	tombstone, other, revision := seedSourceLedgerTombstone(t, ctx, store.DB(), repo)
+	addLegacySourceLedgerRows(t, ctx, store.DB(), tombstone.ID, other.ID, revision-1)
+	insertSourceLedgerJob(t, ctx, store.DB(), "source-ledger-future-generation", tombstone.ID, revision+1, "pending", "", "", "", 0)
+	tx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disposition, err := settleSourceLedgerJobTx(ctx, tx, "default", "source-ledger-future-generation", tombstone.ID, revision+1, 0, time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	if err := store.DB().QueryRowContext(ctx, `SELECT status FROM memory_jobs WHERE id='source-ledger-future-generation'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if disposition != "deletion_tombstone_mismatch" || status != "blocked" {
+		t.Fatalf("future job was accepted: disposition=%q status=%q", disposition, status)
+	}
+	for _, table := range []string{"memory_revisions", "memory_revision_sources", "memory_terms"} {
+		var count int
+		query := `SELECT count(*) FROM ` + table + ` WHERE claim_id=? AND revision<?`
+		if err := store.DB().QueryRowContext(ctx, query, tombstone.ID, revision).Scan(&count); err != nil || count != 1 {
+			t.Errorf("future job changed old %s rows: count=%d err=%v", table, count, err)
+		}
+	}
+}
+
 func TestSourceLedgerMissingOrCorruptTombstoneFailsClosed(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
-		name      string
-		corrupt   bool
-		wantError string
+		name       string
+		corruptSQL string
+		missing    bool
 	}{
-		{name: "missing", wantError: "deletion_tombstone_missing"},
-		{name: "mismatch", corrupt: true, wantError: "deletion_tombstone_mismatch"},
+		{name: "missing", missing: true},
+		{name: "current revision missing", corruptSQL: `DELETE FROM memory_revisions WHERE claim_id=? AND revision=?`},
+		{name: "current revision content", corruptSQL: `UPDATE memory_revisions SET content='not empty' WHERE claim_id=? AND revision=?`},
+		{name: "current revision status", corruptSQL: `UPDATE memory_revisions SET status='active' WHERE claim_id=? AND revision=?`},
+		{name: "deletion timestamp", corruptSQL: `UPDATE memory_tombstones SET deleted_at='2026-01-01T00:00:00Z' WHERE claim_id=? AND revision=?`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store, repo := newMemoryTestRepo(t)
-			claim := writeMemory(t, ctx, store.DB(), repo, Scope{Kind: ScopePersonal, PrincipalID: "source-ledger-owner"}, "preserve me", "source-ledger-missing-source", 0)
-			if tc.corrupt {
-				if _, err := store.DB().ExecContext(ctx, `INSERT INTO memory_tombstones(claim_id,workspace_id,revision,actor_id,reason,deleted_at) VALUES(?,'default',?,'fixture','user_requested','2026-01-01T00:00:00Z')`, claim.ID, claim.Revision+1); err != nil {
+			tombstone, other, revision := seedSourceLedgerTombstone(t, ctx, store.DB(), repo)
+			addLegacySourceLedgerRows(t, ctx, store.DB(), tombstone.ID, other.ID, revision-1)
+			if tc.missing {
+				if _, err := store.DB().ExecContext(ctx, `DELETE FROM memory_tombstones WHERE workspace_id='default' AND claim_id=?`, tombstone.ID); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if _, err := store.DB().ExecContext(ctx, tc.corruptSQL, tombstone.ID, revision); err != nil {
 					t.Fatal(err)
 				}
 			}
-			insertSourceLedgerJob(t, ctx, store.DB(), "source-ledger-invalid-tombstone", claim.ID, claim.Revision, "pending", "", "", "", 0)
+			insertSourceLedgerJob(t, ctx, store.DB(), "source-ledger-invalid-tombstone", tombstone.ID, revision, "pending", "", "", "", 0)
 			tx, err := store.DB().BeginTx(ctx, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			disposition, err := settleSourceLedgerJobTx(ctx, tx, "default", "source-ledger-invalid-tombstone", claim.ID, claim.Revision, 0, time.Now().UTC().Format(time.RFC3339Nano))
+			disposition, err := settleSourceLedgerJobTx(ctx, tx, "default", "source-ledger-invalid-tombstone", tombstone.ID, revision, 0, time.Now().UTC().Format(time.RFC3339Nano))
 			if err != nil {
 				_ = tx.Rollback()
 				t.Fatal(err)
@@ -244,12 +286,19 @@ func TestSourceLedgerMissingOrCorruptTombstoneFailsClosed(t *testing.T) {
 			if err := store.DB().QueryRowContext(ctx, `SELECT status,last_error_code FROM memory_jobs WHERE id='source-ledger-invalid-tombstone'`).Scan(&status, &lastError); err != nil {
 				t.Fatal(err)
 			}
-			if status != "blocked" || disposition != tc.wantError || lastError != tc.wantError {
+			wantError := "deletion_tombstone_mismatch"
+			if tc.missing {
+				wantError = "deletion_tombstone_missing"
+			}
+			if status != "blocked" || disposition != wantError || lastError != wantError {
 				t.Fatalf("invalid tombstone was not fail-closed: status=%s disposition=%s last_error=%s", status, disposition, lastError)
 			}
-			var content string
-			if err := store.DB().QueryRowContext(ctx, `SELECT content FROM memory_revisions WHERE claim_id=? AND revision=?`, claim.ID, claim.Revision).Scan(&content); err != nil || content != "preserve me" {
-				t.Fatalf("invalid tombstone cleanup erased authority content: content=%q err=%v", content, err)
+			for _, table := range []string{"memory_revisions", "memory_revision_sources", "memory_terms"} {
+				var count int
+				query := `SELECT count(*) FROM ` + table + ` WHERE claim_id=? AND revision<?`
+				if err := store.DB().QueryRowContext(ctx, query, tombstone.ID, revision).Scan(&count); err != nil || count != 1 {
+					t.Errorf("invalid tombstone cleanup changed old %s rows: count=%d err=%v", table, count, err)
+				}
 			}
 		})
 	}
