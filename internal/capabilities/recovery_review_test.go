@@ -38,14 +38,14 @@ func capabilityRecoveryFixture(t *testing.T) (*storage.Store, http.Handler, stri
 	if e != nil {
 		t.Fatal(e)
 	}
-	if e = Register(server, store, Config{AvailableCapabilityIDs: []string{"mail.read"}, RuntimeBackend: "fixture"}); e != nil {
+	if e = Register(server, store, Config{AvailableCapabilityIDs: []string{"mail.read"}, RuntimeBackend: runtimeBackendDocker}); e != nil {
 		t.Fatal(e)
 	}
 	if e = store.Migrate(ctx); e != nil {
 		t.Fatal(e)
 	}
 	insertCapabilityTestDevice(t, store, "device", "owner")
-	svc := &Service{db: store.DB(), server: server, availableCapabilityIDs: map[string]struct{}{"mail.read": {}}, runtimeBackend: "fixture"}
+	svc := &Service{db: store.DB(), server: server, availableCapabilityIDs: map[string]struct{}{"mail.read": {}}, runtimeBackend: runtimeBackendDocker}
 	manifest := contracts.CapabilityManifest{SchemaVersion: 1, ArtifactRef: "oci://registry.example/app@sha256:" + strings.Repeat("a", 64), ArtifactDigest: "sha256:" + strings.Repeat("a", 64), Entrypoint: "/app/run", Capabilities: []string{"mail.read"}, Budget: contracts.CapabilityResourceBudget{CPUMillis: 50, MemoryBytes: 100, DiskBytes: 100, TimeoutSeconds: 10, Concurrency: 1}, Network: contracts.CapabilityNetworkPolicy{Mode: "none"}, HealthCheck: &contracts.CapabilityHealthCheck{Kind: "http", Target: "/health", Port: 8080, IntervalSeconds: 10, TimeoutSeconds: 2, FailureThreshold: 2}}
 	cmd := control.CommandContext{CommandID: "fixture", Principal: contracts.Principal{WorkspaceID: "default", SubjectID: "owner", DeviceID: "device", Scopes: []string{"capability:release:submit", "capability:deployment:request", "capability:deployment:authorize"}}, AcceptedAt: time.Now().UTC()}
 	tx := begin(t, store.DB())

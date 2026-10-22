@@ -462,7 +462,7 @@ func validateDeploymentClaim(c contracts.DeploymentClaim, now time.Time) error {
 	if c.WorkspaceID == "" || c.DeploymentID == "" || c.AttemptID == "" || c.Fence < 1 || c.ServiceID == "" || c.RuntimeBackend != "docker" {
 		return errors.New("invalid deployment identity or runtime backend")
 	}
-	if c.Manifest.SchemaVersion != 1 || c.ReleaseDigest == "" || c.Manifest.ArtifactDigest == "" || strings.TrimSpace(c.Manifest.Entrypoint) == "" {
+	if c.Manifest.SchemaVersion != 1 || c.ReleaseDigest == "" || c.Manifest.ArtifactDigest == "" || strings.TrimSpace(c.Manifest.Entrypoint) == "" || c.Manifest.HealthCheck == nil {
 		return errors.New("release or artifact digest or entrypoint is invalid")
 	}
 	if _, err := deploymentImage(c.Manifest.ArtifactRef, c.Manifest.ArtifactDigest); err != nil {

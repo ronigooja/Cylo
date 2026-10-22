@@ -62,8 +62,9 @@ func TestCapabilityHTTPCompositionRequiresConfiguredCapabilityID(t *testing.T) {
 	manifest := contracts.CapabilityManifest{
 		SchemaVersion: 1, ArtifactRef: "oci://registry.example/app@" + digest,
 		ArtifactDigest: digest, Entrypoint: "/app/run", Capabilities: []string{"mail.read"},
-		Budget:  contracts.CapabilityResourceBudget{CPUMillis: 1, MemoryBytes: 1, DiskBytes: 1, TimeoutSeconds: 1, Concurrency: 1},
-		Network: contracts.CapabilityNetworkPolicy{Mode: "none"},
+		Budget:      contracts.CapabilityResourceBudget{CPUMillis: 1, MemoryBytes: 1, DiskBytes: 1, TimeoutSeconds: 1, Concurrency: 1},
+		Network:     contracts.CapabilityNetworkPolicy{Mode: "none"},
+		HealthCheck: &contracts.CapabilityHealthCheck{Kind: "http", Target: "/health", Port: 8080, IntervalSeconds: 10, TimeoutSeconds: 2, FailureThreshold: 2},
 	}
 	request := contracts.CommandRequest{Kind: "capability.release.submit", Payload: mustJSON(t, map[string]any{"manifest": manifest})}
 	response := reviewRequest(handler, http.MethodPost, "/v1/commands", deviceToken, "unregistered-capability", request)

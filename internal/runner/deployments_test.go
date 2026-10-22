@@ -111,7 +111,7 @@ func validDeploymentClaim() contracts.DeploymentClaim {
 	return contracts.DeploymentClaim{
 		WorkspaceID: "workspace-one", DeploymentID: "deployment-one", AttemptID: "attempt-one", Fence: 2, ServiceID: "service-one",
 		ReleaseDigest: "sha256:" + strings.Repeat("a", 64), DesiredOp: "install", RuntimeBackend: "docker",
-		Manifest: contracts.CapabilityManifest{SchemaVersion: 1, ArtifactRef: "oci://registry.example/app@sha256:" + strings.Repeat("b", 64), ArtifactDigest: "sha256:" + strings.Repeat("b", 64), Entrypoint: "/app", Args: []string{"--serve"}, Capabilities: []string{"service"}, Budget: budget, Network: contracts.CapabilityNetworkPolicy{Mode: "none"}},
+		Manifest: contracts.CapabilityManifest{SchemaVersion: 1, ArtifactRef: "oci://registry.example/app@sha256:" + strings.Repeat("b", 64), ArtifactDigest: "sha256:" + strings.Repeat("b", 64), Entrypoint: "/app", Args: []string{"--serve"}, Capabilities: []string{"service"}, HealthCheck: &contracts.CapabilityHealthCheck{Kind: "exec", Target: "app-health", IntervalSeconds: 10, TimeoutSeconds: 2, FailureThreshold: 3}, Budget: budget, Network: contracts.CapabilityNetworkPolicy{Mode: "none"}},
 		Grant:    contracts.CapabilityGrant{GrantID: "grant-one", ScopeKind: "workspace", Actions: []string{"install", "start", "stop", "pause", "resume", "update", "uninstall"}, Budget: budget, ExpiresAt: time.Now().UTC().Add(time.Hour)},
 	}
 }
@@ -139,6 +139,7 @@ func TestDeploymentExecutorRejectsUnsupportedOrUnauthorizedClaimBeforeDocker(t *
 			c.Manifest.SecretRefs = map[string]string{"API_KEY": "secret://gateway"}
 		},
 		"unresolvable grant scope": func(c *contracts.DeploymentClaim) { c.Grant.ScopeKind, c.Grant.ScopeID = "task", "task-one" },
+		"missing health check":     func(c *contracts.DeploymentClaim) { c.Manifest.HealthCheck = nil },
 		"unbounded writable volume": func(c *contracts.DeploymentClaim) {
 			c.Manifest.Mounts = []contracts.CapabilityMount{{VolumeID: "volume-one", Target: "/data"}}
 			c.VolumeIDs = []string{"volume-one"}

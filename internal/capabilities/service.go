@@ -34,6 +34,8 @@ type Config struct {
 	RuntimeBackend         string
 }
 
+const runtimeBackendDocker = "docker"
+
 type submitReleasePayload struct {
 	Manifest contracts.CapabilityManifest `json:"manifest"`
 }
@@ -57,6 +59,10 @@ func Register(server *control.Server, store *storage.Store, cfg Config) error {
 	if server == nil || store == nil || store.DB() == nil {
 		return errors.New("capability registration requires control server and storage")
 	}
+	runtimeBackend := strings.TrimSpace(cfg.RuntimeBackend)
+	if runtimeBackend != "" && runtimeBackend != runtimeBackendDocker {
+		return fmt.Errorf("unsupported capability runtime backend %q", runtimeBackend)
+	}
 	available := make(map[string]struct{}, len(cfg.AvailableCapabilityIDs))
 	for _, capabilityID := range cfg.AvailableCapabilityIDs {
 		capabilityID = strings.TrimSpace(capabilityID)
@@ -68,7 +74,7 @@ func Register(server *control.Server, store *storage.Store, cfg Config) error {
 	if err := RegisterMigrations(store); err != nil {
 		return err
 	}
-	svc := &Service{db: store.DB(), server: server, availableCapabilityIDs: available, runtimeBackend: strings.TrimSpace(cfg.RuntimeBackend)}
+	svc := &Service{db: store.DB(), server: server, availableCapabilityIDs: available, runtimeBackend: runtimeBackend}
 	if err := svc.registerTaskSource(); err != nil {
 		return err
 	}
@@ -334,7 +340,7 @@ func (s *Service) enqueue(ctx context.Context, tx *sql.Tx, workspace, deployment
 }
 
 func (s *Service) claimDeployment(w http.ResponseWriter, r *http.Request) {
-	if s.runtimeBackend == "" {
+	if s.runtimeBackend != runtimeBackendDocker {
 		control.WriteError(w, control.NewAPIError(503, "capability_runner_unavailable", "no capability runtime adapter is configured", nil))
 		return
 	}
@@ -692,8 +698,8 @@ func scanDeployment(row scanner) (map[string]any, error) {
 }
 
 func validateManifest(m *contracts.CapabilityManifest) error {
-	if m.SchemaVersion != 1 || !strings.HasPrefix(m.ArtifactRef, "oci://") && !strings.HasPrefix(m.ArtifactRef, "https://") || !validDigest(m.ArtifactDigest) || !strings.Contains(m.ArtifactRef, "@"+m.ArtifactDigest) || strings.TrimSpace(m.Entrypoint) == "" || len(m.Entrypoint) > 500 || len(m.Args) > 128 || len(m.Capabilities) == 0 || len(m.Capabilities) > 64 || len(m.Mounts) > 64 || len(m.Triggers) > 32 || !budgetPositive(m.Budget) {
-		return errors.New("schema version, content-addressed artifact, entrypoint, capability IDs, and positive resource budget are required")
+	if m.SchemaVersion != 1 || !strings.HasPrefix(m.ArtifactRef, "oci://") && !strings.HasPrefix(m.ArtifactRef, "https://") || !validDigest(m.ArtifactDigest) || !strings.Contains(m.ArtifactRef, "@"+m.ArtifactDigest) || strings.TrimSpace(m.Entrypoint) == "" || len(m.Entrypoint) > 500 || len(m.Args) > 128 || len(m.Capabilities) == 0 || len(m.Capabilities) > 64 || len(m.Mounts) > 64 || len(m.Triggers) > 32 || !budgetPositive(m.Budget) || m.HealthCheck == nil {
+		return errors.New("schema version, content-addressed artifact, entrypoint, capability IDs, health check, and positive resource budget are required")
 	}
 	for _, arg := range m.Args {
 		if len(arg) > 4096 || strings.ContainsAny(arg, "\x00\r\n") {
