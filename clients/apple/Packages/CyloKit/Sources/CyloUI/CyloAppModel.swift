@@ -40,10 +40,14 @@ public final class CyloAppModel: ObservableObject {
     private var connectionGeneration = ConnectionGeneration()
     private var exportDownloadTask: Task<ScopedExportArtifact, Error>?
     private var exportRequestID: UUID?
+    private var memoryRefreshSequence: UInt64 = 0
+    private var memoryRefreshInFlight = false
+    private var pendingMemoryRefreshQuery: String?
 #if DEBUG
     var capabilityRevocationSubmitOverrideForTesting: ((Int64, JSONValue) async -> Bool)?
     var capabilityRevocationRefreshOverrideForTesting: (() async -> Void)?
     var exportDownloadOverrideForTesting: ((String) async throws -> ScopedExportArtifact)?
+    var memorySearchOverrideForTesting: ((String) async throws -> MemorySearchResult)?
 
     func setCapabilityDeploymentsForTesting(_ deployments: [CapabilityDeployment]) {
         capabilityDeployments = deployments
@@ -51,6 +55,14 @@ public final class CyloAppModel: ObservableObject {
 
     func setExportArtifactForTesting(_ artifact: ScopedExportArtifact?) {
         exportArtifact = artifact
+    }
+
+    func setMemoryClaimsForTesting(_ claims: [MemoryClaim]) {
+        memoryClaims = claims
+    }
+
+    func handleEventForTesting(_ envelope: EventEnvelope) async {
+        await handle(.event(envelope))
     }
 #endif
     private var configuredServerURL: URL?
@@ -139,6 +151,7 @@ public final class CyloAppModel: ObservableObject {
 
     public func updateServerAddress() async {
         cancelExport(status: nil)
+        clearVisibleMemory()
         connectionGeneration.advance()
         connectionEpoch = connectionGeneration.value
         capabilityReleases = []
@@ -291,6 +304,7 @@ public final class CyloAppModel: ObservableObject {
         do {
             try await refreshSnapshot()
             await refreshNotifications()
+            await refreshMemory()
         } catch {
             if snapshot == nil { setOffline(error) }
             else { setStale("A push wakeup arrived, but the latest server state could not be loaded: \(userMessage(error))") }
@@ -318,18 +332,59 @@ public final class CyloAppModel: ObservableObject {
     }
 
     public func refreshMemory(query: String = "") async {
-        guard let api else { return }
-        let generation = connectionGeneration.value
-        do {
-            let result = try await api.searchMemory(query: query)
-            guard generation == connectionGeneration.value, api === self.api else { return }
-            memoryClaims = result.items
-            memoryMissing = result.missing
-            memoryConflicts = result.conflicts
-        } catch {
-            guard generation == connectionGeneration.value else { return }
-            if let failure = error as? CyloError, case let .http(status, _, _, _) = failure, status == 403 { return }
-            notice = "Memory could not be refreshed: \(userMessage(error))"
+        #if DEBUG
+        let testSearch = memorySearchOverrideForTesting
+        #else
+        let testSearch: ((String) async throws -> MemorySearchResult)? = nil
+        #endif
+        guard api != nil || testSearch != nil else { return }
+        if memoryRefreshInFlight {
+            memoryRefreshSequence &+= 1
+            pendingMemoryRefreshQuery = query
+            return
+        }
+        memoryRefreshInFlight = true
+        defer { memoryRefreshInFlight = false }
+
+        var nextQuery: String? = query
+        while let currentQuery = nextQuery {
+            nextQuery = nil
+            memoryRefreshSequence &+= 1
+            let requestSequence = memoryRefreshSequence
+            let generation = connectionGeneration.value
+            let capturedAPI = api
+            do {
+                let result: MemorySearchResult
+                if let testSearch { result = try await testSearch(currentQuery) }
+                else if let capturedAPI { result = try await capturedAPI.searchMemory(query: currentQuery) }
+                else { throw CyloError.missingCredential }
+                guard requestSequence == memoryRefreshSequence,
+                      generation == connectionGeneration.value,
+                      testSearch != nil || capturedAPI === self.api else {
+                    nextQuery = pendingMemoryRefreshQuery
+                    pendingMemoryRefreshQuery = nil
+                    continue
+                }
+                memoryClaims = result.items
+                memoryMissing = result.missing
+                memoryConflicts = result.conflicts
+            } catch {
+                guard requestSequence == memoryRefreshSequence,
+                      generation == connectionGeneration.value,
+                      testSearch != nil || capturedAPI === self.api else {
+                    nextQuery = pendingMemoryRefreshQuery
+                    pendingMemoryRefreshQuery = nil
+                    continue
+                }
+                if let failure = error as? CyloError,
+                   case let .http(status, _, _, _) = failure, status == 401 || status == 403 {
+                    clearMemoryAndPreparedExport(status: "Memory access was denied; cached memory and the prepared export were cleared.")
+                } else {
+                    notice = "Memory could not be refreshed: \(userMessage(error))"
+                }
+            }
+            nextQuery = pendingMemoryRefreshQuery
+            pendingMemoryRefreshQuery = nil
         }
     }
 
@@ -837,9 +892,7 @@ public final class CyloAppModel: ObservableObject {
             freshness = .loading
             pairingID = defaults.string(forKey: "cylo.pairingID.\(serverAddress)")
             pairingStatus = nil
-            memoryClaims = []
-            memoryMissing = []
-            memoryConflicts = []
+            clearVisibleMemory()
             notifications = []
             capabilityReleases = []
             capabilityDeployments = []
@@ -1257,6 +1310,7 @@ public final class CyloAppModel: ObservableObject {
                 if let error = error as? CyloError,
                    case let .http(status, _, _, _) = error,
                    status == 401 || status == 403 {
+                    clearMemoryAndPreparedExport(status: "Server access changed; cached memory and the prepared export were cleared.")
                     setOffline(error)
                     return
                 }
@@ -1271,15 +1325,40 @@ public final class CyloAppModel: ObservableObject {
     private func handle(_ push: ServerPush) async {
         switch push {
         case let .event(envelope):
+            let memoryChanged = envelope.aggregateType == "memory" && ["memory.revised", "memory.deleted", "memory.proposal_accepted"].contains(envelope.type)
+            let deviceAuthorizationChanged = envelope.aggregateType == "device" && envelope.type == "device.revoked"
+            if memoryChanged || deviceAuthorizationChanged {
+                await handleMemoryOrAuthorizationChange(status: memoryChanged ? "Server memory changed; prepare a fresh export." : "Device authorization changed; prepare a fresh export.")
+            }
             setStale("A server change arrived; refreshing the authoritative snapshot.")
             do { try await refreshSnapshot() }
             catch { setStale("Snapshot refresh failed: \(userMessage(error))") }
             if envelope.type.hasPrefix("notification.") { await refreshNotifications() }
         case .snapshotRequired:
+            clearMemoryAndPreparedExport(status: "Server history expired; cached memory and the prepared export were cleared.")
             setStale("The saved event cursor expired; loading a fresh snapshot.")
             do { try await refreshSnapshot() }
             catch { setStale("Snapshot repair failed: \(userMessage(error))") }
+            await refreshMemory()
         }
+    }
+
+    private func handleMemoryOrAuthorizationChange(status: String) async {
+        clearMemoryAndPreparedExport(status: status)
+        await refreshMemory()
+    }
+
+    private func clearMemoryAndPreparedExport(status: String) {
+        clearVisibleMemory()
+        cancelExport(status: status)
+    }
+
+    private func clearVisibleMemory() {
+        memoryRefreshSequence &+= 1
+        pendingMemoryRefreshQuery = nil
+        memoryClaims = []
+        memoryMissing = []
+        memoryConflicts = []
     }
 
     private func setStale(_ reason: String) {
