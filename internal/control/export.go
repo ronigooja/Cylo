@@ -296,19 +296,19 @@ func (s *Server) handleScopedExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err = s.AppendEventsTx(r.Context(), auditTx, p, []contracts.Event{{
-		Type: "data.export.prepared", AggregateType: "data_export", AggregateID: exportID, AggregateVersion: 1,
+		EventID: exportID, Type: "data.export.prepared", AggregateType: "data_export", AggregateID: exportID, AggregateVersion: 1,
 		Payload: auditPayload,
 	}}); err != nil {
 		writeExportFailure(w)
 		return
 	}
 	var validatedCursor int64
-	var eventType, aggregateID string
+	var eventID, eventType, aggregateID string
 	if err = auditTx.QueryRowContext(r.Context(), `SELECT current_cursor FROM event_counters WHERE workspace_id=?`, p.WorkspaceID).Scan(&validatedCursor); err != nil || validatedCursor != cursor+1 {
 		writeError(w, apiError(http.StatusConflict, "export_snapshot_stale", "export audit cursor did not follow the data snapshot", nil))
 		return
 	}
-	if err = auditTx.QueryRowContext(r.Context(), `SELECT event_type,aggregate_id FROM events WHERE workspace_id=? AND cursor=?`, p.WorkspaceID, validatedCursor).Scan(&eventType, &aggregateID); err != nil || eventType != "data.export.prepared" || aggregateID != exportID {
+	if err = auditTx.QueryRowContext(r.Context(), `SELECT event_id,event_type,aggregate_id FROM events WHERE workspace_id=? AND cursor=?`, p.WorkspaceID, validatedCursor).Scan(&eventID, &eventType, &aggregateID); err != nil || eventID != exportID || eventType != "data.export.prepared" || aggregateID != exportID {
 		writeError(w, apiError(http.StatusConflict, "export_snapshot_stale", "export audit event does not match the package authority cursor", nil))
 		return
 	}

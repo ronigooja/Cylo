@@ -183,12 +183,12 @@ func assertExportAuditProof(t *testing.T, db *sql.DB, manifest map[string]any) {
 	if !ok || validatedCursor != snapshotCursor+1 || auditCursor != validatedCursor || authority["export_audit_event_id"] != exportID || authority["export_audit_event_type"] != "data.export.prepared" {
 		t.Fatalf("manifest does not attest the single prepared audit cursor: %#v", authority)
 	}
-	var eventType, aggregateID string
-	if err = db.QueryRow(`SELECT event_type,aggregate_id FROM events WHERE cursor=?`, auditCursor).Scan(&eventType, &aggregateID); err != nil {
+	var eventID, eventType, aggregateID string
+	if err = db.QueryRow(`SELECT event_id,event_type,aggregate_id FROM events WHERE cursor=?`, auditCursor).Scan(&eventID, &eventType, &aggregateID); err != nil {
 		t.Fatal(err)
 	}
-	if eventType != authority["export_audit_event_type"] || aggregateID != exportID {
-		t.Fatalf("manifest audit proof disagrees with event: type=%s aggregate=%s", eventType, aggregateID)
+	if eventID != exportID || eventType != authority["export_audit_event_type"] || aggregateID != exportID {
+		t.Fatalf("manifest audit proof disagrees with event: id=%s type=%s aggregate=%s", eventID, eventType, aggregateID)
 	}
 }
 
