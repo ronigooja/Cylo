@@ -8,7 +8,7 @@ Usage:
     --approved-root PATH \
     --output-root PATH \
     --package-cache-seed PATH \
-    [--include-ios-xcode-app-target]
+    [--include-ios-xcode-app-target | --require-ios-xcode-app-target]
 
 Create a clean source snapshot and run Apple checks with all generated files
 under --output-root. Both --output-root and --package-cache-seed must be below
@@ -23,6 +23,8 @@ entry point. The entry-point compile is source evidence, not an Xcode app build.
 Pass --include-ios-xcode-app-target to separately attempt the CyloMobile Xcode
 scheme build. A missing eligible destination is reported as
 BLOCKED_NO_ELIGIBLE_DESTINATION and does not change the source compile result.
+Pass --require-ios-xcode-app-target to require that build to pass; a missing
+eligible destination then makes validation fail after recording the block.
 USAGE
 }
 
@@ -35,6 +37,7 @@ APPROVED_ROOT=
 OUTPUT_ROOT=
 PACKAGE_CACHE_SEED=
 INCLUDE_IOS_XCODE_APP_TARGET=0
+REQUIRE_IOS_XCODE_APP_TARGET=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -55,6 +58,11 @@ while [ "$#" -gt 0 ]; do
             ;;
         --include-ios-xcode-app-target)
             INCLUDE_IOS_XCODE_APP_TARGET=1
+            shift
+            ;;
+        --require-ios-xcode-app-target)
+            INCLUDE_IOS_XCODE_APP_TARGET=1
+            REQUIRE_IOS_XCODE_APP_TARGET=1
             shift
             ;;
         -h|--help)
@@ -244,6 +252,11 @@ if [ "$INCLUDE_IOS_XCODE_APP_TARGET" -eq 1 ]; then
     fi
 else
     record "SKIP iOS Xcode app-target build (use --include-ios-xcode-app-target to attempt it)"
+fi
+
+if [ "$REQUIRE_IOS_XCODE_APP_TARGET" -eq 1 ] && [ "$IOS_APP_TARGET_STATUS" != PASS ]; then
+    record "FAIL required iOS Xcode app-target build (status: $IOS_APP_TARGET_STATUS)"
+    exit 1
 fi
 
 record "COMPLETE shared tests, macOS app build, and direct iOS SDK source checks passed"
