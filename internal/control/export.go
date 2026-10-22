@@ -43,7 +43,7 @@ type exportCounter struct {
 }
 
 type exportFile struct {
-	*os.File
+	file  *os.File
 	count int64
 	hash  io.Writer
 }
@@ -52,12 +52,48 @@ func (f *exportFile) Write(p []byte) (int, error) {
 	if int64(len(p)) > maxScopedExportBytes-f.count {
 		return 0, errExportTooLarge
 	}
-	n, err := f.File.Write(p)
+	n, err := f.file.Write(p)
 	if n > 0 {
 		f.count += int64(n)
 		_, _ = f.hash.Write(p[:n])
 	}
+	if err == nil && n != len(p) {
+		err = io.ErrShortWrite
+	}
 	return n, err
+}
+
+func (f *exportFile) WriteString(s string) (int, error) {
+	if int64(len(s)) > maxScopedExportBytes-f.count {
+		return 0, errExportTooLarge
+	}
+	n, err := f.file.WriteString(s)
+	if n > 0 {
+		f.count += int64(n)
+		hashErr := hashExportString(f.hash, s[:n])
+		if err == nil {
+			err = hashErr
+		}
+	}
+	if err == nil && n != len(s) {
+		err = io.ErrShortWrite
+	}
+	return n, err
+}
+
+func hashExportString(w io.Writer, value string) error {
+	const chunk = 32 << 10
+	for len(value) > 0 {
+		n := len(value)
+		if n > chunk {
+			n = chunk
+		}
+		if _, err := w.Write([]byte(value[:n])); err != nil {
+			return err
+		}
+		value = value[n:]
+	}
+	return nil
 }
 
 var errExportTooLarge = errors.New("export exceeds configured size limit")
@@ -100,7 +136,7 @@ func (s *Server) handleScopedExport(w http.ResponseWriter, r *http.Request) {
 	defer os.Remove(path)
 	defer f.Close()
 	h := sha256.New()
-	output := &exportFile{File: f, hash: h}
+	output := &exportFile{file: f, hash: h}
 
 	tx, err := s.store.DB().BeginTx(r.Context(), &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -200,7 +236,7 @@ func exportAuthorizationFingerprint(ctx context.Context, q *sql.Tx, p contracts.
 	h := sha256.New()
 	visible := exportVisibilityPredicate()
 	for _, statement := range []string{
-		`SELECT p.id FROM projects p WHERE p.workspace_id=?1 AND ` + visible.project + ` ORDER BY p.id`,
+		`SELECT p.id FROM projects p WHERE p.workspace_id=?1 AND p.status='active' AND ` + visible.project + ` ORDER BY p.id`,
 		`SELECT t.id FROM tasks t WHERE t.workspace_id=?1 AND ` + visible.task + ` ORDER BY t.id`,
 	} {
 		rows, err := q.QueryContext(ctx, statement, p.WorkspaceID, p.SubjectID)
@@ -339,13 +375,13 @@ func writeExportDocument(ctx context.Context, tx *sql.Tx, out io.Writer, p contr
 	}
 	visible := exportVisibilityPredicate()
 	args := []any{p.WorkspaceID, p.SubjectID}
-	if err := writeRows(ctx, tx, out, &counts.Projects, `SELECT json_object('id',p.id,'name',p.name,'description',p.description,'status',p.status,'version',p.version,'created_at',p.created_at,'updated_at',p.updated_at) FROM projects p WHERE p.workspace_id=?1 AND `+visible.project+` ORDER BY p.created_at,p.id`, append([]any(nil), args...)); err != nil {
+	if err := writeRows(ctx, tx, out, &counts.Projects, `SELECT json_object('id',p.id,'name',p.name,'description',p.description,'status',p.status,'version',p.version,'created_at',p.created_at,'updated_at',p.updated_at) FROM projects p WHERE p.workspace_id=?1 AND p.status='active' AND `+visible.project+` ORDER BY p.created_at,p.id`, append([]any(nil), args...)); err != nil {
 		return err
 	}
 	if _, err := io.WriteString(out, `,"tasks":`); err != nil {
 		return err
 	}
-	if err := writeRows(ctx, tx, out, &counts.Tasks, `SELECT json_object('id',t.id,'project_id',coalesce(t.project_id,''),'title',t.title,'goal',t.goal,'source',t.source,'profile_id',t.profile_id,'status',t.status,'version',t.version,'created_at',t.created_at,'updated_at',t.updated_at,'accepted_at',t.accepted_at,'started_at',t.started_at,'finished_at',t.finished_at,'result',t.result,'error',t.error) FROM tasks t WHERE t.workspace_id=?1 AND `+visible.task+` ORDER BY t.created_at,t.id`, append([]any(nil), args...)); err != nil {
+	if err := writeRows(ctx, tx, out, &counts.Tasks, `SELECT json_object('id',t.id,'project_id',CASE WHEN EXISTS(SELECT 1 FROM projects p WHERE p.workspace_id=t.workspace_id AND p.id=t.project_id AND p.status='active' AND (p.owner_subject_id=?2 OR EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=p.workspace_id AND m.project_id=p.id AND m.subject_id=?2 AND m.status='active'))) THEN t.project_id ELSE '' END,'title',t.title,'goal',t.goal,'source',t.source,'profile_id',t.profile_id,'status',t.status,'version',t.version,'created_at',t.created_at,'updated_at',t.updated_at,'accepted_at',t.accepted_at,'started_at',t.started_at,'finished_at',t.finished_at,'result',t.result,'error',t.error) FROM tasks t WHERE t.workspace_id=?1 AND `+visible.task+` ORDER BY t.created_at,t.id`, append([]any(nil), args...)); err != nil {
 		return err
 	}
 	if _, err := io.WriteString(out, `,"task_dependencies":`); err != nil {
@@ -375,7 +411,7 @@ func writeExportDocument(ctx context.Context, tx *sql.Tx, out io.Writer, p contr
 	if _, err := io.WriteString(out, `,"evidence":`); err != nil {
 		return err
 	}
-	if err := writeRows(ctx, tx, out, &counts.Evidence, `SELECT json_object('id',e.id,'task_id',e.task_id,'run_id',coalesce(e.run_id,''),'kind',e.kind,'summary',e.summary,'source',e.source,'created_at',e.created_at,'verified',e.verified) FROM evidence e JOIN tasks t ON t.id=e.task_id AND t.workspace_id=e.workspace_id WHERE e.workspace_id=?1 AND `+visible.taskOnT+` ORDER BY e.created_at,e.id`, append([]any(nil), args...)); err != nil {
+	if err := writeRows(ctx, tx, out, &counts.Evidence, `SELECT json_object('id',e.id,'task_id',e.task_id,'run_id',CASE WHEN EXISTS(SELECT 1 FROM runs er WHERE er.workspace_id=e.workspace_id AND er.id=e.run_id AND er.task_id=e.task_id) THEN coalesce(e.run_id,'') ELSE '' END,'kind',e.kind,'summary',e.summary,'source',e.source,'created_at',e.created_at,'verified',e.verified) FROM evidence e JOIN tasks t ON t.id=e.task_id AND t.workspace_id=e.workspace_id WHERE e.workspace_id=?1 AND `+visible.taskOnT+` ORDER BY e.created_at,e.id`, append([]any(nil), args...)); err != nil {
 		return err
 	}
 	if _, err := io.WriteString(out, `,"memory":`); err != nil {
@@ -499,7 +535,13 @@ func writeMemoryRows(ctx context.Context, tx *sql.Tx, out io.Writer, p contracts
 			claim["valid_to"] = validTo
 		}
 		if supersedes != "" {
-			claim["supersedes"] = supersedes
+			included, checkErr := exportMemoryClaimIncluded(ctx, tx, p, exportScope, supersedes)
+			if checkErr != nil {
+				return checkErr
+			}
+			if included {
+				claim["supersedes"] = supersedes
+			}
 		}
 		if _, err = io.WriteString(out, `,"record":`); err != nil {
 			return err
@@ -653,7 +695,11 @@ WHERE rs.claim_id=? AND rs.revision=? AND rs.workspace_id=? AND s.deleted_at IS 
 		}
 		first = false
 		counts.Sources++
-		if err = writeJSONValue(out, map[string]any{"id": id, "version": version, "scope": map[string]any{"kind": kind, "id": scopeID, "principal_id": principalID}, "kind": sourceKind, "reference": reference, "content_hash": contentHash, "recorded_at": recorded, "producer": producer}); err != nil {
+		safeReference, err := safeExportSourceReference(ctx, tx, p, reference)
+		if err != nil {
+			return err
+		}
+		if err = writeJSONValue(out, map[string]any{"id": id, "version": version, "scope": map[string]any{"kind": kind, "id": scopeID, "principal_id": principalID}, "kind": sourceKind, "reference": safeReference, "content_hash": contentHash, "recorded_at": recorded, "producer": producer}); err != nil {
 			return err
 		}
 	}
@@ -662,4 +708,48 @@ WHERE rs.claim_id=? AND rs.revision=? AND rs.workspace_id=? AND s.deleted_at IS 
 	}
 	_, err = io.WriteString(out, `]`)
 	return err
+}
+
+func exportMemoryClaimIncluded(ctx context.Context, tx *sql.Tx, p contracts.Principal, exportScope, claimID string) (bool, error) {
+	var kind, scopeID, principalID string
+	err := tx.QueryRowContext(ctx, `SELECT scope_kind,scope_id,principal_id FROM memory_claims WHERE workspace_id=? AND id=? AND deleted_at IS NULL AND status!='tombstoned'`, p.WorkspaceID, claimID).Scan(&kind, &scopeID, &principalID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if exportScope == "personal" && kind != "personal" || exportScope == "workspace" && kind == "personal" {
+		return false, nil
+	}
+	return exportMemoryScopeAllowed(ctx, tx, p, kind, scopeID, principalID)
+}
+
+func safeExportSourceReference(ctx context.Context, tx *sql.Tx, p contracts.Principal, reference string) (string, error) {
+	prefix, id, ok := strings.Cut(reference, ":")
+	if !ok || id == "" {
+		return "", nil
+	}
+	visible := exportVisibilityPredicate()
+	var count int
+	switch prefix {
+	case "task_entry":
+		err := tx.QueryRowContext(ctx, `SELECT count(*) FROM task_entries e JOIN tasks t ON t.id=e.task_id AND t.workspace_id=e.workspace_id WHERE e.id=?3 AND e.workspace_id=?1 AND `+visible.taskOnT, p.WorkspaceID, p.SubjectID, id).Scan(&count)
+		if err != nil {
+			return "", err
+		}
+	case "evidence":
+		err := tx.QueryRowContext(ctx, `SELECT count(*) FROM evidence e JOIN tasks t ON t.id=e.task_id AND t.workspace_id=e.workspace_id WHERE e.id=?3 AND e.workspace_id=?1 AND `+visible.taskOnT, p.WorkspaceID, p.SubjectID, id).Scan(&count)
+		if err != nil {
+			return "", err
+		}
+	default:
+		// Events and command receipts are intentionally outside this export
+		// projection, so their opaque identities are redacted here.
+		return "", nil
+	}
+	if count != 1 {
+		return "", nil
+	}
+	return reference, nil
 }

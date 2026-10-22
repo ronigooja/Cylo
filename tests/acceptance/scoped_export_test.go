@@ -2,13 +2,16 @@ package acceptance
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -80,6 +83,9 @@ func TestScopedExportHTTPHonorsMembershipMemoryVersionsAndTombstones(t *testing.
 	if personal.Header().Get("Content-Type") != "application/vnd.cylo.export+json; charset=utf-8" || !strings.HasPrefix(personal.Header().Get("Content-Disposition"), `attachment; filename="cylo-export-`) || personal.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("unsafe export response headers: %#v", personal.Header())
 	}
+	if err := assertExportAuditMatchesBody(store.DB(), personal.Body.Bytes(), personal.Header().Get("Content-Length")); err != nil {
+		t.Fatal(err)
+	}
 	var personalDoc map[string]any
 	if err := json.Unmarshal(personal.Body.Bytes(), &personalDoc); err != nil {
 		t.Fatalf("personal export is invalid JSON: %v", err)
@@ -141,6 +147,128 @@ func TestScopedExportHTTPHonorsMembershipMemoryVersionsAndTombstones(t *testing.
 	if err := store.DB().QueryRow(`SELECT count(*) FROM events WHERE event_type='data.export.prepared' AND subject_id=?`, subject).Scan(&audits); err != nil || audits != 2 {
 		t.Fatalf("prepared export audit count=%d err=%v", audits, err)
 	}
+}
+
+func TestScopedExportUsesActiveProjectACLAndRedactsHiddenReferences(t *testing.T) {
+	store, handler, token, subject, device := scopedExportServer(t)
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	seedExportProjectTask(t, store.DB(), "archived-project", "archived-task", "default", subject, device, at)
+	if _, err := store.DB().Exec(`UPDATE projects SET status='archived' WHERE id='archived-project'`); err != nil {
+		t.Fatal(err)
+	}
+	seedExportMemory(t, store.DB(), "hidden-personal-memory", "personal", "", "another-subject", "hidden", "hidden memory", "", false, at)
+	seedExportMemory(t, store.DB(), "visible-personal-memory", "personal", "", subject, "visible", "visible memory", "", false, at)
+	if _, err := store.DB().Exec(`UPDATE memory_claims SET supersedes_id='hidden-personal-memory' WHERE id='visible-personal-memory'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().Exec(`INSERT INTO memory_sources(workspace_id,id,version,scope_kind,scope_id,principal_id,kind,reference,content_hash,recorded_at,producer) VALUES('default','visible-hidden-ref-source',1,'personal','',?,'task_entry','task_entry:archived-entry','',?,'fixture')`, subject, at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().Exec(`INSERT INTO memory_revision_sources(claim_id,revision,workspace_id,source_id,source_version) VALUES('visible-personal-memory',1,'default','visible-hidden-ref-source',1)`); err != nil {
+		t.Fatal(err)
+	}
+	response := reviewRequest(handler, http.MethodGet, "/v1/export?scope=personal", token, "", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("export=%d %s", response.Code, response.Body.String())
+	}
+	for _, hidden := range []string{"archived-project", "hidden-personal-memory", "task_entry:archived-entry"} {
+		if strings.Contains(response.Body.String(), hidden) {
+			t.Errorf("export disclosed inactive or inaccessible reference %q", hidden)
+		}
+	}
+	if !strings.Contains(response.Body.String(), "visible memory") {
+		t.Fatal("authorized memory omitted")
+	}
+}
+
+func TestScopedExportSizeLimitAndTemporaryCleanup(t *testing.T) {
+	tempRoot := t.TempDir()
+	t.Setenv("TMPDIR", tempRoot)
+	store, handler, token, subject, device := scopedExportServer(t)
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	seedExportProjectTask(t, store.DB(), "large-project", "large-task", "default", subject, device, at)
+	if _, err := store.DB().Exec(`UPDATE tasks SET goal=? WHERE id='large-task'`, strings.Repeat("x", 65<<20)); err != nil {
+		t.Fatal(err)
+	}
+	response := reviewRequest(handler, http.MethodGet, "/v1/export?scope=workspace", token, "", nil)
+	if response.Code != http.StatusRequestEntityTooLarge || strings.Contains(response.Body.String(), "xxxxx") {
+		t.Fatalf("oversized export=%d body length=%d", response.Code, response.Body.Len())
+	}
+	leftovers, err := filepath.Glob(filepath.Join(tempRoot, "cylo-export-*"))
+	if err != nil || len(leftovers) != 0 {
+		t.Fatalf("temporary export remains after size rejection: %v err=%v", leftovers, err)
+	}
+	var audits int
+	if err = store.DB().QueryRow(`SELECT count(*) FROM events WHERE event_type='data.export.prepared'`).Scan(&audits); err != nil || audits != 0 {
+		t.Fatalf("rejected export audit=%d err=%v", audits, err)
+	}
+}
+
+func TestScopedExportClientCancelCleansTemporaryFile(t *testing.T) {
+	tempRoot := t.TempDir()
+	t.Setenv("TMPDIR", tempRoot)
+	store, handler, token, subject, device := scopedExportServer(t)
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	seedExportProjectTask(t, store.DB(), "cancel-project", "cancel-task", "default", subject, device, at)
+	if _, err := store.DB().Exec(`UPDATE tasks SET goal=? WHERE id='cancel-task'`, strings.Repeat("x", 32<<20)); err != nil {
+		t.Fatal(err)
+	}
+	live := httptest.NewServer(handler)
+	t.Cleanup(live.Close)
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, live.URL+"/v1/export?scope=workspace", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	response, err := live.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	_ = response.Body.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		leftovers, globErr := filepath.Glob(filepath.Join(tempRoot, "cylo-export-*"))
+		if globErr != nil {
+			t.Fatal(globErr)
+		}
+		if len(leftovers) == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	leftovers, _ := filepath.Glob(filepath.Join(tempRoot, "cylo-export-*"))
+	t.Fatalf("temporary export remains after canceled response: %v", leftovers)
+}
+
+func assertExportAuditMatchesBody(db *sql.DB, body []byte, contentLength string) error {
+	n, err := strconv.Atoi(contentLength)
+	if err != nil {
+		return fmt.Errorf("invalid content length %q: %w", contentLength, err)
+	}
+	if n != len(body) {
+		return fmt.Errorf("content length=%d body bytes=%d", n, len(body))
+	}
+	var raw []byte
+	err = db.QueryRow(`SELECT payload FROM events WHERE event_type='data.export.prepared' ORDER BY cursor DESC LIMIT 1`).Scan(&raw)
+	if err != nil {
+		return err
+	}
+	var event struct {
+		Payload struct {
+			Bytes  int64  `json:"bytes"`
+			SHA256 string `json:"sha256"`
+		} `json:"payload"`
+	}
+	if err = json.Unmarshal(raw, &event); err != nil {
+		return err
+	}
+	digest := sha256.Sum256(body)
+	if event.Payload.Bytes != int64(len(body)) || event.Payload.SHA256 != hex.EncodeToString(digest[:]) {
+		return fmt.Errorf("audit does not match actual export: bytes=%d hash=%s actual_bytes=%d actual_hash=%s", event.Payload.Bytes, event.Payload.SHA256, len(body), hex.EncodeToString(digest[:]))
+	}
+	return nil
 }
 
 func TestScopedExportRequiresSeparateExportAndMemoryReadGrants(t *testing.T) {
