@@ -81,13 +81,11 @@ public final class APIClient: @unchecked Sendable {
         request.setValue("application/vnd.cylo.export+zip", forHTTPHeaderField: "Accept")
         try authorize(&request)
 
-        let (downloadURL, rawResponse) = try await session.download(for: request)
+        let download = try await downloadBounded(request, using: session, maximumBytes: Int64(Self.maximumExportBytes))
+        let downloadURL = download.fileURL
         defer { try? FileManager.default.removeItem(at: downloadURL) }
-        guard let response = rawResponse as? HTTPURLResponse else { throw CyloError.invalidResponse }
+        let response = download.response
         guard (200..<300).contains(response.statusCode) else {
-            let attributes = try? FileManager.default.attributesOfItem(atPath: downloadURL.path)
-            let size = (attributes?[.size] as? NSNumber)?.intValue ?? 0
-            guard size <= 1 << 20 else { throw CyloError.invalidResponse }
             let data = try Data(contentsOf: downloadURL)
             throw decodeFailure(status: response.statusCode, data: data)
         }
