@@ -70,8 +70,11 @@ public final class CyloAppModel: ObservableObject {
         try await refreshSnapshot()
     }
 
-    func refreshAfterRecoveredCommandsForTesting(_ outcomes: [CommandOutcome]) async {
-        await refreshMemoryAfterRecoveredCommands(outcomes)
+    func recoverPendingCommandsForTesting(api: APIClient, journal: CommandJournal, expectedGeneration: UInt64? = nil) async {
+        self.api = api
+        let testCoordinator = CommandCoordinator(api: api, journal: journal)
+        coordinator = testCoordinator
+        await recoverPendingCommands(expectedGeneration: expectedGeneration ?? connectionGeneration.value, sourceAPI: api, coordinator: testCoordinator)
     }
 #endif
     private var configuredServerURL: URL?
@@ -130,7 +133,7 @@ public final class CyloAppModel: ObservableObject {
     public func start() async {
         var generation = connectionGeneration.value
         do {
-            _ = try configure()
+            let configuredAPI = try configure()
             generation = connectionGeneration.value
             if pushNotificationsEnabled { NativeNotificationDelivery.shared.registerForRemoteNotifications() }
             try await refreshSnapshot()
@@ -139,21 +142,7 @@ public final class CyloAppModel: ObservableObject {
             guard generation == connectionGeneration.value else { return }
             await refreshNotifications()
             guard generation == connectionGeneration.value else { return }
-            do {
-                let recovered = try await coordinator?.recoverPending() ?? []
-                guard generation == connectionGeneration.value else { return }
-                if !recovered.isEmpty {
-                    notice = "Recovered \(recovered.count) command receipt(s) from this device's durable queue."
-                    do { try await refreshSnapshot() }
-                    catch {
-                        guard generation == connectionGeneration.value else { return }
-                        setStale("Recovered commands, but the latest snapshot could not be loaded: \(userMessage(error))")
-                    }
-                    await refreshMemoryAfterRecoveredCommands(recovered)
-                }
-            } catch {
-                if generation == connectionGeneration.value { notice = "A saved command needs attention: \(userMessage(error))" }
-            }
+            if let coordinator { await recoverPendingCommands(expectedGeneration: generation, sourceAPI: configuredAPI, coordinator: coordinator) }
             guard generation == connectionGeneration.value else { return }
             startEventLoop()
         } catch {
@@ -1394,8 +1383,30 @@ public final class CyloAppModel: ObservableObject {
         await refreshMemory()
     }
 
-    private func refreshMemoryAfterRecoveredCommands(_ outcomes: [CommandOutcome]) async {
+    private func recoverPendingCommands(expectedGeneration: UInt64, sourceAPI: APIClient, coordinator: CommandCoordinator) async {
+        do {
+            let recovered = try await coordinator.recoverPending()
+            guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
+            guard !recovered.isEmpty else { return }
+            notice = "Recovered \(recovered.count) command receipt(s) from this device's durable queue."
+            if recovered.contains(where: { $0.receipt.kind.hasPrefix("memory.") }) {
+                clearMemoryAndPreparedExport(status: "A recovered memory command changed server memory; cached memory and the prepared export were cleared.")
+            }
+            do { try await refreshSnapshot() }
+            catch {
+                guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
+                setStale("Recovered commands, but the latest snapshot could not be loaded: \(userMessage(error))")
+            }
+            guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
+            await refreshMemoryAfterRecoveredCommands(recovered, expectedGeneration: expectedGeneration, sourceAPI: sourceAPI)
+        } catch {
+            if isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) { notice = "A saved command needs attention: \(userMessage(error))" }
+        }
+    }
+
+    private func refreshMemoryAfterRecoveredCommands(_ outcomes: [CommandOutcome], expectedGeneration: UInt64, sourceAPI: APIClient?) async {
         guard outcomes.contains(where: { $0.receipt.kind.hasPrefix("memory.") }) else { return }
+        guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
         await refreshMemory()
     }
 

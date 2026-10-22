@@ -64,10 +64,6 @@ final class ClientContractTests: XCTestCase {
         MemoryClaim(id: id, workspaceId: "workspace-1", scope: MemoryScope(kind: "personal", id: nil, principalId: "subject-1"), subject: "preference", key: "format", content: content, authorityKind: "user_confirmed", status: "active", revision: 1, validFrom: nil, validTo: nil, supersedes: nil, sources: [], deletedAt: nil)
     }
 
-    private func recoveredOutcome(kind: String) -> CommandOutcome {
-        CommandOutcome(receipt: CommandReceipt(commandId: "command-1", idempotencyKey: "key-1", workspaceId: "workspace-1", kind: kind, status: "accepted", resourceType: "memory", resourceId: "memory-1", resourceVersion: 2, acceptedAt: "2026-10-21T12:00:00Z", eventCursor: "8"), recovered: true)
-    }
-
     func testScopedExportUsesAuthenticatedScopedRequestAndPrivateTemporaryFile() async throws {
         ExportURLProtocol.capturedRequest = nil
         ExportURLProtocol.responseHandler = { _ in
@@ -316,19 +312,68 @@ final class ClientContractTests: XCTestCase {
     }
 
     @MainActor
-    func testRecoveredMemoryCommandsRefreshAfterJournalReplay() async throws {
+    func testRecoveredMemoryDeleteReceiptReplaysJournalAndInvalidatesPreparedExport() async throws {
         let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
         model.setMemoryClaimsForTesting([memoryClaim(id: "memory-before-replay", content: "before replay")])
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let artifactURL = directory.appendingPathComponent("private-export.json")
+        try Data("export containing deleted memory".utf8).write(to: artifactURL)
+        model.setExportArtifactForTesting(ScopedExportArtifact(fileURL: artifactURL, filename: "cylo-export-private.json", scope: "personal", snapshotCursor: "7"))
+
+        let key = "recovery-key-\(UUID().uuidString.lowercased())"
+        let journal = try CommandJournal(fileURL: directory.appendingPathComponent("commands.json"))
+        try await journal.append(PendingCommand(idempotencyKey: key, kind: "memory.delete", expectedVersion: 2, payload: .object(["memory_id": .string("memory-1")]), createdAt: "2026-10-21T12:00:00Z", workspaceID: "workspace-1", expectedResourceType: "memory", expectedResourceID: "memory-1"))
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        var observedReceiptLookup = false
+        ExportURLProtocol.responseHandler = { request in
+            if request.url?.path == "/v1/commands", request.httpMethod == "GET", URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.contains(where: { $0.name == "key" && $0.value == key }) == true {
+                observedReceiptLookup = true
+                return (200, ["Content-Type": "application/json"], Data("{\"command_id\":\"cmd-recovered\",\"idempotency_key\":\"\(key)\",\"workspace_id\":\"workspace-1\",\"kind\":\"memory.delete\",\"status\":\"accepted\",\"resource_type\":\"memory\",\"resource_id\":\"memory-1\",\"resource_version\":3,\"accepted_at\":\"2026-10-21T12:00:00Z\",\"event_cursor\":\"8\"}".utf8))
+            }
+            return (503, ["Content-Type": "application/json"], Data())
+        }
         var observedQueries: [String] = []
         model.memorySearchOverrideForTesting = { query in
             observedQueries.append(query)
             return MemorySearchResult(items: [], missing: [], conflicts: [])
         }
 
-        await model.refreshAfterRecoveredCommandsForTesting([recoveredOutcome(kind: "memory.delete"), recoveredOutcome(kind: "memory.remember")])
+        await model.recoverPendingCommandsForTesting(api: api, journal: journal)
 
+        let remainingCommands = try await journal.all()
+        XCTAssertTrue(observedReceiptLookup, "recovery must resolve the persisted idempotency key through the receipt endpoint")
+        XCTAssertTrue(remainingCommands.isEmpty, "an accepted recovered receipt must remove its journal row")
         XCTAssertEqual(observedQueries, [""])
         XCTAssertTrue(model.memoryClaims.isEmpty)
+        XCTAssertNil(model.exportArtifact, "a recovered memory deletion must invalidate a prepared private export")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: artifactURL.path), "the invalidated private export file must be removed")
+    }
+
+    @MainActor
+    func testRecoveredMemoryReceiptFromOldGenerationCannotInvalidateNewExport() async throws {
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let artifactURL = directory.appendingPathComponent("new-private-export.json")
+        try Data("new connection export".utf8).write(to: artifactURL)
+        model.setExportArtifactForTesting(ScopedExportArtifact(fileURL: artifactURL, filename: "cylo-export-new.json", scope: "personal", snapshotCursor: "9"))
+
+        let key = "old-recovery-key-\(UUID().uuidString.lowercased())"
+        let journal = try CommandJournal(fileURL: directory.appendingPathComponent("commands.json"))
+        try await journal.append(PendingCommand(idempotencyKey: key, kind: "memory.delete", expectedVersion: 2, payload: .object(["memory_id": .string("memory-1")]), createdAt: "2026-10-21T12:00:00Z", workspaceID: "workspace-1", expectedResourceType: "memory", expectedResourceID: "memory-1"))
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        ExportURLProtocol.responseHandler = { request in
+            guard request.url?.path == "/v1/commands" else { return (503, [:], Data()) }
+            return (200, ["Content-Type": "application/json"], Data("{\"command_id\":\"cmd-old\",\"idempotency_key\":\"\(key)\",\"workspace_id\":\"workspace-1\",\"kind\":\"memory.delete\",\"status\":\"accepted\",\"resource_type\":\"memory\",\"resource_id\":\"memory-1\",\"resource_version\":3,\"accepted_at\":\"2026-10-21T12:00:00Z\",\"event_cursor\":\"8\"}".utf8))
+        }
+
+        await model.recoverPendingCommandsForTesting(api: api, journal: journal, expectedGeneration: model.connectionEpoch &- 1)
+
+        XCTAssertEqual(model.exportArtifact?.filename, "cylo-export-new.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: artifactURL.path))
     }
 
     @MainActor
