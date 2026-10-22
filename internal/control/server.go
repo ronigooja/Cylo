@@ -143,6 +143,12 @@ func (s *Server) AppendEventsTx(ctx context.Context, tx *sql.Tx, p contracts.Pri
 
 type TaskSourceAdmissionHandler func(context.Context, *sql.Tx, contracts.Principal, string, *TaskSourceRequest, json.RawMessage, time.Time) ([]contracts.Event, error)
 
+// TaskDispatchGuard decides whether a trusted non-user task source remains
+// authorized immediately before a runner creates an AO runtime. A non-empty
+// reason code denies dispatch. Implementations may update their source-owned
+// records inside tx so cancellation and the task transition commit together.
+type TaskDispatchGuard func(context.Context, *sql.Tx, string, string, time.Time) (reasonCode string, err error)
+
 // PrincipalCanAccessProject/Task are the authoritative row-level access checks
 // for feature modules running within a device transaction.
 func PrincipalCanAccessProject(ctx context.Context, tx *sql.Tx, p contracts.Principal, projectID string) (bool, error) {
@@ -194,16 +200,17 @@ func NewAPIError(status int, code, message string, details any) *APIError {
 }
 
 type Server struct {
-	store       *storage.Store
-	cfg         Config
-	commands    map[string]CommandHandler
-	taskSources map[string]TaskSourceAdmissionHandler
-	public      *http.ServeMux
-	device      *http.ServeMux
-	runner      *http.ServeMux
-	mu          sync.RWMutex
-	sealed      bool
-	pushSender  PushSender
+	store              *storage.Store
+	cfg                Config
+	commands           map[string]CommandHandler
+	taskSources        map[string]TaskSourceAdmissionHandler
+	taskDispatchGuards map[string]TaskDispatchGuard
+	public             *http.ServeMux
+	device             *http.ServeMux
+	runner             *http.ServeMux
+	mu                 sync.RWMutex
+	sealed             bool
+	pushSender         PushSender
 }
 
 func DefaultOwnerScopes() []string {
@@ -304,7 +311,7 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 			return nil, errors.New("default profile is not present in configured profiles")
 		}
 	}
-	s := &Server{store: store, cfg: cfg, commands: make(map[string]CommandHandler), taskSources: make(map[string]TaskSourceAdmissionHandler), public: http.NewServeMux(), device: http.NewServeMux(), runner: http.NewServeMux(), pushSender: cfg.PushSender}
+	s := &Server{store: store, cfg: cfg, commands: make(map[string]CommandHandler), taskSources: make(map[string]TaskSourceAdmissionHandler), taskDispatchGuards: make(map[string]TaskDispatchGuard), public: http.NewServeMux(), device: http.NewServeMux(), runner: http.NewServeMux(), pushSender: cfg.PushSender}
 	s.registerCoreRoutes()
 	return s, nil
 }
