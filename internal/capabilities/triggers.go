@@ -65,8 +65,9 @@ func (s *Service) enableDeploymentTriggers(ctx context.Context, tx *sql.Tx, depl
 		return err
 	}
 	var grantID, digest, configRef, configHash, desired, observed, expires string
+	var revokedAt sql.NullString
 	var version int64
-	err := tx.QueryRowContext(ctx, `SELECT d.grant_id,d.release_digest,d.config_ref,d.config_sha256,d.version,d.desired_state,d.observed_state,g.expires_at FROM capability_deployments d JOIN capability_grants g ON g.grant_id=d.grant_id AND g.deployment_id=d.deployment_id AND g.release_digest=d.release_digest WHERE d.deployment_id=?`, deployment).Scan(&grantID, &digest, &configRef, &configHash, &version, &desired, &observed, &expires)
+	err := tx.QueryRowContext(ctx, `SELECT d.grant_id,d.release_digest,d.config_ref,d.config_sha256,d.version,d.desired_state,d.observed_state,g.expires_at,d.revoked_at FROM capability_deployments d JOIN capability_grants g ON g.grant_id=d.grant_id AND g.deployment_id=d.deployment_id AND g.release_digest=d.release_digest WHERE d.deployment_id=?`, deployment).Scan(&grantID, &digest, &configRef, &configHash, &version, &desired, &observed, &expires, &revokedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		_, cancelErr := tx.ExecContext(ctx, `UPDATE capability_trigger_runs SET state='canceled',updated_at=? WHERE deployment_id=? AND state='queued'`, at, deployment)
 		return cancelErr
@@ -78,7 +79,7 @@ func (s *Service) enableDeploymentTriggers(ctx context.Context, tx *sql.Tx, depl
 	if err != nil {
 		return err
 	}
-	if desired != "running" || observed != "running" || !expiry.After(now.UTC()) || grantID == "" {
+	if desired != "running" || observed != "running" || !expiry.After(now.UTC()) || grantID == "" || revokedAt.Valid {
 		_, err := tx.ExecContext(ctx, `UPDATE capability_trigger_runs SET state='canceled',updated_at=? WHERE deployment_id=? AND state='queued'`, at, deployment)
 		return err
 	}
@@ -588,7 +589,7 @@ func enqueueDueSchedules(ctx context.Context, tx *sql.Tx, workspace string, now 
 }
 
 func claimQueuedProgramTrigger(ctx context.Context, tx *sql.Tx, runner contracts.RunnerPrincipal, workspace string, now time.Time) (*contracts.CapabilityTriggerClaim, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT r.trigger_run_id,r.trigger_id,r.deployment_id,r.trigger_key,r.event_id,r.scheduled_for,r.event_payload,r.mode,t.release_digest,t.grant_id,t.scopes,d.service_id,d.config_ref,d.config_sha256,g.scope_kind,g.scope_id,g.principal_id,g.actions,g.budget,g.expires_at,rel.manifest FROM capability_trigger_runs r JOIN capability_trigger_definitions t ON t.trigger_id=r.trigger_id JOIN capability_deployments d ON d.deployment_id=r.deployment_id AND d.grant_id=t.grant_id AND d.release_digest=t.release_digest AND d.version=t.expected_deployment_version AND d.config_ref=t.config_ref AND d.config_sha256=t.config_sha256 JOIN capability_grants g ON g.grant_id=t.grant_id AND g.deployment_id=d.deployment_id AND g.release_digest=d.release_digest JOIN capability_releases rel ON rel.digest=t.release_digest AND rel.workspace_id=t.workspace_id WHERE r.workspace_id=? AND r.state='queued' AND r.mode='program' AND t.enabled=1 AND d.desired_state='running' AND d.observed_state='running' AND g.expires_at>? AND (SELECT count(*) FROM capability_trigger_runs active WHERE active.trigger_id=t.trigger_id AND active.state IN ('claimed','running','uncertain')) < CAST(json_extract(g.budget,'$.concurrency') AS INTEGER) ORDER BY r.created_at,r.trigger_run_id LIMIT ?`, workspace, now.Format(time.RFC3339Nano), triggerEventPageSize)
+	rows, err := tx.QueryContext(ctx, `SELECT r.trigger_run_id,r.trigger_id,r.deployment_id,r.trigger_key,r.event_id,r.scheduled_for,r.event_payload,r.mode,t.release_digest,t.grant_id,t.scopes,d.service_id,d.config_ref,d.config_sha256,g.scope_kind,g.scope_id,g.principal_id,g.actions,g.budget,g.expires_at,rel.manifest FROM capability_trigger_runs r JOIN capability_trigger_definitions t ON t.trigger_id=r.trigger_id JOIN capability_deployments d ON d.deployment_id=r.deployment_id AND d.grant_id=t.grant_id AND d.release_digest=t.release_digest AND d.version=t.expected_deployment_version AND d.config_ref=t.config_ref AND d.config_sha256=t.config_sha256 JOIN capability_grants g ON g.grant_id=t.grant_id AND g.deployment_id=d.deployment_id AND g.release_digest=d.release_digest JOIN capability_releases rel ON rel.digest=t.release_digest AND rel.workspace_id=t.workspace_id WHERE r.workspace_id=? AND r.state='queued' AND r.mode='program' AND t.enabled=1 AND d.revoked_at IS NULL AND d.desired_state='running' AND d.observed_state='running' AND g.revoked_at IS NULL AND g.expires_at>? AND (SELECT count(*) FROM capability_trigger_runs active WHERE active.trigger_id=t.trigger_id AND active.state IN ('claimed','running','uncertain')) < CAST(json_extract(g.budget,'$.concurrency') AS INTEGER) ORDER BY r.created_at,r.trigger_run_id LIMIT ?`, workspace, now.Format(time.RFC3339Nano), triggerEventPageSize)
 	if err != nil {
 		return nil, err
 	}

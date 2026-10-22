@@ -207,7 +207,7 @@ type Server struct {
 
 func DefaultOwnerScopes() []string {
 	return []string{
-		"client:read", "client:command", "device:manage", "device:push",
+		"client:read", "client:command", "device:manage", "device:push", "capability:deployment:revoke",
 		"memory:read:personal", "memory:write:personal", "memory:delete:personal",
 		"memory:read:workspace", "memory:write:workspace", "memory:delete:workspace",
 	}

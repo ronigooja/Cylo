@@ -101,6 +101,7 @@ type DeploymentClaim struct {
 	RuntimeBackend string             `json:"runtime_backend"`
 	ClaimState     string             `json:"claim_state,omitempty"`
 	DesiredControl string             `json:"desired_control,omitempty"`
+	CleanupOnly    bool               `json:"cleanup_only,omitempty"`
 }
 
 type DeploymentObservation struct {

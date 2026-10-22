@@ -72,44 +72,53 @@ func (e *DeploymentExecutor) Execute(ctx context.Context, claim contracts.Deploy
 		ObservedAt: now().UTC(),
 	}
 	if err := validateDeploymentClaim(claim, now()); err != nil {
-		obs.State, obs.ErrorCode = "failed", deploymentErrorCode(err)
+		obs.State, obs.ErrorCode = cleanupFailure(claim, "failed", deploymentErrorCode(err))
 		return obs
 	}
 	if e.Docker == nil {
-		obs.State, obs.ErrorCode = "failed", "docker_unavailable"
+		obs.State, obs.ErrorCode = cleanupFailure(claim, "failed", "docker_unavailable")
 		return obs
 	}
 	if e.Fences == nil {
-		obs.State, obs.ErrorCode = "failed", "deployment_fence_authority_unavailable"
+		obs.State, obs.ErrorCode = cleanupFailure(claim, "failed", "deployment_fence_authority_unavailable")
 		return obs
 	}
 	release, err := e.Fences.LockDeployment(ctx, claim.DeploymentID)
 	if err != nil {
-		obs.State, obs.ErrorCode = "failed", "deployment_fence_authority_unavailable"
+		obs.State, obs.ErrorCode = cleanupFailure(claim, "failed", "deployment_fence_authority_unavailable")
 		return obs
 	}
 	defer release()
 	fingerprint, err := deploymentClaimFingerprint(claim)
 	if err != nil {
-		obs.State, obs.ErrorCode = "failed", "deployment_claim_invalid"
+		obs.State, obs.ErrorCode = cleanupFailure(claim, "failed", "deployment_claim_invalid")
 		return obs
 	}
 	deadline := claim.Manifest.Budget.TimeoutSeconds
 	if claim.Grant.Budget.TimeoutSeconds < deadline {
 		deadline = claim.Grant.Budget.TimeoutSeconds
 	}
+	if claim.CleanupOnly {
+		deadline = 30
+	}
 	opCtx, cancel := context.WithTimeout(ctx, time.Duration(deadline)*time.Second)
 	defer cancel()
 	fresh, err := e.Fences.BeginDeploymentEffect(ctx, claim.DeploymentID, claim.Fence, fingerprint)
 	if err != nil {
-		obs.State, obs.ErrorCode = "failed", "deployment_fence_rejected"
+		obs.State, obs.ErrorCode = cleanupFailure(claim, "failed", "deployment_fence_rejected")
 		return obs
 	}
 	if !fresh {
+		if claim.CleanupOnly {
+			return e.reconcileCleanupOnly(opCtx, claim, obs)
+		}
 		return e.reconcileOnly(opCtx, claim, obs)
 	}
 	container := deploymentContainerName(claim.DeploymentID)
 	labels := deploymentLabels(claim)
+	if claim.CleanupOnly {
+		return e.stopCleanupOnly(opCtx, claim, container, obs, now)
+	}
 
 	switch claim.DesiredOp {
 	case "install", "update":
@@ -208,6 +217,13 @@ func (e *DeploymentExecutor) Execute(ctx context.Context, claim contracts.Deploy
 	return obs
 }
 
+func cleanupFailure(claim contracts.DeploymentClaim, state, code string) (string, string) {
+	if claim.CleanupOnly {
+		return "uncertain", code
+	}
+	return state, code
+}
+
 func deploymentClaimFingerprint(claim contracts.DeploymentClaim) (string, error) {
 	claim.ClaimState = ""
 	claim.DesiredControl = ""
@@ -297,6 +313,96 @@ func (e *DeploymentExecutor) reconcileOnly(ctx context.Context, claim contracts.
 	}
 	obs.State, obs.ErrorCode = "uncertain", "docker_outcome_unverified"
 	return obs
+}
+
+func (e *DeploymentExecutor) stopCleanupOnly(ctx context.Context, claim contracts.DeploymentClaim, name string, obs contracts.DeploymentObservation, now func() time.Time) contracts.DeploymentObservation {
+	body, err := e.Docker.Run(ctx, "inspect", "--format", "{{json .}}", name)
+	if errors.Is(err, ErrDockerObjectNotFound) {
+		effect := "docker:" + name
+		obs.State, obs.ExternalEffectRef = "stopped", []string{effect}
+		obs.TerminationProof = &contracts.CapabilityTerminationProof{EffectRef: effect, TerminatedAt: now().UTC(), CleanupComplete: true}
+		return obs
+	}
+	if err != nil {
+		obs.State, obs.ErrorCode = "uncertain", "docker_ownership_unverified"
+		return obs
+	}
+	var state struct {
+		ID     string `json:"Id"`
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
+		State struct {
+			Running bool `json:"Running"`
+		} `json:"State"`
+	}
+	if json.Unmarshal(body, &state) != nil || state.ID == "" || !cleanupOwned(state.Config.Labels, claim) || !cleanupFenceAllows(state.Config.Labels, claim) {
+		obs.State, obs.ErrorCode = "uncertain", "docker_ownership_unverified"
+		return obs
+	}
+	if state.State.Running {
+		if _, err = e.Docker.Run(ctx, "stop", "--time", "10", name); err != nil {
+			obs.State, obs.ErrorCode = "uncertain", "docker_termination_unverified"
+			return obs
+		}
+	}
+	return e.reconcileCleanupOnly(ctx, claim, obs)
+}
+
+func (e *DeploymentExecutor) reconcileCleanupOnly(ctx context.Context, claim contracts.DeploymentClaim, obs contracts.DeploymentObservation) contracts.DeploymentObservation {
+	name := deploymentContainerName(claim.DeploymentID)
+	body, err := e.Docker.Run(ctx, "inspect", "--format", "{{json .}}", name)
+	if errors.Is(err, ErrDockerObjectNotFound) {
+		effect := "docker:" + name
+		obs.State, obs.ExternalEffectRef = "stopped", []string{effect}
+		obs.TerminationProof = &contracts.CapabilityTerminationProof{EffectRef: effect, TerminatedAt: obs.ObservedAt, CleanupComplete: true}
+		return obs
+	}
+	if err != nil {
+		obs.State, obs.ErrorCode = "uncertain", "docker_termination_unverified"
+		return obs
+	}
+	var state struct {
+		ID     string `json:"Id"`
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
+		State struct {
+			Running bool `json:"Running"`
+		} `json:"State"`
+	}
+	if json.Unmarshal(body, &state) != nil || state.ID == "" || !cleanupOwned(state.Config.Labels, claim) || !cleanupFenceAllows(state.Config.Labels, claim) {
+		obs.State, obs.ErrorCode = "uncertain", "docker_ownership_unverified"
+		return obs
+	}
+	if state.State.Running {
+		obs.State, obs.ErrorCode = "uncertain", "docker_termination_unverified"
+		return obs
+	}
+	effect := "docker:" + state.ID
+	obs.State, obs.ExternalEffectRef = "stopped", []string{effect}
+	obs.TerminationProof = &contracts.CapabilityTerminationProof{EffectRef: effect, TerminatedAt: obs.ObservedAt, CleanupComplete: true}
+	return obs
+}
+
+func cleanupOwned(labels map[string]string, claim contracts.DeploymentClaim) bool {
+	for key, value := range deploymentOwnershipLabels(claim) {
+		if labels[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func cleanupFenceAllows(labels map[string]string, claim contracts.DeploymentClaim) bool {
+	priorFence, err := strconv.ParseInt(labels["io.cylo.fence"], 10, 64)
+	if err != nil || priorFence < 1 || claim.Fence < priorFence {
+		return false
+	}
+	if claim.Fence == priorFence && labels["io.cylo.attempt"] != labelValue(claim.AttemptID) {
+		return false
+	}
+	return true
 }
 
 func parseFence(value string) int64 { parsed, _ := strconv.ParseInt(value, 10, 64); return parsed }
@@ -462,6 +568,12 @@ func validateDeploymentClaim(c contracts.DeploymentClaim, now time.Time) error {
 	if c.WorkspaceID == "" || c.DeploymentID == "" || c.AttemptID == "" || c.Fence < 1 || c.ServiceID == "" || c.RuntimeBackend != "docker" {
 		return errors.New("invalid deployment identity or runtime backend")
 	}
+	if c.CleanupOnly {
+		if c.DesiredOp != "stop" || c.Grant.GrantID == "" {
+			return errors.New("cleanup-only claim must identify a revoked grant and request stop")
+		}
+		return nil
+	}
 	if c.Manifest.SchemaVersion != 1 || c.ReleaseDigest == "" || c.Manifest.ArtifactDigest == "" || strings.TrimSpace(c.Manifest.Entrypoint) == "" || c.Manifest.HealthCheck == nil {
 		return errors.New("release or artifact digest or entrypoint is invalid")
 	}
@@ -479,7 +591,7 @@ func validateDeploymentClaim(c contracts.DeploymentClaim, now time.Time) error {
 	if len(c.Manifest.SecretRefs) != 0 || c.ConfigRef != "" || c.ConfigSHA256 != "" {
 		return errors.New("external configuration and secret resolution are not configured")
 	}
-	if c.Grant.GrantID == "" || !c.Grant.ExpiresAt.After(now) || !hasString(c.Grant.Actions, c.DesiredOp) {
+	if c.Grant.GrantID == "" || (!c.Grant.ExpiresAt.After(now) && c.ClaimState != "claimed" && c.ClaimState != "uncertain") || !hasString(c.Grant.Actions, c.DesiredOp) {
 		return errors.New("authorization grant is expired or does not allow the requested operation")
 	}
 	if c.Grant.ScopeKind != "workspace" && c.Grant.ScopeKind != "personal" {

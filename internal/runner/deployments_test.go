@@ -219,6 +219,90 @@ func TestDeploymentExecutorRequiresVerifiedTerminationForStop(t *testing.T) {
 	}
 }
 
+func TestDeploymentExecutorCleanupOnlyBypassesGrantOnlyForOwnedStop(t *testing.T) {
+	claim := validDeploymentClaim()
+	claim.DesiredOp, claim.CleanupOnly = "stop", true
+	claim.Fence = 2
+	claim.Grant.Actions = []string{"install"}
+	claim.Grant.ExpiresAt = time.Now().Add(-time.Hour)
+	claim.Manifest.SecretRefs = map[string]string{"KEY": "secret://deployment"}
+	claim.Manifest.Mounts = []contracts.CapabilityMount{{VolumeID: "persistent-data", Target: "/data"}}
+	claim.VolumeIDs = []string{"persistent-data"}
+	claim.ConfigRef, claim.ConfigSHA256 = "deployment-config", strings.Repeat("d", 64)
+	labels := deploymentOwnershipLabels(claim)
+	labels["io.cylo.release"] = "sha256:" + strings.Repeat("c", 64)
+	labels["io.cylo.fence"] = "1"
+	labels["io.cylo.attempt"] = labelValue("old-install")
+	docker := &fakeDocker{claim: claim, containerRunning: true, containerID: "container-owned", created: true, containerLabels: labels}
+	obs := (&DeploymentExecutor{Docker: docker, Fences: deploymentTestAuthority(t)}).Execute(context.Background(), claim)
+	if obs.State != "stopped" || obs.TerminationProof == nil || !obs.TerminationProof.CleanupComplete {
+		t.Fatalf("cleanup observation=%+v commands=%v", obs, docker.commands)
+	}
+	for _, command := range docker.commands {
+		if len(command) > 0 && (command[0] == "run" || command[0] == "pull" || command[0] == "rm" || command[0] == "volume") {
+			t.Fatalf("cleanup performed an operation beyond stop: %v", command)
+		}
+	}
+	if !docker.missingContainer && docker.containerRunning {
+		t.Fatalf("cleanup did not stop the owned container: %v", docker.commands)
+	}
+}
+
+func TestDeploymentExecutorCleanupOnlyRejectsUnownedOrNewerFence(t *testing.T) {
+	for name, mutate := range map[string]func(map[string]string, contracts.DeploymentClaim){
+		"unowned labels": func(labels map[string]string, claim contracts.DeploymentClaim) {
+			labels["io.cylo.deployment"] = labelValue("other-deployment")
+		},
+		"newer fence": func(labels map[string]string, claim contracts.DeploymentClaim) { labels["io.cylo.fence"] = "3" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			claim := validDeploymentClaim()
+			claim.DesiredOp, claim.CleanupOnly, claim.Fence = "stop", true, 2
+			claim.Grant.Actions = []string{"install"}
+			claim.Grant.ExpiresAt = time.Now().Add(-time.Hour)
+			labels := deploymentOwnershipLabels(claim)
+			labels["io.cylo.release"] = strings.TrimPrefix(claim.ReleaseDigest, "sha256:")
+			labels["io.cylo.fence"] = "1"
+			labels["io.cylo.attempt"] = labelValue("old-install")
+			mutate(labels, claim)
+			docker := &fakeDocker{claim: claim, containerRunning: true, containerID: "container-owned", created: true, containerLabels: labels}
+			obs := (&DeploymentExecutor{Docker: docker, Fences: deploymentTestAuthority(t)}).Execute(context.Background(), claim)
+			if obs.State != "uncertain" || len(docker.commands) != 1 || docker.commands[0][0] != "inspect" {
+				t.Fatalf("cleanup observation=%+v commands=%v", obs, docker.commands)
+			}
+		})
+	}
+}
+
+func TestDeploymentExecutorCleanupOnlyProvesMissingContainerWithoutCreatingResources(t *testing.T) {
+	claim := validDeploymentClaim()
+	claim.DesiredOp, claim.CleanupOnly = "stop", true
+	claim.Fence = 2
+	claim.Grant.Actions = []string{"install"}
+	claim.Grant.ExpiresAt = time.Now().Add(-time.Hour)
+	docker := &fakeDocker{claim: claim, missingContainer: true}
+	obs := (&DeploymentExecutor{Docker: docker, Fences: deploymentTestAuthority(t)}).Execute(context.Background(), claim)
+	if obs.State != "stopped" || obs.TerminationProof == nil || !obs.TerminationProof.CleanupComplete || len(docker.commands) != 1 || docker.commands[0][0] != "inspect" {
+		t.Fatalf("missing-container cleanup observation=%+v commands=%v", obs, docker.commands)
+	}
+}
+
+func TestDeploymentExecutorAllowsPreviouslyClaimedWorkToReconcileAfterGrantExpiry(t *testing.T) {
+	claim := validDeploymentClaim()
+	claim.DesiredOp = "stop"
+	claim.ClaimState = "uncertain"
+	claim.Grant.ExpiresAt = time.Now().Add(-time.Hour)
+	labels := deploymentOwnershipLabels(claim)
+	labels["io.cylo.release"] = strings.TrimPrefix(claim.ReleaseDigest, "sha256:")
+	labels["io.cylo.fence"] = "1"
+	labels["io.cylo.attempt"] = labelValue("prior-attempt")
+	docker := &fakeDocker{claim: claim, containerRunning: false, containerID: "container-id", created: true, containerLabels: labels}
+	obs := (&DeploymentExecutor{Docker: docker, Fences: deploymentTestAuthority(t)}).Execute(context.Background(), claim)
+	if obs.State != "stopped" || obs.TerminationProof == nil {
+		t.Fatalf("expired claimed work was not reconciled from actual state: observation=%+v commands=%v", obs, docker.commands)
+	}
+}
+
 func TestDeploymentExecutorRejectsStaleFenceAgainstNewerContainer(t *testing.T) {
 	claim := validDeploymentClaim()
 	claim.DesiredOp = "stop"
