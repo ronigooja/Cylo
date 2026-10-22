@@ -1056,6 +1056,7 @@ private struct SettingsView: View {
     @State private var showingRevoke: Device?
     @State private var exportScope = "personal"
     @State private var showingExportSave = false
+    @State private var validatingExportSave = false
 
     private var exportDocument: ScopedExportFileDocument {
         ScopedExportFileDocument(fileURL: model.exportArtifact?.fileURL ?? FileManager.default.temporaryDirectory)
@@ -1114,7 +1115,18 @@ private struct SettingsView: View {
                 .disabled(model.exportStatus == "Preparing the authorized export…" || model.exportArtifact != nil)
                 if let artifact = model.exportArtifact {
                     LabeledContent("Prepared file", value: artifact.filename)
-                    Button("Save export…") { showingExportSave = true }
+                    Button("Save export…") {
+                        let epoch = model.connectionEpoch
+                        validatingExportSave = true
+                        Task {
+                            let valid = await model.validateExportForSave(expectedConnectionEpoch: epoch)
+                            validatingExportSave = false
+                            if valid && epoch == model.connectionEpoch && model.exportArtifact != nil {
+                                showingExportSave = true
+                            }
+                        }
+                    }
+                    .disabled(validatingExportSave)
                     Button("Discard export", role: .cancel) { model.cancelExport() }
                 }
                 if let status = model.exportStatus {

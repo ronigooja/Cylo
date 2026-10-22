@@ -64,13 +64,13 @@ final class ClientContractTests: XCTestCase {
         return URLSession(configuration: configuration)
     }
 
-    private func exportPackage(scope: String = "personal", schemaVersion: Int = 2, contents: Data? = nil) -> (Data, [String: String]) {
+    private func exportPackage(scope: String = "personal", schemaVersion: Int = 2, contents: Data? = nil, snapshotCursor: String = "17", validatedCursor: String = "18", auditCursor: String = "18", auditID: String = "export-1", auditType: String = "data.export.prepared") -> (Data, [String: String]) {
         let contents = contents ?? Data(#"{"projects":[],"tasks":[],"task_dependencies":[],"task_entries":[],"approvals":[],"runs":[],"evidence":[],"memory":[]}"#.utf8)
         let manifest: [String: Any] = [
             "format": "cylo.authority-export", "schema_version": schemaVersion,
             "export_id": "export-1", "created_at": "2026-10-21T12:00:00Z",
             "workspace_id": "workspace-1", "subject_id": "device-1", "scope": scope,
-            "authority": ["instance_lineage_id": "lineage-1", "generation": 3, "deletion_sequence": "4", "snapshot_event_cursor": "17", "source": "sqlite_authority"],
+            "authority": ["instance_lineage_id": "lineage-1", "generation": 3, "deletion_sequence": "4", "snapshot_event_cursor": snapshotCursor, "validated_through_cursor": validatedCursor, "export_audit_event_cursor": auditCursor, "export_audit_event_id": auditID, "export_audit_event_type": auditType, "source": "sqlite_authority"],
             "integrity": ["data_bytes": contents.count, "data_sha256": Self.sha256(contents)],
             "coverage": [:]
         ]
@@ -150,6 +150,10 @@ final class ClientContractTests: XCTestCase {
         XCTAssertEqual(artifact.scope, "personal")
         XCTAssertEqual(artifact.filename, "cylo-export-exp-1.zip")
         XCTAssertEqual(artifact.snapshotCursor, "17")
+        XCTAssertEqual(artifact.validatedThroughCursor, "18")
+        XCTAssertEqual(artifact.exportAuditEventCursor, "18")
+        XCTAssertEqual(artifact.exportAuditEventID, "export-1")
+        XCTAssertEqual(artifact.exportAuditEventType, "data.export.prepared")
         XCTAssertEqual(artifact.instanceLineageID, "lineage-1")
         XCTAssertEqual(artifact.generation, 3)
         XCTAssertEqual(artifact.deletionSequence, "4")
@@ -159,17 +163,51 @@ final class ClientContractTests: XCTestCase {
         try FileManager.default.removeItem(at: artifact.fileURL)
     }
 
+    @MainActor
+    func testExportDownloadRefreshAndSaveAcceptPreparedAuditCursorThenRejectChangedAuthority() async throws {
+        let (package, headers) = exportPackage()
+        ExportURLProtocol.responseHandler = { request in
+            request.url?.path == "/v1/export" ? (200, headers, package) : (500, [:], Data())
+        }
+        let client = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = try CommandJournal(fileURL: directory.appendingPathComponent("commands.json"))
+        var latest = Snapshot(serverVersion: "srv-1", eventCursor: "18", projects: [], tasks: [], approvals: [], devices: [], runs: [], authority: SnapshotAuthority(instanceLineageId: "lineage-1", generation: 3, deletionSequence: "4"))
+        model.snapshotFetchOverrideForTesting = { latest }
+        await model.recoverPendingCommandsForTesting(api: client, journal: journal)
+
+        await model.prepareExport(scope: "personal", expectedConnectionEpoch: model.connectionEpoch)
+
+        let artifact = try XCTUnwrap(model.exportArtifact)
+        XCTAssertEqual(artifact.snapshotCursor, "17", "the data image cursor remains distinct from the audit cursor")
+        XCTAssertEqual(artifact.validatedThroughCursor, "18")
+        let stillAuthorized = await model.validateExportForSave(expectedConnectionEpoch: model.connectionEpoch)
+        XCTAssertTrue(stillAuthorized, "the matching prepared audit event is the sole allowed cursor advance")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: artifact.fileURL.path))
+
+        latest = Snapshot(serverVersion: "srv-2", eventCursor: "18", projects: [], tasks: [], approvals: [], devices: [], runs: [], authority: SnapshotAuthority(instanceLineageId: "lineage-1", generation: 3, deletionSequence: "5"))
+        let revoked = await model.validateExportForSave(expectedConnectionEpoch: model.connectionEpoch)
+        XCTAssertFalse(revoked, "changed deletion authority must invalidate the copy")
+        XCTAssertNil(model.exportArtifact)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: artifact.fileURL.path))
+    }
+
     func testScopedExportRejectsInvalidScopeSchemaFilenameAndDeclaredOversize() async throws {
         let client = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
         do { _ = try await client.downloadExport(scope: "all"); XCTFail("invalid scope accepted") } catch { if case CyloError.invalidResponse = error {} else { XCTFail("unexpected error: \(error)") } }
 
         let (wrongVersion, wrongVersionHeaders) = exportPackage(schemaVersion: 3)
         let (wrongScope, wrongScopeHeaders) = exportPackage(scope: "workspace")
+        let (wrongAuditCursor, wrongAuditCursorHeaders) = exportPackage(validatedCursor: "19")
         let (validPackage, validHeaders) = exportPackage()
         var invalidFilenameHeaders = validHeaders
         invalidFilenameHeaders["Content-Disposition"] = "attachment; filename=\"../cylo-export-x.zip\""
         for (headers, body) in [
             (wrongVersionHeaders, wrongVersion),
+            (wrongAuditCursorHeaders, wrongAuditCursor),
             (invalidFilenameHeaders, validPackage),
             (wrongScopeHeaders, wrongScope)
         ] {
@@ -452,13 +490,30 @@ final class ClientContractTests: XCTestCase {
         let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
         let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try Data("prepared export".utf8).write(to: fileURL)
-        model.setExportArtifactForTesting(ScopedExportArtifact(fileURL: fileURL, filename: "cylo-export-one.json", scope: "personal", snapshotCursor: "5"))
+        model.setExportArtifactForTesting(ScopedExportArtifact(fileURL: fileURL, filename: "cylo-export-one.json", scope: "personal", snapshotCursor: "5", exportID: "export-one", validatedThroughCursor: "6", exportAuditEventCursor: "6", exportAuditEventID: "event-export", exportAuditEventType: "data.export.prepared"))
+        model.snapshotFetchOverrideForTesting = {
+            Snapshot(serverVersion: "srv-1", eventCursor: "6", projects: [], tasks: [], approvals: [], devices: [], runs: [], authority: SnapshotAuthority(instanceLineageId: "", generation: 0, deletionSequence: "0"))
+        }
 
         await model.handleEventForTesting(EventEnvelope(schemaVersion: 1, eventId: "event-export", cursor: "6", type: "data.export.prepared", occurredAt: "2026-10-21T12:00:00Z", workspaceId: "workspace-1", subjectId: "subject-1", aggregateType: "data_export", aggregateId: "export-one", aggregateVersion: 1, payload: .object([:])))
 
         XCTAssertNotNil(model.exportArtifact)
         XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.path))
         model.cancelExport()
+    }
+
+    @MainActor
+    func testPermissionChangeRemovesPreparedExportEvenWhenSnapshotRefreshFails() async throws {
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("prepared export".utf8).write(to: fileURL)
+        model.setExportArtifactForTesting(ScopedExportArtifact(fileURL: fileURL, filename: "cylo-export-one.json", scope: "personal", snapshotCursor: "5"))
+        model.snapshotFetchOverrideForTesting = { throw CyloError.invalidResponse }
+
+        await model.handleEventForTesting(EventEnvelope(schemaVersion: 1, eventId: "event-revoked", cursor: "6", type: "device.revoked", occurredAt: "2026-10-21T12:00:00Z", workspaceId: "workspace-1", subjectId: "device-1", aggregateType: "device", aggregateId: "device-1", aggregateVersion: 2, payload: .object([:])))
+
+        XCTAssertNil(model.exportArtifact)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
     }
 
     @MainActor

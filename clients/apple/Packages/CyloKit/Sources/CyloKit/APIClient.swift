@@ -17,8 +17,13 @@ public struct ScopedExportArtifact: Sendable {
     public let instanceLineageID: String
     public let generation: Int64
     public let deletionSequence: String
+    public let exportID: String
+    public let validatedThroughCursor: String
+    public let exportAuditEventCursor: String
+    public let exportAuditEventID: String
+    public let exportAuditEventType: String
 
-    public init(fileURL: URL, filename: String, scope: String, snapshotCursor: String, instanceLineageID: String = "", generation: Int64 = 0, deletionSequence: String = "0") {
+    public init(fileURL: URL, filename: String, scope: String, snapshotCursor: String, instanceLineageID: String = "", generation: Int64 = 0, deletionSequence: String = "0", exportID: String = "", validatedThroughCursor: String = "", exportAuditEventCursor: String = "", exportAuditEventID: String = "", exportAuditEventType: String = "") {
         self.fileURL = fileURL
         self.filename = filename
         self.scope = scope
@@ -26,6 +31,11 @@ public struct ScopedExportArtifact: Sendable {
         self.instanceLineageID = instanceLineageID
         self.generation = generation
         self.deletionSequence = deletionSequence
+        self.exportID = exportID
+        self.validatedThroughCursor = validatedThroughCursor
+        self.exportAuditEventCursor = exportAuditEventCursor
+        self.exportAuditEventID = exportAuditEventID
+        self.exportAuditEventType = exportAuditEventType
     }
 }
 
@@ -118,17 +128,35 @@ public final class APIClient: @unchecked Sendable {
         } catch { throw CyloError.invalidResponse }
         let manifest = archive.manifest
         let deletionSequence = Int64(manifest.authority.deletionSequence)
+        let dataCursor = UInt64(manifest.authority.snapshotEventCursor)
+        let validatedCursor = UInt64(manifest.authority.validatedThroughCursor)
+        let auditCursor = UInt64(manifest.authority.exportAuditEventCursor)
         guard manifest.format == "cylo.authority-export", manifest.schemaVersion == 2,
               manifest.scope == scope, !manifest.workspaceId.isEmpty, !manifest.subjectId.isEmpty,
+              !manifest.exportId.isEmpty,
               !manifest.authority.snapshotEventCursor.isEmpty, !manifest.authority.instanceLineageId.isEmpty,
-              manifest.authority.generation > 0, let deletionSequence, deletionSequence >= 0 else { throw CyloError.invalidResponse }
+              manifest.authority.generation > 0, let deletionSequence, deletionSequence >= 0,
+              let dataCursor, let validatedCursor, let auditCursor,
+              dataCursor < UInt64.max, validatedCursor == dataCursor + 1,
+              auditCursor == validatedCursor,
+              manifest.authority.exportAuditEventId == manifest.exportId,
+              manifest.authority.exportAuditEventType == "data.export.prepared" else { throw CyloError.invalidResponse }
 
         let fileURL = temporaryDirectory.appendingPathComponent("cylo-export-" + UUID().uuidString.lowercased() + ".zip", isDirectory: false)
         do {
             try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
             try FileManager.default.copyItem(at: downloadURL, to: fileURL)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
-            return ScopedExportArtifact(fileURL: fileURL, filename: filename, scope: scope, snapshotCursor: manifest.authority.snapshotEventCursor, instanceLineageID: manifest.authority.instanceLineageId, generation: manifest.authority.generation, deletionSequence: manifest.authority.deletionSequence)
+            return ScopedExportArtifact(fileURL: fileURL, filename: filename, scope: scope,
+                                        snapshotCursor: manifest.authority.snapshotEventCursor,
+                                        instanceLineageID: manifest.authority.instanceLineageId,
+                                        generation: manifest.authority.generation,
+                                        deletionSequence: manifest.authority.deletionSequence,
+                                        exportID: manifest.exportId,
+                                        validatedThroughCursor: manifest.authority.validatedThroughCursor,
+                                        exportAuditEventCursor: manifest.authority.exportAuditEventCursor,
+                                        exportAuditEventID: manifest.authority.exportAuditEventId,
+                                        exportAuditEventType: manifest.authority.exportAuditEventType)
         } catch {
             try? FileManager.default.removeItem(at: fileURL)
             throw CyloError.persistence("The export could not be written to a private temporary file.")
