@@ -97,6 +97,17 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 		spec = persisted.Spec
 		phase = ""
 		if persisted.Phase == "claimed" && spec.ClientRequestID == "" && persisted.Session == "" && persisted.Container == "" {
+			pending, pendingErr := e.Journal.PendingObservations(ctx, claim.RunID)
+			if pendingErr != nil {
+				return pendingErr
+			}
+			for _, queued := range pending {
+				if queued.Body.Kind == "no_effect_terminal" {
+					// Replay the exact queued receipt. A second terminal body would
+					// conflict after the first one commits on the control plane.
+					return e.flush(ctx, claim.RunID)
+				}
+			}
 			// A prior preflight failure can persist its no-effect receipt before
 			// reporting it. If the runner restarted between those writes, fail the
 			// empty request closed instead of attempting AO creation.

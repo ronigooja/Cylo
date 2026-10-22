@@ -14,11 +14,12 @@ import (
 )
 
 type fakeControl struct {
-	order        *[]string
-	control      contracts.RunControl
-	controls     []string
-	controlIndex int
-	observations []contracts.RunnerObservation
+	order                   *[]string
+	control                 contracts.RunControl
+	controls                []string
+	controlIndex            int
+	observations            []contracts.RunnerObservation
+	loseFirstObservationAck bool
 }
 
 func (f *fakeControl) Claim(context.Context) (*contracts.JobClaim, error)    { return nil, ErrNoClaim }
@@ -39,6 +40,10 @@ func (f *fakeControl) Observe(_ context.Context, _ string, observation contracts
 	f.observations = append(f.observations, observation)
 	if f.order != nil {
 		*f.order = append(*f.order, "observe:"+observation.Kind)
+	}
+	if f.loseFirstObservationAck {
+		f.loseFirstObservationAck = false
+		return errors.New("simulated lost observation acknowledgement")
 	}
 	return nil
 }
@@ -183,6 +188,40 @@ func TestRouteUnavailableFailsRunBeforeAOCreate(t *testing.T) {
 	}
 	if len(control.observations) != 1 || control.observations[0].Kind != "no_effect_terminal" || control.observations[0].NoEffectProof == nil || control.observations[0].NoEffectProof.Outcome != "failed" {
 		t.Fatalf("route rejection did not report a no-effect terminal observation: %+v", control.observations)
+	}
+}
+
+func TestNoEffectReceiptReplaysExactlyAfterLostAcknowledgement(t *testing.T) {
+	claim := validClaim()
+	agent := &fakeAO{}
+	engine, control := makeEngine(t, claim, contracts.RunControl{DesiredControl: "run"}, agent, permitIsolation{}, nil)
+	engine.Routes = map[string]Route{}
+	control.loseFirstObservationAck = true
+
+	if err := engine.Process(context.Background(), claim); err == nil {
+		t.Fatal("expected simulated lost observation acknowledgement")
+	}
+	pending, err := engine.Journal.PendingObservations(context.Background(), claim.RunID)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending no-effect receipts after lost acknowledgement = %d, err=%v", len(pending), err)
+	}
+	first := pending[0].Body
+	if first.Kind != "no_effect_terminal" {
+		t.Fatalf("queued receipt kind = %q", first.Kind)
+	}
+
+	if err := engine.Process(context.Background(), claim); err != nil {
+		t.Fatalf("replay lost-acknowledgement receipt: %v", err)
+	}
+	if agent.createN != 0 {
+		t.Fatal("runner created AO worker while replaying a terminal no-effect receipt")
+	}
+	if len(control.observations) != 2 || !reflect.DeepEqual(control.observations[0], first) || !reflect.DeepEqual(control.observations[1], first) {
+		t.Fatalf("runner did not replay the exact queued receipt: observations=%+v queued=%+v", control.observations, first)
+	}
+	pending, err = engine.Journal.PendingObservations(context.Background(), claim.RunID)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("pending no-effect receipts after replay acknowledgement = %d, err=%v", len(pending), err)
 	}
 }
 
