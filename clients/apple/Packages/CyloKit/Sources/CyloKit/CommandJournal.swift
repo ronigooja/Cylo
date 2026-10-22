@@ -114,10 +114,18 @@ public actor CommandCoordinator {
     }
 
     public func recoverPending() async throws -> [CommandOutcome] {
+        try await recoverPending(onOutcome: { _ in })
+    }
+
+    /// Reports each receipt as soon as its journal row is durably removed. Callers can
+    /// reconcile accepted commands even if a later row in the same replay fails.
+    public func recoverPending(onOutcome: @MainActor @Sendable (CommandOutcome) async -> Void) async throws -> [CommandOutcome] {
         let commands = try await journal.all()
         var outcomes: [CommandOutcome] = []
         for command in commands {
-            outcomes.append(try await deliver(command, checkReceiptFirst: true))
+            let outcome = try await deliver(command, checkReceiptFirst: true)
+            outcomes.append(outcome)
+            await onOutcome(outcome)
         }
         return outcomes
     }

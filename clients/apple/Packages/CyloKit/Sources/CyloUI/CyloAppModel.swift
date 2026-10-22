@@ -1385,28 +1385,28 @@ public final class CyloAppModel: ObservableObject {
 
     private func recoverPendingCommands(expectedGeneration: UInt64, sourceAPI: APIClient, coordinator: CommandCoordinator) async {
         do {
-            let recovered = try await coordinator.recoverPending()
+            let recovered = try await coordinator.recoverPending { [weak self] outcome in
+                guard let self, self.isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
+                await self.reconcileRecoveredMemoryOutcome(outcome, expectedGeneration: expectedGeneration, sourceAPI: sourceAPI)
+            }
             guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
             guard !recovered.isEmpty else { return }
             notice = "Recovered \(recovered.count) command receipt(s) from this device's durable queue."
-            if recovered.contains(where: { $0.receipt.kind.hasPrefix("memory.") }) {
-                clearMemoryAndPreparedExport(status: "A recovered memory command changed server memory; cached memory and the prepared export were cleared.")
-            }
             do { try await refreshSnapshot() }
             catch {
                 guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
                 setStale("Recovered commands, but the latest snapshot could not be loaded: \(userMessage(error))")
             }
             guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
-            await refreshMemoryAfterRecoveredCommands(recovered, expectedGeneration: expectedGeneration, sourceAPI: sourceAPI)
         } catch {
             if isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) { notice = "A saved command needs attention: \(userMessage(error))" }
         }
     }
 
-    private func refreshMemoryAfterRecoveredCommands(_ outcomes: [CommandOutcome], expectedGeneration: UInt64, sourceAPI: APIClient?) async {
-        guard outcomes.contains(where: { $0.receipt.kind.hasPrefix("memory.") }) else { return }
+    private func reconcileRecoveredMemoryOutcome(_ outcome: CommandOutcome, expectedGeneration: UInt64, sourceAPI: APIClient) async {
+        guard outcome.receipt.kind.hasPrefix("memory.") else { return }
         guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
+        clearMemoryAndPreparedExport(status: "A recovered memory command changed server memory; cached memory and the prepared export were cleared.")
         await refreshMemory()
     }
 
