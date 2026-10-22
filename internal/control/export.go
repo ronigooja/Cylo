@@ -302,6 +302,16 @@ func (s *Server) handleScopedExport(w http.ResponseWriter, r *http.Request) {
 		writeExportFailure(w)
 		return
 	}
+	var validatedCursor int64
+	var eventType, aggregateID string
+	if err = auditTx.QueryRowContext(r.Context(), `SELECT current_cursor FROM event_counters WHERE workspace_id=?`, p.WorkspaceID).Scan(&validatedCursor); err != nil || validatedCursor != cursor+1 {
+		writeError(w, apiError(http.StatusConflict, "export_snapshot_stale", "export audit cursor did not follow the data snapshot", nil))
+		return
+	}
+	if err = auditTx.QueryRowContext(r.Context(), `SELECT event_type,aggregate_id FROM events WHERE workspace_id=? AND cursor=?`, p.WorkspaceID, validatedCursor).Scan(&eventType, &aggregateID); err != nil || eventType != "data.export.prepared" || aggregateID != exportID {
+		writeError(w, apiError(http.StatusConflict, "export_snapshot_stale", "export audit event does not match the package authority cursor", nil))
+		return
+	}
 	if err = auditTx.Commit(); err != nil {
 		writeExportFailure(w)
 		return
@@ -369,7 +379,12 @@ func buildExportManifest(id string, p contracts.Principal, scope string, cursor 
 	return map[string]any{
 		"format": "cylo.authority-export", "schema_version": 2, "export_id": id,
 		"created_at": time.Now().UTC().Format(time.RFC3339Nano), "workspace_id": p.WorkspaceID, "subject_id": p.SubjectID, "scope": scope,
-		"authority":   map[string]any{"instance_lineage_id": lineage, "generation": generation, "deletion_sequence": strconv.FormatInt(deletionSequence, 10), "snapshot_event_cursor": strconv.FormatInt(cursor, 10), "source": "sqlite_authority"},
+		"authority": map[string]any{
+			"instance_lineage_id": lineage, "generation": generation, "deletion_sequence": strconv.FormatInt(deletionSequence, 10),
+			"snapshot_event_cursor": strconv.FormatInt(cursor, 10), "validated_through_cursor": strconv.FormatInt(cursor+1, 10),
+			"export_audit_event_cursor": strconv.FormatInt(cursor+1, 10), "export_audit_event_id": id,
+			"export_audit_event_type": "data.export.prepared", "source": "sqlite_authority",
+		},
 		"content":     map[string]any{"inventory": []string{"projects", "tasks", "task_dependencies", "task_entries", "approvals", "runs", "evidence", "memory_claims", "memory_revisions", "memory_sources", "voice_associations", "capability_authorizations"}, "counts": counts},
 		"permissions": map[string]any{"scope": scope, "row_visibility": "principal_authorized", "secret_values": "excluded"},
 		"artifacts":   map[string]any{"bytes": "referenced_not_included", "voice_audio_bytes": "omitted"},

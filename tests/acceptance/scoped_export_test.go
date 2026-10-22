@@ -100,6 +100,7 @@ func TestScopedExportHTTPHonorsMembershipMemoryVersionsAndTombstones(t *testing.
 		t.Fatal(err)
 	}
 	manifest, personalDoc := decodeExportPackage(t, personal.Body.Bytes(), personal.Header())
+	assertExportAuditProof(t, store.DB(), manifest)
 	personalText := personal.Body.String()
 	for _, mustHave := range []string{"visible-project", "visible-task", "personal-live", "old revision", "current revision", "entry-visible-task"} {
 		if !strings.Contains(personalText, mustHave) {
@@ -149,6 +150,7 @@ func TestScopedExportHTTPHonorsMembershipMemoryVersionsAndTombstones(t *testing.
 		}
 	}
 	workspaceManifest, _ := decodeExportPackage(t, workspace.Body.Bytes(), workspace.Header())
+	assertExportAuditProof(t, store.DB(), workspaceManifest)
 	if workspaceManifest["omissions"] == nil || workspaceManifest["authority"] == nil || workspaceManifest["integrity"] == nil {
 		t.Fatal("coverage, authority, or integrity metadata missing from manifest")
 	}
@@ -156,6 +158,37 @@ func TestScopedExportHTTPHonorsMembershipMemoryVersionsAndTombstones(t *testing.
 	var audits int
 	if err := store.DB().QueryRow(`SELECT count(*) FROM events WHERE event_type='data.export.prepared' AND subject_id=?`, subject).Scan(&audits); err != nil || audits != 2 {
 		t.Fatalf("prepared export audit count=%d err=%v", audits, err)
+	}
+}
+
+func assertExportAuditProof(t *testing.T, db *sql.DB, manifest map[string]any) {
+	t.Helper()
+	authority, ok := manifest["authority"].(map[string]any)
+	if !ok {
+		t.Fatalf("export manifest authority is malformed: %#v", manifest["authority"])
+	}
+	snapshotCursor, err := strconv.ParseInt(authority["snapshot_event_cursor"].(string), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validatedCursor, err := strconv.ParseInt(authority["validated_through_cursor"].(string), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditCursor, err := strconv.ParseInt(authority["export_audit_event_cursor"].(string), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exportID, ok := manifest["export_id"].(string)
+	if !ok || validatedCursor != snapshotCursor+1 || auditCursor != validatedCursor || authority["export_audit_event_id"] != exportID || authority["export_audit_event_type"] != "data.export.prepared" {
+		t.Fatalf("manifest does not attest the single prepared audit cursor: %#v", authority)
+	}
+	var eventType, aggregateID string
+	if err = db.QueryRow(`SELECT event_type,aggregate_id FROM events WHERE cursor=?`, auditCursor).Scan(&eventType, &aggregateID); err != nil {
+		t.Fatal(err)
+	}
+	if eventType != authority["export_audit_event_type"] || aggregateID != exportID {
+		t.Fatalf("manifest audit proof disagrees with event: type=%s aggregate=%s", eventType, aggregateID)
 	}
 }
 
