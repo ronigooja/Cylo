@@ -155,18 +155,24 @@ def deletion_ledger_metadata(connection: sqlite3.Connection) -> dict[str, Any] |
     if not valid_ledger_timestamp(initialized_at):
         fail("memory deletion ledger initialization time is invalid")
 
-    count, minimum, watermark = connection.execute(
-        "SELECT count(*),coalesce(min(sequence),0),coalesce(max(sequence),0) FROM memory_deletion_events"
+    count, distinct_count, non_integer_count, minimum, watermark = connection.execute(
+        "SELECT count(*),count(DISTINCT sequence),"
+        "sum(CASE WHEN typeof(sequence) != 'integer' THEN 1 ELSE 0 END),"
+        "coalesce(min(sequence),0),coalesce(max(sequence),0) FROM memory_deletion_events"
     ).fetchone()
-    if count != watermark or (count > 0 and minimum != 1):
+    if non_integer_count or count != distinct_count or count != watermark or (count > 0 and minimum != 1):
         fail("memory deletion ledger sequence is not contiguous in SQLite snapshot")
     sequence_table = connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sqlite_sequence'"
     ).fetchone()
     if sequence_table is None:
         fail("memory deletion ledger sequence high-water is missing")
-    sequence_row = connection.execute("SELECT seq FROM sqlite_sequence WHERE name='memory_deletion_events'").fetchone()
-    sequence_high_water = int(sequence_row[0]) if sequence_row is not None else 0
+    sequence_rows = connection.execute("SELECT seq FROM sqlite_sequence WHERE name='memory_deletion_events'").fetchall()
+    if len(sequence_rows) > 1:
+        fail("memory deletion ledger sequence high-water is ambiguous")
+    sequence_high_water = sequence_rows[0][0] if sequence_rows else 0
+    if isinstance(sequence_high_water, bool) or not isinstance(sequence_high_water, int):
+        fail("memory deletion ledger sequence high-water is invalid")
     if sequence_high_water != watermark:
         fail("memory deletion ledger sequence high-water does not match its events")
 

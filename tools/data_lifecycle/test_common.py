@@ -159,6 +159,41 @@ class RestoreDeletionLedgerMetadataTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "baseline is unsupported"):
                 verify_manifest(payload)
 
+    def test_restore_rejects_duplicate_event_sequences_in_malformed_table(self):
+        with tempfile.TemporaryDirectory() as directory:
+            payload, manifest = self.make_payload(Path(directory))
+            database_path = payload / "authority" / "cylo.sqlite"
+            with sqlite3.connect(database_path) as db:
+                db.executescript(
+                    """
+                    DROP TABLE memory_deletion_events;
+                    CREATE TABLE memory_deletion_events(sequence INTEGER, ledger_generation INTEGER, event_type TEXT, workspace_id TEXT, claim_id TEXT, revision INTEGER, deleted_at TEXT);
+                    INSERT INTO memory_deletion_events VALUES(1,1,'claim_deleted','default','claim-a',2,'2026-10-22T00:01:00Z');
+                    INSERT INTO memory_deletion_events VALUES(1,1,'claim_deleted','default','claim-b',3,'2026-10-22T00:02:00Z');
+                    INSERT INTO memory_deletion_events VALUES(3,1,'claim_deleted','default','claim-c',4,'2026-10-22T00:03:00Z');
+                    INSERT INTO sqlite_sequence(name,seq) VALUES('memory_deletion_events',3);
+                    """
+                )
+            manifest["files"] = [file_record(database_path, "authority", "authority/cylo.sqlite")]
+            (payload / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "sequence is not contiguous"):
+                verify_manifest(payload)
+
+    def test_restore_rejects_fractional_and_duplicate_sequence_high_waters(self):
+        for sequence_updates, expected_error in (
+            ("UPDATE sqlite_sequence SET seq=1.5 WHERE name='memory_deletion_events';", "high-water is invalid"),
+            ("INSERT INTO sqlite_sequence(name,seq) VALUES('memory_deletion_events',1);", "high-water is ambiguous"),
+        ):
+            with self.subTest(expected_error=expected_error), tempfile.TemporaryDirectory() as directory:
+                payload, manifest = self.make_payload(Path(directory))
+                database_path = payload / "authority" / "cylo.sqlite"
+                with sqlite3.connect(database_path) as db:
+                    db.execute(sequence_updates)
+                manifest["files"] = [file_record(database_path, "authority", "authority/cylo.sqlite")]
+                (payload / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+                with self.assertRaisesRegex(RuntimeError, expected_error):
+                    verify_manifest(payload)
+
     def test_restore_rejects_ledger_tables_missing_after_migration(self):
         with tempfile.TemporaryDirectory() as directory:
             payload, manifest = self.make_payload(Path(directory))
