@@ -163,7 +163,7 @@ func startCapabilityHTTPFixture(t *testing.T, databasePath, bootstrapCode, runne
 	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
 		t.Fatal(err)
 	}
-	deviceScopes := []string{"client:read", "client:command", "capability:read", "capability:release:submit", "capability:deployment:request", "capability:deployment:authorize"}
+	deviceScopes := []string{"client:read", "client:command", "capability:read", "capability:release:submit", "capability:deployment:request", "capability:deployment:authorize", "capability:deployment:revoke"}
 	server, err := control.NewServer(store, control.Config{BootstrapCode: bootstrapCode, RunnerToken: runnerToken, RunnerID: "local-capability-runner", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim", "runner:observe", "runner:control:read", "capability:deploy"}, DeviceScopes: deviceScopes})
 	if err != nil {
 		_ = store.Close()
@@ -323,11 +323,12 @@ func assertCapabilityDeploymentState(t *testing.T, client *http.Client, base, de
 	var got struct {
 		DeploymentID string `json:"deployment_id"`
 		Observed     string `json:"observed_state"`
+		LastError    string `json:"last_error_code"`
 		Version      int64  `json:"version"`
 	}
 	capabilityHTTP(t, client, http.MethodGet, base+"/v1/capabilities/deployments/"+deployment, device, "", nil, http.StatusOK, &got)
 	if got.DeploymentID != deployment || got.Observed != want || got.Version != priorVersion {
-		t.Fatalf("deployment state=%q version=%d id=%q, want %q version=%d", got.Observed, got.Version, got.DeploymentID, want, priorVersion)
+		t.Fatalf("deployment state=%q error=%q version=%d id=%q, want %q version=%d", got.Observed, got.LastError, got.Version, got.DeploymentID, want, priorVersion)
 	}
 	return got.Version
 }
