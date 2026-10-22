@@ -38,10 +38,7 @@ func (s *Server) taskDispatchReasonTx(ctx context.Context, tx *sql.Tx, source, w
 	guard := s.taskDispatchGuards[source]
 	s.mu.RUnlock()
 	if guard == nil {
-		if source == "service" {
-			return "dispatch_policy_unavailable", nil
-		}
-		return "", nil
+		return "dispatch_policy_unavailable", nil
 	}
 	return guard(ctx, tx, workspaceID, taskID, now.UTC())
 }
@@ -50,16 +47,19 @@ func (s *Server) taskDispatchReasonTx(ctx context.Context, tx *sql.Tx, source, w
 // SQLite transaction. It is also used by the model-call reservation path so
 // authorization and the last pre-dispatch budget reservation share a commit.
 func (s *Server) TaskDispatchAuthorizationTx(ctx context.Context, tx *sql.Tx, runID string, now time.Time) (contracts.DispatchAuthorization, error) {
-	var workspaceID, taskID, source, status string
-	err := tx.QueryRowContext(ctx, `SELECT r.workspace_id,r.task_id,t.source,r.status FROM runs r JOIN tasks t ON t.id=r.task_id AND t.workspace_id=r.workspace_id WHERE r.id=?`, runID).Scan(&workspaceID, &taskID, &source, &status)
+	var workspaceID, taskID, source, status, desired string
+	err := tx.QueryRowContext(ctx, `SELECT r.workspace_id,r.task_id,t.source,r.status,r.desired_control FROM runs r JOIN tasks t ON t.id=r.task_id AND t.workspace_id=r.workspace_id WHERE r.id=?`, runID).Scan(&workspaceID, &taskID, &source, &status, &desired)
 	if errors.Is(err, sql.ErrNoRows) {
 		return contracts.DispatchAuthorization{Allowed: false, ReasonCode: "run_unavailable"}, nil
 	}
 	if err != nil {
 		return contracts.DispatchAuthorization{}, err
 	}
-	if status != "dispatching" {
-		return contracts.DispatchAuthorization{Allowed: false, ReasonCode: "run_not_dispatching"}, nil
+	if status != "dispatching" && status != "active" {
+		return contracts.DispatchAuthorization{Allowed: false, ReasonCode: "run_not_dispatchable"}, nil
+	}
+	if desired != "run" {
+		return contracts.DispatchAuthorization{Allowed: false, ReasonCode: "run_stopping"}, nil
 	}
 	reason, err := s.taskDispatchReasonTx(ctx, tx, source, workspaceID, taskID, now)
 	if err != nil {
@@ -68,7 +68,7 @@ func (s *Server) TaskDispatchAuthorizationTx(ctx context.Context, tx *sql.Tx, ru
 	if reason == "" {
 		return contracts.DispatchAuthorization{Allowed: true}, nil
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE runs SET desired_control='stop',control_version=control_version+CASE WHEN desired_control='stop' THEN 0 ELSE 1 END WHERE id=? AND status='dispatching'`, runID); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE runs SET desired_control='stop',control_version=control_version+CASE WHEN desired_control='stop' THEN 0 ELSE 1 END WHERE id=? AND status IN ('dispatching','active')`, runID); err != nil {
 		return contracts.DispatchAuthorization{}, err
 	}
 	return contracts.DispatchAuthorization{Allowed: false, ReasonCode: reason}, nil
