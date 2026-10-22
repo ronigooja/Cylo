@@ -373,6 +373,36 @@ public final class CyloAppModel: ObservableObject {
         return true
     }
 
+    public func revokeCapabilityDeployment(_ deployment: CapabilityDeployment, expectedConnectionEpoch: UInt64) async -> Bool {
+        guard expectedConnectionEpoch == connectionEpoch else {
+            notice = "The server connection changed. Reopen the capability inventory and review the current deployment before revoking it."
+            return false
+        }
+        guard let current = capabilityDeployments.first(where: { $0.deploymentId == deployment.deploymentId }),
+              current.version == deployment.version,
+              current.revokedAt == nil,
+              !current.grantId.isEmpty else {
+            notice = "This deployment changed or its authorization is already revoked. The latest capability inventory is being loaded."
+            await refreshCapabilities()
+            return false
+        }
+
+        let payload: JSONValue = .object(["deployment_id": .string(deployment.deploymentId)])
+        guard await send(kind: "capability.deployment.revoke", expectedVersion: deployment.version, payload: payload) else {
+            guard expectedConnectionEpoch == connectionEpoch else { return false }
+            await refreshCapabilities()
+            if let refreshed = capabilityDeployments.first(where: { $0.deploymentId == deployment.deploymentId }),
+               refreshed.version != deployment.version {
+                notice = "The deployment version changed. The latest capability inventory has been loaded; review it before trying again."
+            }
+            return false
+        }
+
+        await refreshCapabilities()
+        notice = "Authorization revoked. Stop cleanup was queued; the observed state must confirm shutdown."
+        return true
+    }
+
     public func authorizeCapabilityDeployment(_ deployment: CapabilityDeployment, release: CapabilityRelease, scopeKind: String = "workspace", scopeID: String? = nil, expiresAt: Date, expectedConnectionEpoch: UInt64) async -> Bool {
         guard expectedConnectionEpoch == connectionEpoch,
               capabilityDeployments.contains(where: { $0.deploymentId == deployment.deploymentId && $0.version == deployment.version }),

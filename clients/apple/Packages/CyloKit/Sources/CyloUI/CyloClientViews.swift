@@ -659,9 +659,12 @@ private struct CapabilitiesView: View {
     @State private var showingReleaseForm = false
     @State private var showingDeploymentForm = false
     @State private var authorizationTarget: CapabilityDeployment?
+    @State private var revocationTarget: CapabilityDeployment?
+    @State private var showingRevocationConfirmation = false
     @State private var releaseFormEpoch: UInt64 = 0
     @State private var deploymentFormEpoch: UInt64 = 0
     @State private var authorizationEpoch: UInt64 = 0
+    @State private var revocationEpoch: UInt64 = 0
 
     var body: some View {
         List {
@@ -688,6 +691,45 @@ private struct CapabilitiesView: View {
                             Text("Latest error: \(deployment.lastErrorCode)").font(.caption).foregroundStyle(.orange)
                         }
                         Text("Updated \(deployment.updatedAt)").font(.caption2).foregroundStyle(.tertiary)
+                        if let revokedAt = deployment.revokedAt {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Label("Authorization revoked", systemImage: "hand.raised.slash")
+                                    .foregroundStyle(.red)
+                                Text("Revoked \(revokedAt)")
+                                    .font(.caption)
+                                if let revokedBy = deployment.revokedBy, !revokedBy.isEmpty {
+                                    Text("By \(revokedBy)").font(.caption2).foregroundStyle(.secondary)
+                                }
+                                if let cleanupStatus = deployment.revocationCleanupStatus {
+                                    switch cleanupStatus {
+                                    case let .pending(observedState):
+                                        Label("Stop cleanup pending · runner last observed \(observedState)", systemImage: "clock")
+                                            .foregroundStyle(.orange)
+                                    case .stopped:
+                                        Label("Runner confirmed stopped after revocation", systemImage: "checkmark.circle")
+                                            .foregroundStyle(.green)
+                                    case .unknown:
+                                        Label("Stop cleanup not confirmed · runner state unknown", systemImage: "exclamationmark.triangle")
+                                            .foregroundStyle(.red)
+                                    case .uncertain:
+                                        Label("Stop cleanup outcome is uncertain", systemImage: "exclamationmark.triangle")
+                                            .foregroundStyle(.red)
+                                    case .failed:
+                                        Label("Stop cleanup failed · runner reported failure", systemImage: "xmark.octagon")
+                                            .foregroundStyle(.red)
+                                    }
+                                }
+                            }
+                            .font(.caption)
+                            .accessibilityElement(children: .combine)
+                        } else if !deployment.grantId.isEmpty {
+                            Button("Revoke authorization", role: .destructive) {
+                                revocationEpoch = model.connectionEpoch
+                                revocationTarget = deployment
+                                showingRevocationConfirmation = true
+                            }
+                            .disabled(model.isBusy)
+                        }
                         if deployment.desiredState == "awaiting_authorization",
                            let release = model.capabilityReleases.first(where: { $0.digest == deployment.releaseDigest }) {
                             Button("Review authorization") {
@@ -746,6 +788,24 @@ private struct CapabilitiesView: View {
             showingReleaseForm = false
             showingDeploymentForm = false
             authorizationTarget = nil
+            showingRevocationConfirmation = false
+            revocationTarget = nil
+        }
+        .confirmationDialog(
+            "Revoke authorization for \(revocationTarget?.serviceId ?? "this service")?",
+            isPresented: $showingRevocationConfirmation
+        ) {
+            Button("Revoke authorization", role: .destructive) {
+                guard let deployment = revocationTarget else { return }
+                Task {
+                    if await model.revokeCapabilityDeployment(deployment, expectedConnectionEpoch: revocationEpoch) {
+                        revocationTarget = nil
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) { revocationTarget = nil }
+        } message: {
+            Text("Cylo will block new work immediately and queue stop cleanup. This action does not confirm that the runner has stopped the service; observed state will report that separately.")
         }
     }
 }

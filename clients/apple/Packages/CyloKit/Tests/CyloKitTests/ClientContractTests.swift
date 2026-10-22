@@ -37,6 +37,56 @@ final class ClientContractTests: XCTestCase {
         XCTAssertEqual(inventory.items.first?.latestFence, 3)
     }
 
+    func testCapabilityRevocationKeepsRunnerCleanupOutcomeSeparate() throws {
+        func deployment(revokedAt: Any, revokedBy: Any, desired: String, observed: String) throws -> CapabilityDeployment {
+            let item: [String: Any] = [
+                "deployment_id": "deploy-1",
+                "workspace_id": "workspace-1",
+                "service_id": "service-1",
+                "release_digest": "sha256:release",
+                "requested_operation": "start",
+                "desired_state": desired,
+                "observed_state": observed,
+                "grant_id": "grant-1",
+                "config_ref": "",
+                "config_sha256": "",
+                "version": 8,
+                "created_by": "owner-1",
+                "created_at": "2026-10-21T12:00:00Z",
+                "updated_at": "2026-10-21T12:01:00Z",
+                "latest_attempt_id": "attempt-1",
+                "latest_fence": 4,
+                "last_error_code": "",
+                "revoked_at": revokedAt,
+                "revoked_by": revokedBy
+            ]
+            let data = try JSONSerialization.data(withJSONObject: ["items": [item]])
+            return try XCTUnwrap(CyloJSON.decoder.decode(CapabilityDeploymentList.self, from: data).items.first)
+        }
+
+        let active = try deployment(revokedAt: NSNull(), revokedBy: NSNull(), desired: "running", observed: "running")
+        XCTAssertNil(active.revokedAt)
+        XCTAssertNil(active.revokedBy)
+        XCTAssertNil(active.revocationCleanupStatus)
+
+        let cleanupPending = try deployment(revokedAt: "2026-10-21T12:02:00Z", revokedBy: "owner-1", desired: "stopped", observed: "running")
+        XCTAssertEqual(cleanupPending.revokedAt, "2026-10-21T12:02:00Z")
+        XCTAssertEqual(cleanupPending.revokedBy, "owner-1")
+        XCTAssertEqual(cleanupPending.revocationCleanupStatus, .pending(observedState: "running"))
+
+        let cleanupUncertain = try deployment(revokedAt: "2026-10-21T12:02:00Z", revokedBy: "owner-1", desired: "stopped", observed: "uncertain")
+        XCTAssertEqual(cleanupUncertain.revocationCleanupStatus, .uncertain)
+
+        let cleanupFailed = try deployment(revokedAt: "2026-10-21T12:02:00Z", revokedBy: "owner-1", desired: "stopped", observed: "failed")
+        XCTAssertEqual(cleanupFailed.revocationCleanupStatus, .failed)
+
+        let cleanupUnknown = try deployment(revokedAt: "2026-10-21T12:02:00Z", revokedBy: "owner-1", desired: "stopped", observed: "unknown")
+        XCTAssertEqual(cleanupUnknown.revocationCleanupStatus, .unknown)
+
+        let stopped = try deployment(revokedAt: "2026-10-21T12:02:00Z", revokedBy: "owner-1", desired: "stopped", observed: "stopped")
+        XCTAssertEqual(stopped.revocationCleanupStatus, .stopped)
+    }
+
     func testCapabilityRequestBindsExistingServiceToCurrentDeploymentVersion() throws {
         let data = Data(#"{"items":[{"deployment_id":"deploy-1","workspace_id":"workspace-1","service_id":"service-1","release_digest":"sha256:release","requested_operation":"start","desired_state":"running","observed_state":"pending","grant_id":"grant-1","config_ref":"","config_sha256":"","version":7,"created_by":"device-1","created_at":"2026-10-21T12:00:00Z","updated_at":"2026-10-21T12:01:00Z","latest_attempt_id":"attempt-1","latest_fence":3,"last_error_code":""}]}"#.utf8)
         let deployments = try CyloJSON.decoder.decode(CapabilityDeploymentList.self, from: data).items

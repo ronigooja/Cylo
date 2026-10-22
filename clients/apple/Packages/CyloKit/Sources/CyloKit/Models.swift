@@ -243,6 +243,27 @@ public struct CapabilityDeployment: Codable, Equatable, Identifiable, Sendable {
     public var latestAttemptId: String
     public var latestFence: Int64
     public var lastErrorCode: String
+    public var revokedAt: String?
+    public var revokedBy: String?
+
+    public var revocationCleanupStatus: CapabilityRevocationCleanupStatus? {
+        guard revokedAt != nil else { return nil }
+        switch observedState {
+        case "stopped": .stopped
+        case "unknown": .unknown
+        case "uncertain": .uncertain
+        case "failed": .failed
+        default: .pending(observedState: observedState)
+        }
+    }
+}
+
+public enum CapabilityRevocationCleanupStatus: Equatable, Sendable {
+    case pending(observedState: String)
+    case stopped
+    case unknown
+    case uncertain
+    case failed
 }
 
 public extension Array where Element == CapabilityDeployment {
