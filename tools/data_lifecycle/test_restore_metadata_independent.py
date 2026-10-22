@@ -6,13 +6,13 @@ import tempfile
 import unittest
 
 from data_lifecycle.common import file_record, verify_manifest
-from data_lifecycle.test_common import RestoreDeletionLedgerMetadataTests
+from data_lifecycle import test_common as fixtures
 
 
 class IndependentLedgerCorruptionTests(unittest.TestCase):
     def assert_rejected(self, sql, *, watermark=None):
         with tempfile.TemporaryDirectory() as directory:
-            payload, manifest = RestoreDeletionLedgerMetadataTests().make_payload(Path(directory))
+            payload, manifest = fixtures.RestoreDeletionLedgerMetadataTests().make_payload(Path(directory))
             database = payload / "authority" / "cylo.sqlite"
             with sqlite3.connect(database) as connection:
                 connection.executescript(sql)
