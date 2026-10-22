@@ -1029,13 +1029,16 @@ public final class CyloAppModel: ObservableObject {
                 exportRequestID = nil
             }
         }
+        var unownedArtifactURL: URL?
         do {
             let artifact = try await task.value
+            unownedArtifactURL = artifact.fileURL
             if testDownload == nil { try await refreshSnapshot() }
             guard !Task.isCancelled, requestID == exportRequestID,
                   generation == connectionGeneration.value,
                   testDownload != nil || capturedAPI === self.api else {
                 try? FileManager.default.removeItem(at: artifact.fileURL)
+                unownedArtifactURL = nil
                 if requestID == exportRequestID {
                     exportStatus = "Export canceled. The prepared temporary file was removed."
                 }
@@ -1043,12 +1046,15 @@ public final class CyloAppModel: ObservableObject {
             }
             guard testDownload != nil || Self.exportAuthorityMatches(artifact, snapshot: snapshot) else {
                 try? FileManager.default.removeItem(at: artifact.fileURL)
+                unownedArtifactURL = nil
                 exportStatus = "Server authority changed while preparing the export. Prepare a fresh copy."
                 return
             }
             exportArtifact = artifact
+            unownedArtifactURL = nil
             exportStatus = "Export prepared by the server. Choose Save to select where to keep the file."
         } catch {
+            if let unownedArtifactURL { try? FileManager.default.removeItem(at: unownedArtifactURL) }
             guard requestID == exportRequestID, generation == connectionGeneration.value else { return }
             exportStatus = error.localizedDescription
         }
