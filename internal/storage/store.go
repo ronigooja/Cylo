@@ -177,7 +177,7 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 			_ = store.Close()
 			return nil, fmt.Errorf("record staged restore guard: %w", err)
 		}
-		if _, err := db.ExecContext(ctx, `INSERT OR IGNORE INTO cylo_restore_stage_guard(singleton,pending) VALUES(1,1)`); err != nil {
+		if _, err := db.ExecContext(ctx, `INSERT INTO cylo_restore_stage_guard(singleton,pending) VALUES(1,1) ON CONFLICT(singleton) DO UPDATE SET pending=1`); err != nil {
 			_ = store.Close()
 			return nil, fmt.Errorf("record staged restore guard: %w", err)
 		}
