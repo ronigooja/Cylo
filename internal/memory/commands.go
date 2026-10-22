@@ -355,6 +355,8 @@ func mapMemoryError(err error) error {
 		return featureError(http.StatusServiceUnavailable, "restore_deletion_reconciliation_required", "restored instance is closed until deletion reconciliation is completed", nil)
 	case errors.Is(err, ErrVersionConflict):
 		return featureError(http.StatusConflict, "version_conflict", "memory revision is stale", nil)
+	case errors.Is(err, ErrContextStale):
+		return featureError(http.StatusConflict, "context_stale", "memory changed while context was being assembled; retry the request", nil)
 	case errors.Is(err, ErrNotFound):
 		return featureError(http.StatusNotFound, "not_found", "memory record not found", nil)
 	case errors.Is(err, ErrForbidden):
