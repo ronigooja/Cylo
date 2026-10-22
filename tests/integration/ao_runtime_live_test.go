@@ -54,13 +54,14 @@ func TestAOLiveSupervisedCodexRuntime(t *testing.T) {
 	containerWorkspace := ""
 	stopVerified := false
 	createAttempts := 0
+	createOutcomeUnknown := false
 	defer func() {
 		if stopVerified {
 			return
 		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cleanupCancel()
-		if sessionID == "" && createAttempts > 0 {
+		if sessionID == "" && createOutcomeUnknown {
 			if session, reconcileErr := reconcileLiveWorker(cleanupCtx, client, spec, &createAttempts); reconcileErr == nil {
 				sessionID = session.ID
 			}
@@ -91,6 +92,7 @@ func TestAOLiveSupervisedCodexRuntime(t *testing.T) {
 	session, err := reconcileLiveWorker(ctx, client, spec, &createAttempts)
 	if err != nil {
 		if errors.Is(err, ao.ErrOutcomeUnknown) {
+			createOutcomeUnknown = true
 			t.Fatalf("AO worker create remains unknown after bounded replay with the original request identity (attempts=%d)", createAttempts)
 		}
 		t.Fatalf("AO rejected live worker creation (%T)", err)
@@ -237,8 +239,10 @@ func assertLiveContainerBoundary(t *testing.T, ctx context.Context, docker runne
 			t.Fatalf("AO container mount has unexpected type or workspace mode")
 		}
 		if mount.RW && filepath.Clean(mount.Source) == filepath.Clean(mount.Destination) {
+			resolvedSource, sourceErr := filepath.EvalSymlinks(mount.Source)
 			rel, relErr := filepath.Rel(filepath.Clean(workspaceRoot), filepath.Clean(mount.Source))
-			if relErr == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && filepath.Clean(mount.Destination) == filepath.Clean(mount.Source) {
+			resolvedRel, resolvedRelErr := filepath.Rel(filepath.Clean(workspaceRoot), filepath.Clean(resolvedSource))
+			if sourceErr == nil && relErr == nil && resolvedRelErr == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && resolvedRel != "." && resolvedRel != ".." && !strings.HasPrefix(resolvedRel, ".."+string(filepath.Separator)) {
 				workspaceMounted = true
 				workspacePath = filepath.Clean(mount.Source)
 			}
@@ -350,6 +354,23 @@ func writeUnknownLiveCreateEvidence(root, label, requestID, projectID string, at
 	return err
 }
 
+func writeExactLiveSessionEvidence(root, label, requestID, projectID, sessionID string) error {
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		return err
+	}
+	path := filepath.Join(root, "owned-session-"+label+"-"+requestID+".json")
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = fmt.Fprintf(file, "{\"status\":\"session_bound_persist_failed\",\"client_request_id\":%q,\"project_id\":%q,\"session_id\":%q}\n", requestID, projectID, sessionID)
+	return err
+}
+
 type fakeLiveWorkerCreator struct {
 	responses []struct {
 		session ao.Session
@@ -409,6 +430,20 @@ func TestReconcileLiveWorkerLeavesRepeatedUnknownUnbound(t *testing.T) {
 		if seen != spec {
 			t.Fatal("unknown outcome replay changed the original AO create spec")
 		}
+	}
+}
+
+func TestReconcileLiveWorkerDoesNotReplayDefiniteRejection(t *testing.T) {
+	spec := ao.WorkerSpec{ClientRequestID: "run-rejected", ProjectID: "project-owned", Harness: "codex", DisplayName: "worker", Prompt: "fixture"}
+	rejection := errors.New("AO rejected request")
+	creator := &fakeLiveWorkerCreator{responses: []struct {
+		session ao.Session
+		err     error
+	}{{err: rejection}}}
+	var attempts int
+	session, err := reconcileLiveWorker(context.Background(), creator, spec, &attempts)
+	if !errors.Is(err, rejection) || session.ID != "" || attempts != 1 || len(creator.seen) != 1 {
+		t.Fatalf("definite rejection triggered an extra create replay: calls=%d attempts=%d error_type=%T", len(creator.seen), attempts, err)
 	}
 }
 

@@ -124,23 +124,24 @@ func TestAOLiveCyloTaskReceiptRunnerCodexProof(t *testing.T) {
 	var sessionID, containerID string
 	stopVerified := false
 	createReplayAttempts := 0
-	cleanupAO := func() {
+	cleanupAO := func(cleanupCtx context.Context) {
 		if stopVerified {
 			return
 		}
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cleanupCancel()
 		if sessionID == "" {
 			if entry, found, entryErr := journal.Entry(cleanupCtx, claim.RunID); entryErr == nil && found && validLiveJournalIdentity(entry, *claim) {
-				if entry.Session != "" {
-					sessionID = entry.Session
-					containerID = entry.Container
+				if adoptedSession, adoptedContainer, owned := liveJournalOwnedSession(entry, *claim); owned {
+					sessionID = adoptedSession
+					containerID = adoptedContainer
 				} else if entry.Phase == "effect_unknown" {
 					session, reconcileErr := reconcileUnknownJournalCreate(cleanupCtx, aoClient, entry, *claim, &createReplayAttempts)
 					if reconcileErr == nil {
 						sessionID = session.ID
 						if setErr := journal.SetSession(cleanupCtx, claim.RunID, claim.AttemptID, claim.Fence, sessionID, "bound"); setErr != nil {
-							sessionID = ""
+							if evidenceErr := writeExactLiveSessionEvidence(evidenceRoot, "task-runner", claim.RunID, aoProject, sessionID); evidenceErr != nil {
+								t.Errorf("persist exact AO session ownership evidence failed (%T)", evidenceErr)
+							}
+							t.Errorf("persist exact reconciled AO session failed (%T)", setErr)
 						}
 					}
 				}
@@ -201,25 +202,29 @@ func TestAOLiveCyloTaskReceiptRunnerCodexProof(t *testing.T) {
 	// closing the journal or store, including on a fatal assertion.
 	defer func() {
 		cancel()
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cleanupCancel()
 		select {
 		case <-engineDone:
 			engineJoined = true
-		case <-time.After(30 * time.Second):
+		case <-cleanupCtx.Done():
 			t.Error("runner Engine did not stop after the live test context was cancelled")
 			engineJoined = false
 			return
 		}
 		if sessionID == "" {
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			if entry, found, err := journal.Entry(cleanupCtx, claim.RunID); err != nil {
 				t.Errorf("read exact runner session during cleanup failed (%T)", err)
 			} else if found {
-				sessionID = entry.Session
-				containerID = entry.Container
+				if adoptedSession, adoptedContainer, owned := liveJournalOwnedSession(entry, *claim); owned {
+					sessionID = adoptedSession
+					containerID = adoptedContainer
+				} else if !validLiveJournalIdentity(entry, *claim) {
+					t.Errorf("runner journal identity failed exact cleanup ownership validation")
+				}
 			}
-			cleanupCancel()
 		}
-		cleanupAO()
+		cleanupAO(cleanupCtx)
 	}()
 
 	containerID, containerWorkspace := "", ""
@@ -230,6 +235,9 @@ func TestAOLiveCyloTaskReceiptRunnerCodexProof(t *testing.T) {
 			entry, found, entryErr := journal.Entry(ctx, claim.RunID)
 			if entryErr != nil {
 				t.Fatalf("read runner journal after Engine exit failed (%T)", entryErr)
+			}
+			if found && !validLiveJournalIdentity(entry, *claim) {
+				t.Fatalf("runner journal identity failed exact session ownership validation")
 			}
 			if entry.Session != "" {
 				sessionID = entry.Session
@@ -254,10 +262,13 @@ func TestAOLiveCyloTaskReceiptRunnerCodexProof(t *testing.T) {
 					if entry.Session != "" && entry.Session != session.ID {
 						t.Fatalf("same-key AO replay returned a conflicting session identity")
 					}
+					sessionID = session.ID
 					if err := journal.SetSession(ctx, claim.RunID, claim.AttemptID, claim.Fence, session.ID, "bound"); err != nil {
+						if evidenceErr := writeExactLiveSessionEvidence(evidenceRoot, "task-runner", claim.RunID, aoProject, session.ID); evidenceErr != nil {
+							t.Errorf("persist exact AO session ownership evidence failed (%T)", evidenceErr)
+						}
 						t.Fatalf("bind reconciled original AO session to the exact runner claim failed (%T)", err)
 					}
-					sessionID = session.ID
 					finished, engineDone = startLiveEngine(ctx, engine, *claim)
 					continue
 				}
@@ -278,6 +289,9 @@ func TestAOLiveCyloTaskReceiptRunnerCodexProof(t *testing.T) {
 			t.Fatal(entryErr)
 		}
 		if ok && entry.Session != "" {
+			if !validLiveJournalIdentity(entry, *claim) {
+				t.Fatalf("runner journal identity failed exact container ownership validation")
+			}
 			sessionID = entry.Session
 			if id, found, findErr := supervisor.Find(ctx, "codex", entry.Session); findErr != nil {
 				t.Fatalf("inspect exact AO session container failed (%T)", findErr)
@@ -299,7 +313,7 @@ func TestAOLiveCyloTaskReceiptRunnerCodexProof(t *testing.T) {
 		t.Fatal("Cylo runner Engine task chain did not finish before its acceptance deadline")
 	}
 	entry, ok, err := journal.Entry(ctx, claim.RunID)
-	if err != nil || !ok || entry.Phase != "terminated" || entry.Session == "" || entry.Container != containerID {
+	if err != nil || !ok || !validLiveJournalIdentity(entry, *claim) || entry.Phase != "terminated" || entry.Session == "" || entry.Container != containerID {
 		t.Fatalf("runner journal did not persist exact AO/container termination: found=%t phase=%q session_bound=%t container_match=%t error_type=%T", ok, entry.Phase, entry.Session != "", entry.Container == containerID, err)
 	}
 	if err := verifyWorkspaceArtifact(containerWorkspace); err != nil {
@@ -432,6 +446,13 @@ func validLiveJournalIdentity(entry runner.JournalEntry, claim contracts.JobClai
 		strings.Contains(entry.Spec.Prompt, "CYLO_RUNTIME_TOOL_PROBE.txt")
 }
 
+func liveJournalOwnedSession(entry runner.JournalEntry, claim contracts.JobClaim) (string, string, bool) {
+	if !validLiveJournalIdentity(entry, claim) || entry.Session == "" {
+		return "", "", false
+	}
+	return entry.Session, entry.Container, true
+}
+
 func reconcileUnknownJournalCreate(ctx context.Context, client liveWorkerCreator, entry runner.JournalEntry, claim contracts.JobClaim, attempts *int) (ao.Session, error) {
 	if !validLiveJournalIdentity(entry, claim) || entry.Phase != "effect_unknown" || entry.Session != "" {
 		return ao.Session{}, errors.New("unknown AO create journal identity is not safe to replay")
@@ -527,5 +548,26 @@ func TestReconcileUnknownJournalCreateRejectsChangedIdentityWithoutDispatch(t *t
 	}
 	if len(creator.seen) != 0 {
 		t.Fatalf("rejected journal identities still dispatched AO create %d times", len(creator.seen))
+	}
+}
+
+func TestWrongJournalIdentityCannotExpandCleanupOwnership(t *testing.T) {
+	claim := contracts.JobClaim{
+		RunID: "run-owned", TaskID: "task-owned", AttemptID: "attempt-owned", Fence: 5,
+		ProfileID: "profile-owned", AOProjectID: "project-owned", RuntimeRouteID: "codex",
+		ModelRouteID: "gpt-6-luna", IsolationPolicy: runner.CodexWorkspaceWritePolicy,
+	}
+	entry := runner.JournalEntry{
+		Claim: claim, Session: "session-foreign", Container: "container-foreign", Phase: "bound",
+		Spec: ao.WorkerSpec{ClientRequestID: claim.RunID, ProjectID: claim.AOProjectID, Harness: "codex", Model: "gpt-6-luna", ApprovalMode: "auto", DisplayName: "worker", Prompt: "Create CYLO_RUNTIME_TOOL_PROBE.txt"},
+	}
+	entry.Claim.Fence++
+	creator := &fakeLiveWorkerCreator{}
+	sessionID, _, owned := liveJournalOwnedSession(entry, claim)
+	if owned {
+		_ = stopExactLiveWorker(context.Background(), creator, sessionID)
+	}
+	if owned || len(creator.stoppedIDs) != 0 {
+		t.Fatal("mismatched journal identity expanded exact cleanup ownership")
 	}
 }
