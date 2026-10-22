@@ -64,6 +64,10 @@ final class ClientContractTests: XCTestCase {
         MemoryClaim(id: id, workspaceId: "workspace-1", scope: MemoryScope(kind: "personal", id: nil, principalId: "subject-1"), subject: "preference", key: "format", content: content, authorityKind: "user_confirmed", status: "active", revision: 1, validFrom: nil, validTo: nil, supersedes: nil, sources: [], deletedAt: nil)
     }
 
+    private func recoveredOutcome(kind: String) -> CommandOutcome {
+        CommandOutcome(receipt: CommandReceipt(commandId: "command-1", idempotencyKey: "key-1", workspaceId: "workspace-1", kind: kind, status: "accepted", resourceType: "memory", resourceId: "memory-1", resourceVersion: 2, acceptedAt: "2026-10-21T12:00:00Z", eventCursor: "8"), recovered: true)
+    }
+
     func testScopedExportUsesAuthenticatedScopedRequestAndPrivateTemporaryFile() async throws {
         ExportURLProtocol.capturedRequest = nil
         ExportURLProtocol.responseHandler = { _ in
@@ -290,6 +294,41 @@ final class ClientContractTests: XCTestCase {
         XCTAssertNotNil(model.exportArtifact)
         XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.path))
         model.cancelExport()
+    }
+
+    @MainActor
+    func testDelayedOldConnectionMemoryEventCannotInvalidateNewConnectionData() async throws {
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let oldEpoch = model.connectionEpoch
+        model.serverAddress = "invalid-url"
+        await model.updateServerAddress()
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("new connection export".utf8).write(to: fileURL)
+        model.setExportArtifactForTesting(ScopedExportArtifact(fileURL: fileURL, filename: "cylo-export-new.json", scope: "personal", snapshotCursor: "1"))
+        model.setMemoryClaimsForTesting([memoryClaim(id: "memory-new", content: "new connection claim")])
+
+        await model.handleEventForTesting(EventEnvelope(schemaVersion: 1, eventId: "old-event", cursor: "2", type: "memory.deleted", occurredAt: "2026-10-21T12:00:00Z", workspaceId: "workspace-old", subjectId: "subject-old", aggregateType: "memory", aggregateId: "memory-old", aggregateVersion: 2, payload: .object([:])), expectedConnectionEpoch: oldEpoch)
+
+        XCTAssertEqual(model.memoryClaims.map(\.id), ["memory-new"])
+        XCTAssertEqual(model.exportArtifact?.filename, "cylo-export-new.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.path))
+        model.cancelExport()
+    }
+
+    @MainActor
+    func testRecoveredMemoryCommandsRefreshAfterJournalReplay() async throws {
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        model.setMemoryClaimsForTesting([memoryClaim(id: "memory-before-replay", content: "before replay")])
+        var observedQueries: [String] = []
+        model.memorySearchOverrideForTesting = { query in
+            observedQueries.append(query)
+            return MemorySearchResult(items: [], missing: [], conflicts: [])
+        }
+
+        await model.refreshAfterRecoveredCommandsForTesting([recoveredOutcome(kind: "memory.delete"), recoveredOutcome(kind: "memory.remember")])
+
+        XCTAssertEqual(observedQueries, [""])
+        XCTAssertTrue(model.memoryClaims.isEmpty)
     }
 
     @MainActor

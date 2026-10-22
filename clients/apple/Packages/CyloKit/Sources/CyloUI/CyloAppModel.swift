@@ -62,12 +62,16 @@ public final class CyloAppModel: ObservableObject {
         memoryClaims = claims
     }
 
-    func handleEventForTesting(_ envelope: EventEnvelope) async {
-        await handle(.event(envelope))
+    func handleEventForTesting(_ envelope: EventEnvelope, expectedConnectionEpoch: UInt64? = nil) async {
+        await handle(.event(envelope), expectedGeneration: expectedConnectionEpoch ?? connectionGeneration.value, sourceAPI: nil)
     }
 
     func refreshSnapshotForTesting() async throws {
         try await refreshSnapshot()
+    }
+
+    func refreshAfterRecoveredCommandsForTesting(_ outcomes: [CommandOutcome]) async {
+        await refreshMemoryAfterRecoveredCommands(outcomes)
     }
 #endif
     private var configuredServerURL: URL?
@@ -140,7 +144,12 @@ public final class CyloAppModel: ObservableObject {
                 guard generation == connectionGeneration.value else { return }
                 if !recovered.isEmpty {
                     notice = "Recovered \(recovered.count) command receipt(s) from this device's durable queue."
-                    try await refreshSnapshot()
+                    do { try await refreshSnapshot() }
+                    catch {
+                        guard generation == connectionGeneration.value else { return }
+                        setStale("Recovered commands, but the latest snapshot could not be loaded: \(userMessage(error))")
+                    }
+                    await refreshMemoryAfterRecoveredCommands(recovered)
                 }
             } catch {
                 if generation == connectionGeneration.value { notice = "A saved command needs attention: \(userMessage(error))" }
@@ -1320,7 +1329,8 @@ public final class CyloAppModel: ObservableObject {
             do {
                 let next = try await stream.run(after: cursor) { [weak self] push in
                     guard let self else { return }
-                    await self.handle(push)
+                    guard !Task.isCancelled else { return }
+                    await self.handle(push, expectedGeneration: generation, sourceAPI: api)
                 }
                 if Task.isCancelled || generation != connectionGeneration.value { return }
                 if let next, snapshot?.eventCursor != next {
@@ -1345,28 +1355,47 @@ public final class CyloAppModel: ObservableObject {
         }
     }
 
-    private func handle(_ push: ServerPush) async {
+    private func handle(_ push: ServerPush, expectedGeneration: UInt64, sourceAPI: APIClient?) async {
+        guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI), !Task.isCancelled else { return }
         switch push {
         case let .event(envelope):
             let memoryChanged = envelope.aggregateType == "memory" && ["memory.revised", "memory.deleted", "memory.proposal_accepted"].contains(envelope.type)
             if memoryChanged {
                 await handleMemoryOrAuthorizationChange(status: "Server memory changed; prepare a fresh export.")
+                guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI), !Task.isCancelled else { return }
             }
             setStale("A server change arrived; refreshing the authoritative snapshot.")
             do { try await refreshSnapshot() }
-            catch { setStale("Snapshot refresh failed: \(userMessage(error))") }
+            catch {
+                guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI), !Task.isCancelled else { return }
+                setStale("Snapshot refresh failed: \(userMessage(error))")
+            }
+            guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI), !Task.isCancelled else { return }
             if envelope.type.hasPrefix("notification.") { await refreshNotifications() }
         case .snapshotRequired:
             clearMemoryAndPreparedExport(status: "Server history expired; cached memory and the prepared export were cleared.")
             setStale("The saved event cursor expired; loading a fresh snapshot.")
             do { try await refreshSnapshot() }
-            catch { setStale("Snapshot repair failed: \(userMessage(error))") }
+            catch {
+                guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI), !Task.isCancelled else { return }
+                setStale("Snapshot repair failed: \(userMessage(error))")
+            }
+            guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI), !Task.isCancelled else { return }
             await refreshMemory()
         }
     }
 
+    private func isCurrentConnection(_ generation: UInt64, sourceAPI: APIClient?) -> Bool {
+        generation == connectionGeneration.value && (sourceAPI == nil || sourceAPI === api)
+    }
+
     private func handleMemoryOrAuthorizationChange(status: String) async {
         clearMemoryAndPreparedExport(status: status)
+        await refreshMemory()
+    }
+
+    private func refreshMemoryAfterRecoveredCommands(_ outcomes: [CommandOutcome]) async {
+        guard outcomes.contains(where: { $0.receipt.kind.hasPrefix("memory.") }) else { return }
         await refreshMemory()
     }
 

@@ -1082,6 +1082,9 @@ private struct SettingsView: View {
             }
         }
         .onChange(of: model.connectionEpoch) { _, _ in showingExportSave = false }
+        .onChange(of: model.exportArtifact?.fileURL) { _, fileURL in
+            if fileURL == nil { showingExportSave = false }
+        }
         .confirmationDialog("Revoke \(showingRevoke?.name ?? "this device")?", isPresented: Binding(get: { showingRevoke != nil }, set: { if !$0 { showingRevoke = nil } })) {
             if let device = showingRevoke {
                 Button("Revoke device", role: .destructive) { Task { await model.revoke(device, reason: "Revoked in Cylo Settings"); showingRevoke = nil } }
