@@ -193,8 +193,9 @@ if ! run_logged "direct iOS SDK package source build" "$OUTPUT_ROOT/ios-sdk-buil
 fi
 record "PASS iOS shared-package source compile (manual SDK build; not an Xcode app-target build)"
 
-IOS_BIN_DIR="$IOS_BUILD_ROOT/arm64-apple-ios17.0/debug"
-IOS_MODULES="$IOS_BIN_DIR/Modules"
+IOS_MODULE_PATH=$(find "$IOS_BUILD_ROOT" -name CyloUI.swiftmodule -print -quit)
+[ -n "$IOS_MODULE_PATH" ] || fail "iOS SDK build did not produce CyloUI.swiftmodule"
+IOS_MODULES=$(dirname "$IOS_MODULE_PATH")
 IOS_WEBRTC_FRAMEWORK="$IOS_BUILD_ROOT/artifacts/webrtc/WebRTC/WebRTC.xcframework/ios-arm64"
 mkdir -p "$OUTPUT_ROOT/ios-app-module-cache"
 if ! run_logged "direct iOS app entry-point source compile" "$OUTPUT_ROOT/ios-app-entry-compile.log" \
