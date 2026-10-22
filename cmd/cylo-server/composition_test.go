@@ -82,6 +82,10 @@ func TestComposedServerRegistersDerivedWorkerCredentialAndFailsClosedWithoutVoic
 	if voiceResponse.Code != http.StatusServiceUnavailable || !bytes.Contains(voiceResponse.Body.Bytes(), []byte("voice_unavailable")) {
 		t.Fatalf("voice without configured gateway did not fail closed: status=%d body=%s", voiceResponse.Code, voiceResponse.Body.String())
 	}
+	exportResponse := compositionRequest(t, handler, http.MethodGet, "/v1/export?scope=personal", deviceToken, nil)
+	if exportResponse.Code != http.StatusOK || exportResponse.Header().Get("Content-Disposition") == "" || !bytes.Contains(exportResponse.Body.Bytes(), []byte(`"format":"cylo.authority-export"`)) {
+		t.Fatalf("composed server did not register the scoped export route: status=%d body=%s", exportResponse.Code, exportResponse.Body.String())
+	}
 }
 
 func seedComposedMemoryClaim(t *testing.T, db *sql.DB) {

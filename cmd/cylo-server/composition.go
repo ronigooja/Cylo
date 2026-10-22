@@ -28,5 +28,8 @@ func composeControlServer(store *storage.Store, controlConfig control.Config, vo
 	if err = control.RegisterInstanceRoutes(server); err != nil {
 		return nil, err
 	}
+	if err = control.RegisterExportRoutes(server); err != nil {
+		return nil, err
+	}
 	return server, nil
 }
