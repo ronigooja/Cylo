@@ -1717,11 +1717,15 @@ public final class CyloAppModel: ObservableObject {
         let expectedGeneration = connectionGeneration.value
         let sourceAPI = api
         let commands: [PendingCommand]
+        #if DEBUG
         if let readOverride = pendingCommandReadOverrideForTesting {
             commands = (try? await readOverride()) ?? []
         } else {
             commands = (try? await journal.all()) ?? []
         }
+        #else
+        commands = (try? await journal.all()) ?? []
+        #endif
         guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI), self.journal === journal else { return }
         let currentWorkspaceID = snapshot?.devices.first?.workspaceId
         var summaries = commands.map { command in
