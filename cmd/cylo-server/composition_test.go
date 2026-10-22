@@ -32,6 +32,9 @@ func TestComposedServerRegistersDerivedWorkerCredentialAndFailsClosedWithoutVoic
 	if err = storage.RegisterCoreMigrations(store); err != nil {
 		t.Fatal(err)
 	}
+	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
+		t.Fatal(err)
+	}
 	bootstrapCode, deviceToken, workerToken := compositionSecret(t), compositionSecret(t), compositionSecret(t)
 	tokenFile := filepath.Join(t.TempDir(), "memory-worker-token")
 	if err = os.WriteFile(tokenFile, []byte(workerToken+"\n"), 0o600); err != nil {
