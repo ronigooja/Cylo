@@ -2,6 +2,7 @@ import XCTest
 @testable import CyloKit
 @testable import CyloUI
 import Foundation
+import CryptoKit
 import WebRTC
 
 private final class ExportURLProtocol: URLProtocol {
@@ -63,8 +64,66 @@ final class ClientContractTests: XCTestCase {
         return URLSession(configuration: configuration)
     }
 
-    private func exportBody(scope: String = "personal", schemaVersion: Int = 1) -> Data {
-        Data(#"{"manifest":{"format":"cylo.authority-export","schema_version":\#(schemaVersion),"export_id":"export-1","created_at":"2026-10-21T12:00:00Z","workspace_id":"workspace-1","subject_id":"device-1","scope":"\#(scope)","authority":{"snapshot_event_cursor":"17"},"coverage":{}},"projects":[],"tasks":[],"task_dependencies":[],"task_entries":[],"approvals":[],"runs":[],"evidence":[],"memory":[]}"#.utf8)
+    private func exportPackage(scope: String = "personal", schemaVersion: Int = 2, contents: Data? = nil) -> (Data, [String: String]) {
+        let contents = contents ?? Data(#"{"projects":[],"tasks":[],"task_dependencies":[],"task_entries":[],"approvals":[],"runs":[],"evidence":[],"memory":[]}"#.utf8)
+        let manifest: [String: Any] = [
+            "format": "cylo.authority-export", "schema_version": schemaVersion,
+            "export_id": "export-1", "created_at": "2026-10-21T12:00:00Z",
+            "workspace_id": "workspace-1", "subject_id": "device-1", "scope": scope,
+            "authority": ["instance_lineage_id": "lineage-1", "generation": 3, "deletion_sequence": "4", "snapshot_event_cursor": "17", "source": "sqlite_authority"],
+            "integrity": ["data_bytes": contents.count, "data_sha256": Self.sha256(contents)],
+            "coverage": [:]
+        ]
+        let manifestBytes = try! JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
+        let archive = Self.storedZip(entries: [("manifest.json", manifestBytes), ("data.json", contents)])
+        return (archive, [
+            "Content-Type": "application/vnd.cylo.export+zip",
+            "Content-Disposition": "attachment; filename=\"cylo-export-exp-1.zip\"",
+            "X-Cylo-Archive-SHA256": Self.sha256(archive),
+            "X-Cylo-Manifest-SHA256": Self.sha256(manifestBytes)
+        ])
+    }
+
+    private static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func storedZip(entries: [(String, Data)]) -> Data {
+        func u16(_ value: UInt16) -> Data { Data([UInt8(value & 0xff), UInt8((value >> 8) & 0xff)]) }
+        func u32(_ value: UInt32) -> Data { Data([UInt8(value & 0xff), UInt8((value >> 8) & 0xff), UInt8((value >> 16) & 0xff), UInt8((value >> 24) & 0xff)]) }
+        func crc(_ data: Data) -> UInt32 {
+            let table = (0..<256).map { value -> UInt32 in
+                var entry = UInt32(value)
+                for _ in 0..<8 { entry = entry & 1 == 1 ? (entry >> 1) ^ 0xedb8_8320 : entry >> 1 }
+                return entry
+            }
+            var value: UInt32 = 0xffff_ffff
+            for byte in data {
+                let index = Int((value ^ UInt32(byte)) & 0xff)
+                value = table[index] ^ (value >> 8)
+            }
+            return ~value
+        }
+        var result = Data()
+        var central = Data()
+        for (name, bytes) in entries {
+            let nameBytes = Data(name.utf8)
+            let checksum = crc(bytes)
+            let localOffset = UInt32(result.count)
+            result.append(u32(0x04034b50)); result.append(u16(20)); result.append(u16(8)); result.append(u16(0))
+            result.append(u16(0)); result.append(u16(0)); result.append(u32(0)); result.append(u32(0))
+            result.append(u32(0)); result.append(u16(UInt16(nameBytes.count))); result.append(u16(0)); result.append(nameBytes); result.append(bytes)
+            result.append(u32(0x08074b50)); result.append(u32(checksum)); result.append(u32(UInt32(bytes.count))); result.append(u32(UInt32(bytes.count)))
+            central.append(u32(0x02014b50)); central.append(u16(20)); central.append(u16(20)); central.append(u16(8)); central.append(u16(0))
+            central.append(u16(0)); central.append(u16(0)); central.append(u32(checksum)); central.append(u32(UInt32(bytes.count)))
+            central.append(u32(UInt32(bytes.count))); central.append(u16(UInt16(nameBytes.count))); central.append(u16(0)); central.append(u16(0))
+            central.append(u16(0)); central.append(u16(0)); central.append(u32(0)); central.append(u32(localOffset)); central.append(nameBytes)
+        }
+        let directoryOffset = UInt32(result.count)
+        result.append(central)
+        result.append(u32(0x06054b50)); result.append(u16(0)); result.append(u16(0)); result.append(u16(UInt16(entries.count)))
+        result.append(u16(UInt16(entries.count))); result.append(u32(UInt32(central.count))); result.append(u32(directoryOffset)); result.append(u16(0))
+        return result
     }
 
     private func memoryClaim(id: String, content: String) -> MemoryClaim {
@@ -73,9 +132,8 @@ final class ClientContractTests: XCTestCase {
 
     func testScopedExportUsesAuthenticatedScopedRequestAndPrivateTemporaryFile() async throws {
         ExportURLProtocol.capturedRequest = nil
-        ExportURLProtocol.responseHandler = { _ in
-            (200, ["Content-Type": "application/vnd.cylo.export+json; charset=utf-8", "Content-Disposition": "attachment; filename=\"cylo-export-exp-1.json\""], self.exportBody())
-        }
+        let (package, headers) = exportPackage()
+        ExportURLProtocol.responseHandler = { _ in (200, headers, package) }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -87,12 +145,15 @@ final class ClientContractTests: XCTestCase {
         XCTAssertEqual(request.httpMethod, "GET")
         XCTAssertEqual(URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.path, "/base/v1/export")
         XCTAssertEqual(URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems, [URLQueryItem(name: "scope", value: "personal")])
-        XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "application/vnd.cylo.export+json")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "application/vnd.cylo.export+zip")
         XCTAssertTrue(try XCTUnwrap(request.value(forHTTPHeaderField: "Authorization")).hasPrefix("Bearer "))
         XCTAssertEqual(artifact.scope, "personal")
-        XCTAssertEqual(artifact.filename, "cylo-export-exp-1.json")
+        XCTAssertEqual(artifact.filename, "cylo-export-exp-1.zip")
         XCTAssertEqual(artifact.snapshotCursor, "17")
-        XCTAssertEqual(try Data(contentsOf: artifact.fileURL), exportBody())
+        XCTAssertEqual(artifact.instanceLineageID, "lineage-1")
+        XCTAssertEqual(artifact.generation, 3)
+        XCTAssertEqual(artifact.deletionSequence, "4")
+        XCTAssertEqual(try Data(contentsOf: artifact.fileURL), package)
         let attributes = try FileManager.default.attributesOfItem(atPath: artifact.fileURL.path)
         XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
         try FileManager.default.removeItem(at: artifact.fileURL)
@@ -102,10 +163,15 @@ final class ClientContractTests: XCTestCase {
         let client = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
         do { _ = try await client.downloadExport(scope: "all"); XCTFail("invalid scope accepted") } catch { if case CyloError.invalidResponse = error {} else { XCTFail("unexpected error: \(error)") } }
 
+        let (wrongVersion, wrongVersionHeaders) = exportPackage(schemaVersion: 3)
+        let (wrongScope, wrongScopeHeaders) = exportPackage(scope: "workspace")
+        let (validPackage, validHeaders) = exportPackage()
+        var invalidFilenameHeaders = validHeaders
+        invalidFilenameHeaders["Content-Disposition"] = "attachment; filename=\"../cylo-export-x.zip\""
         for (headers, body) in [
-            (["Content-Type": "application/vnd.cylo.export+json", "Content-Disposition": "attachment; filename=\"cylo-export-x.json\""], exportBody(schemaVersion: 2)),
-            (["Content-Type": "application/vnd.cylo.export+json", "Content-Disposition": "attachment; filename=\"../cylo-export-x.json\""], exportBody()),
-            (["Content-Type": "application/vnd.cylo.export+json", "Content-Disposition": "attachment; filename=\"cylo-export-x.json\""], exportBody(scope: "workspace"))
+            (wrongVersionHeaders, wrongVersion),
+            (invalidFilenameHeaders, validPackage),
+            (wrongScopeHeaders, wrongScope)
         ] {
             ExportURLProtocol.responseHandler = { _ in (200, headers, body) }
             do { _ = try await client.downloadExport(scope: "personal"); XCTFail("invalid export accepted") }
@@ -113,10 +179,26 @@ final class ClientContractTests: XCTestCase {
         }
 
         ExportURLProtocol.responseHandler = { _ in
-            (200, ["Content-Type": "application/vnd.cylo.export+json", "Content-Disposition": "attachment; filename=\"cylo-export-x.json\"", "Content-Length": String(64 * 1024 * 1024 + 1)], Data())
+            (200, ["Content-Type": "application/vnd.cylo.export+zip", "Content-Disposition": "attachment; filename=\"cylo-export-x.zip\"", "Content-Length": String(1024 * 1024 * 1024 + 1)], Data())
         }
         do { _ = try await client.downloadExport(scope: "personal"); XCTFail("oversized export accepted") }
         catch { if case CyloError.exportTooLarge = error {} else { XCTFail("unexpected error: \(error)") } }
+    }
+
+    func testScopedExportStreamsArchivesLargerThan64MiB() async throws {
+        let contents = Data(repeating: 0x61, count: 65 * 1024 * 1024)
+        let (package, headers) = exportPackage(contents: contents)
+        ExportURLProtocol.responseHandler = { _ in (200, headers, package) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let client = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+
+        let artifact = try await client.downloadExport(scope: "personal", temporaryDirectory: directory)
+
+        let size = (try FileManager.default.attributesOfItem(atPath: artifact.fileURL.path)[.size] as? NSNumber)?.uint64Value
+        XCTAssertGreaterThan(size ?? 0, 64 * 1024 * 1024)
+        try FileManager.default.removeItem(at: artifact.fileURL)
     }
 
     @MainActor
@@ -254,6 +336,25 @@ final class ClientContractTests: XCTestCase {
         XCTAssertTrue(model.memoryClaims.isEmpty)
         XCTAssertNil(model.exportArtifact)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+    }
+
+    @MainActor
+    func testDeletionSequenceChangeInvalidatesPreparedExportAndPrivateFile() async throws {
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("cylo-export-authority.zip")
+        try Data("archive".utf8).write(to: fileURL)
+        let originalAuthority = SnapshotAuthority(instanceLineageId: "lineage-1", generation: 5, deletionSequence: "8")
+        model.setSnapshotForTesting(Snapshot(serverVersion: "1", eventCursor: "17", projects: [], tasks: [], approvals: [], devices: [], runs: [], authority: originalAuthority))
+        model.setExportArtifactForTesting(ScopedExportArtifact(fileURL: fileURL, filename: "cylo-export-authority.zip", scope: "personal", snapshotCursor: "17", instanceLineageID: "lineage-1", generation: 5, deletionSequence: 8))
+        model.snapshotFetchOverrideForTesting = {
+            Snapshot(serverVersion: "1", eventCursor: "18", projects: [], tasks: [], approvals: [], devices: [], runs: [], authority: SnapshotAuthority(instanceLineageId: "lineage-1", generation: 5, deletionSequence: "9"))
+        }
+
+        try await model.refreshSnapshotForTesting()
+
+        XCTAssertNil(model.exportArtifact)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+        XCTAssertTrue(model.exportStatus?.contains("authority changed") == true)
     }
 
     @MainActor
@@ -645,11 +746,12 @@ final class ClientContractTests: XCTestCase {
     func testExpiredSSECursorRequestsSnapshotRepair() throws {
         var parser = SSEParser()
         XCTAssertNil(try parser.consume(line: "event: snapshot_required"))
-        XCTAssertNil(try parser.consume(line: #"data: {"reason":"cursor_expired"}"#))
-        guard case let .snapshotRequired(reason)? = try parser.consume(line: "") else {
+        XCTAssertNil(try parser.consume(line: #"data: {"reason":"cursor_expired","authority":{"instance_lineage_id":"lineage-2","generation":6,"deletion_sequence":"9"}}"#))
+        guard case let .snapshotRequired(reason, authority)? = try parser.consume(line: "") else {
             return XCTFail("Expected snapshot repair request")
         }
         XCTAssertEqual(reason, "cursor_expired")
+        XCTAssertEqual(authority, SnapshotAuthority(instanceLineageId: "lineage-2", generation: 6, deletionSequence: "9"))
     }
 
     func testSSEParserDropsUnterminatedRecordAtEOF() throws {
@@ -1022,7 +1124,16 @@ final class ClientContractTests: XCTestCase {
         ExportURLProtocol.responseHandler = { request in
             if request.url?.path == "/v1/voice/sessions/session-1/hangup" {
                 hangupCount += 1
-                return (202, ["Content-Type": "application/json"], Data(#"{"ok":true,"state":"ended","upstream_termination":"unverified","pool_blocked":true}"#.utf8))
+                XCTAssertEqual(localStopCount, 1, "the hangup receipt is sent only after local media teardown")
+                let body = (try? JSONSerialization.jsonObject(with: Self.requestBody(request) ?? Data())) as? [String: Any]
+                XCTAssertEqual(body?["media_closed"] as? Bool, true)
+                XCTAssertEqual(body?["generation"] as? Int, 4)
+                XCTAssertEqual(body?["account_lease_id"] as? String, "opaque-lease-1")
+                XCTAssertEqual(body?["account_lease_generation"] as? Int, 11)
+                if hangupCount == 1 {
+                    return (202, ["Content-Type": "application/json"], Data(#"{"ok":true,"state":"ended","upstream_termination":"unverified","pool_blocked":true}"#.utf8))
+                }
+                return (200, ["Content-Type": "application/json"], Data(#"{"ok":true,"state":"ended","upstream_termination":"verified","pool_blocked":false}"#.utf8))
             }
             if request.url?.path == "/v1/voice/pool/status" {
                 return (200, ["Content-Type": "application/json"], Data(#"{"blocked":true,"reason_code":"upstream_termination_unverified","updated_at":"2026-10-22T12:00:00Z","account_lease_identity":false,"account_scoped_termination":false,"trusted_termination_evidence":false}"#.utf8))
@@ -1030,7 +1141,7 @@ final class ClientContractTests: XCTestCase {
             return (404, [:], Data())
         }
         let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
-        let session = VoiceSessionResponse(voiceSessionId: "session-1", generation: 4, state: "active", answerSdp: "")
+        let session = VoiceSessionResponse(voiceSessionId: "session-1", generation: 4, state: "active", answerSdp: "", accountLeaseId: "opaque-lease-1", accountLeaseGeneration: 11)
         let epoch = model.installVoiceSessionForTesting(session, api: api)
         let heartbeatStarted = expectation(description: "heartbeat task starts")
         let heartbeatCancelled = expectation(description: "heartbeat task is canceled on media loss")
@@ -1057,6 +1168,12 @@ final class ClientContractTests: XCTestCase {
         XCTAssertTrue(reason.contains("quarantined"))
         XCTAssertTrue(reason.contains("unverified"))
         XCTAssertTrue(model.voicePoolStatus?.blocked == true)
+        XCTAssertTrue(model.canEndVoiceSession, "the identity remains available for an idempotent server release retry")
+
+        await model.endVoiceSession()
+
+        XCTAssertEqual(hangupCount, 2)
+        XCTAssertFalse(model.canEndVoiceSession)
     }
 
     @MainActor

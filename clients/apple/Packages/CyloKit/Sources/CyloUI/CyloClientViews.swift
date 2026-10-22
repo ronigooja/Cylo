@@ -1124,7 +1124,7 @@ private struct SettingsView: View {
             if let notice = model.notice { Section("Latest update") { Text(notice).textSelection(.enabled) } }
         }
         .navigationTitle("Settings")
-        .fileExporter(isPresented: $showingExportSave, document: exportDocument, contentType: .json, defaultFilename: model.exportArtifact?.filename ?? "cylo-export.json") { result in
+        .fileExporter(isPresented: $showingExportSave, document: exportDocument, contentType: .zip, defaultFilename: model.exportArtifact?.filename ?? "cylo-export.zip") { result in
             switch result {
             case .success: model.exportSaveFinished(saved: true)
             case let .failure(error): model.exportSaveFinished(saved: false, error: error)
@@ -1146,7 +1146,7 @@ private struct SettingsView: View {
 }
 
 private struct ScopedExportFileDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.json] }
+    static var readableContentTypes: [UTType] { [.zip] }
     let fileURL: URL
 
     init(fileURL: URL) { self.fileURL = fileURL }

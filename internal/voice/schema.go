@@ -93,8 +93,22 @@ CREATE TABLE voice_account_terminations (
 	}}); err != nil {
 		return err
 	}
-	return store.RegisterMigration(storage.Migration{Namespace: "voice", Version: 201, Name: "voice_stable_turn_task_binding", Up: func(ctx context.Context, tx *sql.Tx) error {
+	if err := store.RegisterMigration(storage.Migration{Namespace: "voice", Version: 201, Name: "voice_stable_turn_task_binding", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `CREATE UNIQUE INDEX voice_task_links_stable_turn ON voice_task_links(session_id,generation,turn_id)`)
+		return err
+	}}); err != nil {
+		return err
+	}
+	if err := store.RegisterMigration(storage.Migration{Namespace: "voice", Version: 202, Name: "voice_account_lease_identity", Up: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `ALTER TABLE voice_sessions ADD COLUMN account_lease_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE voice_sessions ADD COLUMN account_lease_generation INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE voice_sessions ADD COLUMN account_id_hash BLOB NOT NULL DEFAULT '';`)
+		return err
+	}}); err != nil {
+		return err
+	}
+	return store.RegisterMigration(storage.Migration{Namespace: "voice", Version: 203, Name: "voice_gateway_unbind_receipt", Up: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `ALTER TABLE voice_sessions ADD COLUMN gateway_unbound INTEGER NOT NULL DEFAULT 0 CHECK(gateway_unbound IN (0,1))`)
 		return err
 	}})
 }

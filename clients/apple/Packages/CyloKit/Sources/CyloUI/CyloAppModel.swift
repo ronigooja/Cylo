@@ -169,6 +169,7 @@ public final class CyloAppModel: ObservableObject {
     private var canRegisterPushToken = false
 
     public init(defaults: UserDefaults = .standard) {
+        Self.cleanupExpiredExportTemporaries()
         self.defaults = defaults
         serverAddress = defaults.string(forKey: "cylo.serverAddress") ?? ""
         pushNotificationsEnabled = defaults.bool(forKey: "cylo.apns.optIn")
@@ -707,7 +708,7 @@ public final class CyloAppModel: ObservableObject {
             await closeVoiceLocalMedia(mediaEpoch: mediaEpoch)
             var remainsQuarantined = false
             if let allocatedSession {
-                let release = try? await api.hangupVoiceSession(sessionID: allocatedSession.voiceSessionId)
+                let release = try? await api.hangupVoiceSession(allocatedSession)
                 remainsQuarantined = release == nil || release?.poolBlocked == true
                 if remainsQuarantined {
                     let latestPool = try? await api.voicePoolStatus()
@@ -777,21 +778,18 @@ public final class CyloAppModel: ObservableObject {
             if let voiceHangupOverrideForTesting {
                 result = try await voiceHangupOverrideForTesting(session.voiceSessionId)
             } else {
-                result = try await api.hangupVoiceSession(sessionID: session.voiceSessionId)
+                result = try await api.hangupVoiceSession(session)
             }
             #else
-            result = try await api.hangupVoiceSession(sessionID: session.voiceSessionId)
+            result = try await api.hangupVoiceSession(session)
             #endif
             guard voiceSession?.voiceSessionId == session.voiceSessionId, voiceSessionMediaEpoch == mediaEpoch else { return }
             let latestPool = result.poolBlocked == true ? try? await api.voicePoolStatus() : nil
             guard voiceSession?.voiceSessionId == session.voiceSessionId, voiceSessionMediaEpoch == mediaEpoch else { return }
             if result.poolBlocked == true {
                 voicePoolStatus = latestPool
-                voiceStatus = .interrupted(reason: lossReason.map { "\($0) Local media is closed. The server reports upstream termination is unverified; the account pool remains quarantined." } ?? "Local media is closed. The server reports upstream termination is unverified; the account pool remains quarantined.")
-                voiceSession = nil
-                voiceSessionMediaEpoch = nil
-                voiceSessionMediaClosed = false
-                voiceAPI = nil
+                voiceSessionMediaClosed = true
+                voiceStatus = .interrupted(reason: lossReason.map { "\($0) Local media is closed. Upstream termination is unverified; the account pool remains quarantined. Retry server hangup to repeat the idempotent lease release." } ?? "Local media is closed. Upstream termination is unverified; the account pool remains quarantined. Retry server hangup to repeat the idempotent lease release.")
             } else if let lossReason {
                 voiceStatus = .interrupted(reason: "\(lossReason) Local media is closed and the server confirmed release of the voice lease. This did not cancel a task.")
                 voiceSession = nil
@@ -1033,6 +1031,7 @@ public final class CyloAppModel: ObservableObject {
         }
         do {
             let artifact = try await task.value
+            if testDownload == nil { try await refreshSnapshot() }
             guard !Task.isCancelled, requestID == exportRequestID,
                   generation == connectionGeneration.value,
                   testDownload != nil || capturedAPI === self.api else {
@@ -1040,6 +1039,11 @@ public final class CyloAppModel: ObservableObject {
                 if requestID == exportRequestID {
                     exportStatus = "Export canceled. The prepared temporary file was removed."
                 }
+                return
+            }
+            guard testDownload != nil || Self.exportAuthorityMatches(artifact, snapshot: snapshot) else {
+                try? FileManager.default.removeItem(at: artifact.fileURL)
+                exportStatus = "Server authority changed while preparing the export. Prepare a fresh copy."
                 return
             }
             exportArtifact = artifact
@@ -1246,9 +1250,17 @@ public final class CyloAppModel: ObservableObject {
         guard generation == connectionGeneration.value,
               testFetch != nil || capturedAPI === self.api else { return }
         if let current = snapshot, !cursor(latest.eventCursor, isAtLeast: current.eventCursor) {
-            throw CyloError.invalidResponse
+            guard Self.authorityIdentityChanged(from: current.authority, to: latest.authority) else {
+                throw CyloError.invalidResponse
+            }
+        }
+        if let current = snapshot, current.authority != latest.authority {
+            clearMemoryAndPreparedExport(status: "Server authority changed; cached memory and the prepared export were cleared.")
         }
         snapshot = latest
+        if let artifact = exportArtifact, !Self.exportAuthorityMatches(artifact, snapshot: latest) {
+            cancelExport(status: "Server authority changed; the prepared export was removed. Prepare a fresh copy.")
+        }
         try cache?.save(latest)
         freshness = .current(serverVersion: latest.serverVersion, cursor: latest.eventCursor)
         commandStatusByKey = commandStatusByKey.filter { $0.value == .needsReview }
@@ -1776,6 +1788,28 @@ public final class CyloAppModel: ObservableObject {
     private func clearMemoryAndPreparedExport(status: String) {
         clearVisibleMemory()
         cancelExport(status: status)
+    }
+
+    private static func authorityIdentityChanged(from previous: SnapshotAuthority?, to latest: SnapshotAuthority?) -> Bool {
+        guard let previous, let latest else { return previous != latest }
+        return previous.instanceLineageId != latest.instanceLineageId || previous.generation != latest.generation
+    }
+
+    private static func exportAuthorityMatches(_ artifact: ScopedExportArtifact, snapshot: Snapshot?) -> Bool {
+        guard let snapshot else { return false }
+        guard let authority = snapshot.authority else { return artifact.snapshotCursor == snapshot.eventCursor }
+        return artifact.instanceLineageID == authority.instanceLineageId
+            && artifact.generation == authority.generation
+            && artifact.deletionSequence == authority.deletionSequence
+            && artifact.snapshotCursor == snapshot.eventCursor
+    }
+
+    private static func cleanupExpiredExportTemporaries() {
+        let directory = FileManager.default.temporaryDirectory
+        guard let entries = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
+        for entry in entries where entry.lastPathComponent.hasPrefix("cylo-export-") && entry.pathExtension == "zip" {
+            try? FileManager.default.removeItem(at: entry)
+        }
     }
 
     private func clearVisibleMemory() {

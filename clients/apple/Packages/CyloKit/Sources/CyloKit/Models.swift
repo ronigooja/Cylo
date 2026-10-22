@@ -3,20 +3,34 @@ import Foundation
 public struct Snapshot: Codable, Equatable, Sendable {
     public var serverVersion: String
     public var eventCursor: String
+    public var authority: SnapshotAuthority? = nil
     public var projects: [Project]
     public var tasks: [TaskRecord]
     public var approvals: [Approval]
     public var devices: [Device]
     public var runs: [Run]
 
-    public init(serverVersion: String, eventCursor: String, projects: [Project], tasks: [TaskRecord], approvals: [Approval], devices: [Device], runs: [Run]) {
+    public init(serverVersion: String, eventCursor: String, projects: [Project], tasks: [TaskRecord], approvals: [Approval], devices: [Device], runs: [Run], authority: SnapshotAuthority? = nil) {
         self.serverVersion = serverVersion
         self.eventCursor = eventCursor
+        self.authority = authority
         self.projects = projects
         self.tasks = tasks
         self.approvals = approvals
         self.devices = devices
         self.runs = runs
+    }
+}
+
+public struct SnapshotAuthority: Codable, Equatable, Sendable {
+    public var instanceLineageId: String
+    public var generation: Int64
+    public var deletionSequence: String
+
+    public init(instanceLineageId: String, generation: Int64, deletionSequence: String) {
+        self.instanceLineageId = instanceLineageId
+        self.generation = generation
+        self.deletionSequence = deletionSequence
     }
 }
 
@@ -327,6 +341,8 @@ public struct VoiceSessionResponse: Codable, Equatable, Sendable {
     public var generation: Int64
     public var state: String
     public var answerSdp: String
+    public var accountLeaseId: String? = nil
+    public var accountLeaseGeneration: Int64? = nil
 }
 
 public struct VoicePoolStatus: Codable, Equatable, Sendable {
@@ -388,7 +404,7 @@ public enum CyloError: Error, LocalizedError, Sendable {
         switch self {
         case .invalidServerURL: "Enter a valid Cylo server URL."
         case .missingCredential: "This device has not been paired with the server."
-        case .exportTooLarge: "This export is larger than the 64 MiB download limit."
+        case .exportTooLarge: "This export is larger than the 1 GiB download limit."
         case let .http(_, _, message, _): message
         case .invalidResponse: "The server returned a response the app could not read."
         case let .persistence(message): message
