@@ -185,6 +185,21 @@ final class ClientContractTests: XCTestCase {
         catch { if case CyloError.exportTooLarge = error {} else { XCTFail("unexpected error: \(error)") } }
     }
 
+    func testBoundedDownloadCancelsWhenTransferExceedsConfiguredLimit() async throws {
+        let body = Data(repeating: 0x61, count: 128 * 1024)
+        ExportURLProtocol.responseHandler = { request in
+            (200, ["Content-Length": String(body.count)], body)
+        }
+        let request = URLRequest(url: URL(string: "https://cylo.example/oversize")!)
+        do {
+            _ = try await downloadBounded(request, using: exportSession(), maximumBytes: 1024)
+            XCTFail("over-limit transfer was accepted")
+        } catch {
+            if case CyloError.exportTooLarge = error { }
+            else { XCTFail("unexpected error: \(error)") }
+        }
+    }
+
     func testScopedExportStreamsArchivesLargerThan64MiB() async throws {
         let contents = Data(repeating: 0x61, count: 65 * 1024 * 1024)
         let (package, headers) = exportPackage(contents: contents)
@@ -199,6 +214,33 @@ final class ClientContractTests: XCTestCase {
         let size = (try FileManager.default.attributesOfItem(atPath: artifact.fileURL.path)[.size] as? NSNumber)?.uint64Value
         XCTAssertGreaterThan(size ?? 0, 64 * 1024 * 1024)
         try FileManager.default.removeItem(at: artifact.fileURL)
+    }
+
+    @MainActor
+    func testSnapshotFailureRemovesDownloadedExportTemporaryFile() async throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+        let existing = Set((try FileManager.default.contentsOfDirectory(at: temporaryDirectory, includingPropertiesForKeys: nil))
+            .filter { $0.lastPathComponent.hasPrefix("cylo-export-") && $0.pathExtension == "zip" })
+        let (package, headers) = exportPackage()
+        ExportURLProtocol.responseHandler = { request in
+            if request.url?.path == "/v1/export" { return (200, headers, package) }
+            return (503, ["Content-Type": "application/json"], Data())
+        }
+        let client = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let directory = temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = try CommandJournal(fileURL: directory.appendingPathComponent("commands.json"))
+        model.snapshotFetchOverrideForTesting = { throw CyloError.invalidResponse }
+        await model.recoverPendingCommandsForTesting(api: client, journal: journal)
+
+        await model.prepareExport(scope: "personal", expectedConnectionEpoch: model.connectionEpoch)
+
+        XCTAssertNil(model.exportArtifact)
+        let after = Set((try FileManager.default.contentsOfDirectory(at: temporaryDirectory, includingPropertiesForKeys: nil))
+            .filter { $0.lastPathComponent.hasPrefix("cylo-export-") && $0.pathExtension == "zip" })
+        XCTAssertEqual(after, existing, "an export downloaded before a failed snapshot refresh must be removed")
     }
 
     @MainActor
