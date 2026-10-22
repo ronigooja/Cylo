@@ -107,6 +107,9 @@ class BackupDeleteManifestTests(unittest.TestCase):
         self.assertEqual(read_backup_delete_manifest(None, self.journal, self.metadata), {
             "baseline": "fixture-lineage", "sequence": 0, "targets": [], "version": 1,
         })
+        self.metadata["snapshot_sequence"] = 1
+        with self.assertRaisesRegex(RuntimeError, "journal is empty"):
+            read_backup_delete_manifest(None, self.journal, self.metadata)
 
     def test_global_sequences_can_arrive_out_of_order_without_identity_fields(self):
         second = {**self.record, "sequence": 2, "lineage_id": "fixture-lineage", "entity_id": "claim-b", "hash": "c" * 64}
