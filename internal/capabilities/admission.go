@@ -53,7 +53,55 @@ type triggerAdmissionRow struct {
 }
 
 func (s *Service) registerTaskSource() error {
-	return s.server.RegisterTaskSourceHandler("service", s.validateCapabilityTaskSource)
+	if err := s.server.RegisterTaskSourceHandler("service", s.validateCapabilityTaskSource); err != nil {
+		return err
+	}
+	return s.server.RegisterTaskDispatchGuard("service", s.authorizeCapabilityTaskDispatch)
+}
+
+// authorizeCapabilityTaskDispatch rechecks the durable trigger grant inside
+// the runner claim or model-call reservation transaction. Service tasks fail
+// closed when their source run or its current grant cannot be proven active.
+func (s *Service) authorizeCapabilityTaskDispatch(ctx context.Context, tx *sql.Tx, workspaceID, taskID string, now time.Time) (string, error) {
+	var triggerRunID, runState, linkedTask, triggerGrant, triggerDigest string
+	var triggerEnabled bool
+	var deploymentGrant, deploymentDigest, desired, observed string
+	var deploymentRevoked, grantRevoked sql.NullString
+	var expiresAt string
+	err := tx.QueryRowContext(ctx, `SELECT r.trigger_run_id,r.state,r.task_id,t.enabled,t.grant_id,t.release_digest,d.grant_id,d.release_digest,d.desired_state,d.observed_state,d.revoked_at,g.revoked_at,g.expires_at FROM capability_trigger_runs r JOIN capability_trigger_definitions t ON t.trigger_id=r.trigger_id AND t.workspace_id=r.workspace_id JOIN capability_deployments d ON d.deployment_id=r.deployment_id AND d.workspace_id=r.workspace_id JOIN capability_grants g ON g.grant_id=t.grant_id AND g.deployment_id=d.deployment_id AND g.release_digest=t.release_digest WHERE r.workspace_id=? AND r.task_id=?`, workspaceID, taskID).Scan(&triggerRunID, &runState, &linkedTask, &triggerEnabled, &triggerGrant, &triggerDigest, &deploymentGrant, &deploymentDigest, &desired, &observed, &deploymentRevoked, &grantRevoked, &expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "service_trigger_missing", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	reason := ""
+	if linkedTask != taskID || (runState != "running" && runState != "uncertain" && runState != "waiting") {
+		reason = "service_trigger_inactive"
+	} else if !triggerEnabled || triggerGrant == "" || triggerGrant != deploymentGrant || triggerDigest == "" || triggerDigest != deploymentDigest {
+		reason = "service_trigger_stale"
+	} else if deploymentRevoked.Valid || grantRevoked.Valid {
+		reason = "grant_revoked"
+	} else if desired != "running" || observed != "running" {
+		reason = "deployment_not_running"
+	} else if expires, parseErr := time.Parse(time.RFC3339Nano, expiresAt); parseErr != nil || !expires.After(now.UTC()) {
+		reason = "grant_expired"
+	}
+	if reason == "" {
+		return "", nil
+	}
+	var taskStatus string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM tasks WHERE id=? AND workspace_id=?`, taskID, workspaceID).Scan(&taskStatus); err != nil {
+		return "", err
+	}
+	triggerState := "uncertain"
+	if taskStatus == "queued" {
+		triggerState = "canceled"
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE capability_trigger_runs SET state=?,last_error_code=?,updated_at=? WHERE trigger_run_id=? AND state IN ('running','uncertain','waiting') AND task_id=?`, triggerState, reason, now.UTC().Format(time.RFC3339Nano), triggerRunID, taskID); err != nil {
+		return "", err
+	}
+	return reason, nil
 }
 
 // validateCapabilityTaskSource is the task-core hook for the service source.
@@ -211,6 +259,81 @@ func (s *Service) admitQueuedTaskTriggers(ctx context.Context, tx *sql.Tx, works
 				continue
 			}
 			return err
+		}
+	}
+	return nil
+}
+
+// reapInactiveServiceTasks cancels source tasks that have not been claimed and
+// requests a fenced stop for active runs whose grant expired or was revoked.
+// It uses only local SQLite and emits no model work.
+func (s *Service) reapInactiveServiceTasks(ctx context.Context, tx *sql.Tx, workspaces []string, now time.Time) error {
+	for _, workspace := range workspaces {
+		rows, err := tx.QueryContext(ctx, `SELECT t.id,t.owner_subject_id,t.status,t.version FROM tasks t JOIN capability_trigger_runs r ON r.task_id=t.id AND r.workspace_id=t.workspace_id WHERE t.workspace_id=? AND t.source='service' AND r.state IN ('running','uncertain','waiting') AND t.status IN ('queued','active','waiting','awaiting_user') ORDER BY t.created_at,t.id`, workspace)
+		if err != nil {
+			return err
+		}
+		type task struct {
+			id, owner, status string
+			version           int64
+		}
+		var tasks []task
+		for rows.Next() {
+			var item task
+			if err := rows.Scan(&item.id, &item.owner, &item.status, &item.version); err != nil {
+				rows.Close()
+				return err
+			}
+			tasks = append(tasks, item)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, item := range tasks {
+			reason, err := s.authorizeCapabilityTaskDispatch(ctx, tx, workspace, item.id, now)
+			if err != nil {
+				return err
+			}
+			at := now.UTC().Format(time.RFC3339Nano)
+			if item.status == "awaiting_user" {
+				// Preserve the already-produced result for the user's decision. A
+				// trigger grant governs further dispatch, not accepting evidence.
+				if _, err := tx.ExecContext(ctx, `UPDATE capability_trigger_runs SET state='waiting',last_error_code=?,updated_at=? WHERE workspace_id=? AND task_id=? AND state IN ('running','uncertain','waiting')`, reason, at, workspace, item.id); err != nil {
+					return err
+				}
+				continue
+			}
+			if reason == "" {
+				continue
+			}
+			if item.status == "active" {
+				if _, err := tx.ExecContext(ctx, `UPDATE runs SET desired_control='stop',control_version=control_version+CASE WHEN desired_control='stop' THEN 0 ELSE 1 END WHERE task_id=? AND workspace_id=? AND status IN ('dispatching','active','uncertain')`, item.id, workspace); err != nil {
+					return err
+				}
+				continue
+			}
+			result, err := tx.ExecContext(ctx, `UPDATE tasks SET status='canceled',version=version+1,finished_at=?,updated_at=? WHERE id=? AND workspace_id=? AND status=? AND version=?`, at, at, item.id, workspace, item.status, item.version)
+			if err != nil {
+				return err
+			}
+			changed, err := result.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if changed != 1 {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE capability_trigger_runs SET state='canceled',last_error_code=?,updated_at=? WHERE workspace_id=? AND task_id=? AND state IN ('running','uncertain','waiting')`, reason, at, workspace, item.id); err != nil {
+				return err
+			}
+			event := contracts.Event{Type: "task.canceled", OccurredAt: now.UTC(), WorkspaceID: workspace, AggregateType: "task", AggregateID: item.id, AggregateVersion: item.version + 1, Payload: mustJSON(map[string]any{"task_id": item.id, "reason_code": reason})}
+			if err := s.server.AppendEventsTx(ctx, tx, contracts.Principal{WorkspaceID: workspace, SubjectID: item.owner}, []contracts.Event{event}); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

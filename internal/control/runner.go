@@ -71,13 +71,14 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	rows, err := tx.QueryContext(r.Context(), `SELECT id,workspace_id,title,goal,profile_id,harness,version,created_by_device_id,command_id,coalesce(lineage_root_task_id,id),coalesce(lineage_parent_task_id,''),lineage_depth,child_policy_json,pregrant_capabilities_json FROM tasks WHERE status='queued' AND NOT EXISTS (SELECT 1 FROM task_dependencies d WHERE d.task_id=tasks.id AND d.status<>'satisfied') ORDER BY created_at,id`)
+	rows, err := tx.QueryContext(r.Context(), `SELECT id,workspace_id,title,goal,profile_id,harness,version,created_by_device_id,command_id,coalesce(lineage_root_task_id,id),coalesce(lineage_parent_task_id,''),lineage_depth,child_policy_json,pregrant_capabilities_json,source FROM tasks WHERE status='queued' AND NOT EXISTS (SELECT 1 FROM task_dependencies d WHERE d.task_id=tasks.id AND d.status<>'satisfied') ORDER BY created_at,id`)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	type candidate struct {
 		id, workspace, title, goal, profile, harness, device, command string
+		source                                                        string
 		root, parent                                                  string
 		depth                                                         int
 		childPolicyJSON, pregrantJSON                                 []byte
@@ -86,7 +87,7 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 	var chosen *candidate
 	for rows.Next() {
 		var c candidate
-		if err = rows.Scan(&c.id, &c.workspace, &c.title, &c.goal, &c.profile, &c.harness, &c.version, &c.device, &c.command, &c.root, &c.parent, &c.depth, &c.childPolicyJSON, &c.pregrantJSON); err != nil {
+		if err = rows.Scan(&c.id, &c.workspace, &c.title, &c.goal, &c.profile, &c.harness, &c.version, &c.device, &c.command, &c.root, &c.parent, &c.depth, &c.childPolicyJSON, &c.pregrantJSON, &c.source); err != nil {
 			rows.Close()
 			writeError(w, err)
 			return
@@ -115,6 +116,36 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 	rows.Close()
 	if chosen == nil {
 		_ = tx.Rollback()
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if reason, guardErr := s.taskDispatchReasonTx(r.Context(), tx, chosen.source, chosen.workspace, chosen.id, time.Now().UTC()); guardErr != nil {
+		writeError(w, guardErr)
+		return
+	} else if reason != "" {
+		now := time.Now().UTC()
+		at := now.Format(time.RFC3339Nano)
+		result, updateErr := tx.ExecContext(r.Context(), `UPDATE tasks SET status='canceled',version=version+1,finished_at=?,updated_at=? WHERE id=? AND workspace_id=? AND status='queued' AND version=?`, at, at, chosen.id, chosen.workspace, chosen.version)
+		if updateErr != nil {
+			writeError(w, updateErr)
+			return
+		}
+		changed, updateErr := result.RowsAffected()
+		if updateErr != nil || changed != 1 {
+			if updateErr == nil {
+				updateErr = errors.New("task changed while dispatch authorization was being fenced")
+			}
+			writeError(w, updateErr)
+			return
+		}
+		if err = appendEventTx(r.Context(), tx, contracts.Event{Type: "task.canceled", OccurredAt: now, WorkspaceID: chosen.workspace, AggregateType: "task", AggregateID: chosen.id, AggregateVersion: chosen.version + 1, Payload: raw(map[string]any{"task_id": chosen.id, "reason_code": reason})}); err != nil {
+			writeError(w, err)
+			return
+		}
+		if err = tx.Commit(); err != nil {
+			writeError(w, err)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}

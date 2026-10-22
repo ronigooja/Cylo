@@ -135,6 +135,10 @@ func (s *Service) claimTrigger(w http.ResponseWriter, r *http.Request) {
 		control.WriteError(w, control.NewAPIError(401, "unauthenticated", "capability:deploy runner authentication required", nil))
 		return
 	}
+	if s.runtimeBackend == "" {
+		control.WriteError(w, control.NewAPIError(503, "capability_runner_unavailable", "capability runtime backend is disabled", nil))
+		return
+	}
 	var claim *contracts.CapabilityTriggerClaim
 	err := s.server.RunnerTransaction(r.Context(), func(tx *sql.Tx, runner contracts.RunnerPrincipal) error {
 		if current, err := activeTriggerClaim(r.Context(), tx, runner); err != nil {
@@ -160,23 +164,8 @@ func (s *Service) claimTrigger(w http.ResponseWriter, r *http.Request) {
 		for i := range workspaces {
 			workspaces[i] = runner.WorkspaceIDs[(start+i)%workspaceCount]
 		}
-		for _, workspace := range workspaces {
-			if !control.HasRunnerScope(runner, "capability:deploy", workspace) {
-				continue
-			}
-			if err := processTriggerEvents(r.Context(), tx, workspace, now); err != nil {
-				return err
-			}
-			if err := enqueueDueSchedules(r.Context(), tx, workspace, now); err != nil {
-				return err
-			}
-			if err := s.admitQueuedTaskTriggers(r.Context(), tx, workspace, now); err != nil {
-				return err
-			}
-		}
-		if s.runtimeBackend == "" {
-			_, updateErr := tx.ExecContext(r.Context(), `UPDATE capability_trigger_runner_cursors SET workspace_index=? WHERE runner_id=?`, (start+1)%workspaceCount, runner.RunnerID)
-			return updateErr
+		if err := s.processTriggerAdmissions(r.Context(), tx, runner, workspaces, now); err != nil {
+			return err
 		}
 		for i, workspace := range workspaces {
 			if !control.HasRunnerScope(runner, "capability:deploy", workspace) {
@@ -204,6 +193,92 @@ func (s *Service) claimTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, claim)
+}
+
+type capabilityTriggerAdmissionStatus struct {
+	PendingProgramTriggers int    `json:"pending_program_triggers"`
+	ProgramExecution       string `json:"program_execution"`
+	ProgramReasonCode      string `json:"program_reason_code,omitempty"`
+}
+
+// admitTriggerTasks advances event/schedule cursors and admits worker/super
+// triggers through the trusted task source hook. It does not claim program
+// triggers: there is no bounded invocation executor for their manifest/event
+// contract yet, so they remain queued for a future compatible runner.
+func (s *Service) admitTriggerTasks(w http.ResponseWriter, r *http.Request) {
+	runner, ok := control.RunnerPrincipalFromContext(r.Context())
+	if !ok || !runnerHasCapabilityScope(runner, "capability:deploy") {
+		control.WriteError(w, control.NewAPIError(401, "unauthenticated", "capability:deploy runner authentication required", nil))
+		return
+	}
+	if s.runtimeBackend == "" {
+		control.WriteError(w, control.NewAPIError(503, "capability_runner_unavailable", "capability runtime backend is disabled", nil))
+		return
+	}
+	var status capabilityTriggerAdmissionStatus
+	err := s.server.RunnerTransaction(r.Context(), func(tx *sql.Tx, runner contracts.RunnerPrincipal) error {
+		now := time.Now().UTC()
+		workspaces := make([]string, 0, len(runner.WorkspaceIDs))
+		for _, workspace := range runner.WorkspaceIDs {
+			if control.HasRunnerScope(runner, "capability:deploy", workspace) {
+				workspaces = append(workspaces, workspace)
+			}
+		}
+		if err := s.processTriggerAdmissions(r.Context(), tx, runner, workspaces, now); err != nil {
+			return err
+		}
+		if err := s.reapInactiveServiceTasks(r.Context(), tx, workspaces, now); err != nil {
+			return err
+		}
+		var countErr error
+		status.PendingProgramTriggers, countErr = countPendingProgramTriggers(r.Context(), tx, workspaces, now)
+		if countErr != nil {
+			return countErr
+		}
+		if status.PendingProgramTriggers > 0 {
+			status.ProgramExecution = "unsupported"
+			status.ProgramReasonCode = "program_trigger_executor_unavailable"
+		} else {
+			status.ProgramExecution = "ready"
+		}
+		return nil
+	})
+	if err != nil {
+		control.WriteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Service) processTriggerAdmissions(ctx context.Context, tx *sql.Tx, runner contracts.RunnerPrincipal, workspaces []string, now time.Time) error {
+	for _, workspace := range workspaces {
+		if !control.HasRunnerScope(runner, "capability:deploy", workspace) {
+			continue
+		}
+		if err := processTriggerEvents(ctx, tx, workspace, now); err != nil {
+			return err
+		}
+		if err := enqueueDueSchedules(ctx, tx, workspace, now); err != nil {
+			return err
+		}
+		if err := s.admitQueuedTaskTriggers(ctx, tx, workspace, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func countPendingProgramTriggers(ctx context.Context, tx *sql.Tx, workspaces []string, now time.Time) (int, error) {
+	total := 0
+	for _, workspace := range workspaces {
+		var count int
+		err := tx.QueryRowContext(ctx, `SELECT count(*) FROM capability_trigger_runs r JOIN capability_trigger_definitions t ON t.trigger_id=r.trigger_id AND t.workspace_id=r.workspace_id JOIN capability_deployments d ON d.deployment_id=r.deployment_id AND d.workspace_id=r.workspace_id JOIN capability_grants g ON g.grant_id=t.grant_id AND g.deployment_id=d.deployment_id AND g.release_digest=t.release_digest WHERE r.workspace_id=? AND r.mode='program' AND r.state='queued' AND t.enabled=1 AND d.revoked_at IS NULL AND d.grant_id=t.grant_id AND d.release_digest=t.release_digest AND d.desired_state='running' AND d.observed_state='running' AND g.revoked_at IS NULL AND g.expires_at>?`, workspace, now.UTC().Format(time.RFC3339Nano)).Scan(&count)
+		if err != nil {
+			return 0, err
+		}
+		total += count
+	}
+	return total, nil
 }
 
 func (s *Service) currentTriggerClaim(w http.ResponseWriter, r *http.Request) {
@@ -308,8 +383,33 @@ func processTriggerEvents(ctx context.Context, tx *sql.Tx, workspace string, now
 				return err
 			}
 		}
+		if event.aggregateType == "task" && event.kind == "task.result_decided" {
+			var body struct {
+				Payload struct {
+					Status string `json:"status"`
+				} `json:"payload"`
+			}
+			if err := json.Unmarshal(event.payload, &body); err != nil {
+				return err
+			}
+			switch body.Payload.Status {
+			case "complete":
+				if _, err := tx.ExecContext(ctx, `UPDATE capability_trigger_runs SET state='completed',updated_at=? WHERE workspace_id=? AND task_id=? AND state IN ('running','uncertain','waiting')`, now.Format(time.RFC3339Nano), workspace, event.aggregateID); err != nil {
+					return err
+				}
+			case "waiting":
+				if _, err := tx.ExecContext(ctx, `UPDATE capability_trigger_runs SET state='waiting',updated_at=? WHERE workspace_id=? AND task_id=? AND state='running'`, now.Format(time.RFC3339Nano), workspace, event.aggregateID); err != nil {
+					return err
+				}
+			}
+		}
 		if event.aggregateType == "task" && event.kind == "task.failed" {
 			if _, err := tx.ExecContext(ctx, `UPDATE capability_trigger_runs SET state='failed',last_error_code='task_failed',updated_at=? WHERE workspace_id=? AND task_id=? AND state='running'`, now.Format(time.RFC3339Nano), workspace, event.aggregateID); err != nil {
+				return err
+			}
+		}
+		if event.aggregateType == "task" && event.kind == "task.canceled" {
+			if _, err := tx.ExecContext(ctx, `UPDATE capability_trigger_runs SET state='canceled',updated_at=? WHERE workspace_id=? AND task_id=? AND state IN ('running','uncertain','waiting')`, now.Format(time.RFC3339Nano), workspace, event.aggregateID); err != nil {
 				return err
 			}
 		}

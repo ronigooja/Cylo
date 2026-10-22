@@ -279,9 +279,32 @@ func TestRunnerDeploymentClaimAndFencedObservation(t *testing.T) {
 	if _, err = store.DB().ExecContext(ctx, `INSERT INTO events(event_id,workspace_id,cursor,schema_version,event_type,occurred_at,subject_id,aggregate_type,aggregate_id,aggregate_version,payload) VALUES('trigger-event-1','default',1,1,'task.created',?,'owner','task','task-1',1,'{"type":"task.created","payload":{"task":{"task_id":"task-1"}}}'),('trigger-event-2','default',2,1,'task.created',?,'owner','task','task-2',1,'{"type":"task.created","payload":{"task":{"task_id":"task-2"}}}')`, time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = store.DB().ExecContext(ctx, `UPDATE capability_trigger_definitions SET next_run_at=? WHERE kind='schedule'`, time.Now().UTC().Add(10*time.Minute).Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
 	var enabledTriggers int
 	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM capability_trigger_definitions WHERE enabled=1`).Scan(&enabledTriggers); err != nil || enabledTriggers != 5 {
 		t.Fatalf("triggers were not enabled: count=%d err=%v", enabledTriggers, err)
+	}
+	var admissionStatus capabilityTriggerAdmissionStatus
+	for attempt := 0; attempt < 2; attempt++ {
+		admissionRequest := httptest.NewRequest(http.MethodPost, "/runner/v1/capability-triggers/admissions", nil)
+		admissionRequest.Header.Set("Authorization", "Bearer "+runnerToken)
+		admissionResponse := httptest.NewRecorder()
+		handler.ServeHTTP(admissionResponse, admissionRequest)
+		if admissionResponse.Code != http.StatusOK || json.Unmarshal(admissionResponse.Body.Bytes(), &admissionStatus) != nil {
+			t.Fatalf("trigger admission attempt %d status=%d body=%s", attempt, admissionResponse.Code, admissionResponse.Body.String())
+		}
+	}
+	if admissionStatus.ProgramExecution != "unsupported" || admissionStatus.PendingProgramTriggers < 1 || admissionStatus.ProgramReasonCode != "program_trigger_executor_unavailable" {
+		t.Fatalf("program trigger support status was not explicit: %+v", admissionStatus)
+	}
+	var idempotentAdmissionTasks, idempotentAdmissionRuns int
+	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE source='service'`).Scan(&idempotentAdmissionTasks); err != nil || idempotentAdmissionTasks != 2 {
+		t.Fatalf("repeated trigger polls created %d tasks, want 2 (err=%v)", idempotentAdmissionTasks, err)
+	}
+	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM capability_trigger_runs WHERE mode IN ('worker','super') AND state='running' AND task_id<>''`).Scan(&idempotentAdmissionRuns); err != nil || idempotentAdmissionRuns != 2 {
+		t.Fatalf("repeated trigger polls admitted %d worker/super runs, want 2 (err=%v)", idempotentAdmissionRuns, err)
 	}
 	triggerClaimRequest := httptest.NewRequest(http.MethodPost, "/runner/v1/capability-triggers/claims", nil)
 	triggerClaimRequest.Header.Set("Authorization", "Bearer "+runnerToken)
@@ -342,6 +365,34 @@ func TestRunnerDeploymentClaimAndFencedObservation(t *testing.T) {
 	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE source='service'`).Scan(&admittedTasks); err != nil || admittedTasks != 2 {
 		t.Fatalf("replaying trigger events duplicated admitted tasks: count=%d err=%v", admittedTasks, err)
 	}
+	var acceptedTaskID string
+	if err = store.DB().QueryRowContext(ctx, `SELECT task_id FROM capability_trigger_runs WHERE mode IN ('worker','super') AND state='running' AND task_id<>'' ORDER BY task_id LIMIT 1`).Scan(&acceptedTaskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB().ExecContext(ctx, `UPDATE tasks SET status='complete',finished_at=?,updated_at=? WHERE id=?`, time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano), acceptedTaskID); err != nil {
+		t.Fatal(err)
+	}
+	var resultEventCursor int64
+	if err = store.DB().QueryRowContext(ctx, `SELECT coalesce(max(cursor),0)+1 FROM events WHERE workspace_id='default'`).Scan(&resultEventCursor); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB().ExecContext(ctx, `UPDATE event_counters SET current_cursor=? WHERE workspace_id='default'`, resultEventCursor); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB().ExecContext(ctx, `INSERT INTO events(event_id,workspace_id,cursor,schema_version,event_type,occurred_at,subject_id,aggregate_type,aggregate_id,aggregate_version,payload) VALUES('task-result-decided','default',?,1,'task.result_decided',?,'owner','task',?,2,'{"type":"task.result_decided","payload":{"status":"complete"}}')`, resultEventCursor, time.Now().UTC().Format(time.RFC3339Nano), acceptedTaskID); err != nil {
+		t.Fatal(err)
+	}
+	acceptanceAdmissionRequest := httptest.NewRequest(http.MethodPost, "/runner/v1/capability-triggers/admissions", nil)
+	acceptanceAdmissionRequest.Header.Set("Authorization", "Bearer "+runnerToken)
+	acceptanceAdmissionResponse := httptest.NewRecorder()
+	handler.ServeHTTP(acceptanceAdmissionResponse, acceptanceAdmissionRequest)
+	if acceptanceAdmissionResponse.Code != http.StatusOK {
+		t.Fatalf("acceptance event processing status=%d body=%s", acceptanceAdmissionResponse.Code, acceptanceAdmissionResponse.Body.String())
+	}
+	var acceptedTriggerState string
+	if err = store.DB().QueryRowContext(ctx, `SELECT state FROM capability_trigger_runs WHERE task_id=?`, acceptedTaskID).Scan(&acceptedTriggerState); err != nil || acceptedTriggerState != "completed" {
+		t.Fatalf("user-accepted service task trigger state=%q err=%v", acceptedTriggerState, err)
+	}
 	if _, err = store.DB().ExecContext(ctx, `UPDATE capability_trigger_definitions SET next_run_at=? WHERE kind='schedule'`, time.Now().UTC().Add(-10*time.Minute).Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
@@ -353,8 +404,8 @@ func TestRunnerDeploymentClaimAndFencedObservation(t *testing.T) {
 	if scheduleResponse.Code != http.StatusOK || json.Unmarshal(scheduleResponse.Body.Bytes(), &scheduleClaim) != nil || scheduleClaim.ScheduledFor.IsZero() {
 		t.Fatalf("coalesced schedule claim=%d body=%s", scheduleResponse.Code, scheduleResponse.Body.String())
 	}
-	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE source='service'`).Scan(&admittedTasks); err != nil || admittedTasks != 3 {
-		t.Fatalf("scheduled super trigger did not admit exactly one task: tasks=%d err=%v", admittedTasks, err)
+	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE source='service'`).Scan(&admittedTasks); err != nil || admittedTasks != 4 {
+		t.Fatalf("schedule and backlog admission task count=%d, want 4 (err=%v)", admittedTasks, err)
 	}
 	scheduleObservation := contracts.CapabilityTriggerObservation{TriggerRunID: scheduleClaim.TriggerRunID, AttemptID: scheduleClaim.AttemptID, Fence: scheduleClaim.Fence, ObservationID: "schedule-completed", State: "completed", ObservedAt: time.Now().UTC()}
 	scheduleObservationRequest := httptest.NewRequest(http.MethodPost, "/runner/v1/capability-triggers/"+scheduleClaim.TriggerRunID+"/observations", strings.NewReader(string(marshal(scheduleObservation))))
@@ -423,11 +474,26 @@ func TestRunnerDeploymentClaimAndFencedObservation(t *testing.T) {
 		t.Fatalf("expired grant left queued task triggers: count=%d err=%v", expiredTaskRuns, err)
 	}
 	var canceledExpiredRuns int
-	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM capability_trigger_runs WHERE deployment_id=? AND mode IN ('worker','super') AND state='canceled' AND last_error_code='grant_expired'`, dep.ResourceID).Scan(&canceledExpiredRuns); err != nil || canceledExpiredRuns != 2 {
+	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM capability_trigger_runs WHERE deployment_id=? AND mode IN ('worker','super') AND state='canceled' AND last_error_code='grant_expired'`, dep.ResourceID).Scan(&canceledExpiredRuns); err != nil || canceledExpiredRuns != 1 {
 		t.Fatalf("expired worker/super runs were not durably canceled: count=%d err=%v", canceledExpiredRuns, err)
 	}
-	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE source='service'`).Scan(&serviceTasks); err != nil || serviceTasks != 3 {
+	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE source='service'`).Scan(&serviceTasks); err != nil || serviceTasks != 4 {
 		t.Fatalf("expired grant admitted another task: count=%d err=%v", serviceTasks, err)
+	}
+	tx = begin(t, store.DB())
+	if err = svc.reapInactiveServiceTasks(ctx, tx, []string{"default"}, time.Now().UTC()); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var canceledServiceTasks, canceledTaskEvents int
+	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE source='service' AND status='canceled'`).Scan(&canceledServiceTasks); err != nil || canceledServiceTasks != 3 {
+		t.Fatalf("expired queued service tasks not canceled: count=%d err=%v", canceledServiceTasks, err)
+	}
+	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM events WHERE event_type='task.canceled' AND aggregate_type='task'`).Scan(&canceledTaskEvents); err != nil || canceledTaskEvents != 3 {
+		t.Fatalf("canceled service task events=%d, want 3 (err=%v)", canceledTaskEvents, err)
 	}
 	// A new grant for the same deployment must not reactivate definitions that
 	// were created under its previous grant, even when the deployment is running.

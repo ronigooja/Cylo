@@ -89,15 +89,26 @@ func run(args []string) error {
 		ObserveTimeout: durationEnv("CYLO_RUNNER_OBSERVE_TIMEOUT", 15*time.Second),
 	}
 	deployments := &runner.DeploymentWorker{Control: control, Journal: journal, Executor: &runner.DeploymentExecutor{Docker: docker, Fences: deploymentAuthority}}
-	return serve(ctx, engine, deployments, *once, durationEnv("CYLO_RUNNER_IDLE_POLL_INTERVAL", 2*time.Second))
+	var triggerAdmissions *runner.TriggerAdmissionWorker
+	if boolEnv("CYLO_RUNNER_CAPABILITY_TRIGGERS_ENABLED", false) {
+		triggerAdmissions = &runner.TriggerAdmissionWorker{Control: control, OnProgramUnsupported: func(count int) {
+			log.Printf("%d capability program trigger(s) remain queued; program_trigger_executor_unavailable", count)
+		}}
+	}
+	return serve(ctx, engine, deployments, triggerAdmissions, *once, durationEnv("CYLO_RUNNER_IDLE_POLL_INTERVAL", 2*time.Second))
 }
 
-func serve(ctx context.Context, engine *runner.Engine, deployments *runner.DeploymentWorker, once bool, idle time.Duration) error {
+func serve(ctx context.Context, engine *runner.Engine, deployments *runner.DeploymentWorker, triggerAdmissions *runner.TriggerAdmissionWorker, once bool, idle time.Duration) error {
 	// Current claims include work already assigned to this runner. Replay those
 	// exact journaled requests before accepting another claim after restart.
 	current, err := engine.Control.Current(ctx)
 	if err != nil {
 		return fmt.Errorf("reconcile current claims: %w", err)
+	}
+	if once && triggerAdmissions != nil {
+		if err := triggerAdmissions.Run(ctx, true, durationEnv("CYLO_RUNNER_TRIGGER_POLL_INTERVAL", 15*time.Second)); err != nil {
+			return fmt.Errorf("admit capability triggers: %w", err)
+		}
 	}
 	if once && deployments != nil {
 		if err := deployments.Run(ctx, true, idle); err != nil && !errors.Is(err, runner.ErrNoDeployment) {
@@ -106,6 +117,7 @@ func serve(ctx context.Context, engine *runner.Engine, deployments *runner.Deplo
 	}
 	var wg sync.WaitGroup
 	var deploymentDone chan struct{}
+	var triggerAdmissionDone chan struct{}
 	if !once && deployments != nil {
 		deploymentDone = make(chan struct{})
 		go func() {
@@ -115,10 +127,22 @@ func serve(ctx context.Context, engine *runner.Engine, deployments *runner.Deplo
 			}
 		}()
 	}
+	if !once && triggerAdmissions != nil {
+		triggerAdmissionDone = make(chan struct{})
+		go func() {
+			defer close(triggerAdmissionDone)
+			if err := triggerAdmissions.Run(ctx, false, durationEnv("CYLO_RUNNER_TRIGGER_POLL_INTERVAL", 15*time.Second)); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("capability trigger admission polling failed: %v", err)
+			}
+		}()
+	}
 	shutdown := func() {
 		wg.Wait()
 		if deploymentDone != nil {
 			<-deploymentDone
+		}
+		if triggerAdmissionDone != nil {
+			<-triggerAdmissionDone
 		}
 	}
 	active := make(chan struct{}, 4)
@@ -240,6 +264,14 @@ func durationEnv(name string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return duration
+}
+
+func boolEnv(name string, fallback bool) bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv(name)))
+	if value == "" {
+		return fallback
+	}
+	return value == "1" || value == "true" || value == "yes"
 }
 
 func safeID(id string) string {

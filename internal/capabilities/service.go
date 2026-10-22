@@ -99,6 +99,7 @@ func Register(server *control.Server, store *storage.Store, cfg Config) error {
 		return err
 	}
 	return server.RegisterRunnerRoutes(func(mux *http.ServeMux) {
+		mux.HandleFunc("POST /runner/v1/capability-triggers/admissions", svc.admitTriggerTasks)
 		mux.HandleFunc("POST /runner/v1/deployments/claims", svc.claimDeployment)
 		mux.HandleFunc("GET /runner/v1/deployments/claims/current", svc.currentDeploymentClaim)
 		mux.HandleFunc("GET /runner/v1/deployments/claims/unresolved", svc.unresolvedDeploymentClaims)
