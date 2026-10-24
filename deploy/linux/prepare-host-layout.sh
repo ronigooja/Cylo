@@ -6,6 +6,12 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+docker_bin="${CYLO_DOCKER_BINARY:-docker}"
+if ! "$docker_bin" info >/dev/null 2>&1; then
+  echo "the Docker Engine must be available before preparing the Cylo host layout" >&2
+  exit 1
+fi
+
 if ! getent group docker >/dev/null; then
   echo "the Docker Engine docker group is required for the trusted runner" >&2
   exit 1
@@ -17,6 +23,12 @@ if ! id cylo-runner >/dev/null 2>&1; then
   useradd --system --gid cylo-runner --home-dir /var/lib/cylo/runner --shell /usr/sbin/nologin cylo-runner
 fi
 usermod --append --groups docker cylo-runner
+
+# Compose treats this as a deployment-owned external network so another
+# local gateway can join without being re-created by the Cylo stack.
+if ! "$docker_bin" network inspect cylo >/dev/null 2>&1; then
+  "$docker_bin" network create cylo >/dev/null
+fi
 
 install -d -o root -g root -m 0755 /opt/cylo/releases
 install -d -o root -g root -m 0750 /var/cache/cylo/builds
