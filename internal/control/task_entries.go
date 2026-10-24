@@ -38,6 +38,11 @@ func (s *Server) handleTaskEntries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiError(http.StatusUnauthorized, "unauthenticated", "device authentication required", nil))
 		return
 	}
+	if !HasScope(p, "client:read") {
+		writeError(w, apiError(http.StatusForbidden, "forbidden", "client:read scope is required", nil))
+		return
+	}
+
 	taskID := strings.TrimSpace(r.PathValue("task_id"))
 	if taskID == "" {
 		writeError(w, apiError(http.StatusBadRequest, "invalid_request", "task_id is required", nil))

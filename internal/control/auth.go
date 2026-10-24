@@ -80,6 +80,12 @@ func (s *Server) deviceAuth(next http.Handler) http.Handler {
 }
 
 func requiredCoreDeviceScope(r *http.Request) string {
+	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/tasks/") {
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/tasks/"), "/")
+		if len(parts) == 2 && parts[0] != "" && parts[1] == "entries" {
+			return "client:read"
+		}
+	}
 	switch r.URL.Path {
 	case "/v1/snapshot", "/v1/events", "/v1/notifications":
 		return "client:read"

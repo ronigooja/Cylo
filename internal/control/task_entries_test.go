@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
@@ -40,7 +41,7 @@ func taskEntriesTestServer(t *testing.T) (*Server, func()) {
 func getTaskEntries(server *Server, taskID, query, subject string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest("GET", "/v1/tasks/"+taskID+"/entries"+query, nil)
 	r.SetPathValue("task_id", taskID)
-	r = r.WithContext(context.WithValue(r.Context(), devicePrincipalKey{}, contracts.Principal{WorkspaceID: "default", SubjectID: subject}))
+	r = r.WithContext(context.WithValue(r.Context(), devicePrincipalKey{}, contracts.Principal{WorkspaceID: "default", SubjectID: subject, Scopes: []string{"client:read"}}))
 	w := httptest.NewRecorder()
 	server.handleTaskEntries(w, r)
 	return w
@@ -212,5 +213,42 @@ func TestTaskEntriesAllowsActiveProjectViewerAndRechecksRevocation(t *testing.T)
 	response = getTaskEntries(server, "private-task", "", "entries-owner")
 	if response.Code != 404 {
 		t.Fatalf("revoked viewer status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestTaskEntriesHTTPRequiresDeviceReadScope(t *testing.T) {
+	fixture, closeStore := taskEntriesTestServer(t)
+	defer closeStore()
+	// A synthetic bearer is stored only as a digest, matching device middleware.
+	token := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	hash, err := tokenHash(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.DB().Exec(`UPDATE devices SET token_hash=? WHERE id='entries-device'`, hash); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		scopes []string
+		want   int
+	}{
+		{"no grants", []string{}, 403},
+		{"command only", []string{"client:command"}, 403},
+		{"read", []string{"client:read"}, 200},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, err := NewServer(fixture.store, Config{DeviceScopes: test.scopes})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := httptest.NewRequest("GET", "/v1/tasks/entries-task/entries", nil)
+			r.Header.Set("Authorization", "Bearer "+token)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, r)
+			if w.Code != test.want {
+				t.Fatalf("status=%d want=%d body=%s", w.Code, test.want, w.Body.String())
+			}
+		})
 	}
 }
