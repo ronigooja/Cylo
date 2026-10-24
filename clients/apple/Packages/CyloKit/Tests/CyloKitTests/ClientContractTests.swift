@@ -349,7 +349,7 @@ final class ClientContractTests: XCTestCase {
 
         XCTAssertNil(model.exportArtifact)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
-        XCTAssertTrue(model.exportStatus?.contains("canceled") == true)
+        XCTAssertEqual(model.exportStatus, uiText("Saving was canceled. The prepared temporary file was removed."))
 
         let secondURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try Data("{}".utf8).write(to: secondURL)
@@ -387,7 +387,7 @@ final class ClientContractTests: XCTestCase {
         await task.value
 
         XCTAssertNil(model.exportArtifact)
-        XCTAssertFalse(model.exportStatus == "Preparing the authorized export…")
+        XCTAssertNotEqual(model.exportStatus, uiText("Preparing the authorized export…"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(producedURL).path))
         await model.prepareExport(scope: "personal", expectedConnectionEpoch: model.connectionEpoch)
         XCTAssertEqual(model.exportArtifact?.filename, "cylo-export-task-cancelled.json")
@@ -412,7 +412,7 @@ final class ClientContractTests: XCTestCase {
         XCTAssertTrue(model.memoryConflicts.isEmpty)
         XCTAssertNil(model.exportArtifact)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
-        XCTAssertTrue(model.exportStatus?.contains("access was denied") == true)
+        XCTAssertEqual(model.exportStatus, uiText("Memory access was denied; cached memory and the prepared export were cleared."))
     }
 
     @MainActor
@@ -454,7 +454,7 @@ final class ClientContractTests: XCTestCase {
 
         XCTAssertNil(model.exportArtifact)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
-        XCTAssertTrue(model.exportStatus?.contains("authority changed") == true)
+        XCTAssertEqual(model.exportStatus, uiText("Server authority changed; cached memory and the prepared export were cleared."))
     }
 
     @MainActor
@@ -668,7 +668,7 @@ final class ClientContractTests: XCTestCase {
 
         XCTAssertNil(model.exportArtifact)
         XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(producedURL).path))
-        XCTAssertTrue(model.exportStatus?.contains("Server memory changed") == true)
+        XCTAssertEqual(model.exportStatus, uiText("Server memory changed; prepare a fresh export."))
     }
 
     func testConnectionGenerationRejectsResponsesAfterOriginOrCredentialSwitch() throws {
@@ -783,7 +783,7 @@ final class ClientContractTests: XCTestCase {
 
         let result = await task.value
         XCTAssertFalse(result)
-        XCTAssertFalse(model.notice?.contains("Authorization revoked") ?? false)
+        XCTAssertNotEqual(model.notice, uiText("Authorization revoked. Stop cleanup status is shown in the capability inventory."))
         XCTAssertFalse(didRefresh)
     }
 
@@ -808,7 +808,7 @@ final class ClientContractTests: XCTestCase {
 
         let result = await task.value
         XCTAssertFalse(result)
-        XCTAssertFalse(model.notice?.contains("Authorization revoked") ?? false)
+        XCTAssertNotEqual(model.notice, uiText("Authorization revoked. Stop cleanup status is shown in the capability inventory."))
     }
 
     @MainActor
@@ -830,7 +830,7 @@ final class ClientContractTests: XCTestCase {
 
         XCTAssertFalse(result)
         XCTAssertEqual(model.capabilityDeployments.first?.version, 9)
-        XCTAssertEqual(model.notice, "The deployment version changed. The latest capability inventory has been loaded; review it before trying again.")
+        XCTAssertEqual(model.notice, uiText("The deployment version changed. The latest capability inventory has been loaded; review it before trying again."))
     }
 
     @MainActor
@@ -1156,7 +1156,7 @@ final class ClientContractTests: XCTestCase {
         await model.append(to: task, content: "Continue the existing task")
 
         XCTAssertEqual(requestCount, 0)
-        XCTAssertTrue(model.notice?.contains("finished") == true || model.notice?.contains("unavailable") == true)
+        XCTAssertEqual(model.notice, uiText("This task is unavailable in the latest snapshot. Refresh it or choose New task before sending."))
     }
 
     @MainActor
@@ -1282,8 +1282,7 @@ final class ClientContractTests: XCTestCase {
         XCTAssertEqual(hangupCount, 1, "duplicate terminal signals issue at most one hangup")
         XCTAssertEqual(model.tasks.map(\.id), ["task-live"], "media loss does not cancel or rewrite the authoritative task")
         guard case let .interrupted(reason) = model.voiceStatus else { return XCTFail("expected an interrupted voice status") }
-        XCTAssertTrue(reason.contains("quarantined"))
-        XCTAssertTrue(reason.contains("unverified"))
+        XCTAssertEqual(reason, uiFormat("%@ Local media is closed. Upstream termination is unverified; the account pool remains quarantined. Retry server hangup to repeat the idempotent lease release.", uiText("The WebRTC connection was lost.")))
         XCTAssertTrue(model.voicePoolStatus?.blocked == true)
         XCTAssertTrue(model.canEndVoiceSession, "the identity remains available for an idempotent server release retry")
 

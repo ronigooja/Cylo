@@ -118,7 +118,7 @@ extension CredentialStorageTests {
 
         await model.start()
 
-        XCTAssertEqual(model.freshness, .offline(reason: CyloError.credentialStorageNotSelected.localizedDescription, cursor: nil))
-        XCTAssertEqual(model.notice, CyloError.credentialStorageNotSelected.localizedDescription)
+        XCTAssertEqual(model.freshness, .offline(reason: uiText(CyloError.credentialStorageNotSelected.localizedDescription), cursor: nil))
+        XCTAssertEqual(model.notice, uiText(CyloError.credentialStorageNotSelected.localizedDescription))
     }
 }
