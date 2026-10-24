@@ -283,7 +283,14 @@ public final class CyloAppModel: ObservableObject {
             let status = try await api.pairingStatus(id: result.pairingId, identity: identity.loadOrCreate())
             guard generation == connectionGeneration.value else { return }
             pairingStatus = status
-            notice = "Pairing request sent. An approved device must approve this device before it can read Cylo data."
+            if status.status == "approved" {
+                notice = "This device is already registered and approved. Loading the server snapshot…"
+                try await refreshSnapshot()
+                guard generation == connectionGeneration.value else { return }
+                startEventLoop()
+            } else {
+                notice = "Pairing request sent. An approved device must approve this device before it can read Cylo data."
+            }
         } catch { if generation == connectionGeneration.value { notice = userMessage(error) } }
     }
 

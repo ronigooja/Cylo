@@ -1081,7 +1081,10 @@ private struct SettingsView: View {
                     Task { await model.bootstrap(code: bootstrapCode, deviceName: deviceName); bootstrapCode = "" }
                 }
                 .disabled(bootstrapCode.isEmpty || deviceName.isEmpty || model.isBusy)
-                Button("Request approval on this device") { Task { await model.requestPairing(deviceName: deviceName) } }
+                Button(model.pairingStatus?.status == "approved" ? "This device is approved" : "Request approval on this device") {
+                    Task { await model.requestPairing(deviceName: deviceName) }
+                }
+                .disabled(model.isBusy || model.pairingStatus?.status == "approved")
                 if let pairing = model.pairingStatus {
                     LabeledContent("Pairing", value: pairing.status.capitalized)
                     LabeledContent("Expires", value: pairing.expiresAt)
