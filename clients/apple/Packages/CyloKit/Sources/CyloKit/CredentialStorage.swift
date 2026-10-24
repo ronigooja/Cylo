@@ -55,7 +55,7 @@ public final class PrivateFileDeviceIdentityStore: DeviceIdentityStoring, @unche
     ) {
         let support = applicationSupportDirectory
             ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support", isDirectory: true)
+            ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent("Library/Application Support", isDirectory: true)
         let appDirectory = support.appendingPathComponent(bundleIdentifier, isDirectory: true)
         let deviceIdentitiesDirectory = appDirectory.appendingPathComponent("DeviceIdentities", isDirectory: true)
         let originDirectory = deviceIdentitiesDirectory.appendingPathComponent(CredentialStorageOrigin.digest(for: serverURL), isDirectory: true)

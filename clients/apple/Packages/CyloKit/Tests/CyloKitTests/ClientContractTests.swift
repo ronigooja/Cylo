@@ -445,7 +445,7 @@ final class ClientContractTests: XCTestCase {
         try Data("archive".utf8).write(to: fileURL)
         let originalAuthority = SnapshotAuthority(instanceLineageId: "lineage-1", generation: 5, deletionSequence: "8")
         model.setSnapshotForTesting(Snapshot(serverVersion: "1", eventCursor: "17", projects: [], tasks: [], approvals: [], devices: [], runs: [], authority: originalAuthority))
-        model.setExportArtifactForTesting(ScopedExportArtifact(fileURL: fileURL, filename: "cylo-export-authority.zip", scope: "personal", snapshotCursor: "17", instanceLineageID: "lineage-1", generation: 5, deletionSequence: 8))
+        model.setExportArtifactForTesting(ScopedExportArtifact(fileURL: fileURL, filename: "cylo-export-authority.zip", scope: "personal", snapshotCursor: "17", instanceLineageID: "lineage-1", generation: 5, deletionSequence: "8"))
         model.snapshotFetchOverrideForTesting = {
             Snapshot(serverVersion: "1", eventCursor: "18", projects: [], tasks: [], approvals: [], devices: [], runs: [], authority: SnapshotAuthority(instanceLineageId: "lineage-1", generation: 5, deletionSequence: "9"))
         }

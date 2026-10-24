@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import CyloKit
+@testable import CyloUI
 
 final class CredentialStorageTests: XCTestCase {
     func testPrivateFileStoreBearerReadDoesNotCreateIdentity() throws {
