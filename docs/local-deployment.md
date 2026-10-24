@@ -46,7 +46,20 @@ name and the deployment-provided one-use bootstrap code, then select
 **Bootstrap first approved device**. A temporary private code file is supplied
 at `bootstrap-code.tmp` within the dedicated install directory. Remove that
 temporary copy after successful registration. Do not paste the code into
-chat or repository files. The app stores its device identity in Keychain.
+chat or repository files.
+
+In **More > Settings > Credential storage**, choose **Keychain (recommended)**
+or **Local private file** for this server. Until a choice is saved the app does
+not access credentials or connect automatically. Keychain may request system
+permission. Local files use private directories (0700) and files (0600) below
+`~/Library/Application Support/com.cylo.mac/DeviceIdentities/<origin-hash>/`.
+Local file credentials are not encrypted by Keychain.
+
+Changing storage does not automatically copy or overwrite an identity. Use the
+explicit copy-and-switch action to preserve an existing approved identity; this
+may require allowing the old Keychain record to be read once. Switching without
+copying uses a separate identity and requires device approval. Denied Keychain
+access does not erase the existing credential.
 
 Remote automation cannot bypass macOS Keychain access controls or
 Accessibility permissions. An installed/running app is not evidence of

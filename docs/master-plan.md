@@ -216,8 +216,10 @@ probe or live AO task was performed during installation.
   `/Users/zhuwei/terminal/cylo-native-install-20261024` directory, and launched.
   App-relative WebRTC loading and strict ad-hoc signature verification passed.
   A native URLSession probe without ATS exceptions reached the backend. First
-  device registration remains manual: Accessibility automation and an external
-  helper's Keychain read were denied. No bootstrap credential was consumed.
+  device registration was initially left manual because Accessibility
+  automation and an external helper's Keychain read were denied. The user
+  subsequently registered one approved device; deployment agents did not
+  consume a bootstrap credential.
   APNs, distribution signing, iOS installation, and authenticated app task flows
   remain unverified.
 - Space3044 `chatgpt-web-voice` was deployed without upstream source changes at
@@ -228,6 +230,31 @@ probe or live AO task was performed during installation.
   downstream config requests return 401 and a restricted deployment key returns
   200. No ChatGPT Web account was imported. Cylo voice stays disabled pending
   trusted HTTPS and the required account/media lifecycle evidence.
+
+A later local device-registration attempt exposed a duplicate-token defect:
+requesting pairing after successful bootstrap attempted to insert the same
+device token again and returned HTTP 500. The server hotfix from `3b80cbd`
+returns the existing approved/pending device status without extending pairing
+TTL or adding rows; revoked and expired credentials remain rejected, and
+request-ID conflicts remain enforced. Control/acceptance tests and the full Go
+suite passed on the backend candidate. Independent review approved the change.
+The installed server image is now `cylo-server:release-20261024-pairingfix`;
+only that container was replaced. Health and authentication checks passed, the
+existing approved device record was preserved, and runner/memory/Qdrant were
+left running. The Mac app's approved-pairing branch was also fixed and installed.
+No production identity was used to synthesize a pairing request during checks.
+
+The user subsequently requested a credential-storage choice. The installed
+macOS app now offers per-server Keychain or private local-file storage. With no
+selection it does not read credentials or auto-connect; normal bearer/cache
+reads do not create a device identity. Creation occurs only through explicit
+device setup. Migration explicitly copies and verifies the identity without
+deleting the source or overwriting conflicts. Private files use 0700 directories,
+0600 files, and atomic publication. Source review passed; the first app build
+found an initializer-order error, which was corrected before the successful
+build and installation. Following the user's instruction to install and let
+them test, the new storage tests were not run and no functional credential,
+bootstrap, or pairing operations were performed during installation.
 
 Installation found and corrected deployment defects: hard-coded image
 architecture, unreadable release roots, missing shared-network provisioning,
