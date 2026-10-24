@@ -102,6 +102,7 @@ services:
 networks:
   default:
     name: cylo
+    external: true
 
 secrets:
   bootstrap_code:
