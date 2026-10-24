@@ -13,6 +13,10 @@ fake_docker="$fake_bin/docker"
 cat >"$fake_go" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == env && "${2:-}" == GOARCH ]]; then
+  printf '%s\n' "${CYLO_FAKE_GOARCH:-arm64}"
+  exit 0
+fi
 out=""
 while (($#)); do
   if [[ "$1" == "-o" ]]; then
@@ -61,6 +65,7 @@ run_release() {
     CYLO_BUILD_ROOT="$build_root" \
     CYLO_RELEASE_ROOT="$release_root" \
     CYLO_FAKE_DOCKER_LOG="$docker_log" \
+    CYLO_FAKE_GOARCH="${CYLO_FAKE_GOARCH:-arm64}" \
     "$@" \
     bash "$repo_root/deploy/linux/build-release.sh" "$tag"
 }
@@ -86,6 +91,7 @@ if find "$build_root" -maxdepth 1 -name '.go-retry-tag.build.*' -print -quit | g
 fi
 run_release go-retry-tag "$release_root" "$build_root" "$tmp_root/go-retry.log"
 [[ -x "$release_root/go-retry-tag/bin/cylo-runner" ]]
+grep -q -- '--platform linux/arm64' "$tmp_root/go-retry.log"
 
 # A Docker failure must discard only its private stage so the same immutable
 # release tag can be retried successfully.
@@ -103,6 +109,7 @@ run_release retry-tag "$release_root" "$build_root" "$tmp_root/docker-retry.log"
 [[ -x "$release_root/retry-tag/bin/cylo-secret-entrypoint" ]]
 [[ -f "$release_root/retry-tag/deploy-linux/build-release.sh" ]]
 [[ "$(cat "$release_root/retry-tag/bin/cylo-runner")" == "synthetic executable: cylo-runner" ]]
+grep -q -- '--platform linux/arm64' "$tmp_root/docker-retry.log"
 [[ "$(stat -c '%a' "$release_root/retry-tag")" == 700 ]]
 if find "$release_root" -maxdepth 1 -name '.retry-tag.staging.*' -print -quit | grep -q .; then
   echo "successful publish left its staging directory" >&2

@@ -1,3 +1,5 @@
+name: cylo
+
 services:
   cylo-server:
     image: ${CYLO_SERVER_IMAGE:?set CYLO_SERVER_IMAGE to an immutable release tag}
@@ -43,6 +45,8 @@ services:
         target: runner_token
       - source: memory_runner_token
         target: memory_runner_token
+    networks:
+      - default
 
   qdrant:
     image: qdrant/qdrant:v1.19.1@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10
@@ -94,6 +98,10 @@ services:
     depends_on:
       - qdrant
       - cylo-server
+
+networks:
+  default:
+    name: cylo
 
 secrets:
   bootstrap_code:
