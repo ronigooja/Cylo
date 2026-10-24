@@ -61,6 +61,8 @@ services:
     tmpfs:
       - /qdrant/storage:rw,noexec,nosuid,nodev,size=2g,mode=0700,uid=1000,gid=1000
       - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    environment:
+      QDRANT__STORAGE__SNAPSHOTS_PATH: /qdrant/storage/snapshots
 
   cylo-memory-worker:
     image: ${CYLO_MEMORY_WORKER_IMAGE:?set an immutable memory worker image tag}

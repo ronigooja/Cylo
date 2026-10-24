@@ -110,7 +110,7 @@ run_release retry-tag "$release_root" "$build_root" "$tmp_root/docker-retry.log"
 [[ -f "$release_root/retry-tag/deploy-linux/build-release.sh" ]]
 [[ "$(cat "$release_root/retry-tag/bin/cylo-runner")" == "synthetic executable: cylo-runner" ]]
 grep -q -- '--platform linux/arm64' "$tmp_root/docker-retry.log"
-[[ "$(stat -c '%a' "$release_root/retry-tag")" == 700 ]]
+[[ "$(stat -c '%a' "$release_root/retry-tag")" == 755 ]]
 if find "$release_root" -maxdepth 1 -name '.retry-tag.staging.*' -print -quit | grep -q .; then
   echo "successful publish left its staging directory" >&2
   exit 1

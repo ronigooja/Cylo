@@ -45,6 +45,7 @@ build_dir="$(mktemp -d "$build_root/.${tag}.build.XXXXXX")"
 release_stage="$(mktemp -d "$release_root/.${tag}.staging.XXXXXX")"
 chmod 0700 "$build_dir"
 mkdir -p "$build_dir/bin" "$release_stage/bin"
+chmod 0755 "$release_stage"
 
 export CGO_ENABLED=0 GOOS=linux GOARCH="$build_goarch"
 "$go_bin" build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_dir/bin/cylo-server" ./cmd/cylo-server
