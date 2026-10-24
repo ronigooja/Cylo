@@ -149,6 +149,111 @@ func TestReviewHTTPIdentityAndReceipts(t *testing.T) {
 		t.Error("hashed credential storage missing")
 	}
 }
+
+func TestReviewPairingReusesExistingDeviceToken(t *testing.T) {
+	code, token := reviewToken(t), reviewToken(t)
+	s, h := reviewServer(t, control.Config{BootstrapCode: code}, nil)
+	registered := reviewBootstrap(t, h, code, token)
+
+	// The app can show the pairing screen after bootstrap. Reusing its device
+	// token must return the approved identity rather than hit devices.token_hash
+	// UNIQUE and surface a 500.
+	retry := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{
+		RequestID: "pairing-after-bootstrap", DeviceName: "same-device", DeviceToken: token,
+	})
+	if retry.Code != http.StatusOK {
+		t.Fatalf("existing approved pairing status=%d body=%s", retry.Code, retry.Body.String())
+	}
+	var approved contracts.PairingStatus
+	if err := json.Unmarshal(retry.Body.Bytes(), &approved); err != nil {
+		t.Fatal(err)
+	}
+	if approved.PairingID != registered.Device.ID || approved.Status != "approved" || approved.ApprovedAt == nil {
+		t.Fatalf("existing approved pairing=%+v", approved)
+	}
+	var devices, authRequests int
+	if err := s.DB().QueryRow("SELECT count(*) FROM devices").Scan(&devices); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB().QueryRow("SELECT count(*) FROM auth_requests").Scan(&authRequests); err != nil {
+		t.Fatal(err)
+	}
+	if devices != 1 || authRequests != 1 {
+		t.Fatalf("existing approved pairing created rows: devices=%d auth_requests=%d", devices, authRequests)
+	}
+
+	pendingToken := reviewToken(t)
+	first := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{
+		RequestID: "pending-first", DeviceName: "pending", DeviceToken: pendingToken,
+	})
+	if first.Code != http.StatusCreated {
+		t.Fatalf("new pairing status=%d body=%s", first.Code, first.Body.String())
+	}
+	var pending contracts.PairingStatus
+	if err := json.Unmarshal(first.Body.Bytes(), &pending); err != nil {
+		t.Fatal(err)
+	}
+	second := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{
+		RequestID: "pending-retry", DeviceName: "renamed-locally", DeviceToken: pendingToken,
+	})
+	if second.Code != http.StatusOK {
+		t.Fatalf("existing pending pairing status=%d body=%s", second.Code, second.Body.String())
+	}
+	var pendingRetry contracts.PairingStatus
+	if err := json.Unmarshal(second.Body.Bytes(), &pendingRetry); err != nil {
+		t.Fatal(err)
+	}
+	if pendingRetry.PairingID != pending.PairingID || pendingRetry.Status != "pending" || !pendingRetry.ExpiresAt.Equal(pending.ExpiresAt) {
+		t.Fatalf("existing pending pairing changed: first=%+v retry=%+v", pending, pendingRetry)
+	}
+
+	if _, err := s.DB().Exec("UPDATE devices SET pairing_expires_at=? WHERE id=?", time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano), pending.PairingID); err != nil {
+		t.Fatal(err)
+	}
+	expired := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{
+		RequestID: "pending-expired-retry", DeviceName: "pending", DeviceToken: pendingToken,
+	})
+	if expired.Code != http.StatusGone {
+		t.Fatalf("expired pending retry status=%d body=%s", expired.Code, expired.Body.String())
+	}
+	expiredOriginal := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{
+		RequestID: "pending-first", DeviceName: "pending", DeviceToken: pendingToken,
+	})
+	if expiredOriginal.Code != http.StatusGone {
+		t.Fatalf("expired original pairing retry status=%d body=%s", expiredOriginal.Code, expiredOriginal.Body.String())
+	}
+
+	if _, err := s.DB().Exec("UPDATE devices SET status='revoked',revoked_at=? WHERE id=?", time.Now().UTC().Format(time.RFC3339Nano), pending.PairingID); err != nil {
+		t.Fatal(err)
+	}
+	revoked := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{
+		RequestID: "pending-revoked-retry", DeviceName: "pending", DeviceToken: pendingToken,
+	})
+	if revoked.Code != http.StatusConflict || !bytes.Contains(revoked.Body.Bytes(), []byte(`"code":"device_revoked"`)) {
+		t.Fatalf("revoked pairing status=%d body=%s", revoked.Code, revoked.Body.String())
+	}
+	revokedOriginal := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{
+		RequestID: "pending-first", DeviceName: "pending", DeviceToken: pendingToken,
+	})
+	if revokedOriginal.Code != http.StatusConflict || !bytes.Contains(revokedOriginal.Body.Bytes(), []byte(`"code":"device_revoked"`)) {
+		t.Fatalf("revoked original pairing retry status=%d body=%s", revokedOriginal.Code, revokedOriginal.Body.String())
+	}
+
+	// request_id is shared by bootstrap and pairing records; reject a cross-kind
+	// reuse as a typed conflict instead of surfacing SQLite's PRIMARY KEY error.
+	conflict := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{
+		RequestID: "bootstrap", DeviceName: "another", DeviceToken: reviewToken(t),
+	})
+	if conflict.Code != http.StatusConflict || !bytes.Contains(conflict.Body.Bytes(), []byte(`"code":"idempotency_conflict"`)) {
+		t.Fatalf("cross-kind request reuse status=%d body=%s", conflict.Code, conflict.Body.String())
+	}
+	conflictWithExistingToken := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{
+		RequestID: "bootstrap", DeviceName: "another", DeviceToken: token,
+	})
+	if conflictWithExistingToken.Code != http.StatusConflict || !bytes.Contains(conflictWithExistingToken.Body.Bytes(), []byte(`"code":"idempotency_conflict"`)) {
+		t.Fatalf("cross-kind existing-token reuse status=%d body=%s", conflictWithExistingToken.Code, conflictWithExistingToken.Body.String())
+	}
+}
 func TestReviewExtensionRollback(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
 	s, h := reviewServer(t, control.Config{BootstrapCode: code}, func(srv *control.Server) {

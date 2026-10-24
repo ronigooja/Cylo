@@ -174,11 +174,63 @@ func (s *Server) handlePairingCreate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
+		if status.Status == "revoked" {
+			writeError(w, apiError(http.StatusConflict, "device_revoked", "device credential has been revoked", nil))
+			return
+		}
+		if status.Status == "pending" && status.ExpiresAt.Before(time.Now().UTC()) {
+			writeError(w, apiError(http.StatusGone, "pairing_expired", "pairing request has expired", nil))
+			return
+		}
 		if err = tx.Commit(); err != nil {
 			writeError(w, err)
 			return
 		}
 		writeJSON(w, 200, status)
+		return
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		writeError(w, err)
+		return
+	}
+	// request_id is globally unique across bootstrap and pairing requests.
+	// Check this before token replay so a cross-kind reuse cannot be accepted
+	// merely because the token belongs to an already-approved device.
+	var existingKind string
+	err = tx.QueryRowContext(r.Context(), `SELECT kind FROM auth_requests WHERE request_id=?`, req.RequestID).Scan(&existingKind)
+	if err == nil {
+		writeError(w, apiError(http.StatusConflict, "idempotency_conflict", "request_id was already used for a different identity request", nil))
+		return
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		writeError(w, err)
+		return
+	}
+	// A device token identifies the device, not a single pairing request. The
+	// first device is commonly bootstrapped from the same app that later opens
+	// the pairing screen. Treat that retry as an idempotent status read instead
+	// of attempting a second devices INSERT (token_hash is UNIQUE).
+	var existingStatus string
+	err = tx.QueryRowContext(r.Context(), `SELECT id,status FROM devices WHERE token_hash=?`, token).Scan(&deviceID, &existingStatus)
+	if err == nil {
+		if existingStatus == "revoked" {
+			writeError(w, apiError(http.StatusConflict, "device_revoked", "device credential has been revoked", nil))
+			return
+		}
+		status, statusErr := scanPairingStatus(tx, r.Context(), deviceID)
+		if statusErr != nil {
+			writeError(w, statusErr)
+			return
+		}
+		if existingStatus == "pending" && status.ExpiresAt.Before(time.Now().UTC()) {
+			writeError(w, apiError(http.StatusGone, "pairing_expired", "pairing request has expired", nil))
+			return
+		}
+		if err = tx.Commit(); err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, status)
 		return
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
