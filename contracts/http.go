@@ -115,6 +115,15 @@ type TaskEntry struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
+// TaskMessage is a task timeline entry returned by the paginated task history endpoint.
+type TaskMessage struct {
+	ID        string    `json:"id"`
+	TaskID    string    `json:"task_id"`
+	Kind      string    `json:"kind"`
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type Device struct {
 	ID          string     `json:"id"`
 	WorkspaceID string     `json:"workspace_id"`

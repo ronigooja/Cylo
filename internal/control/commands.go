@@ -34,6 +34,7 @@ func (s *Server) registerCoreRoutes() {
 	s.device.HandleFunc("GET /v1/commands/{command_id}", s.handleGetCommand)
 	s.device.HandleFunc("GET /v1/commands", s.handleGetCommandByKey)
 	s.device.HandleFunc("GET /v1/snapshot", s.handleSnapshot)
+	s.device.HandleFunc("GET /v1/tasks/{task_id}/entries", s.handleTaskEntries)
 	s.device.HandleFunc("GET /v1/events", s.handleEvents)
 	s.device.HandleFunc("GET /v1/notifications", s.handleNotifications)
 	s.runner.HandleFunc("POST /runner/v1/claims", s.handleClaims)
