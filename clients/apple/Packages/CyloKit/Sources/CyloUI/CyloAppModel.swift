@@ -200,7 +200,7 @@ public final class CyloAppModel: ObservableObject {
         pushNotificationsEnabled = defaults.bool(forKey: "cylo.apns.optIn")
         snapshotCache = nil
         if credentialStorageChoice == nil {
-            freshness = .offline(reason: "Choose Keychain or local private file in Settings before connecting.", cursor: nil)
+            freshness = .offline(reason: uiText("Choose Keychain or local private file in Settings before connecting."), cursor: nil)
         }
         RemotePushBridge.shared.onToken = { [weak self] token in
             Task { @MainActor [weak self] in self?.receiveAPNSToken(token) }
@@ -209,7 +209,7 @@ public final class CyloAppModel: ObservableObject {
             await self?.refreshAfterRemoteWake()
         }
         RemotePushBridge.shared.onFailure = { [weak self] in
-            Task { @MainActor [weak self] in self?.notice = "Remote notifications are unavailable on this installation. The Cylo inbox remains available." }
+            Task { @MainActor [weak self] in self?.notice = uiText("Remote notifications are unavailable on this installation. The Cylo inbox remains available.") }
         }
     }
 
@@ -243,8 +243,8 @@ public final class CyloAppModel: ObservableObject {
 
     public func start() async {
         guard credentialStorageChoice != nil else {
-            freshness = .offline(reason: CyloError.credentialStorageNotSelected.localizedDescription, cursor: snapshot?.eventCursor)
-            notice = CyloError.credentialStorageNotSelected.localizedDescription
+            freshness = .offline(reason: userMessage(CyloError.credentialStorageNotSelected), cursor: snapshot?.eventCursor)
+            notice = userMessage(CyloError.credentialStorageNotSelected)
             return
         }
         let configuredAPI: APIClient
@@ -314,7 +314,7 @@ public final class CyloAppModel: ObservableObject {
 
     public func selectCredentialStorage(_ choice: CredentialStorageChoice) async {
         guard let url = validServerURL(serverAddress) else {
-            notice = CyloError.invalidServerURL.localizedDescription
+            notice = userMessage(CyloError.invalidServerURL)
             return
         }
         let savedChoice = Self.loadCredentialStorageChoice(serverURL: url, defaults: defaults)
@@ -349,11 +349,11 @@ public final class CyloAppModel: ObservableObject {
         defaults.set(choice.rawValue, forKey: CredentialStorageChoice.defaultsKey(serverURL: url))
         connectionGeneration.switchOrigin(to: url)
         connectionEpoch = connectionGeneration.value
-        freshness = .offline(reason: "Credential storage changed. Review the identity details, then choose Save and connect.", cursor: nil)
+        freshness = .offline(reason: uiText("Credential storage changed. Review the identity details, then choose Save and connect."), cursor: nil)
         if choice == .privateFile {
-            notice = "Local private file is separate from Keychain. It will not inherit an existing device registration unless you explicitly copy the identity."
+            notice = uiText("Local private file is separate from Keychain. It will not inherit an existing device registration unless you explicitly copy the identity.")
         } else {
-            notice = "Keychain selected. Save and connect to use the existing Keychain identity."
+            notice = uiText("Keychain selected. Save and connect to use the existing Keychain identity.")
         }
     }
 
@@ -363,7 +363,7 @@ public final class CyloAppModel: ObservableObject {
         guard let url = validServerURL(serverAddress),
               let sourceChoice = Self.loadCredentialStorageChoice(serverURL: url, defaults: defaults),
               sourceChoice != destinationChoice else {
-            notice = "Choose a server and a different destination storage before copying the identity."
+            notice = uiText("Choose a server and a different destination storage before copying the identity.")
             return
         }
         credentialStorageChoice = sourceChoice
@@ -371,7 +371,7 @@ public final class CyloAppModel: ObservableObject {
             let source = sourceChoice.makeStore(serverURL: url)
             let destination = destinationChoice.makeStore(serverURL: url)
             guard let original = try source.loadExisting() else {
-                notice = "No identity exists in the current storage. Nothing was copied or created."
+                notice = uiText("No identity exists in the current storage. Nothing was copied or created.")
                 return
             }
             let written = try destination.storeIfAbsent(original)
@@ -379,7 +379,7 @@ public final class CyloAppModel: ObservableObject {
                 throw CyloError.credentialConflict
             }
             await selectCredentialStorage(destinationChoice)
-            notice = "The same device identity was copied to \(destinationChoice.title). The original remains in \(sourceChoice.title). Save and connect to continue."
+            notice = uiFormat("The same device identity was copied to %@. The original remains in %@. Save and connect to continue.", uiText(destinationChoice.title), uiText(sourceChoice.title))
         } catch {
             notice = userMessage(error)
         }
@@ -398,7 +398,7 @@ public final class CyloAppModel: ObservableObject {
             _ = try await api.bootstrap(code: code, deviceName: deviceName, identity: deviceIdentity)
             guard generation == connectionGeneration.value else { return false }
             accepted = true
-            notice = "This device is registered. Loading the server snapshot…"
+            notice = uiText("This device is registered. Loading the server snapshot…")
             try await refreshSnapshot()
             guard generation == connectionGeneration.value else { return false }
             startEventLoop()
@@ -424,12 +424,12 @@ public final class CyloAppModel: ObservableObject {
             guard generation == connectionGeneration.value else { return }
             pairingStatus = status
             if status.status == "approved" {
-                notice = "This device is already registered and approved. Loading the server snapshot…"
+                notice = uiText("This device is already registered and approved. Loading the server snapshot…")
                 try await refreshSnapshot()
                 guard generation == connectionGeneration.value else { return }
                 startEventLoop()
             } else {
-                notice = "Pairing request sent. An approved device must approve this device before it can read Cylo data."
+                notice = uiText("Pairing request sent. An approved device must approve this device before it can read Cylo data.")
             }
         } catch { if generation == connectionGeneration.value { notice = userMessage(error) } }
     }
@@ -445,7 +445,7 @@ public final class CyloAppModel: ObservableObject {
             pairingID = id
             pairingStatus = status
             if pairingStatus?.status == "approved" {
-                notice = "This device was approved. Loading the server snapshot…"
+                notice = uiText("This device was approved. Loading the server snapshot…")
                 try await refreshSnapshot()
                 guard generation == connectionGeneration.value else { return }
                 startEventLoop()
@@ -497,7 +497,7 @@ public final class CyloAppModel: ObservableObject {
         let preferenceEpoch = pushPreferenceEpoch
         do {
             guard try await NativeNotificationDelivery.shared.requestPermission() else {
-                notice = "System notification permission is disabled. The Cylo inbox remains available."
+                notice = uiText("System notification permission is disabled. The Cylo inbox remains available.")
                 return
             }
             guard preferenceEpoch == pushPreferenceEpoch else { return }
@@ -506,12 +506,12 @@ public final class CyloAppModel: ObservableObject {
             NativeNotificationDelivery.shared.registerForRemoteNotifications()
             await registerPendingAPNSToken()
             if pendingAPNSTokenHex == nil {
-                notice = "Push wakeups are enabled. Waiting for APNs registration."
+                notice = uiText("Push wakeups are enabled. Waiting for APNs registration.")
             } else if lastRegisteredAPNSTokenHex == pendingAPNSTokenHex {
-                notice = "Push wakeups are enabled. Notification content remains in the Cylo inbox."
+                notice = uiText("Push wakeups are enabled. Notification content remains in the Cylo inbox.")
             }
         } catch {
-            notice = "System notification permission could not be requested: \(error.localizedDescription)"
+            notice = uiFormat("System notification permission could not be requested: %@", userMessage(error))
         }
     }
 
@@ -526,7 +526,7 @@ public final class CyloAppModel: ObservableObject {
             defaults.set(true, forKey: pushRevocationPendingKey)
         }
         guard registeredPushTokenID != nil else {
-            notice = "Push wakeups are disabled on this device."
+            notice = uiText("Push wakeups are disabled on this device.")
             return
         }
         defaults.set(true, forKey: pushRevocationPendingKey)
@@ -541,7 +541,7 @@ public final class CyloAppModel: ObservableObject {
             await refreshMemory()
         } catch {
             if snapshot == nil { setOffline(error) }
-            else { setStale("A push wakeup arrived, but the latest server state could not be loaded: \(userMessage(error))") }
+            else { setStale(uiFormat("A push wakeup arrived, but the latest server state could not be loaded: %@", userMessage(error))) }
         }
     }
 
@@ -561,7 +561,7 @@ public final class CyloAppModel: ObservableObject {
             hasLoadedNotificationInbox = true
         } catch {
             guard generation == connectionGeneration.value else { return }
-            notice = "The durable notification inbox could not be refreshed: \(userMessage(error))"
+            notice = uiFormat("The durable notification inbox could not be refreshed: %@", userMessage(error))
         }
     }
 
@@ -612,9 +612,9 @@ public final class CyloAppModel: ObservableObject {
                 }
                 if let failure = error as? CyloError,
                    case let .http(status, _, _, _) = failure, status == 401 || status == 403 {
-                    clearMemoryAndPreparedExport(status: "Memory access was denied; cached memory and the prepared export were cleared.")
+                    clearMemoryAndPreparedExport(status: uiText("Memory access was denied; cached memory and the prepared export were cleared."))
                 } else {
-                    notice = "Memory could not be refreshed: \(userMessage(error))"
+                    notice = uiFormat("Memory could not be refreshed: %@", userMessage(error))
                 }
             }
             nextQuery = pendingMemoryRefreshQuery
@@ -634,13 +634,13 @@ public final class CyloAppModel: ObservableObject {
             capabilityDeployments = nextDeployments.items
         } catch {
             guard generation == connectionGeneration.value else { return }
-            notice = "Capability inventory could not be refreshed: \(userMessage(error))"
+            notice = uiFormat("Capability inventory could not be refreshed: %@", userMessage(error))
         }
     }
 
     public func submitCapabilityRelease(artifactRef: String, artifactDigest: String, entrypoint: String, capabilities: String, cpuMillis: Int64, memoryBytes: Int64, diskBytes: Int64, timeoutSeconds: Int64, concurrency: Int, expectedConnectionEpoch: UInt64) async -> Bool {
         guard expectedConnectionEpoch == connectionEpoch else {
-            notice = "The server connection changed. Reopen this form and review its values before submitting."
+            notice = uiText("The server connection changed. Reopen this form and review its values before submitting.")
             return false
         }
         let manifest: JSONValue = .object([
@@ -666,7 +666,7 @@ public final class CyloAppModel: ObservableObject {
     public func requestCapabilityDeployment(serviceID: String, releaseDigest: String, operation: String, expectedConnectionEpoch: UInt64) async -> Bool {
         guard expectedConnectionEpoch == connectionEpoch,
               capabilityReleases.contains(where: { $0.digest == releaseDigest }) else {
-            notice = "The server connection or release selection changed. Reopen this form and review the current inventory."
+            notice = uiText("The server connection or release selection changed. Reopen this form and review the current inventory.")
             return false
         }
         let payload: JSONValue = .object([
@@ -688,7 +688,7 @@ public final class CyloAppModel: ObservableObject {
               !current.grantId.isEmpty else {
             await refreshRevocationInventory()
             guard expectedConnectionEpoch == connectionEpoch else { return false }
-            notice = "This deployment changed or its authorization is already revoked. The latest capability inventory is being loaded."
+            notice = uiText("This deployment changed or its authorization is already revoked. The latest capability inventory is being loaded.")
             return false
         }
 
@@ -709,14 +709,14 @@ public final class CyloAppModel: ObservableObject {
             guard expectedConnectionEpoch == connectionEpoch else { return false }
             if let refreshed = capabilityDeployments.first(where: { $0.deploymentId == deployment.deploymentId }),
                refreshed.version != deployment.version {
-                notice = "The deployment version changed. The latest capability inventory has been loaded; review it before trying again."
+                notice = uiText("The deployment version changed. The latest capability inventory has been loaded; review it before trying again.")
             }
             return false
         }
 
         await refreshRevocationInventory()
         guard expectedConnectionEpoch == connectionEpoch else { return false }
-        notice = "Authorization revoked. Stop cleanup status is shown in the capability inventory."
+        notice = uiText("Authorization revoked. Stop cleanup status is shown in the capability inventory.")
         return true
     }
 
@@ -734,7 +734,7 @@ public final class CyloAppModel: ObservableObject {
         guard expectedConnectionEpoch == connectionEpoch,
               capabilityDeployments.contains(where: { $0.deploymentId == deployment.deploymentId && $0.version == deployment.version }),
               capabilityReleases.contains(where: { $0.digest == release.digest && $0.digest == deployment.releaseDigest }) else {
-            notice = "The server connection or deployment version changed. Reopen this request and review the current inventory."
+            notice = uiText("The server connection or deployment version changed. Reopen this request and review the current inventory.")
             return false
         }
         var payload: [String: JSONValue] = [
@@ -800,7 +800,7 @@ public final class CyloAppModel: ObservableObject {
             guard generation == connectionGeneration.value, mediaEpoch == voiceMediaEpoch else { throw CancellationError() }
             voiceConfig = config
             voicePoolStatus = pool
-            guard !pool.blocked else { throw CyloError.http(status: 409, code: pool.reasonCode, message: "The voice account pool is quarantined until an operator confirms termination.", details: nil) }
+            guard !pool.blocked else { throw CyloError.http(status: 409, code: pool.reasonCode, message: uiText("The voice account pool is quarantined until an operator confirms termination."), details: nil) }
 
             #if os(iOS)
             audio = AppleMobileAudioSessionAdapter()
@@ -874,14 +874,14 @@ public final class CyloAppModel: ObservableObject {
                     voiceSessionMediaEpoch = mediaEpoch
                     voiceSessionMediaClosed = true
                     voiceAPI = api
-                    voiceStatus = .interrupted(reason: "Local voice media is closed. Server hangup is unconfirmed or the account pool remains quarantined; no new session can start until the pool is cleared. \(mediaLossReason ?? userMessage(error))")
+                    voiceStatus = .interrupted(reason: uiFormat("Local voice media is closed. Server hangup is unconfirmed or the account pool remains quarantined; no new session can start until the pool is cleared. %@", mediaLossReason ?? userMessage(error)))
                 } else {
                     voiceSession = nil
                     voiceSessionMediaEpoch = nil
                     voiceSessionMediaClosed = false
                     voiceAPI = nil
                     if let mediaLossReason {
-                        voiceStatus = .interrupted(reason: "\(mediaLossReason) Local media is closed. The setup attempt was stopped; this does not prove upstream termination or cancel a task.")
+                        voiceStatus = .interrupted(reason: uiFormat("%@ Local media is closed. The setup attempt was stopped; this does not prove upstream termination or cancel a task.", mediaLossReason))
                     } else {
                         voiceStatus = .unavailable(reason: userMessage(error))
                     }
@@ -893,7 +893,7 @@ public final class CyloAppModel: ObservableObject {
     public func endVoiceSession() async {
         guard let session = voiceSession, let api = voiceAPI, let mediaEpoch = voiceSessionMediaEpoch else {
             if voiceStartInProgress {
-                voiceStartMediaLoss = (voiceMediaEpoch, "Voice setup was stopped locally.")
+                voiceStartMediaLoss = (voiceMediaEpoch, uiText("Voice setup was stopped locally."))
             }
             await closeVoiceLocalMedia(mediaEpoch: voiceMediaEpoch)
             voiceSession = nil
@@ -911,7 +911,7 @@ public final class CyloAppModel: ObservableObject {
               voiceSessionMediaEpoch == mediaEpoch,
               voiceHangupInFlightSessionID != session.voiceSessionId else { return }
         if let lossReason {
-            voiceStatus = .interrupted(reason: "\(lossReason) Voice controls are stopped while local media closes and server release is checked.")
+            voiceStatus = .interrupted(reason: uiFormat("%@ Voice controls are stopped while local media closes and server release is checked.", lossReason))
         }
         if !voiceSessionMediaClosed {
             guard voiceMediaEpoch == mediaEpoch else { return }
@@ -941,9 +941,9 @@ public final class CyloAppModel: ObservableObject {
             if result.poolBlocked == true {
                 voicePoolStatus = latestPool
                 voiceSessionMediaClosed = true
-                voiceStatus = .interrupted(reason: lossReason.map { "\($0) Local media is closed. Upstream termination is unverified; the account pool remains quarantined. Retry server hangup to repeat the idempotent lease release." } ?? "Local media is closed. Upstream termination is unverified; the account pool remains quarantined. Retry server hangup to repeat the idempotent lease release.")
+                voiceStatus = .interrupted(reason: lossReason.map { uiFormat("%@ Local media is closed. Upstream termination is unverified; the account pool remains quarantined. Retry server hangup to repeat the idempotent lease release.", $0) } ?? uiText("Local media is closed. Upstream termination is unverified; the account pool remains quarantined. Retry server hangup to repeat the idempotent lease release."))
             } else if let lossReason {
-                voiceStatus = .interrupted(reason: "\(lossReason) Local media is closed and the server confirmed release of the voice lease. This did not cancel a task.")
+                voiceStatus = .interrupted(reason: uiFormat("%@ Local media is closed and the server confirmed release of the voice lease. This did not cancel a task.", lossReason))
                 voiceSession = nil
                 voiceSessionMediaEpoch = nil
                 voiceSessionMediaClosed = false
@@ -957,7 +957,7 @@ public final class CyloAppModel: ObservableObject {
             }
         } catch {
             guard voiceSession?.voiceSessionId == session.voiceSessionId, voiceSessionMediaEpoch == mediaEpoch else { return }
-            voiceStatus = .interrupted(reason: "Local media is closed, but server hangup is unconfirmed; the session remains fenced. \(lossReason.map { $0 + " " } ?? "")\(userMessage(error))")
+            voiceStatus = .interrupted(reason: uiFormat("Local media is closed, but server hangup is unconfirmed; the session remains fenced. %@%@", lossReason.map { $0 + " " } ?? "", userMessage(error)))
         }
     }
 
@@ -980,13 +980,19 @@ public final class CyloAppModel: ObservableObject {
 
     private func handleVoiceMediaLoss(_ loss: VoiceMediaLoss, mediaEpoch: UInt64) async {
         guard mediaEpoch == voiceMediaEpoch else { return }
-        guard let reason = loss.message else { return }
+        guard let rawReason = loss.message else { return }
+        let reason: String
+        if case let .leaseRenewalFailed(message) = loss {
+            reason = uiFormat("The voice lease heartbeat failed: %@", message)
+        } else {
+            reason = uiText(rawReason)
+        }
         if let session = voiceSession, let api = voiceAPI, voiceSessionMediaEpoch == mediaEpoch {
             await finishVoiceSession(session, api: api, mediaEpoch: mediaEpoch, lossReason: reason)
             return
         }
         voiceStartMediaLoss = (mediaEpoch, reason)
-        voiceStatus = .interrupted(reason: "\(reason) Stopping voice setup and releasing local media.")
+        voiceStatus = .interrupted(reason: uiFormat("%@ Stopping voice setup and releasing local media.", reason))
         await closeVoiceLocalMedia(mediaEpoch: mediaEpoch)
     }
 
@@ -1018,7 +1024,7 @@ public final class CyloAppModel: ObservableObject {
         do {
             _ = try await coordinator.submit(kind: "voice.turn.commit", payload: commit, workspaceID: workspaceID, idempotencyKey: commitKey)
             guard isCurrentConnection(generation, sourceAPI: sourceAPI) else { return }
-            commandTitleByKey[commitKey] = "Save confirmed voice turn"
+            commandTitleByKey[commitKey] = uiText("Save confirmed voice turn")
             commandStatusByKey[commitKey] = .acceptedAwaitingSnapshot
             await reloadPendingCommandSummaries()
             let sourceReference: JSONValue = .object([
@@ -1038,13 +1044,13 @@ public final class CyloAppModel: ObservableObject {
             taskCreateAttempted = true
             let taskOutcome = try await coordinator.submit(kind: "task.create", payload: createTask, workspaceID: workspaceID, idempotencyKey: taskKey)
             guard isCurrentConnection(generation, sourceAPI: sourceAPI) else { return }
-            commandTitleByKey[taskKey] = "Create task"
+            commandTitleByKey[taskKey] = uiText("Create task")
             commandStatusByKey[taskKey] = .acceptedAwaitingSnapshot
             await reloadPendingCommandSummaries()
             let taskReceipt = taskOutcome.receipt
             guard let taskID = taskReceipt.resourceId, let version = taskReceipt.resourceVersion else { throw CyloError.invalidResponse }
             guard version > 0 else { throw CyloError.invalidResponse }
-            notice = "Voice turn confirmed and linked to task \(taskID)."
+            notice = uiFormat("Voice turn confirmed and linked to task %@.", taskID)
             voiceDraft = ""
             voiceTurnID = nil
             voiceProviderMessageID = nil
@@ -1057,7 +1063,7 @@ public final class CyloAppModel: ObservableObject {
                     commandStatusByKey[key] = .needsReview
                     try? await refreshSnapshot()
                 }
-                notice = "The voice turn may be committed, but task creation needs attention: \(userMessage(error))"
+                notice = uiFormat("The voice turn may be committed, but task creation needs attention: %@", userMessage(error))
                 await reloadPendingCommandSummaries()
             }
         }
@@ -1297,20 +1303,22 @@ public final class CyloAppModel: ObservableObject {
         return result
     }
 
-    public func stop(_ task: TaskRecord, reason: String? = nil) async {
+    @discardableResult
+    public func stop(_ task: TaskRecord, reason: String? = nil) async -> Bool {
         var payload: [String: JSONValue] = ["task_id": .string(task.id)]
         if let reason, !reason.isEmpty { payload["reason"] = .string(reason) }
-        await send(kind: "task.stop", expectedVersion: task.version, payload: .object(payload))
+        return await send(kind: "task.stop", expectedVersion: task.version, payload: .object(payload))
     }
 
-    public func decide(_ approval: Approval, decision: String) async {
-        guard decision == "approve" || decision == "reject" else { return }
+    @discardableResult
+    public func decide(_ approval: Approval, decision: String) async -> Bool {
+        guard decision == "approve" || decision == "reject" else { return false }
         let payload: [String: JSONValue] = [
             "task_id": .string(approval.taskId),
             "approval_id": .string(approval.id),
             "decision": .string(decision)
         ]
-        await send(kind: "task.approve", expectedVersion: approval.version, payload: .object(payload))
+        return await send(kind: "task.approve", expectedVersion: approval.version, payload: .object(payload))
     }
 
     public func resultRun(for task: TaskRecord) -> Run? {
@@ -1322,19 +1330,20 @@ public final class CyloAppModel: ObservableObject {
         return candidates[0]
     }
 
-    public func decideResult(for task: TaskRecord, run: Run, decision: String) async {
+    @discardableResult
+    public func decideResult(for task: TaskRecord, run: Run, decision: String) async -> Bool {
         guard decision == "accept" || decision == "reject",
               task.canAcceptResult,
               run.taskId == task.id,
               run.status == "verification_pending",
               run.terminationConfirmed,
-              resultRun(for: task)?.id == run.id else { return }
+              resultRun(for: task)?.id == run.id else { return false }
         let payload: [String: JSONValue] = [
             "task_id": .string(task.id),
             "run_id": .string(run.id),
             "decision": .string(decision)
         ]
-        await send(kind: "task.accept_result", expectedVersion: task.version, payload: .object(payload))
+        return await send(kind: "task.accept_result", expectedVersion: task.version, payload: .object(payload))
     }
 
     public func approve(_ device: Device) async {
@@ -1361,11 +1370,11 @@ public final class CyloAppModel: ObservableObject {
         guard scope == "personal" || scope == "workspace",
               expectedConnectionEpoch == connectionGeneration.value,
               api != nil || testDownload != nil else {
-            if expectedConnectionEpoch == connectionGeneration.value { exportStatus = "Connect an approved device before preparing an export." }
+            if expectedConnectionEpoch == connectionGeneration.value { exportStatus = uiText("Connect an approved device before preparing an export.") }
             return
         }
         discardExportArtifact()
-        exportStatus = "Preparing the authorized export…"
+        exportStatus = uiText("Preparing the authorized export…")
         let generation = connectionGeneration.value
         let capturedAPI = api
         let requestID = UUID()
@@ -1393,24 +1402,24 @@ public final class CyloAppModel: ObservableObject {
                 try? FileManager.default.removeItem(at: artifact.fileURL)
                 unownedArtifactURL = nil
                 if requestID == exportRequestID {
-                    exportStatus = "Export canceled. The prepared temporary file was removed."
+                    exportStatus = uiText("Export canceled. The prepared temporary file was removed.")
                 }
                 return
             }
             guard testDownload != nil || Self.exportAuthorityMatches(artifact, snapshot: snapshot) else {
                 try? FileManager.default.removeItem(at: artifact.fileURL)
                 unownedArtifactURL = nil
-                exportStatus = "Server authority changed while preparing the export. Prepare a fresh copy."
+                exportStatus = uiText("Server authority changed while preparing the export. Prepare a fresh copy.")
                 return
             }
             exportArtifact = artifact
             exportArtifactConnectionEpoch = generation
             unownedArtifactURL = nil
-            exportStatus = "Export prepared by the server. Choose Save to select where to keep the file."
+            exportStatus = uiText("Export prepared by the server. Choose Save to select where to keep the file.")
         } catch {
             if let unownedArtifactURL { try? FileManager.default.removeItem(at: unownedArtifactURL) }
             guard requestID == exportRequestID, generation == connectionGeneration.value else { return }
-            exportStatus = error.localizedDescription
+            exportStatus = userMessage(error)
         }
     }
 
@@ -1419,9 +1428,9 @@ public final class CyloAppModel: ObservableObject {
         try? FileManager.default.removeItem(at: artifact.fileURL)
         exportArtifact = nil
         exportArtifactConnectionEpoch = nil
-        if saved { exportStatus = "Export saved on this device." }
-        else if let error, (error as NSError).code != NSUserCancelledError { exportStatus = "The export could not be saved: \(error.localizedDescription)" }
-        else { exportStatus = "Saving was canceled. The prepared temporary file was removed." }
+        if saved { exportStatus = uiText("Export saved on this device.") }
+        else if let error, (error as NSError).code != NSUserCancelledError { exportStatus = uiFormat("The export could not be saved: %@", userMessage(error)) }
+        else { exportStatus = uiText("Saving was canceled. The prepared temporary file was removed.") }
     }
 
     public func cancelExport(status: String? = "Export canceled. The prepared temporary file was removed.") {
@@ -1429,7 +1438,7 @@ public final class CyloAppModel: ObservableObject {
         exportDownloadTask?.cancel()
         exportDownloadTask = nil
         discardExportArtifact()
-        exportStatus = status
+        exportStatus = status.map { uiText($0) }
     }
 
     public func validateExportForSave(expectedConnectionEpoch: UInt64) async -> Bool {
@@ -1437,14 +1446,14 @@ public final class CyloAppModel: ObservableObject {
               expectedConnectionEpoch == connectionGeneration.value,
               exportArtifactConnectionEpoch == expectedConnectionEpoch,
               api != nil else {
-            cancelExport(status: "The export is no longer authorized on this connection. Prepare a fresh copy.")
+            cancelExport(status: uiText("The export is no longer authorized on this connection. Prepare a fresh copy."))
             return false
         }
         do {
             try await refreshSnapshot()
         } catch {
             if exportArtifact?.fileURL == artifact.fileURL {
-                cancelExport(status: "Could not recheck server authority. The prepared export was removed.")
+                cancelExport(status: uiText("Could not recheck server authority. The prepared export was removed."))
             }
             return false
         }
@@ -1453,7 +1462,7 @@ public final class CyloAppModel: ObservableObject {
               exportArtifact?.fileURL == artifact.fileURL,
               Self.exportAuthorityMatches(artifact, snapshot: snapshot) else {
             if exportArtifact?.fileURL == artifact.fileURL {
-                cancelExport(status: "Server authority changed. The prepared export was removed.")
+                cancelExport(status: uiText("Server authority changed. The prepared export was removed."))
             }
             return false
         }
@@ -1467,8 +1476,8 @@ public final class CyloAppModel: ObservableObject {
     }
 
     public func projectName(_ id: String?) -> String {
-        guard let id else { return "Unassigned" }
-        return projects.first(where: { $0.id == id })?.name ?? "Project unavailable"
+        guard let id else { return uiText("Unassigned") }
+        return projects.first(where: { $0.id == id })?.name ?? uiText("Project unavailable")
     }
 
     private var pairingKey: String { "cylo.pairingID.\(serverAddress)" }
@@ -1561,7 +1570,7 @@ public final class CyloAppModel: ObservableObject {
         snapshotCache = cache
         if configuredServerURL == url, snapshot == nil, let cached = try cache.load() {
             snapshot = cached
-            freshness = .stale(reason: "Showing the last saved server snapshot.", cursor: cached.eventCursor)
+            freshness = .stale(reason: uiText("Showing the last saved server snapshot."), cursor: cached.eventCursor)
         }
         self.journal = journal
         coordinator = CommandCoordinator(api: api, journal: journal)
@@ -1587,13 +1596,13 @@ public final class CyloAppModel: ObservableObject {
             do { try await refreshSnapshot() }
             catch {
                 guard isCurrentConnection(generation, sourceAPI: sourceAPI) else { return false }
-                setStale("The command was accepted, but the latest snapshot could not be loaded: \(userMessage(error))")
+                setStale(uiFormat("The command was accepted, but the latest snapshot could not be loaded: %@", userMessage(error)))
             }
             guard isCurrentConnection(generation, sourceAPI: sourceAPI) else { return false }
             if kind == "task.stop" {
-                notice = "Stop intent recorded (receipt \(outcome.receipt.commandId)). Awaiting server confirmation that the runtime terminated."
+                notice = uiFormat("Stop intent recorded (receipt %@). Awaiting server confirmation that the runtime terminated.", outcome.receipt.commandId)
             } else {
-                notice = "\(outcome.receipt.kind) accepted by the server (receipt \(outcome.receipt.commandId))."
+                notice = uiFormat("%@ accepted by the server (receipt %@).", title, outcome.receipt.commandId)
             }
             return true
         } catch {
@@ -1615,7 +1624,7 @@ public final class CyloAppModel: ObservableObject {
               let coordinator,
               let api,
               let workspaceID = snapshot?.devices.first?.workspaceId else {
-            notice = "Refresh the server and choose the workspace that owns this saved action before checking it."
+            notice = uiText("Refresh the server and choose the workspace that owns this saved action before checking it.")
             return
         }
         let generation = connectionGeneration.value
@@ -1629,12 +1638,12 @@ public final class CyloAppModel: ObservableObject {
             guard isCurrentConnection(generation, sourceAPI: api) else { return }
             reconcileTaskOutcome(outcome)
             commandStatusByKey[summary.id] = .acceptedAwaitingSnapshot
-            notice = "\(summary.title) was accepted. Refreshing the latest task state."
+            notice = uiFormat("%@ was accepted. Refreshing the latest task state.", summary.title)
             await reloadPendingCommandSummaries()
             do { try await refreshSnapshot() }
             catch {
                 guard isCurrentConnection(generation, sourceAPI: api) else { return }
-                setStale("The action was accepted, but the latest snapshot could not be loaded: \(userMessage(error))")
+                setStale(uiFormat("The action was accepted, but the latest snapshot could not be loaded: %@", userMessage(error)))
             }
             if let taskID = selectedTaskID, outcome.receipt.kind.hasPrefix("task.") { await loadTaskEntries(taskID: taskID) }
             if outcome.receipt.kind.hasPrefix("memory.") {
@@ -1644,11 +1653,11 @@ public final class CyloAppModel: ObservableObject {
             guard isCurrentConnection(generation, sourceAPI: api) else { return }
             if isNeedsReview(error) {
                 commandStatusByKey[summary.id] = .needsReview
-                notice = "\(summary.title) was not applied because the server state changed. Review the refreshed task and make a new choice."
+                notice = uiFormat("%@ was not applied because the server state changed. Review the refreshed task and make a new choice.", summary.title)
                 try? await refreshSnapshot()
             } else {
                 commandStatusByKey[summary.id] = .waitingForConfirmation
-                notice = "Cylo could not confirm whether \(summary.title.lowercased()) was applied. The saved action is unchanged; check status again when connected."
+                notice = uiFormat("Cylo could not confirm whether %@ was applied. The saved action is unchanged; check status again when connected.", summary.title)
             }
             await reloadPendingCommandSummaries()
         }
@@ -1673,11 +1682,11 @@ public final class CyloAppModel: ObservableObject {
         catch {
             if generation == connectionGeneration.value {
                 if exportArtifact != nil {
-                    cancelExport(status: "Could not confirm current server authority. The prepared export was removed.")
+                    cancelExport(status: uiText("Could not confirm current server authority. The prepared export was removed."))
                 }
                 if Self.isAccessDenied(error) {
                     clearTaskContext(clearDrafts: true)
-                    clearMemoryAndPreparedExport(status: "Server access changed; cached memory and the prepared export were cleared.")
+                    clearMemoryAndPreparedExport(status: uiText("Server access changed; cached memory and the prepared export were cleared."))
                 }
             }
             throw error
@@ -1691,7 +1700,7 @@ public final class CyloAppModel: ObservableObject {
         }
         if let current = snapshot, current.authority != latest.authority {
             if Self.authorityIdentityChanged(from: current.authority, to: latest.authority) { clearTaskContext(clearDrafts: true) }
-            clearMemoryAndPreparedExport(status: "Server authority changed; cached memory and the prepared export were cleared.")
+            clearMemoryAndPreparedExport(status: uiText("Server authority changed; cached memory and the prepared export were cleared."))
         }
         snapshot = latest
         if let selectedTaskID, !latest.tasks.contains(where: { $0.id == selectedTaskID }) {
@@ -1699,7 +1708,7 @@ public final class CyloAppModel: ObservableObject {
             taskEntriesError = uiText("This task is no longer available. Refresh access or choose New task.")
         }
         if let artifact = exportArtifact, !Self.exportAuthorityMatches(artifact, snapshot: latest) {
-            cancelExport(status: "Server authority changed; the prepared export was removed. Prepare a fresh copy.")
+            cancelExport(status: uiText("Server authority changed; the prepared export was removed. Prepare a fresh copy."))
         }
         try cache?.save(latest)
         freshness = .current(serverVersion: latest.serverVersion, cursor: latest.eventCursor)
@@ -1833,7 +1842,7 @@ public final class CyloAppModel: ObservableObject {
                     defaults.set(true, forKey: pushRevocationPendingKey(for: registrationOrigin, identityFingerprint: identityFingerprint))
                 }
             } else if generation == connectionGeneration.value {
-                notice = "The device could not register for push wakeups: \(userMessage(error))"
+                notice = uiFormat("The device could not register for push wakeups: %@", userMessage(error))
             }
         }
     }
@@ -1865,11 +1874,11 @@ public final class CyloAppModel: ObservableObject {
             if configuredServerURL == origin, pushIdentityFingerprint == identityFingerprint {
                 if registeredPushTokenID == tokenID { registeredPushTokenID = nil }
                 if queue.isEmpty { lastRegisteredAPNSTokenHex = nil }
-                if !pushNotificationsEnabled { notice = "Push wakeups are disabled on this device." }
+                if !pushNotificationsEnabled { notice = uiText("Push wakeups are disabled on this device.") }
             }
         } catch {
             if configuredServerURL == origin, pushIdentityFingerprint == identityFingerprint {
-                notice = "Push wakeups are disabled locally, but the server could not confirm token revocation: \(userMessage(error))"
+                notice = uiFormat("Push wakeups are disabled locally, but the server could not confirm token revocation: %@", userMessage(error))
             }
         }
     }
@@ -2073,18 +2082,18 @@ public final class CyloAppModel: ObservableObject {
                     try await refreshSnapshot()
                 }
                 streamBackoff = 1
-                setStale("The event stream ended; reconnecting.")
+                setStale(uiText("The event stream ended; reconnecting."))
             } catch {
                 if Task.isCancelled || generation != connectionGeneration.value { return }
                 if let error = error as? CyloError,
                    case let .http(status, _, _, _) = error,
                    status == 401 || status == 403 {
                     clearTaskContext(clearDrafts: true)
-                    clearMemoryAndPreparedExport(status: "Server access changed; cached memory and the prepared export were cleared.")
+                    clearMemoryAndPreparedExport(status: uiText("Server access changed; cached memory and the prepared export were cleared."))
                     setOffline(error)
                     return
                 }
-                if snapshot == nil { setOffline(error) } else { setStale("Connection interrupted: \(userMessage(error))") }
+                if snapshot == nil { setOffline(error) } else { setStale(uiFormat("Connection interrupted: %@", userMessage(error))) }
             }
             let delay = streamBackoff
             streamBackoff = min(streamBackoff * 2, 30)
@@ -2097,18 +2106,18 @@ public final class CyloAppModel: ObservableObject {
         switch push {
         case let .event(envelope):
             if let artifact = exportArtifact, !Self.matchesExportAudit(envelope, artifact: artifact) {
-                cancelExport(status: "A server change may have changed export access. The prepared copy was removed.")
+                cancelExport(status: uiText("A server change may have changed export access. The prepared copy was removed."))
             }
             let memoryChanged = envelope.aggregateType == "memory" && ["memory.revised", "memory.deleted", "memory.proposal_accepted"].contains(envelope.type)
             if memoryChanged {
-                await handleMemoryOrAuthorizationChange(status: "Server memory changed; prepare a fresh export.")
+                await handleMemoryOrAuthorizationChange(status: uiText("Server memory changed; prepare a fresh export."))
                 guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI), !Task.isCancelled else { return }
             }
-            setStale("A server change arrived; refreshing the authoritative snapshot.")
+            setStale(uiText("A server change arrived; refreshing the authoritative snapshot."))
             do { try await refreshSnapshot() }
             catch {
                 guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI), !Task.isCancelled else { return }
-                setStale("Snapshot refresh failed: \(userMessage(error))")
+                setStale(uiFormat("Snapshot refresh failed: %@", userMessage(error)))
             }
             guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI), !Task.isCancelled else { return }
             if envelope.aggregateType == "task", envelope.aggregateId == selectedTaskID {
@@ -2117,12 +2126,12 @@ public final class CyloAppModel: ObservableObject {
             if envelope.type.hasPrefix("notification.") { await refreshNotifications() }
         case .snapshotRequired:
             clearTaskHistory()
-            clearMemoryAndPreparedExport(status: "Server history expired; cached memory and the prepared export were cleared.")
-            setStale("The saved event cursor expired; loading a fresh snapshot.")
+            clearMemoryAndPreparedExport(status: uiText("Server history expired; cached memory and the prepared export were cleared."))
+            setStale(uiText("The saved event cursor expired; loading a fresh snapshot."))
             do { try await refreshSnapshot() }
             catch {
                 guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI), !Task.isCancelled else { return }
-                setStale("Snapshot repair failed: \(userMessage(error))")
+                setStale(uiFormat("Snapshot repair failed: %@", userMessage(error)))
             }
             guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI), !Task.isCancelled else { return }
             if let taskID = selectedTaskID { await loadTaskEntries(taskID: taskID) }
@@ -2164,17 +2173,17 @@ public final class CyloAppModel: ObservableObject {
             })
             guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
             guard !recovered.isEmpty else { return }
-            notice = "Recovered \(recovered.count) command receipt(s) from this device's durable queue."
+            notice = uiFormat("Recovered %lld command receipt(s) from this device's durable queue.", Int64(recovered.count))
             do { try await refreshSnapshot() }
             catch {
                 guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
-                setStale("Recovered commands, but the latest snapshot could not be loaded: \(userMessage(error))")
+                setStale(uiFormat("Recovered commands, but the latest snapshot could not be loaded: %@", userMessage(error)))
             }
             guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
             if let taskID = selectedTaskID { await loadTaskEntries(taskID: taskID) }
         } catch {
             if isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) {
-                notice = isNeedsReview(error) ? "A saved action needs review. The original action was not rewritten; check the updated server state before choosing again." : userMessage(error)
+                notice = isNeedsReview(error) ? uiText("A saved action needs review. The original action was not rewritten; check the updated server state before choosing again.") : userMessage(error)
                 if isNeedsReview(error) { try? await refreshSnapshot() }
                 await reloadPendingCommandSummaries()
             }
@@ -2217,7 +2226,7 @@ public final class CyloAppModel: ObservableObject {
         }
         let pendingKeys = Set(commands.map(\.idempotencyKey))
         for (key, state) in commandStatusByKey where !pendingKeys.contains(key) && (state == .acceptedAwaitingSnapshot || state == .needsReview) {
-            summaries.append(PendingCommandSummary(id: key, title: commandTitleByKey[key] ?? "Saved action", state: state))
+            summaries.append(PendingCommandSummary(id: key, title: commandTitleByKey[key] ?? uiText("Saved action"), state: state))
         }
         pendingCommandSummaries = summaries
     }
@@ -2228,15 +2237,15 @@ public final class CyloAppModel: ObservableObject {
         func string(_ key: String) -> String? { if case let .string(value)? = object[key] { return value }; return nil }
         let taskName = string("task_id").flatMap { task(id: $0)?.title }
         switch kind {
-        case "task.create": return "Create task"
-        case "task.append": return taskName.map { "Add entry to \($0)" } ?? "Add entry to task"
-        case "task.stop": return taskName.map { "Request stop for \($0)" } ?? "Request stop for task"
-        case "task.approve": return string("decision") == "reject" ? "Reject requested action" : "Approve requested action"
-        case "task.accept_result": return taskName.map { "Review result for \($0)" } ?? "Review task result"
-        case "project.create": return "Create project"
-        case "memory.remember": return "Save memory"
-        case "memory.delete": return "Delete memory"
-        default: return "Submit saved action"
+        case "task.create": return uiText("Create task")
+        case "task.append": return taskName.map { uiFormat("Add entry to %@", $0) } ?? uiText("Add entry to task")
+        case "task.stop": return taskName.map { uiFormat("Request stop for %@", $0) } ?? uiText("Request stop for task")
+        case "task.approve": return string("decision") == "reject" ? uiText("Reject requested action") : uiText("Approve requested action")
+        case "task.accept_result": return taskName.map { uiFormat("Review result for %@", $0) } ?? uiText("Review task result")
+        case "project.create": return uiText("Create project")
+        case "memory.remember": return uiText("Save memory")
+        case "memory.delete": return uiText("Delete memory")
+        default: return uiText("Submit saved action")
         }
     }
 
@@ -2248,7 +2257,7 @@ public final class CyloAppModel: ObservableObject {
     private func reconcileRecoveredMemoryOutcome(_ outcome: CommandOutcome, expectedGeneration: UInt64, sourceAPI: APIClient) async {
         guard outcome.receipt.kind.hasPrefix("memory.") else { return }
         guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
-        clearMemoryAndPreparedExport(status: "A recovered memory command changed server memory; cached memory and the prepared export were cleared.")
+        clearMemoryAndPreparedExport(status: uiText("A recovered memory command changed server memory; cached memory and the prepared export were cleared."))
         await refreshMemory()
     }
 
@@ -2327,10 +2336,27 @@ public final class CyloAppModel: ObservableObject {
         if let error = error as? CyloError,
            case let .http(status, code, _, details) = error,
            status == 409, code == "version_conflict" {
-            let current = details?["current_version"]
-            return "This item changed on another device. The latest server state is being loaded. Current version: \(current.map { String(describing: $0) } ?? "unknown")."
+            let current: String
+            switch details?["current_version"] {
+            case .integer(let value): current = String(value)
+            case .string(let value): current = value
+            default: current = uiText("unknown")
+            }
+            return uiFormat("This item changed on another device. The latest server state is being loaded. Current version: %@.", current)
         }
-        return error.localizedDescription
+        if let failure = error as? CyloError {
+            switch failure {
+            case .http(_, _, let message, _):
+                return uiFormat("Server error: %@", message)
+            case .credentialAccessDenied(let storage):
+                return uiFormat("Access to the selected %@ identity was denied. No identity was created or changed. To keep the same server registration, allow access and copy the identity explicitly; a new file identity may need approval from another approved device.", uiText(storage))
+            case .persistence(let message):
+                return uiFormat("Local storage error: %@", message)
+            default:
+                return uiText(failure.localizedDescription)
+            }
+        }
+        return uiFormat("An error occurred: %@", error.localizedDescription)
     }
 
     private func cursor(_ candidate: String, isAtLeast baseline: String) -> Bool {
