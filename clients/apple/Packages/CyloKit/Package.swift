@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "CyloKit",
+    defaultLocalization: "en",
     platforms: [
         .macOS(.v14),
         .iOS(.v17)
@@ -16,7 +17,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "CyloKit"),
-        .target(name: "CyloUI", dependencies: ["CyloKit", .product(name: "WebRTC", package: "WebRTC")]),
+        .target(name: "CyloUI", dependencies: ["CyloKit", .product(name: "WebRTC", package: "WebRTC")], resources: [.process("Resources")]),
         .testTarget(name: "CyloKitTests", dependencies: ["CyloKit", "CyloUI"])
     ]
 )
