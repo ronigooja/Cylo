@@ -1,0 +1,43 @@
+services:
+  voice-gateway:
+    container_name: cylo-voice-gateway
+    build:
+      context: /opt/cylo/voice/upstream
+      dockerfile: Dockerfile
+      args:
+        VERSION: cylo-pinned
+        REVISION: 6338ac478070aaa34bfe7a3c0469caf9e9174c02
+    env_file:
+      - /etc/cylo/voice.env
+    environment:
+      VOICE_DATABASE_FILE: /app/data/voice.db
+      VOICE_LISTEN_ADDR: 0.0.0.0:8090
+      VOICE_TLS: "false"
+    ports:
+      - "127.0.0.1:18090:8090"
+    volumes:
+      - /var/lib/cylo/voice:/app/data
+    networks:
+      - cylo
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 384m
+    cpus: 1.0
+    pids_limit: 128
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  cylo:
+    external: true
+    name: cylo
