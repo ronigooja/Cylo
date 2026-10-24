@@ -244,7 +244,7 @@ struct TaskDetailView: View {
                 }
                 .safeAreaInset(edge: .bottom) { TaskComposer(model: model, taskID: task.id, projectID: task.projectId).id(task.id).frame(maxWidth: 760).padding(.horizontal).padding(.bottom, 8).frame(maxWidth: .infinity).background(.bar) }
                 .navigationTitle(task.title)
-                .toolbar { if task.status == .queued || task.status == .active || task.status == .waiting || task.status == .paused { Button(uiText("Request stop"), systemImage: "stop.circle", role: .destructive) { showingStopConfirmation = true } } }
+                .toolbar { if task.status.canAcceptEntries { Button(uiText("Request stop"), systemImage: "stop.circle", role: .destructive) { showingStopConfirmation = true } } }
                 .confirmationDialog(uiText("Request that Cylo stop this task?"), isPresented: $showingStopConfirmation) {
                     Button(uiText("Request stop"), role: .destructive) { Task {
                         stopError = nil
