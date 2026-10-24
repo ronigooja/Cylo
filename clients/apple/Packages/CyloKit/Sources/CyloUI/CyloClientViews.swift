@@ -1057,6 +1057,8 @@ private struct SettingsView: View {
     @State private var exportScope = "personal"
     @State private var showingExportSave = false
     @State private var validatingExportSave = false
+    @State private var pendingCredentialStorageChoice: CredentialStorageChoice?
+    @State private var showingCredentialStorageConfirmation = false
 
     private var exportDocument: ScopedExportFileDocument {
         ScopedExportFileDocument(fileURL: model.exportArtifact?.fileURL ?? FileManager.default.temporaryDirectory)
@@ -1064,6 +1066,40 @@ private struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("Credential storage") {
+                Picker("Store device identity", selection: Binding(
+                    get: { model.credentialStorageChoice?.rawValue ?? "" },
+                    set: { rawValue in
+                        guard let choice = CredentialStorageChoice(rawValue: rawValue) else { return }
+                        if let current = model.credentialStorageChoice, current != choice {
+                            pendingCredentialStorageChoice = choice
+                            showingCredentialStorageConfirmation = true
+                        } else {
+                            Task { await model.selectCredentialStorage(choice) }
+                        }
+                    }
+                )) {
+                    Text("Choose storage…").tag("")
+                    ForEach(CredentialStorageChoice.allCases) { choice in
+                        Text(choice.title).tag(choice.rawValue)
+                    }
+                }
+                Text(model.credentialStorageChoice?.explanation ?? "Choose how Cylo stores this server's device identity. No identity is read or created until you choose storage and explicitly connect or start device setup.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if model.credentialStorageChoice == .privateFile {
+                    Text("A file identity is separate from any Keychain identity. To keep the same server registration, explicitly copy the existing identity while Keychain access is available. A new file identity may need approval from another approved device.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                if let current = model.credentialStorageChoice {
+                    let destination: CredentialStorageChoice = current == .keychain ? .privateFile : .keychain
+                    Button("Copy current identity to \(destination.title)") {
+                        Task { await model.copyCredentialIdentity(to: destination) }
+                    }
+                    .disabled(model.isBusy)
+                }
+            }
             Section("Server") {
                 TextField("Server URL", text: $model.serverAddress)
                     #if os(iOS)
@@ -1072,6 +1108,7 @@ private struct SettingsView: View {
                     .keyboardType(.URL)
                     #endif
                 Button("Save and connect") { Task { await model.updateServerAddress() } }
+                    .disabled(model.credentialStorageChoice == nil || model.isBusy)
                 FreshnessBanner(model: model)
             }
             Section("This device") {
@@ -1080,11 +1117,11 @@ private struct SettingsView: View {
                 Button("Bootstrap first approved device") {
                     Task { await model.bootstrap(code: bootstrapCode, deviceName: deviceName); bootstrapCode = "" }
                 }
-                .disabled(bootstrapCode.isEmpty || deviceName.isEmpty || model.isBusy)
+                .disabled(bootstrapCode.isEmpty || deviceName.isEmpty || model.isBusy || model.credentialStorageChoice == nil)
                 Button(model.pairingStatus?.status == "approved" ? "This device is approved" : "Request approval on this device") {
                     Task { await model.requestPairing(deviceName: deviceName) }
                 }
-                .disabled(model.isBusy || model.pairingStatus?.status == "approved")
+                .disabled(model.isBusy || model.pairingStatus?.status == "approved" || model.credentialStorageChoice == nil)
                 if let pairing = model.pairingStatus {
                     LabeledContent("Pairing", value: pairing.status.capitalized)
                     LabeledContent("Expires", value: pairing.expiresAt)
@@ -1146,6 +1183,7 @@ private struct SettingsView: View {
             }
         }
         .onChange(of: model.connectionEpoch) { _, _ in showingExportSave = false }
+        .onChange(of: model.serverAddress) { _, _ in model.reloadCredentialStorageChoiceForCurrentServer() }
         .onChange(of: model.exportArtifact?.fileURL) { _, fileURL in
             if fileURL == nil { showingExportSave = false }
         }
@@ -1156,6 +1194,21 @@ private struct SettingsView: View {
             Button("Cancel", role: .cancel) { showingRevoke = nil }
         } message: {
             Text("Revocation blocks future requests and disconnects its event stream. The server owns the revocation result.")
+        }
+        .confirmationDialog("Change credential storage?", isPresented: $showingCredentialStorageConfirmation) {
+            if let destination = pendingCredentialStorageChoice {
+                Button("Copy current identity and switch") {
+                    Task { await model.copyCredentialIdentity(to: destination) }
+                    pendingCredentialStorageChoice = nil
+                }
+                Button("Switch without copying") {
+                    Task { await model.selectCredentialStorage(destination) }
+                    pendingCredentialStorageChoice = nil
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingCredentialStorageChoice = nil }
+        } message: {
+            Text("Cylo will not copy or create an identity automatically. Copying requires access to the current store and leaves the original intact. Switching without copying keeps the existing identity where it is; the destination may need separate device approval.")
         }
     }
 }

@@ -7,6 +7,7 @@ import WebRTC
 @MainActor
 public final class CyloAppModel: ObservableObject {
     @Published public var serverAddress: String
+    @Published public private(set) var credentialStorageChoice: CredentialStorageChoice?
     @Published public private(set) var snapshot: Snapshot?
     @Published public private(set) var freshness: ClientFreshness = .loading
     @Published public private(set) var notice: String?
@@ -33,7 +34,7 @@ public final class CyloAppModel: ObservableObject {
 
     private let defaults: UserDefaults
     private var api: APIClient?
-    private var identity: DeviceIdentityStore?
+    private var identity: DeviceIdentityStoring?
     private var journal: CommandJournal?
     private var coordinator: CommandCoordinator?
     private var eventTask: Task<Void, Never>?
@@ -174,18 +175,11 @@ public final class CyloAppModel: ObservableObject {
         Self.cleanupExpiredExportTemporaries()
         self.defaults = defaults
         serverAddress = defaults.string(forKey: "cylo.serverAddress") ?? ""
+        credentialStorageChoice = Self.loadCredentialStorageChoice(serverAddress: serverAddress, defaults: defaults)
         pushNotificationsEnabled = defaults.bool(forKey: "cylo.apns.optIn")
-        if let url = URL(string: serverAddress), url.host != nil,
-           let device = try? DeviceIdentityStore(serverURL: url).loadOrCreate(),
-           let cache = try? SnapshotCache(serverURL: url, deviceToken: device.deviceToken), let cached = try? cache.load() {
-            configuredServerURL = url
-            pushIdentityFingerprint = Self.pushIdentityFingerprint(deviceToken: device.deviceToken)
-            registeredPushTokenID = defaults.string(forKey: pushRegistrationKey(for: url, identityFingerprint: pushIdentityFingerprint ?? ""))
-            snapshotCache = cache
-            snapshot = cached
-            freshness = .stale(reason: "Showing the last saved server snapshot.", cursor: cached.eventCursor)
-        } else {
-            snapshotCache = nil
+        snapshotCache = nil
+        if credentialStorageChoice == nil {
+            freshness = .offline(reason: "Choose Keychain or local private file in Settings before connecting.", cursor: nil)
         }
         RemotePushBridge.shared.onToken = { [weak self] token in
             Task { @MainActor [weak self] in self?.receiveAPNSToken(token) }
@@ -208,6 +202,11 @@ public final class CyloAppModel: ObservableObject {
     public var canEndVoiceSession: Bool { voiceSession != nil }
 
     public func start() async {
+        guard credentialStorageChoice != nil else {
+            freshness = .offline(reason: CyloError.credentialStorageNotSelected.localizedDescription, cursor: snapshot?.eventCursor)
+            notice = CyloError.credentialStorageNotSelected.localizedDescription
+            return
+        }
         var generation = connectionGeneration.value
         do {
             let configuredAPI = try configure()
@@ -241,10 +240,17 @@ public final class CyloAppModel: ObservableObject {
         capabilityReleases = []
         capabilityDeployments = []
         await endVoiceSession()
+        api = nil
+        identity = nil
+        journal = nil
+        coordinator = nil
+        snapshotCache = nil
+        configuredServerURL = nil
         if let url = URL(string: serverAddress), url.host != nil { connectionGeneration.switchOrigin(to: url) }
         else { connectionGeneration.advance() }
         connectionEpoch = connectionGeneration.value
         defaults.set(serverAddress.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "cylo.serverAddress")
+        credentialStorageChoice = Self.loadCredentialStorageChoice(serverAddress: serverAddress, defaults: defaults)
         eventTask?.cancel()
         eventTask = nil
         snapshot = nil
@@ -252,14 +258,91 @@ public final class CyloAppModel: ObservableObject {
         await start()
     }
 
+    public func reloadCredentialStorageChoiceForCurrentServer() {
+        credentialStorageChoice = Self.loadCredentialStorageChoice(serverAddress: serverAddress, defaults: defaults)
+    }
+
+    public func selectCredentialStorage(_ choice: CredentialStorageChoice) async {
+        guard let url = validServerURL(serverAddress) else {
+            notice = CyloError.invalidServerURL.localizedDescription
+            return
+        }
+        let savedChoice = Self.loadCredentialStorageChoice(serverURL: url, defaults: defaults)
+        guard savedChoice != choice else {
+            credentialStorageChoice = choice
+            return
+        }
+        await endVoiceSession()
+        connectionGeneration.advance()
+        connectionEpoch = connectionGeneration.value
+        eventTask?.cancel()
+        eventTask = nil
+        cancelExport(status: nil)
+        clearVisibleMemory()
+        snapshot = nil
+        notifications = []
+        capabilityReleases = []
+        capabilityDeployments = []
+        pendingCommandSummaries = []
+        commandStatusByKey = [:]
+        commandTitleByKey = [:]
+        api = nil
+        identity = nil
+        journal = nil
+        coordinator = nil
+        snapshotCache = nil
+        configuredServerURL = nil
+        pairingID = defaults.string(forKey: "cylo.pairingID.\(serverAddress)")
+        pairingStatus = nil
+        credentialStorageChoice = choice
+        defaults.set(choice.rawValue, forKey: CredentialStorageChoice.defaultsKey(serverURL: url))
+        connectionGeneration.switchOrigin(to: url)
+        connectionEpoch = connectionGeneration.value
+        freshness = .offline(reason: "Credential storage changed. Review the identity details, then choose Save and connect.", cursor: nil)
+        if choice == .privateFile {
+            notice = "Local private file is separate from Keychain. It will not inherit an existing device registration unless you explicitly copy the identity."
+        } else {
+            notice = "Keychain selected. Save and connect to use the existing Keychain identity."
+        }
+    }
+
+    /// Copies the current identity to the other store only after an explicit user action.
+    /// It never deletes or overwrites the source identity.
+    public func copyCredentialIdentity(to destinationChoice: CredentialStorageChoice) async {
+        guard let url = validServerURL(serverAddress),
+              let sourceChoice = Self.loadCredentialStorageChoice(serverURL: url, defaults: defaults),
+              sourceChoice != destinationChoice else {
+            notice = "Choose a server and a different destination storage before copying the identity."
+            return
+        }
+        credentialStorageChoice = sourceChoice
+        do {
+            let source = sourceChoice.makeStore(serverURL: url)
+            let destination = destinationChoice.makeStore(serverURL: url)
+            guard let original = try source.loadExisting() else {
+                notice = "No identity exists in the current storage. Nothing was copied or created."
+                return
+            }
+            let written = try destination.storeIfAbsent(original)
+            guard written == original, try destination.loadExisting() == original else {
+                throw CyloError.credentialConflict
+            }
+            await selectCredentialStorage(destinationChoice)
+            notice = "The same device identity was copied to \(destinationChoice.title). The original remains in \(sourceChoice.title). Save and connect to continue."
+        } catch {
+            notice = userMessage(error)
+        }
+    }
+
     public func bootstrap(code: String, deviceName: String) async {
         var generation = connectionGeneration.value
         do {
-            let api = try configure()
+            let api = try configure(allowIdentityCreation: true)
             generation = connectionGeneration.value
             guard let identity else { throw CyloError.missingCredential }
-            _ = try identity.loadOrCreate()
-            _ = try await api.bootstrap(code: code, deviceName: deviceName, identity: identity.loadOrCreate())
+            let deviceIdentity = try identity.loadOrCreate()
+            _ = try configure()
+            _ = try await api.bootstrap(code: code, deviceName: deviceName, identity: deviceIdentity)
             guard generation == connectionGeneration.value else { return }
             notice = "This device is registered. Loading the server snapshot…"
             try await refreshSnapshot()
@@ -273,14 +356,16 @@ public final class CyloAppModel: ObservableObject {
     public func requestPairing(deviceName: String) async {
         var generation = connectionGeneration.value
         do {
-            let api = try configure()
+            let api = try configure(allowIdentityCreation: true)
             generation = connectionGeneration.value
             guard let identity else { throw CyloError.missingCredential }
-            let result = try await api.requestPairing(deviceName: deviceName, identity: identity.loadOrCreate())
+            let deviceIdentity = try identity.loadOrCreate()
+            _ = try configure()
+            let result = try await api.requestPairing(deviceName: deviceName, identity: deviceIdentity)
             guard generation == connectionGeneration.value else { return }
             pairingID = result.pairingId
             defaults.set(result.pairingId, forKey: pairingKey)
-            let status = try await api.pairingStatus(id: result.pairingId, identity: identity.loadOrCreate())
+            let status = try await api.pairingStatus(id: result.pairingId, identity: deviceIdentity)
             guard generation == connectionGeneration.value else { return }
             pairingStatus = status
             if status.status == "approved" {
@@ -300,7 +385,7 @@ public final class CyloAppModel: ObservableObject {
             let api = try configure()
             generation = connectionGeneration.value
             guard let id = pairingID ?? defaults.string(forKey: pairingKey), let identity else { return }
-            let status = try await api.pairingStatus(id: id, identity: identity.loadOrCreate())
+            let status = try await api.pairingStatus(id: id, identity: try currentDeviceIdentity())
             guard generation == connectionGeneration.value else { return }
             pairingID = id
             pairingStatus = status
@@ -1129,11 +1214,39 @@ public final class CyloAppModel: ObservableObject {
 
     private var pairingKey: String { "cylo.pairingID.\(serverAddress)" }
 
-    private func configure() throws -> APIClient {
+    private func validServerURL(_ address: String) -> URL? {
+        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(), ["https", "http"].contains(scheme), url.host != nil else {
+            return nil
+        }
+        return url
+    }
+
+    private static func loadCredentialStorageChoice(serverAddress: String, defaults: UserDefaults) -> CredentialStorageChoice? {
+        guard let url = URL(string: serverAddress.trimmingCharacters(in: .whitespacesAndNewlines)), url.host != nil else { return nil }
+        return loadCredentialStorageChoice(serverURL: url, defaults: defaults)
+    }
+
+    private static func loadCredentialStorageChoice(serverURL: URL, defaults: UserDefaults) -> CredentialStorageChoice? {
+        guard let raw = defaults.string(forKey: CredentialStorageChoice.defaultsKey(serverURL: serverURL)) else { return nil }
+        return CredentialStorageChoice(rawValue: raw)
+    }
+
+    private func currentDeviceIdentity() throws -> DeviceIdentity {
+        guard let identity, let existing = try identity.loadExisting() else { throw CyloError.missingCredential }
+        return existing
+    }
+
+    private func configure(allowIdentityCreation: Bool = false) throws -> APIClient {
         let trimmed = serverAddress.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(), ["https", "http"].contains(scheme), url.host != nil else {
             throw CyloError.invalidServerURL
         }
+        guard let storageChoice = Self.loadCredentialStorageChoice(serverURL: url, defaults: defaults) else {
+            credentialStorageChoice = nil
+            throw CyloError.credentialStorageNotSelected
+        }
+        credentialStorageChoice = storageChoice
         defaults.set(trimmed, forKey: "cylo.serverAddress")
         if let api, api.serverURL == url, coordinator != nil { return api }
         if configuredServerURL != url {
@@ -1160,9 +1273,18 @@ public final class CyloAppModel: ObservableObject {
             connectionEpoch = connectionGeneration.value
         }
         eventTask?.cancel()
-        let identity = DeviceIdentityStore(serverURL: url)
+        let identity = storageChoice.makeStore(serverURL: url)
         let api = try APIClient(serverURL: url, credentials: identity)
-        let deviceIdentity = try identity.loadOrCreate()
+        let deviceIdentity = try identity.loadExisting()
+        self.identity = identity
+        self.api = api
+        guard let deviceIdentity else {
+            journal = nil
+            coordinator = nil
+            snapshotCache = nil
+            guard allowIdentityCreation else { throw CyloError.missingCredential }
+            return api
+        }
         let identityFingerprint = Self.pushIdentityFingerprint(deviceToken: deviceIdentity.deviceToken)
         if let previousFingerprint = pushIdentityFingerprint, previousFingerprint != identityFingerprint {
             pendingCommandSummaries = []
@@ -1180,8 +1302,6 @@ public final class CyloAppModel: ObservableObject {
             snapshot = cached
             freshness = .stale(reason: "Showing the last saved server snapshot.", cursor: cached.eventCursor)
         }
-        self.identity = identity
-        self.api = api
         self.journal = journal
         coordinator = CommandCoordinator(api: api, journal: journal)
         pairingID = defaults.string(forKey: pairingKey)
@@ -1906,12 +2026,6 @@ public final class CyloAppModel: ObservableObject {
 
     private func setOffline(_ error: Error) {
         freshness = .offline(reason: userMessage(error), cursor: snapshot?.eventCursor)
-        if snapshot == nil, let url = URL(string: serverAddress), url.host != nil,
-           let device = try? identity?.loadOrCreate(),
-           let cache = try? SnapshotCache(serverURL: url, deviceToken: device.deviceToken), let cached = try? cache.load() {
-            snapshotCache = cache
-            snapshot = cached
-        }
     }
 
     private func userMessage(_ error: Error) -> String {

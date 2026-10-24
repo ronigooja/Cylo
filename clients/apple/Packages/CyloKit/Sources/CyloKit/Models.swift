@@ -394,6 +394,9 @@ public struct APIFailureBody: Codable, Sendable {
 public enum CyloError: Error, LocalizedError, Sendable {
     case invalidServerURL
     case missingCredential
+    case credentialStorageNotSelected
+    case credentialAccessDenied(String)
+    case credentialConflict
     case exportTooLarge
     case http(status: Int, code: String, message: String, details: [String: JSONValue]?)
     case invalidResponse
@@ -403,7 +406,10 @@ public enum CyloError: Error, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .invalidServerURL: "Enter a valid Cylo server URL."
-        case .missingCredential: "This device has not been paired with the server."
+        case .missingCredential: "No device identity is saved in the selected storage. Use Bootstrap or Request approval in Settings to create one explicitly."
+        case .credentialStorageNotSelected: "Choose Keychain or local private file in Settings before connecting."
+        case let .credentialAccessDenied(storage): "Access to the selected \(storage) identity was denied. No identity was created or changed. To keep the same server registration, allow access and copy the identity explicitly; a new file identity may need approval from another approved device."
+        case .credentialConflict: "A different device identity already exists in the destination storage. It was not overwritten; switch back to the original storage or resolve the conflict before copying."
         case .exportTooLarge: "This export is larger than the 1 GiB download limit."
         case let .http(_, _, message, _): message
         case .invalidResponse: "The server returned a response the app could not read."
