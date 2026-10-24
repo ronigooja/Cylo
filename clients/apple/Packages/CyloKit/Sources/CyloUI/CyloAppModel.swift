@@ -174,8 +174,9 @@ public final class CyloAppModel: ObservableObject {
     public init(defaults: UserDefaults = .standard) {
         Self.cleanupExpiredExportTemporaries()
         self.defaults = defaults
-        serverAddress = defaults.string(forKey: "cylo.serverAddress") ?? ""
-        credentialStorageChoice = Self.loadCredentialStorageChoice(serverAddress: serverAddress, defaults: defaults)
+        let initialServerAddress = defaults.string(forKey: "cylo.serverAddress") ?? ""
+        serverAddress = initialServerAddress
+        credentialStorageChoice = Self.loadCredentialStorageChoice(serverAddress: initialServerAddress, defaults: defaults)
         pushNotificationsEnabled = defaults.bool(forKey: "cylo.apns.optIn")
         snapshotCache = nil
         if credentialStorageChoice == nil {
