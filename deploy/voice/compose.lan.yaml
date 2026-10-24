@@ -1,0 +1,4 @@
+services:
+  voice-gateway:
+    ports:
+      - "${VOICE_LAN_BIND:?Set VOICE_LAN_BIND to a private host address}:18090:8090"

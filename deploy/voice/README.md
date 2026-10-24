@@ -17,7 +17,7 @@ generated credentials are root-readable only under `/etc/cylo`.
 An initial downstream key named `cylo-control-plane` is created once and
 stored in `/etc/cylo/voice-api-key.env`; later deployments reuse this file.
 
-The management page is bound only to host loopback:
+By default, the management page is bound only to host loopback:
 
 ```text
 http://127.0.0.1:18090/login
@@ -32,11 +32,22 @@ is authorized to use and that has Web Voice access. This account's
 `access_token` must be entered manually; it is not an OpenAI API key, is
 encrypted in the gateway database, and does not refresh automatically.
 
-The gateway uses plain HTTP only on loopback and on the private Docker network
-named `cylo`. Do not publish port 18090 on a LAN or public address. The
-container has a 384 MiB memory cap, 1 CPU cap, 128 PID cap, a read-only root
-filesystem, and bounded local Docker logs. Persistent gateway data is stored
-in `/var/lib/cylo/voice`.
+The gateway uses plain HTTP on loopback and on the private Docker network named
+`cylo`. A LAN bind is an explicit opt-in for an address assigned to the host:
+
+```bash
+sudo env VOICE_LAN_BIND=192.168.1.4 ./deploy/voice/deploy.sh
+```
+
+The script persists this bind address at `/etc/cylo/voice.lan.env` and adds a
+second host mapping while retaining the loopback mapping. It accepts only a
+private IPv4 host address; it does not bind all interfaces. Without this
+setting, port 18090 stays loopback-only. The LAN page uses HTTP, so only use it
+on a trusted private network. To return to loopback-only, redeploy with
+`sudo env VOICE_LAN_BIND= ./deploy/voice/deploy.sh`. The container has a
+384 MiB memory cap, 1 CPU cap, 128 PID cap, a read-only root filesystem, and
+bounded local Docker logs. Persistent gateway data is stored in
+`/var/lib/cylo/voice`.
 
 ## Cylo integration boundary
 

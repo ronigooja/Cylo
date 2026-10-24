@@ -9,6 +9,8 @@ readonly data_dir=/var/lib/cylo/voice
 readonly compose_file=/etc/cylo/voice.compose.yaml
 readonly env_file=/etc/cylo/voice.env
 readonly admin_file=/etc/cylo/voice-admin.txt
+readonly lan_env_file=/etc/cylo/voice.lan.env
+readonly lan_compose_file=/etc/cylo/voice.lan.compose.yaml
 readonly script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ "$(id -u)" -ne 0 ]]; then
@@ -69,8 +71,37 @@ if ! docker network inspect cylo >/dev/null 2>&1; then
   docker network create cylo >/dev/null
 fi
 
-docker compose --project-name cylo-voice --file "$compose_file" up --detach --build
+lan_bind=""
+if [[ -v VOICE_LAN_BIND ]]; then
+  lan_bind="$VOICE_LAN_BIND"
+elif [[ -e "$lan_env_file" ]]; then
+  lan_bind="$(sed -n 's/^VOICE_LAN_BIND=//p' "$lan_env_file")"
+fi
+if [[ -v VOICE_LAN_BIND && -z "$lan_bind" ]]; then
+  : >"$lan_env_file"
+  chmod 0600 "$lan_env_file"
+fi
+compose_args=(--project-name cylo-voice --file "$compose_file")
+if [[ -n "$lan_bind" ]]; then
+  python3 -c 'import ipaddress,sys; ip=ipaddress.IPv4Address(sys.argv[1]); sys.exit(0 if ip.is_private and not ip.is_loopback and not ip.is_link_local else 1)' "$lan_bind" || {
+    echo "VOICE_LAN_BIND must be a private IPv4 address assigned to this host." >&2
+    exit 1
+  }
+  if ! ip -o -4 addr show | awk '{split($4,a,"/"); print a[1]}' | grep -Fxq "$lan_bind"; then
+    echo "VOICE_LAN_BIND is not assigned to a host network interface." >&2
+    exit 1
+  fi
+  printf 'VOICE_LAN_BIND=%s\n' "$lan_bind" >"$lan_env_file"
+  chmod 0600 "$lan_env_file"
+  install -m 0644 "$script_dir/compose.lan.yaml" "$lan_compose_file"
+  compose_args+=(--env-file "$lan_env_file" --file "$lan_compose_file")
+fi
+
+docker compose "${compose_args[@]}" up --detach --build
 python3 "$script_dir/provision-api-key.py"
 echo "Voice gateway deployed from $upstream_revision."
 echo "Management URL: http://127.0.0.1:18090/login"
 echo "Management credentials file: $admin_file (root-readable only)"
+if [[ -n "$lan_bind" ]]; then
+  echo "LAN management URL: http://$lan_bind:18090/login"
+fi
