@@ -174,13 +174,21 @@ struct TasksView: View {
     @State private var searchPresented = false
     private var visible: [TaskRecord] {
         model.tasks.filter { task in
-            (query.isEmpty || task.title.localizedCaseInsensitiveContains(query) || task.goal.localizedCaseInsensitiveContains(query)) &&
-            (filter == "all" || (filter == "review" ? task.status == .awaitingUser : task.status.canAcceptEntries))
+            let matchesSearch = query.isEmpty || task.title.localizedCaseInsensitiveContains(query) || task.goal.localizedCaseInsensitiveContains(query)
+            let needsAttention = task.status == .awaitingUser || model.approvals.contains { $0.taskId == task.id && $0.status == "pending" }
+            let matchesStatus: Bool
+            switch filter {
+            case "active": matchesStatus = task.status.canAcceptEntries && !needsAttention
+            case "review": matchesStatus = needsAttention
+            case "ended": matchesStatus = !task.status.canAcceptEntries
+            default: matchesStatus = true
+            }
+            return matchesSearch && matchesStatus
         }
     }
     var body: some View {
         List {
-            Picker(uiText("Filter"), selection: $filter) { Text(uiText("All")).tag("all"); Text(uiText("Active")).tag("active"); Text(uiText("Needs review")).tag("review") }.pickerStyle(.segmented)
+            Picker(uiText("Filter"), selection: $filter) { Text(uiText("All")).tag("all"); Text(uiText("Active")).tag("active"); Text(uiText("Pending tasks")).tag("review"); Text(uiText("Ended")).tag("ended") }.pickerStyle(.segmented)
             FreshnessBanner(model: model)
             ForEach(visible) { task in NavigationLink(value: WorkspaceRoute.task(task.id)) { TaskSummary(task: task, model: model) } }
             if visible.isEmpty { ContentUnavailableView(uiText("No matching tasks"), systemImage: "checklist") }
@@ -236,7 +244,7 @@ struct TaskDetailView: View {
                 }
                 .safeAreaInset(edge: .bottom) { TaskComposer(model: model, taskID: task.id, projectID: task.projectId).id(task.id).frame(maxWidth: 760).padding(.horizontal).padding(.bottom, 8).frame(maxWidth: .infinity).background(.bar) }
                 .navigationTitle(task.title)
-                .toolbar { if task.status.canAcceptEntries { Button(uiText("Request stop"), systemImage: "stop.circle", role: .destructive) { showingStopConfirmation = true } } }
+                .toolbar { if task.status == .queued || task.status == .active || task.status == .waiting || task.status == .paused { Button(uiText("Request stop"), systemImage: "stop.circle", role: .destructive) { showingStopConfirmation = true } } }
                 .confirmationDialog(uiText("Request that Cylo stop this task?"), isPresented: $showingStopConfirmation) {
                     Button(uiText("Request stop"), role: .destructive) { Task {
                         stopError = nil

@@ -124,7 +124,7 @@ struct SettingsView: View {
                     let epoch = model.connectionEpoch
                     Task { await model.prepareExport(scope: exportScope, expectedConnectionEpoch: epoch) }
                 }
-                .disabled(model.exportStatus == "Preparing the authorized export…" || model.exportArtifact != nil)
+                .disabled(model.exportStatus == uiText("Preparing the authorized export…") || model.exportArtifact != nil)
                 if let artifact = model.exportArtifact {
                     LabeledContent(uiText("Prepared file"), value: artifact.filename)
                     Button(uiText("Save export…")) {

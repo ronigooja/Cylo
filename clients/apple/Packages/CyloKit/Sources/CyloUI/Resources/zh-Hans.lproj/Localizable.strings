@@ -390,3 +390,5 @@
 "unknown" = "未知";
 "·" = "·";
 "· verified" = "· 已验证";
+"Pending tasks" = "待处理";
+"Ended" = "已结束";
