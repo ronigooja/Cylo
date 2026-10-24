@@ -70,6 +70,8 @@ The durable relationship is `Project → Task → Run → AO Session → Runtime
 
 ## 4. Native application flows
 
+UI design must communicate function through clear naming, layout, and interaction so users can understand features and complete actions. Do not display redundant purpose descriptions or operating tutorials by default. Offer necessary help on demand, and state material consequences, risks, and limits at the point of action. If removing explanatory copy makes a feature unclear, improve the design first; add brief contextual help for unfamiliar concepts or complex operations when needed. This rule applies to all client screens and flows.
+
 ### Interface decisions and acceptance boundary
 
 The Apple redesign uses system typography, SF Symbols, semantic colors, system appearance, and English/Simplified Chinese localization. Spacing follows 4/8/12/16/24/32 pt steps; conversation text is limited to 760 pt. Blue emphasizes primary actions; status also has a text label. Normal connected state has no banner. Offline, stale, and failed operations remain visible with an action at the affected surface.

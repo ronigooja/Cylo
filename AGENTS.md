@@ -10,6 +10,10 @@
 - Keep implementation status honest. A design, static check, fixture, or proof of concept is not production implementation or end-to-end acceptance.
 - Keep decisions and acceptance boundaries in `docs/master-plan.md`; keep the README concise.
 
+## UI design
+
+- Follow the UI rule in `docs/master-plan.md`, section 4: communicate function through clear naming, layout, and interaction; omit redundant purpose descriptions and operating tutorials by default. Provide necessary help on demand and state material consequences, risks, and limits at the point of action.
+
 ## Current product and architecture baseline
 
 - The product is private and self-hosted: a Linux Go control server, independent runner, SQLite WAL with `synchronous=FULL`, and native SwiftUI macOS/iPhone/iPad clients.
