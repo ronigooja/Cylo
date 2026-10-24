@@ -76,6 +76,7 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
     environment:
+      HOME: /var/lib/cylo/memory
       CYLO_SECRET_FILE_MAP: CYLO_RUNNER_TOKEN=/run/secrets/memory_runner_token,CYLO_MEM0_LLM_API_KEY=/run/secrets/mem0_llm_api_key
       CYLO_CONTROL_URL: http://cylo-server:8787
       CYLO_QDRANT_URL: http://qdrant:6333
