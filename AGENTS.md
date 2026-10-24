@@ -21,7 +21,7 @@
 
 ## Work coordination and safety
 
-- The main agent coordinates planning, assignments, dependencies, review, and integration. Delegate implementation to GPT-6 Luna subagents at high reasoning effort and substantive independent verification to GPT-6.1 at medium reasoning effort. Use at most four concurrent implementation subagents and reserve one independent review slot.
+- The main agent coordinates planning, assignments, dependencies, review, and integration. Use GPT-6 Luna at medium reasoning effort for simple tasks. Use GPT-6.1 Sol at medium reasoning effort for complex tasks, independent review, and UI design and implementation. Use at most four concurrent implementation subagents and reserve one independent review slot.
 - Run concurrent work in separate branches and worktrees under `$HOME/subagents`, with explicit file ownership for each assignment. Do not edit outside assigned ownership or take over another agent's archive scope.
 - Before ending a delegated task or handing work to a fresh context, leave a concise handoff with the branch/worktree, ownership, commit, completed work, remaining work, verification, and known limitations.
 - Coordinate cross-module API and data changes with the main agent and affected owners before editing. Review delegated commits before integration; report relevant tests, commands, outcomes, and limitations without claiming checks that were not run.
