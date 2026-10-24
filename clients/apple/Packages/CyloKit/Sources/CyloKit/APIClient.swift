@@ -85,6 +85,19 @@ public final class APIClient: @unchecked Sendable {
         try await request(path: ["v1", "snapshot"], method: "GET", authenticated: true)
     }
 
+    public func taskEntries(taskID: String, cursor: String? = nil, limit: Int = 100) async throws -> TaskEntriesPage {
+        guard !taskID.isEmpty, (1...100).contains(limit) else { throw CyloError.invalidResponse }
+        var components = URLComponents(url: try makeURL(path: ["v1", "tasks", taskID, "entries"]), resolvingAgainstBaseURL: false)
+        var queryItems = [URLQueryItem(name: "limit", value: String(limit))]
+        if let cursor, !cursor.isEmpty { queryItems.append(URLQueryItem(name: "cursor", value: cursor)) }
+        components?.queryItems = queryItems
+        guard let url = components?.url else { throw CyloError.invalidServerURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        try authorize(&request)
+        return try await perform(request)
+    }
+
     public func downloadExport(scope: String, temporaryDirectory: URL = FileManager.default.temporaryDirectory) async throws -> ScopedExportArtifact {
         guard scope == "personal" || scope == "workspace" else { throw CyloError.invalidResponse }
         var components = URLComponents(url: try makeURL(path: ["v1", "export"]), resolvingAgainstBaseURL: false)

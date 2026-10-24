@@ -363,10 +363,15 @@ public struct VoiceOperationResponse: Codable, Equatable, Sendable {
 
 public struct TaskEntry: Codable, Equatable, Identifiable, Sendable {
     public var id: String
+    public var taskId: String
     public var kind: String
     public var content: String
-    public var authorDeviceId: String
     public var createdAt: String
+}
+
+public struct TaskEntriesPage: Codable, Equatable, Sendable {
+    public var messages: [TaskEntry]
+    public var nextCursor: String?
 }
 
 public struct CommandReceipt: Codable, Equatable, Sendable {

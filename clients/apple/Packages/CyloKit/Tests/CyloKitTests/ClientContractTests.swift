@@ -1356,4 +1356,247 @@ final class ClientContractTests: XCTestCase {
         }
         return data.isEmpty ? nil : data
     }
+    private func conversationTask(_ id: String, updatedAt: String = "2026-10-24T12:00:00Z", status: TaskStatus = .active) -> TaskRecord {
+        TaskRecord(id: id, projectId: nil, title: id, goal: id, source: "user", profileId: nil, status: status, version: 2, createdAt: "2026-10-24T11:00:00Z", updatedAt: updatedAt, acceptedAt: nil, startedAt: nil, finishedAt: nil, result: nil, error: nil, evidence: [], canAcceptResult: false)
+    }
+
+    private func conversationSnapshot(_ tasks: [TaskRecord]) -> Snapshot {
+        Snapshot(serverVersion: "1", eventCursor: "1", projects: [], tasks: tasks, approvals: [], devices: [Device(id: "device-1", workspaceId: "workspace-1", name: "Test", status: "approved", version: 1, createdAt: "now", approvedAt: nil, lastSeenAt: nil)], runs: [])
+    }
+
+    func testTaskEntriesAPIUsesPagedWireContractAndRejectsOversizedPage() async throws {
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        var count = 0
+        ExportURLProtocol.responseHandler = { request in
+            count += 1
+            XCTAssertEqual(request.url?.path, "/v1/tasks/task-a/entries")
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems
+            XCTAssertEqual(query?.first(where: { $0.name == "cursor" })?.value, "opaque+cursor")
+            XCTAssertEqual(query?.first(where: { $0.name == "limit" })?.value, "50")
+            XCTAssertNotNil(request.value(forHTTPHeaderField: "Authorization"))
+            return (200, [:], Data(#"{"messages":[{"id":"entry-1","task_id":"task-a","kind":"user","content":"Continue","created_at":"2026-10-24T12:00:00Z"}],"next_cursor":"next"}"#.utf8))
+        }
+        let page = try await api.taskEntries(taskID: "task-a", cursor: "opaque+cursor", limit: 50)
+        XCTAssertEqual(page.messages.first?.taskId, "task-a")
+        XCTAssertEqual(page.nextCursor, "next")
+        do {
+            _ = try await api.taskEntries(taskID: "task-a", limit: 101)
+            XCTFail("oversized pages must fail before a request")
+        } catch { XCTAssertEqual(count, 1) }
+    }
+
+    @MainActor
+    func testTaskHistoryPreservesServerOrderAndDeduplicatesOverlappingPages() async throws {
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        await model.preparePendingCheckForTesting(api: api, journal: try CommandJournal(fileURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)), snapshot: conversationSnapshot([conversationTask("a")]))
+        let first = TaskEntry(id: "first", taskId: "a", kind: "user", content: "First", createdAt: "2026-10-24T12:00:00Z")
+        let second = TaskEntry(id: "second", taskId: "a", kind: "user", content: "Second", createdAt: "2026-10-24T12:00:00.1Z")
+        model.taskEntriesFetchOverrideForTesting = { taskID, cursor in
+            XCTAssertEqual(taskID, "a")
+            if cursor == nil { return TaskEntriesPage(messages: [first], nextCursor: "next") }
+            XCTAssertEqual(cursor, "next")
+            return TaskEntriesPage(messages: [first, second], nextCursor: nil)
+        }
+        await model.selectTask("a")
+        XCTAssertTrue(model.hasMoreTaskEntries)
+        await model.loadMoreTaskEntries()
+        XCTAssertEqual(model.taskEntries.map(\.id), ["first", "second"])
+        XCTAssertFalse(model.hasMoreTaskEntries)
+        model.taskEntriesFetchOverrideForTesting = { _, _ in throw URLError(.notConnectedToInternet) }
+        await model.selectTask("a")
+        XCTAssertTrue(model.taskEntries.isEmpty)
+        XCTAssertNotNil(model.taskEntriesError)
+    }
+
+    @MainActor
+    func testDelayedTaskHistoryCannotReplaceNewSelectionAndDraftsStaySeparate() async throws {
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        await model.preparePendingCheckForTesting(api: api, journal: try CommandJournal(fileURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)), snapshot: conversationSnapshot([conversationTask("a"), conversationTask("b")]))
+        let gate = AsyncTestGate()
+        model.taskEntriesFetchOverrideForTesting = { taskID, _ in
+            if taskID == "a" { await gate.pause() }
+            return TaskEntriesPage(messages: [TaskEntry(id: taskID, taskId: taskID, kind: "user", content: taskID, createdAt: "now")], nextCursor: nil)
+        }
+        model.updateTaskDraft("new draft")
+        model.updateTaskDraft("draft a", for: "a")
+        let oldRead = Task { await model.selectTask("a") }
+        await gate.waitUntilStarted()
+        await model.selectTask("b")
+        XCTAssertEqual(model.selectedTaskDraft, "", "an empty existing task never inherits the new task draft")
+        model.updateTaskDraft("draft b", for: "b")
+        await gate.resume()
+        await oldRead.value
+        XCTAssertEqual(model.selectedTaskID, "b")
+        XCTAssertEqual(model.taskEntries.map(\.id), ["b"])
+        XCTAssertEqual(model.taskDrafts["a"], "draft a")
+        XCTAssertEqual(model.selectedTaskDraft, "draft b")
+        XCTAssertEqual(model.newTaskDraft, "new draft")
+        XCTAssertFalse(model.isLoadingTaskEntries)
+    }
+
+    @MainActor
+    func testUnknownTaskSendRetainsDraftAndReusesReceiptWithoutSecondPost() async throws {
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = try CommandJournal(fileURL: directory.appendingPathComponent("commands.json"))
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        await model.preparePendingCheckForTesting(api: api, journal: journal, snapshot: conversationSnapshot([]))
+        model.updateTaskDraft("Please investigate")
+        var postCount = 0
+        var savedKey = ""
+        ExportURLProtocol.responseHandler = { request in
+            if request.httpMethod == "POST" {
+                postCount += 1
+                savedKey = request.value(forHTTPHeaderField: "Idempotency-Key") ?? ""
+                return (503, [:], Data())
+            }
+            XCTAssertEqual(request.httpMethod, "GET")
+            let key = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "key" })?.value
+            XCTAssertEqual(key, savedKey)
+            return (200, [:], Self.commandReceipt(key: savedKey, kind: "task.create", workspaceID: "workspace-1", resourceID: "created"))
+        }
+        let firstResult = await model.sendTaskDraft(for: nil)
+        guard case let .unknown(key, _) = firstResult else { return XCTFail("ambiguous HTTP failure must preserve a retryable intent") }
+        XCTAssertEqual(key, savedKey)
+        XCTAssertEqual(model.newTaskDraft, "Please investigate")
+        let pending = try await journal.all()
+        XCTAssertEqual(pending.map(\.idempotencyKey), [savedKey])
+        let retryResult = await model.sendTaskDraft(for: nil)
+        guard case .accepted = retryResult else { return XCTFail("retry must resolve the original receipt") }
+        XCTAssertEqual(postCount, 1)
+        XCTAssertEqual(model.newTaskDraft, "")
+        let remaining = try await journal.all()
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
+    @MainActor
+    func testRejectedTaskSendRetainsDraftAndAcceptedSendPreservesNewerEdit() async throws {
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = try CommandJournal(fileURL: directory.appendingPathComponent("commands.json"))
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let snapshot = conversationSnapshot([])
+        await model.preparePendingCheckForTesting(api: api, journal: journal, snapshot: snapshot)
+        model.updateTaskDraft("Original")
+        ExportURLProtocol.responseHandler = { _ in
+            (409, [:], Data(#"{"error":{"code":"version_conflict","message":"Changed"}}"#.utf8))
+        }
+        let rejected = await model.sendTaskDraft(for: nil)
+        guard case .failed = rejected else { return XCTFail("conflict must be a known failure") }
+        XCTAssertEqual(model.newTaskDraft, "Original")
+        let remaining = try await journal.all()
+        XCTAssertTrue(remaining.isEmpty)
+        let gate = AsyncTestGate()
+        model.snapshotFetchOverrideForTesting = { await gate.pause(); return snapshot }
+        ExportURLProtocol.responseHandler = { request in
+            let key = request.value(forHTTPHeaderField: "Idempotency-Key") ?? ""
+            return (200, [:], Self.commandReceipt(key: key, kind: "task.create", workspaceID: "workspace-1", resourceID: "created"))
+        }
+        let sending = Task { await model.sendTaskDraft(for: nil) }
+        await gate.waitUntilStarted()
+        model.updateTaskDraft("A newer edit")
+        await gate.resume()
+        let accepted = await sending.value
+        guard case .accepted = accepted else { return XCTFail("receipt remains accepted") }
+        XCTAssertEqual(model.newTaskDraft, "A newer edit")
+    }
+
+    @MainActor
+    func testTaskOrderingParsesFractionalSecondsAndCredentialChangeClearsDraftContext() async throws {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        defaults.set("https://cylo.example", forKey: "cylo.serverAddress")
+        let model = CyloAppModel(defaults: defaults)
+        model.setSnapshotForTesting(conversationSnapshot([conversationTask("older"), conversationTask("newer", updatedAt: "2026-10-24T05:00:00.1-07:00")]))
+        XCTAssertEqual(model.tasks.map(\.id), ["newer", "older"])
+        model.updateTaskDraft("private draft")
+        model.updateTaskDraft("private task draft", for: "a")
+        await model.selectCredentialStorage(.privateFile)
+        XCTAssertEqual(model.newTaskDraft, "")
+        XCTAssertTrue(model.taskDrafts.isEmpty)
+        XCTAssertTrue(model.taskEntries.isEmpty)
+        XCTAssertNil(model.selectedTaskID)
+    }
+
+    @MainActor
+    func testExplicitTaskSendKeepsTargetWhenAnotherTaskIsSelected() async throws {
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        await model.preparePendingCheckForTesting(api: api, journal: try CommandJournal(fileURL: directory.appendingPathComponent("commands.json")), snapshot: conversationSnapshot([conversationTask("a"), conversationTask("b")]))
+        let gate = AsyncTestGate()
+        model.taskEntriesFetchOverrideForTesting = { taskID, _ in
+            if taskID == "a" { await gate.pause() }
+            return TaskEntriesPage(messages: [], nextCursor: nil)
+        }
+        model.updateTaskDraft("Message for a", for: "a")
+        model.updateTaskDraft("Message for b", for: "b")
+        let selecting = Task { await model.selectTask("a") }
+        await gate.waitUntilStarted()
+        await model.selectTask("b")
+        var postedTaskID: String?
+        ExportURLProtocol.responseHandler = { request in
+            let body = Self.requestBody(request) ?? Data()
+            let command = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            postedTaskID = (command?["payload"] as? [String: Any])?["task_id"] as? String
+            let key = request.value(forHTTPHeaderField: "Idempotency-Key") ?? ""
+            return (200, [:], Self.commandReceipt(key: key, kind: "task.append", workspaceID: "workspace-1", resourceID: "a"))
+        }
+        let result = await model.sendTaskDraft(for: "a")
+        guard case .accepted = result else { return XCTFail("explicit task send should be accepted") }
+        await gate.resume()
+        await selecting.value
+        XCTAssertEqual(postedTaskID, "a")
+        XCTAssertEqual(model.selectedTaskID, "b")
+        XCTAssertEqual(model.taskDrafts["a"], "")
+        XCTAssertEqual(model.taskDrafts["b"], "Message for b")
+    }
+
+    @MainActor
+    func testUnknownReceiptRetryPreservesEditedDraftAndDoesNotPostIt() async throws {
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = try CommandJournal(fileURL: directory.appendingPathComponent("commands.json"))
+        await model.preparePendingCheckForTesting(api: api, journal: journal, snapshot: conversationSnapshot([]))
+        var postCount = 0
+        var key = ""
+        ExportURLProtocol.responseHandler = { request in
+            if request.httpMethod == "POST" {
+                postCount += 1
+                key = request.value(forHTTPHeaderField: "Idempotency-Key") ?? ""
+                return (503, [:], Data())
+            }
+            return (200, [:], Self.commandReceipt(key: key, kind: "task.create", workspaceID: "workspace-1", resourceID: "created"))
+        }
+        model.updateTaskDraft("Original task")
+        let unknown = await model.sendTaskDraft(for: nil)
+        guard case .unknown = unknown else { return XCTFail("send must remain unconfirmed") }
+        model.updateTaskDraft("A different draft")
+        let resolved = await model.retryTaskSubmission(idempotencyKey: key)
+        guard case .accepted = resolved else { return XCTFail("retry must check original receipt") }
+        XCTAssertEqual(postCount, 1)
+        XCTAssertEqual(model.newTaskDraft, "A different draft")
+    }
+
+    @MainActor
+    func testMemoryDeletionSequenceDoesNotEraseTaskDrafts() async throws {
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        var before = conversationSnapshot([])
+        before.authority = SnapshotAuthority(instanceLineageId: "lineage", generation: 1, deletionSequence: "0")
+        model.setSnapshotForTesting(before)
+        model.updateTaskDraft("Keep this draft")
+        var after = before
+        after.eventCursor = "2"
+        after.authority = SnapshotAuthority(instanceLineageId: "lineage", generation: 1, deletionSequence: "1")
+        model.snapshotFetchOverrideForTesting = { after }
+        try await model.refreshSnapshotForTesting()
+        XCTAssertEqual(model.newTaskDraft, "Keep this draft")
+    }
+
 }
