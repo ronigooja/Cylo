@@ -208,10 +208,17 @@ public final class CyloAppModel: ObservableObject {
             notice = CyloError.credentialStorageNotSelected.localizedDescription
             return
         }
-        var generation = connectionGeneration.value
+        let configuredAPI: APIClient
         do {
-            let configuredAPI = try configure()
-            generation = connectionGeneration.value
+            configuredAPI = try configure()
+        } catch {
+            // Configuration can switch origins before reporting a missing identity.
+            // That setup error is current even if configure advanced the generation.
+            setOffline(error)
+            return
+        }
+        let generation = connectionGeneration.value
+        do {
             await reloadPendingCommandSummaries()
             if pushNotificationsEnabled { NativeNotificationDelivery.shared.registerForRemoteNotifications() }
             try await refreshSnapshot()
@@ -2026,7 +2033,9 @@ public final class CyloAppModel: ObservableObject {
     }
 
     private func setOffline(_ error: Error) {
-        freshness = .offline(reason: userMessage(error), cursor: snapshot?.eventCursor)
+        let message = userMessage(error)
+        freshness = .offline(reason: message, cursor: snapshot?.eventCursor)
+        notice = message
     }
 
     private func userMessage(_ error: Error) -> String {

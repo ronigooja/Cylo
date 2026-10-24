@@ -406,7 +406,7 @@ public enum CyloError: Error, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .invalidServerURL: "Enter a valid Cylo server URL."
-        case .missingCredential: "No device identity is saved in the selected storage. Use Bootstrap or Request approval in Settings to create one explicitly."
+        case .missingCredential: "No identity is saved in the selected storage. To keep an existing registration, explicitly copy its identity from the other store. Otherwise use Bootstrap for the first device or Request approval from another approved device."
         case .credentialStorageNotSelected: "Choose Keychain or local private file in Settings before connecting."
         case let .credentialAccessDenied(storage): "Access to the selected \(storage) identity was denied. No identity was created or changed. To keep the same server registration, allow access and copy the identity explicitly; a new file identity may need approval from another approved device."
         case .credentialConflict: "A different device identity already exists in the destination storage. It was not overwritten; switch back to the original storage or resolve the conflict before copying."

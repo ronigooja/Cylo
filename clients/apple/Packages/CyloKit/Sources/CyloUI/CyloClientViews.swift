@@ -1066,6 +1066,11 @@ private struct SettingsView: View {
 
     var body: some View {
         Form {
+            if let notice = model.notice {
+                Section("Connection status") {
+                    NoticeCard(message: notice)
+                }
+            }
             Section("Credential storage") {
                 Picker("Store device identity", selection: Binding(
                     get: { model.credentialStorageChoice?.rawValue ?? "" },
@@ -1173,7 +1178,6 @@ private struct SettingsView: View {
                     Text(status).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
                 }
             }
-            if let notice = model.notice { Section("Latest update") { Text(notice).textSelection(.enabled) } }
         }
         .navigationTitle("Settings")
         .fileExporter(isPresented: $showingExportSave, document: exportDocument, contentType: .zip, defaultFilename: model.exportArtifact?.filename ?? "cylo-export.zip") { result in
