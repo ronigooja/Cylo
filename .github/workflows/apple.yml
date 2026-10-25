@@ -32,6 +32,7 @@ jobs:
           set -euo pipefail
           CI_OUTPUT="$RUNNER_TEMP/cylo-apple"
           echo "CI_OUTPUT=$CI_OUTPUT" >> "$GITHUB_ENV"
+          echo "CYLO_BUILD_ROOT=$CI_OUTPUT/test-data" >> "$GITHUB_ENV"
           mkdir -p "$CI_OUTPUT/logs" "$CI_OUTPUT/artifacts"
           {
             git rev-parse HEAD
