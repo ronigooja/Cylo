@@ -321,6 +321,12 @@ Create only directories that contain tracked files. Other contributors will own 
 
 Available integration machines/tools: macOS host `zhuwei@macair`, Xcode 16.2, Swift 6.0.3, Go 1.26.4 at `/root/environment/go1.26.4/bin/go`, and the planned Go module uses `modernc.org/sqlite` for pure-Go SQLite. All Mac-side files must be beneath `/Users/zhuwei/terminal/<dedicated-folder>`. Availability does not mean a device build, voice test, or deployment has passed.
 
+### Build and test execution policy
+
+Linux builds and executable tests run on Vultr to keep dependency, Docker, and test caches off the controller. Native Apple builds and tests use macOS/Xcode. The execution rules are maintained in [development rules](development.md); the `vultr-tasks` skill owns the worker lifecycle procedure.
+
+These workers are development tooling, not Cylo product runtimes; AO runtime ownership and external-service restrictions still apply. Build/test success proves only the scope exercised and does not by itself establish deployment or end-to-end acceptance.
+
 ## 12. Milestones and acceptance
 
 | Milestone | Scope | Exit evidence |

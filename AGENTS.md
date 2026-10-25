@@ -32,3 +32,8 @@
 - Never put credentials, tokens, private account data, or secret values in source, documentation, logs, or test fixtures. Refer to secret names or deployment-provided references only.
 - Do not change external services or the existing CLIProxyAPI deployment as part of repository work unless explicitly authorized.
 - Prefer evidence that can be repeated. Report commands and outcomes accurately; do not claim checks that were not run.
+
+## Build and test execution
+
+- Before building or testing, read and follow [the development rules](docs/development.md).
+- Linux builds, Docker builds, and executable tests run on Vultr; native Apple builds and tests run on macOS/Xcode. Only documentation and lightweight static checks run locally.
