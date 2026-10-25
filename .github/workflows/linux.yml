@@ -1,0 +1,70 @@
+name: Linux checks
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/**']
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/linux.yml'
+  pull_request:
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/linux.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Record source and environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/cylo-linux/logs"
+          {
+            git rev-parse HEAD
+            git status --short
+            go version
+            uname -a
+          } > "$RUNNER_TEMP/cylo-linux/logs/environment.txt"
+      - name: Run Go tests
+        shell: bash
+        run: |
+          set -uo pipefail
+          go test ./... 2>&1 | tee "$RUNNER_TEMP/cylo-linux/logs/go-tests.log"
+          status=$?
+          echo "$status" > "$RUNNER_TEMP/cylo-linux/logs/go-tests.exit"
+          exit "$status"
+      - name: Race-check authorization
+        shell: bash
+        run: |
+          set -uo pipefail
+          go test -race ./internal/control ./cmd/cylo-server 2>&1 | tee "$RUNNER_TEMP/cylo-linux/logs/auth-race.log"
+          status=$?
+          echo "$status" > "$RUNNER_TEMP/cylo-linux/logs/auth-race.exit"
+          exit "$status"
+      - name: Upload verification logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-logs-${{ github.sha }}
+          path: ${{ runner.temp }}/cylo-linux/logs
+          retention-days: 7
+          if-no-files-found: error

@@ -42,6 +42,38 @@ execution, memory processing, or task completion.
 
 ## macOS application
 
+### Password-login replacement: rollout boundary
+
+The approved replacement uses the fixed endpoint `http://debian.local:8787`,
+one-use owner setup with a password, and password login on additional devices.
+The address is not editable. Password login does not require another device to
+be online. This source change does not update the running server or installed
+apps; the earlier installed-device procedure below describes that installation
+until rollout is performed and verified.
+
+An existing installation whose bootstrap code was already consumed requires a
+fresh setup code from a server administrator. After stopping the server, run
+the replacement server binary on its host:
+
+```sh
+cylo-server recover-owner --database /path/to/cylo.db --confirm-revoke-all-devices
+```
+
+The operation requires the exclusive database lock, preserves the owner identity
+and business data, clears the password for setup, revokes device sessions, and
+requests active runs to stop. Keep the generated code private and enter it in
+the replacement app's first-setup form with the new owner password. The stored
+recovery code takes precedence over the original deployment bootstrap code;
+do not paste either code or the password into chat or repository files. A stop
+request is not termination proof. Back up authoritative data before rollout;
+run this command only as an intentional migration or recovery operation.
+
+The fixed endpoint currently uses plain HTTP on the trusted LAN. Password and
+session transport protection remains an acceptance gap; this source change
+does not establish HTTPS or modify the deployed network configuration.
+
+### Earlier installed client
+
 The app is installed at `/Applications/Cylo.app`. Current update artifacts and
 logs are under `~/Developer/Cylo/runs/fixed-server-ui-20261025/`. The app
 can use `http://debian.local:8787` directly on the LAN. The existing
