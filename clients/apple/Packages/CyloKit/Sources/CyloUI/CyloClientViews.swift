@@ -59,6 +59,9 @@ public struct CyloRootView: View {
     }
     private var splitNavigation: some View {
         NavigationSplitView {
+            #if os(macOS)
+            macSidebar
+            #else
             List(selection: $area) {
                 ForEach(MainArea.allCases) { item in Label(uiText(item.title), systemImage: item.symbol).tag(item) }
                 Section(uiText("Recent tasks")) {
@@ -74,9 +77,91 @@ public struct CyloRootView: View {
             .safeAreaInset(edge: .bottom) {
                 Button { showAccount = true } label: { Label(uiText("Account & Settings"), systemImage: "person.crop.circle").frame(maxWidth: .infinity, alignment: .leading) }.buttonStyle(.plain).padding()
             }
+            #endif
         } detail: {
             NavigationStack(path: path(for: area ?? .conversation)) { screen(area ?? .conversation) }.toolbar { utilityToolbar }
         }
+    }
+    #if os(macOS)
+    private var macSidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "bubble.left.and.bubble.right.fill")
+                    .font(.system(size: 20, weight: .medium)).foregroundStyle(.tint)
+                Text(uiText("Cylo")).font(.system(size: 21, weight: .semibold, design: .rounded))
+            }
+            .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 22)
+
+            Button { newConversation() } label: {
+                Label(uiText("New conversation"), systemImage: "square.and.pencil")
+                    .font(.system(size: 13, weight: .medium))
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
+            }
+            .buttonStyle(.bordered).controlSize(.large)
+            .padding(.horizontal, 16).padding(.bottom, 20)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(MainArea.allCases) { item in
+                        sidebarButton(selected: area == item && (paths[item] ?? []).isEmpty) {
+                            area = item
+                            paths[item] = []
+                        } label: {
+                            Label(uiText(item.title), systemImage: item.symbol)
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                    }
+                    if !model.tasks.isEmpty {
+                        Text(uiText("Recent tasks"))
+                            .font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                            .padding(.horizontal, 12).padding(.top, 24).padding(.bottom, 7)
+                        ForEach(model.tasks.prefix(6)) { task in
+                            sidebarButton(selected: selectedSidebarTask == task.id) {
+                                area = .conversation
+                                paths[.conversation] = [.task(task.id)]
+                            } label: {
+                                HStack(alignment: .top, spacing: 10) {
+                                    Image(systemName: "bubble.left").foregroundStyle(.secondary).frame(width: 16)
+                                    Text(task.title).lineLimit(2).multilineTextAlignment(.leading)
+                                }.font(.system(size: 13))
+                            }
+                        }
+                    }
+                }.padding(.horizontal, 12)
+            }
+            Divider().padding(.horizontal, 16)
+            Button { showAccount = true } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "person.crop.circle").font(.system(size: 24)).foregroundStyle(.secondary)
+                    Text(uiText("Account & Settings")).font(.system(size: 12, weight: .medium))
+                    Spacer(minLength: 0)
+                    Image(systemName: "gearshape").font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+                .padding(12).contentShape(Rectangle())
+            }.buttonStyle(.plain).padding(8)
+        }
+        .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 300)
+    }
+    private var selectedSidebarTask: String? {
+        guard let route = paths[area ?? .conversation]?.last, case let .task(id) = route else { return nil }
+        return id
+    }
+    private func sidebarButton<Content: View>(selected: Bool, action: @escaping () -> Void, @ViewBuilder label: () -> Content) -> some View {
+        Button(action: action) {
+            label()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .contentShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(selected ? Color.accentColor : Color.primary)
+        .background(selected ? Color.accentColor.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+    #endif
+    private func newConversation() {
+        area = .conversation
+        paths[.conversation] = []
     }
     @ViewBuilder private func screen(_ item: MainArea) -> some View {
         Group {
@@ -108,10 +193,7 @@ public struct CyloRootView: View {
     }
     @ToolbarContentBuilder private var utilityToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
-            Button {
-                area = .conversation
-                paths[.conversation] = []
-            } label: { Label(uiText("New conversation"), systemImage: "square.and.pencil") }
+            Button { newConversation() } label: { Label(uiText("New conversation"), systemImage: "square.and.pencil") }
                 .keyboardShortcut("n", modifiers: .command)
             Button { showInbox = true } label: {
                 Label(uiText("Notifications"), systemImage: "bell")
@@ -120,7 +202,9 @@ public struct CyloRootView: View {
                         if count > 0 { Text(count > 99 ? "99+" : count.formatted()).font(.system(size: 9, weight: .bold)).foregroundStyle(.white).padding(3).background(.red, in: Capsule()).offset(x: 8, y: -8).accessibilityHidden(true) }
                     }
             }.accessibilityValue(model.notifications.filter { $0.readAt == nil }.count.formatted())
+            #if !os(macOS)
             Button { showAccount = true } label: { Label(uiText("Account & Settings"), systemImage: "person.crop.circle") }
+            #endif
         }
     }
 }

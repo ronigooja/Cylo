@@ -5,6 +5,38 @@ struct ConversationView: View {
     @ObservedObject var model: CyloAppModel
     @Environment(\.openTask) private var openTask
     var body: some View {
+        #if os(macOS)
+        GeometryReader { geometry in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 30) {
+                    FreshnessBanner(model: model)
+                    VStack(alignment: .leading, spacing: 24) {
+                        Text(uiText("What would you like to work on?"))
+                            .font(.system(size: 30, weight: .semibold)).tracking(-0.6)
+                            .fixedSize(horizontal: false, vertical: true)
+                        TaskComposer(model: model, taskID: nil, projectID: nil, accepted: openTask)
+                    }
+                    if !model.tasks.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(uiText("Recent tasks")).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                                .padding(.bottom, 4)
+                            ForEach(model.tasks.prefix(5)) { task in
+                                NavigationLink(value: WorkspaceRoute.task(task.id)) {
+                                    TaskSummary(task: task, model: model)
+                                }.buttonStyle(MacTaskRowStyle())
+                            }
+                        }
+                    }
+                    PendingCommandRows(summaries: model.pendingCommandSummaries, model: model)
+                }
+                .frame(maxWidth: 680)
+                .padding(.horizontal, 40)
+                .padding(.top, max(48, min(110, geometry.size.height * 0.13)))
+                .padding(.bottom, 40).frame(maxWidth: .infinity)
+            }
+        }
+        .navigationTitle(uiText("Conversation"))
+        #else
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 FreshnessBanner(model: model)
@@ -21,6 +53,7 @@ struct ConversationView: View {
             }.frame(maxWidth: 760).padding(24).frame(maxWidth: .infinity)
         }
         .navigationTitle(uiText("Conversation"))
+        #endif
     }
 }
 
@@ -38,6 +71,33 @@ struct TaskComposer: View {
     private var canSend: Bool { taskID.map { model.task(id: $0)?.status.canAcceptEntries == true } ?? true }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            #if os(macOS)
+            VStack(alignment: .leading, spacing: 14) {
+                TextField(uiText("Message Cylo…"), text: draft, axis: .vertical)
+                    .font(.system(size: 14)).lineSpacing(4)
+                    .lineLimit(3...10).textFieldStyle(.plain)
+                    .disabled(!canSend || submitting)
+                    .padding(.top, 2)
+                HStack {
+                    Button { showVoice = true } label: {
+                        Label(uiText("Voice"), systemImage: "waveform")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary)
+                    .disabled(submitting || pendingKey != nil)
+                    Spacer()
+                    Button { submit() } label: {
+                        Image(systemName: "arrow.up").font(.system(size: 13, weight: .semibold))
+                            .frame(width: 20, height: 22)
+                    }
+                    .accessibilityLabel(uiText("Send"))
+                    .help(uiText("Send"))
+                    .buttonStyle(.borderedProminent).tint(.blue).controlSize(.regular)
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(submitting || pendingKey != nil || model.isBusy || !canSend || draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            #else
             HStack(alignment: .bottom) {
                 TextField(uiText("Message Cylo…"), text: draft, axis: .vertical).lineLimit(2...8).textFieldStyle(.plain).disabled(!canSend || submitting)
                 Button { showVoice = true } label: { Label(uiText("Voice"), systemImage: "waveform").labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle()) }.disabled(submitting || pendingKey != nil)
@@ -45,6 +105,7 @@ struct TaskComposer: View {
                     .keyboardShortcut(.return, modifiers: .command)
                     .disabled(submitting || pendingKey != nil || model.isBusy || !canSend || draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
+            #endif
             if submitting { ProgressView().controlSize(.small) }
             if !canSend { Text(uiText("This task no longer accepts messages.")).font(.caption).foregroundStyle(.secondary) }
             NoticeCard(message: error)
@@ -56,7 +117,13 @@ struct TaskComposer: View {
                 }
             }
         }
+        #if os(macOS)
+        .padding(18)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.quaternary, lineWidth: 1))
+        #else
         .padding(16).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18)).overlay(RoundedRectangle(cornerRadius: 18).stroke(.quaternary))
+        #endif
         .sheet(isPresented: $showVoice) { VoicePanel(model: model) { transcript in draft.wrappedValue = transcript; showVoice = false } }
         .onAppear { restorePendingFeedback() }
         .onChange(of: model.pendingCommandSummaries) { _, _ in restorePendingFeedback() }
@@ -156,6 +223,23 @@ struct TaskSummary: View {
     let task: TaskRecord
     @ObservedObject var model: CyloAppModel
     var body: some View {
+        #if os(macOS)
+        HStack(spacing: 14) {
+            Image(systemName: "bubble.left")
+                .font(.system(size: 15)).foregroundStyle(.secondary)
+                .frame(width: 34, height: 34)
+                .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 9))
+            VStack(alignment: .leading, spacing: 5) {
+                Text(task.title).font(.system(size: 13, weight: .medium)).foregroundStyle(.primary).lineLimit(2)
+                HStack(spacing: 6) {
+                    Text(uiText(task.status.label))
+                    if task.projectId != nil { Text(uiText("·")); Text(model.projectName(task.projectId)).lineLimit(1) }
+                }.font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 12)
+            Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
+        }.padding(.vertical, 8).contentShape(Rectangle())
+        #else
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 5) {
                 Text(task.title).font(.headline).foregroundStyle(.primary).lineLimit(2)
@@ -164,6 +248,7 @@ struct TaskSummary: View {
             Spacer()
             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
         }.padding(.vertical, 6).contentShape(Rectangle())
+        #endif
     }
 }
 
@@ -220,10 +305,14 @@ struct TaskDetailView: View {
                             NoticeCard(message: model.taskEntriesError)
                             if model.taskEntriesError != nil { Button(uiText("Retry")) { Task { await model.selectTask(taskID) } } }
                             ForEach(model.taskEntries) { entry in
+                                #if os(macOS)
+                                MacMessageRow(author: entryAuthor(entry.kind), content: entry.content, isUser: entry.kind == "user" || entry.kind == "user_message")
+                                #else
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(entryAuthor(entry.kind)).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                                     MessageBody(content: entry.content)
                                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
+                                #endif
                             }
                             if model.hasMoreTaskEntries { Button(uiText("Load more messages")) { Task { await model.loadMoreTaskEntries() } }.disabled(model.isLoadingTaskEntries) }
                         }
@@ -242,7 +331,16 @@ struct TaskDetailView: View {
                         }.font(.callout)
                     }.frame(maxWidth: 760).padding(20).frame(maxWidth: .infinity)
                 }
-                .safeAreaInset(edge: .bottom) { TaskComposer(model: model, taskID: task.id, projectID: task.projectId).id(task.id).frame(maxWidth: 760).padding(.horizontal).padding(.bottom, 8).frame(maxWidth: .infinity).background(.bar) }
+                .safeAreaInset(edge: .bottom) {
+                    TaskComposer(model: model, taskID: task.id, projectID: task.projectId).id(task.id)
+                        .frame(maxWidth: 760)
+                        #if os(macOS)
+                        .padding(.horizontal, 32).padding(.top, 12).padding(.bottom, 20)
+                        .frame(maxWidth: .infinity).background(.regularMaterial)
+                        #else
+                        .padding(.horizontal).padding(.bottom, 8).frame(maxWidth: .infinity).background(.bar)
+                        #endif
+                }
                 .navigationTitle(task.title)
                 .toolbar { if task.status.canAcceptEntries { Button(uiText("Request stop"), systemImage: "stop.circle", role: .destructive) { showingStopConfirmation = true } } }
                 .confirmationDialog(uiText("Request that Cylo stop this task?"), isPresented: $showingStopConfirmation) {
