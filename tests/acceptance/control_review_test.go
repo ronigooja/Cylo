@@ -485,3 +485,69 @@ func TestReviewApprovalCannotResurrectStoppedTask(t *testing.T) {
 		t.Errorf("stopped task became %s", status)
 	}
 }
+
+func TestReviewConsumedLegacyBootstrapCannotSetOwnerPassword(t *testing.T) {
+	code, token := reviewToken(t), reviewToken(t)
+	store, h := reviewServer(t, control.Config{BootstrapCode: code}, nil)
+	registered := reviewBootstrap(t, h, code, token)
+	// Model the pre-password upgrade state: authoritative subject is retained,
+	// but only a host recovery code may initialize the password now.
+	if _, err := store.DB().Exec(`UPDATE owner_auth SET password_hash=NULL,password_salt=NULL,generation=generation+1; UPDATE devices SET status='revoked'`); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/v1/snapshot", "/v1/auth/session"} {
+		if w := reviewRequest(h, "GET", path, token, "", nil); w.Code != 401 {
+			t.Fatalf("legacy bearer allowed %s=%d", path, w.Code)
+		}
+	}
+	req := contracts.OwnerAuthRequest{RequestID: "legacy-setup", Code: code, Password: "replacement-password", DeviceName: "legacy", DeviceToken: reviewToken(t)}
+	if w := reviewRequest(h, "POST", "/v1/auth/setup", token, "", req); w.Code != 401 {
+		t.Fatalf("consumed original code initialized password=%d", w.Code)
+	}
+	var subject, deviceSubject string
+	var required bool
+	if err := store.DB().QueryRow(`SELECT subject_id,password_hash IS NULL FROM owner_auth WHERE id=1`).Scan(&subject, &required); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DB().QueryRow(`SELECT subject_id FROM devices WHERE id=?`, registered.Device.ID).Scan(&deviceSubject); err != nil {
+		t.Fatal(err)
+	}
+	if subject != deviceSubject || !required {
+		t.Fatal("failed legacy setup changed owner authority")
+	}
+}
+
+func TestReviewRevocationRecheckedInsideMutationTransactions(t *testing.T) {
+	code, token := reviewToken(t), reviewToken(t)
+	var store *storage.Store
+	store, h := reviewServer(t, control.Config{BootstrapCode: code}, func(srv *control.Server) {
+		srv.RegisterAuthenticatedRoutes(func(mux *http.ServeMux) {
+			mux.HandleFunc("POST /v1/review-stale-session", func(w http.ResponseWriter, r *http.Request) {
+				p, _ := control.PrincipalFromContext(r.Context())
+				// Deterministically put a revoke commit between authentication middleware
+				// and both mutation entry points, reproducing an in-flight logout race.
+				if _, err := store.DB().ExecContext(r.Context(), `UPDATE devices SET status='revoked' WHERE id=?`, p.DeviceID); err != nil {
+					t.Fatal(err)
+				}
+				called := false
+				err := srv.DeviceTransaction(r.Context(), func(*sql.Tx, contracts.Principal) error { called = true; return nil })
+				if api, ok := err.(*control.APIError); !ok || api.Status != 401 || called {
+					t.Fatalf("stale DeviceTransaction=%v called=%v", err, called)
+				}
+				_, err = srv.ExecuteCommand(r.Context(), p, "stale-command", contracts.CommandRequest{Kind: "project.create", Payload: json.RawMessage(`{"name":"stale"}`)}, []byte("stale"))
+				if api, ok := err.(*control.APIError); !ok || api.Status != 401 {
+					t.Fatalf("stale ExecuteCommand=%v", err)
+				}
+				w.WriteHeader(200)
+			})
+		})
+	})
+	reviewBootstrap(t, h, code, token)
+	if w := reviewRequest(h, "POST", "/v1/review-stale-session", token, "", nil); w.Code != 200 {
+		t.Fatalf("stale request fixture=%d", w.Code)
+	}
+	var projects int
+	if err := store.DB().QueryRow(`SELECT count(*) FROM projects`).Scan(&projects); err != nil || projects != 0 {
+		t.Fatalf("stale mutation committed: %d %v", projects, err)
+	}
+}

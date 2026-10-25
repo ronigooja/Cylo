@@ -79,6 +79,11 @@ func TestReviewMemoryACLTwoAuthenticatedSubjects(t *testing.T) {
 	for _, scope := range []map[string]any{{"kind": "project", "id": project.ResourceID}, {"kind": "task", "id": task.ResourceID}} {
 		featureCommand(t, h, owner, "remember-"+scope["kind"].(string), "memory.remember", map[string]any{"scope": scope, "subject": "database", "key": "decision", "content": "restricted SQLite evidence", "source_kind": "user_note"})
 	}
+	// Select a persisted owner fixture after creating private rows, so this
+	// lower-level ACL regression still exercises a separate historical subject.
+	if _, err := store.DB().Exec(`UPDATE owner_auth SET subject_id='peer-subject' WHERE id=1; UPDATE devices SET owner_generation=1 WHERE id='peer-device'`); err != nil {
+		t.Fatal(err)
+	}
 	search := func(want bool) {
 		t.Helper()
 		w := reviewRequest(h, "GET", "/v1/memory?q=SQLite", peer, "", nil)
