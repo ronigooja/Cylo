@@ -453,9 +453,6 @@ func (s *Server) commandDeviceRevoke(ctx context.Context, tx *sql.Tx, c CommandC
 	if !HasScope(c.Principal, "device:manage") {
 		return contracts.CommandResult{}, nil, apiError(http.StatusForbidden, "forbidden", "device management scope is required", nil)
 	}
-	if !HasScope(c.Principal, "device:manage") {
-		return contracts.CommandResult{}, nil, apiError(http.StatusForbidden, "forbidden", "device management scope is required", nil)
-	}
 	var p devicePayload
 	if err := decodePayload(req.Payload, &p); err != nil {
 		return contracts.CommandResult{}, nil, err
