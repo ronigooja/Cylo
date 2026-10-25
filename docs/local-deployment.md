@@ -42,19 +42,18 @@ execution, memory processing, or task completion.
 
 ## macOS application
 
-The app is installed at
-`/Users/zhuwei/terminal/cylo-native-install-20261024/Cylo.app`.
-All Mac deployment artifacts remain below that dedicated directory. The app
+The app is installed at `/Applications/Cylo.app`. Current update artifacts and
+logs are under `~/Developer/Cylo/runs/fixed-server-ui-20261025/`. The app
 can use `http://debian.local:8787` directly on the LAN. The existing
 `http://127.0.0.1:8787` endpoint remains available through the SSH tunnel.
 The LAN URL uses plain HTTP and is intended for the trusted local network.
 
 The first device must register through **More > Settings** in the app. Enter a device
 name and the deployment-provided one-use bootstrap code, then select
-**Bootstrap first approved device**. A temporary private code file is supplied
-at `bootstrap-code.tmp` within the dedicated install directory. Remove that
-temporary copy after successful registration. Do not paste the code into
-chat or repository files.
+**Bootstrap first approved device**. Use a current deployment-provided code;
+remove any temporary private copy after registration. Do not paste the code
+into chat or repository files. Additional devices request approval from an
+already approved device.
 
 The updated client fixes the server address to `http://debian.local:8787` and
 defaults to Keychain, preserving any existing explicit storage choice for that
