@@ -5,6 +5,39 @@ struct ConversationView: View {
     @ObservedObject var model: CyloAppModel
     @Environment(\.openTask) private var openTask
     var body: some View {
+        Group {
+        #if os(macOS)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                FreshnessBanner(model: model)
+                if !model.tasks.isEmpty {
+                    Text(uiText("Recent tasks")).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                    ForEach(model.tasks.prefix(8)) { task in
+                        NavigationLink(value: WorkspaceRoute.task(task.id)) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                TaskSummary(task: task, model: model)
+                                let summary = task.result.flatMap { $0.isEmpty ? nil : $0 } ?? task.goal
+                                if !summary.isEmpty {
+                                    Text(summary).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+                                }
+                            }
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+                            .contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                    }
+                }
+                PendingCommandRows(summaries: model.pendingCommandSummaries, model: model)
+            }
+            .frame(maxWidth: 760).padding(24).frame(maxWidth: .infinity)
+        }
+        .safeAreaInset(edge: .bottom) {
+            TaskComposer(model: model, taskID: nil, projectID: nil, accepted: openTask)
+                .frame(maxWidth: 760).padding(.horizontal, 24).padding(.vertical, 12)
+                .frame(maxWidth: .infinity).background(.bar)
+        }
+        #else
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 FreshnessBanner(model: model)
@@ -19,6 +52,8 @@ struct ConversationView: View {
                 }
                 PendingCommandRows(summaries: model.pendingCommandSummaries, model: model)
             }.frame(maxWidth: 760).padding(24).frame(maxWidth: .infinity)
+        }
+        #endif
         }
         .navigationTitle(uiText("Conversation"))
     }
@@ -38,6 +73,41 @@ struct TaskComposer: View {
     private var canSend: Bool { taskID.map { model.task(id: $0)?.status.canAcceptEntries == true } ?? true }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            #if os(macOS)
+            VStack(alignment: .leading, spacing: 8) {
+                TextField(uiText("Message Cylo…"), text: draft, axis: .vertical)
+                    .lineLimit(2...6).textFieldStyle(.plain)
+                    .disabled(!canSend || submitting)
+                    .accessibilityLabel(uiText("Message Cylo…"))
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    Button { showVoice = true } label: {
+                        Group {
+                            if case .connecting = model.voiceStatus {
+                                ProgressView().controlSize(.small).tint(.white)
+                            } else {
+                                Image(systemName: voiceSymbol).font(.system(size: 17, weight: .medium))
+                            }
+                        }
+                        .frame(width: 40, height: 36)
+                        .foregroundStyle(.white)
+                        .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(uiText("Voice"))
+                    .accessibilityValue(voiceAccessibilityValue)
+                    .help(uiText("Voice"))
+                    Button { submit() } label: {
+                        Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold))
+                            .frame(width: 36, height: 36)
+                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain).accessibilityLabel(uiText("Send"))
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(submitting || pendingKey != nil || model.isBusy || !canSend || draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            #else
             HStack(alignment: .bottom) {
                 TextField(uiText("Message Cylo…"), text: draft, axis: .vertical).lineLimit(2...8).textFieldStyle(.plain).disabled(!canSend || submitting)
                 Button { showVoice = true } label: { Label(uiText("Voice"), systemImage: "waveform").labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle()) }.disabled(submitting || pendingKey != nil)
@@ -45,6 +115,7 @@ struct TaskComposer: View {
                     .keyboardShortcut(.return, modifiers: .command)
                     .disabled(submitting || pendingKey != nil || model.isBusy || !canSend || draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
+            #endif
             if submitting { ProgressView().controlSize(.small) }
             if !canSend { Text(uiText("This task no longer accepts messages.")).font(.caption).foregroundStyle(.secondary) }
             NoticeCard(message: error)
@@ -60,6 +131,22 @@ struct TaskComposer: View {
         .sheet(isPresented: $showVoice) { VoicePanel(model: model) { transcript in draft.wrappedValue = transcript; showVoice = false } }
         .onAppear { restorePendingFeedback() }
         .onChange(of: model.pendingCommandSummaries) { _, _ in restorePendingFeedback() }
+    }
+    private var voiceSymbol: String {
+        if model.voicePoolStatus?.blocked == true { return "mic.badge.xmark" }
+        switch model.voiceStatus {
+        case .active: return "waveform"
+        case .unavailable, .interrupted: return "mic.badge.xmark"
+        case .idle, .connecting: return "mic.fill"
+        }
+    }
+    private var voiceAccessibilityValue: String {
+        switch model.voiceStatus {
+        case .idle: uiText("Connect voice")
+        case .connecting: uiText("Connecting voice…")
+        case .active: uiText("Voice connected")
+        case let .unavailable(reason), let .interrupted(reason): reason
+        }
     }
     private func restorePendingFeedback() {
         if let key = model.pendingTaskSubmissionKey(for: taskID) {
@@ -93,6 +180,53 @@ struct VoicePanel: View {
     var useDraft: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     var body: some View {
+        #if os(macOS)
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Label(uiText("Voice"), systemImage: "mic.fill").font(.headline)
+                Spacer()
+                Button(uiText("Done")) { dismiss() }
+            }
+            HStack(spacing: 12) {
+                switch model.voiceStatus {
+                case .idle:
+                    Button(uiText("Connect voice"), systemImage: "mic") { Task { await model.startVoice() } }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.isBusy || model.voicePoolStatus?.blocked == true)
+                case .connecting:
+                    ProgressView().controlSize(.small).accessibilityLabel(uiText("Connecting voice…"))
+                case .active:
+                    Image(systemName: "waveform").foregroundStyle(.blue)
+                        .accessibilityLabel(uiText("Voice connected"))
+                case let .unavailable(reason), let .interrupted(reason):
+                    Text(reason).font(.callout).foregroundStyle(.secondary)
+                    Button(uiText("Retry voice")) { Task { await model.startVoice() } }
+                        .disabled(model.canEndVoiceSession || model.isBusy)
+                }
+                Spacer(minLength: 0)
+                if model.canEndVoiceSession {
+                    Button(uiText("End voice"), role: .destructive) { Task { await model.endVoiceSession() } }
+                }
+            }
+            if model.voicePoolStatus?.blocked == true {
+                Text(uiText("Voice is unavailable while the account pool is quarantined."))
+                    .font(.callout).foregroundStyle(.orange)
+            }
+            Text(uiText("Transcript draft")).font(.subheadline.weight(.semibold))
+            TextEditor(text: Binding(get: { model.voiceDraft }, set: model.updateVoiceDraft))
+                .font(.body).frame(minHeight: 120, maxHeight: 200)
+                .accessibilityLabel(uiText("Voice transcript draft"))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.quaternary))
+            HStack {
+                Spacer()
+                Button(uiText("Use draft")) { useDraft(model.voiceDraft) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.voiceDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20).frame(width: 440)
+        .task { await model.refreshVoiceReadiness() }
+        #else
         NavigationStack {
             Form {
                 Section {
@@ -116,6 +250,7 @@ struct VoicePanel: View {
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button(uiText("Done")) { dismiss() } } }
                 .task { await model.refreshVoiceReadiness() }
         }.frame(idealWidth: 480, idealHeight: 480)
+        #endif
     }
 }
 
@@ -210,7 +345,7 @@ struct TaskDetailView: View {
         Group {
             if let task = model.task(id: taskID) {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 16) {
                         FreshnessBanner(model: model)
                         NoticeCard(message: stopError)
                         if stopRequested { Label(uiText("Stop requested; awaiting runtime confirmation."), systemImage: "clock").font(.caption).foregroundStyle(.secondary) }
@@ -220,15 +355,36 @@ struct TaskDetailView: View {
                             NoticeCard(message: model.taskEntriesError)
                             if model.taskEntriesError != nil { Button(uiText("Retry")) { Task { await model.selectTask(taskID) } } }
                             ForEach(model.taskEntries) { entry in
+                                #if os(macOS)
+                                MacAssistantMessageRow(entry: entry)
+                                #else
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(entryAuthor(entry.kind)).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                                     MessageBody(content: entry.content)
                                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
+                                #endif
                             }
                             if model.hasMoreTaskEntries { Button(uiText("Load more messages")) { Task { await model.loadMoreTaskEntries() } }.disabled(model.isLoadingTaskEntries) }
                         }
                         if let result = task.result, !result.isEmpty { VStack(alignment: .leading, spacing: 8) { Text(uiText("Result")).font(.headline); MessageBody(content: result) } }
                         if let error = task.error, !error.isEmpty { NoticeCard(message: error) }
+                        #if os(macOS)
+                        if !task.evidence.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(uiText("Evidence")).font(.subheadline.weight(.semibold))
+                                ForEach(task.evidence) { item in
+                                    HStack(alignment: .top, spacing: 8) {
+                                        Image(systemName: item.verified ? "checkmark.circle" : "doc.text")
+                                            .foregroundStyle(item.verified ? Color.green : Color.secondary)
+                                        Text(item.summary).font(.callout).textSelection(.enabled)
+                                        if item.verified {
+                                            Text(uiText("· verified")).font(.caption).foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        #endif
                         ResultDecisionRows(task: task, model: model)
                         ApprovalRows(approvals: model.approvals.filter { $0.taskId == task.id && $0.status == "pending" }, model: model)
                         DisclosureGroup(uiText("Technical details")) {
@@ -236,7 +392,9 @@ struct TaskDetailView: View {
                                 LabeledContent(uiText("Task ID"), value: task.id).textSelection(.enabled)
                                 LabeledContent(uiText("Goal")) { Text(task.goal).textSelection(.enabled) }
                                 LabeledContent(uiText("Updated"), value: uiDate(task.updatedAt))
+                                #if !os(macOS)
                                 EvidenceRows(evidence: task.evidence)
+                                #endif
                                 RunRows(runs: model.runs.filter { $0.taskId == task.id })
                             }.padding(.top, 8)
                         }.font(.callout)
@@ -396,3 +554,30 @@ private func entryAuthor(_ kind: String) -> String {
     default: uiText("Entry")
     }
 }
+
+#if os(macOS)
+private struct MacAssistantMessageRow: View {
+    let entry: TaskEntry
+    private var isUser: Bool { entry.kind == "user" || entry.kind == "user_message" }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: isUser ? "person.fill" : "waveform")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(isUser ? Color.secondary : Color.accentColor)
+                .frame(width: 28, height: 28)
+                .background(isUser ? Color.secondary.opacity(0.1) : Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(entryAuthor(entry.kind)).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Text(uiDate(entry.createdAt)).font(.caption2).foregroundStyle(.tertiary)
+                }
+                MessageBody(content: entry.content).font(.body).lineSpacing(3)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
+    }
+}
+#endif
