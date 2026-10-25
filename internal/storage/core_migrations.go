@@ -14,12 +14,6 @@ CREATE TABLE workspaces (
   created_at TEXT NOT NULL
 );
 INSERT INTO workspaces(id,name,created_at) VALUES('default','Default',strftime('%Y-%m-%dT%H:%M:%fZ','now'));
-CREATE TABLE bootstrap_state (
-  id INTEGER PRIMARY KEY CHECK(id=1),
-  code_hash BLOB NOT NULL,
-  consumed_by_device_id TEXT,
-  consumed_at TEXT
-);
 CREATE TABLE devices (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id),
@@ -35,14 +29,6 @@ CREATE TABLE devices (
   revoked_at TEXT
 );
 CREATE INDEX devices_subject ON devices(workspace_id,subject_id,status);
-CREATE TABLE auth_requests (
-  request_id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL CHECK(kind IN ('bootstrap','pairing')),
-  fingerprint BLOB NOT NULL,
-  token_hash BLOB NOT NULL,
-  device_id TEXT NOT NULL REFERENCES devices(id),
-  created_at TEXT NOT NULL
-);
 CREATE TABLE projects (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id),
@@ -370,7 +356,7 @@ ALTER TABLE runs ADD COLUMN harness TEXT NOT NULL DEFAULT 'codex';
 	}}); err != nil {
 		return err
 	}
-	if err := RegisterOwnerAuthMigration(s); err != nil {
+	if err := RegisterInstanceAuthMigration(s); err != nil {
 		return err
 	}
 	return RegisterRunBudgetMigrations(s)

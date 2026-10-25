@@ -22,15 +22,17 @@ type Config struct {
 	RunnerID           string
 	RunnerWorkspaceIDs []string
 	RunnerScopes       []string
-	DeviceScopes       []string
-	DefaultProfileID   string
-	RoleProfiles       map[string]string
-	RuntimeRouteID     string
-	ModelRouteID       string
-	Profiles           map[string]RuntimeProfile
-	PairingTTL         time.Duration
-	MaxRequestBytes    int64
-	PushSender         PushSender
+	// InstanceScopes controls the single instance principal. DeviceScopes is retained only as a source compatibility alias.
+	InstanceScopes   []string
+	DeviceScopes     []string
+	DefaultProfileID string
+	RoleProfiles     map[string]string
+	RuntimeRouteID   string
+	ModelRouteID     string
+	Profiles         map[string]RuntimeProfile
+	PairingTTL       time.Duration
+	MaxRequestBytes  int64
+	PushSender       PushSender
 }
 
 type RuntimeProfile struct {
@@ -258,14 +260,18 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 		roleProfiles[role] = profileID
 	}
 	cfg.RoleProfiles = roleProfiles
-	if cfg.DeviceScopes == nil {
-		cfg.DeviceScopes = DefaultOwnerScopes()
+	if cfg.InstanceScopes == nil {
+		if cfg.DeviceScopes != nil {
+			cfg.InstanceScopes = append([]string(nil), cfg.DeviceScopes...)
+		} else {
+			cfg.InstanceScopes = DefaultOwnerScopes()
+		}
 	} else {
-		cfg.DeviceScopes = append([]string(nil), cfg.DeviceScopes...)
-		for _, scope := range cfg.DeviceScopes {
-			if strings.TrimSpace(scope) == "" || scope == "*" {
-				return nil, errors.New("device scopes must be explicit non-empty grants without wildcard")
-			}
+		cfg.InstanceScopes = append([]string(nil), cfg.InstanceScopes...)
+	}
+	for _, scope := range cfg.InstanceScopes {
+		if strings.TrimSpace(scope) == "" || scope == "*" {
+			return nil, errors.New("instance scopes must be explicit non-empty grants without wildcard")
 		}
 	}
 	for id, profile := range cfg.Profiles {
@@ -498,18 +504,9 @@ func (s *Server) Handler() http.Handler {
 	s.sealed = true
 	s.mu.Unlock()
 	root := http.NewServeMux()
-	root.Handle("GET /v1/auth/status", s.restoreDeletionGate(http.HandlerFunc(s.handleOwnerStatus)))
-	root.Handle("POST /v1/auth/setup", s.restoreDeletionGate(http.HandlerFunc(s.handleOwnerSetup)))
-	root.Handle("POST /v1/auth/login", s.restoreDeletionGate(http.HandlerFunc(s.handleOwnerLogin)))
-	root.Handle("GET /v1/auth/session", s.deviceAuth(s.restoreDeletionGate(http.HandlerFunc(s.handleOwnerSession))))
-	root.Handle("POST /v1/auth/logout", s.deviceAuth(s.restoreDeletionGate(http.HandlerFunc(s.handleOwnerLogout))))
-	legacy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, apiError(410, "legacy_auth_disabled", "use owner password authentication", nil))
-	})
-	root.Handle("POST /v1/bootstrap", s.restoreDeletionGate(legacy))
-	root.Handle("POST /v1/pairings", s.restoreDeletionGate(legacy))
-	root.Handle("GET /v1/pairings/{pairing_id}", s.restoreDeletionGate(legacy))
-	root.Handle("/v1/", s.deviceAuth(s.restoreDeletionGate(s.device)))
+	// Authentication is intentionally a single instance bearer. Password, device
+	// login, pairing, approval, and logout endpoints are not registered.
+	root.Handle("/v1/", s.instanceAuth(s.restoreDeletionGate(s.device)))
 	root.Handle("/runner/v1/", s.runnerAuth(s.restoreDeletionGate(s.runner)))
 	root.Handle("/healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -521,7 +518,7 @@ func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Set this outside routing and authentication so failures, including
 		// stale sessions and unsupported methods, cannot be cached either.
-		if strings.HasPrefix(r.URL.Path, "/v1/auth/") {
+		if false {
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		limited.ServeHTTP(w, r)

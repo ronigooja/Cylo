@@ -1,11 +1,10 @@
 // cylo-server starts the private control plane. Runtime profiles and bootstrap
-// credentials are provided by the deployment environment; no credentials are
-// read from source-controlled files or printed by the process.
+// the instance key is generated at first start and shown once; no credentials
+// are read from source-controlled files.
 package main
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -29,9 +28,9 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "recover-owner" {
-		if err := recoverOwner(os.Args[2:]); err != nil {
-			log.Printf("owner recovery failed: %v", err)
+	if len(os.Args) > 1 && os.Args[1] == "rotate-key" {
+		if err := rotateInstanceKey(os.Args[2:]); err != nil {
+			log.Printf("instance key rotation failed: %v", err)
 			os.Exit(1)
 		}
 		return
@@ -42,15 +41,14 @@ func main() {
 	}
 }
 
-func recoverOwner(args []string) error {
-	flags := flag.NewFlagSet("recover-owner", flag.ContinueOnError)
+func rotateInstanceKey(args []string) error {
+	flags := flag.NewFlagSet("rotate-key", flag.ContinueOnError)
 	dbPath := flags.String("database", "", "path to the control database")
-	confirmed := flags.Bool("confirm-revoke-all-devices", false, "revoke all device credentials and request active runs to stop")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if *dbPath == "" || !*confirmed || flags.NArg() != 0 {
-		return errors.New("usage: cylo-server recover-owner --database PATH --confirm-revoke-all-devices")
+	if *dbPath == "" || flags.NArg() != 0 {
+		return errors.New("usage: cylo-server rotate-key --database PATH")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -77,74 +75,35 @@ func recoverOwner(args []string) error {
 	if err = store.Migrate(ctx); err != nil {
 		return err
 	}
-	secret := make([]byte, 32)
-	if _, err = rand.Read(secret); err != nil {
+	key, err := control.GenerateInstanceKey()
+	if err != nil {
 		return err
 	}
-	code := base64.RawURLEncoding.EncodeToString(secret)
-	hash := sha256.Sum256([]byte(code))
+	digest := sha256.Sum256([]byte{})
+	// Hash the raw 32-byte key, matching the server's bearer digest.
+	raw, err := base64.RawURLEncoding.DecodeString(key)
+	if err != nil {
+		return err
+	}
+	digest = sha256.Sum256(raw)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	tx, err := store.DB().BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	result, err := tx.ExecContext(ctx, `UPDATE devices SET status='revoked',version=version+1,revoked_at=? WHERE status!='revoked'`, now)
-	if err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE instance_auth SET key_hash=?,rotated_at=? WHERE singleton=1`, digest[:], now); err != nil {
 		return err
 	}
-	revoked, _ := result.RowsAffected()
-	if _, err = tx.ExecContext(ctx, `UPDATE device_push_tokens SET status='disabled',disabled_at=?,updated_at=? WHERE status='active'`, now, now); err != nil {
-		return err
-	}
-	if _, err = tx.ExecContext(ctx, `UPDATE push_deliveries SET status='disabled',updated_at=? WHERE status='pending'`, now); err != nil {
-		return err
-	}
-	if _, err = tx.ExecContext(ctx, `UPDATE tasks SET status='canceled',version=version+1,updated_at=?,finished_at=? WHERE status='queued'`, now, now); err != nil {
-		return err
-	}
-	var stopCount int64
-	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM runs WHERE status IN ('dispatching','active','uncertain') AND desired_control!='stop'`).Scan(&stopCount); err != nil {
-		return err
-	}
-	if _, err = tx.ExecContext(ctx, `UPDATE runs SET desired_control='stop',control_version=control_version+1 WHERE status IN ('dispatching','active','uncertain') AND desired_control!='stop'`); err != nil {
-		return err
-	}
-	// storage.Open holds the same exclusive host lock as the running server.
-	// Recovery cannot operate while the server process owns this database.
-	if _, err = tx.ExecContext(ctx, `UPDATE owner_auth SET password_salt=NULL,password_hash=NULL,generation=generation+1,failed_attempts=0,blocked_until=0 WHERE id=1`); err != nil {
-		return err
-	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO bootstrap_state(id,code_hash) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET code_hash=excluded.code_hash,consumed_by_device_id=NULL,consumed_at=NULL`, hash[:]); err != nil {
-		return err
-	}
-	eventID, err := recoveryEventID()
-	if err != nil {
-		return err
-	}
-	var cursor int64
-	if err = tx.QueryRowContext(ctx, `UPDATE event_counters SET current_cursor=current_cursor+1 WHERE workspace_id='default' RETURNING current_cursor`).Scan(&cursor); err != nil {
-		return err
-	}
-	event := map[string]any{"event_id": eventID, "cursor": fmt.Sprint(cursor), "schema_version": 1, "type": "admin.owner_recovered", "occurred_at": now, "workspace_id": "default", "aggregate_type": "admin", "aggregate_id": "owner", "aggregate_version": cursor, "payload": map[string]any{"revoked_device_count": revoked, "stop_requested_run_count": stopCount}}
-	payload, _ := json.Marshal(event)
-	if _, err = tx.ExecContext(ctx, `INSERT INTO events(event_id,workspace_id,cursor,schema_version,event_type,occurred_at,aggregate_type,aggregate_id,aggregate_version,payload) VALUES(?,?,?,?,?,?,?,?,?,?)`, eventID, "default", cursor, 1, "admin.owner_recovered", now, "admin", "owner", cursor, payload); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE devices SET token_hash=?,status='approved',revoked_at=NULL,version=version+1 WHERE id='instance'`, digest[:]); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
 		return err
 	}
-	fmt.Println("Owner setup recovery code (shown once; enter it with the new owner password):")
-	fmt.Println(code)
+	fmt.Println("Instance key (shown once; import it on every Apple device):")
+	fmt.Println(key)
 	return nil
-}
-
-func recoveryEventID() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func run() error {
@@ -161,11 +120,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	bootstrapCode := os.Getenv("CYLO_BOOTSTRAP_CODE")
+	instanceKey := strings.TrimSpace(os.Getenv("CYLO_INSTANCE_KEY"))
 	runnerToken := os.Getenv("CYLO_RUNNER_TOKEN")
-	if bootstrapCode != "" && !validBearer(bootstrapCode) {
-		return errors.New("CYLO_BOOTSTRAP_CODE must be a 32-byte base64url credential")
-	}
 	if runnerToken != "" && !validBearer(runnerToken) {
 		return errors.New("CYLO_RUNNER_TOKEN must be a 32-byte base64url bearer")
 	}
@@ -187,12 +143,11 @@ func run() error {
 		return err
 	}
 	cfg := control.Config{
-		BootstrapCode:      bootstrapCode,
 		RunnerToken:        runnerToken,
 		RunnerID:           env("CYLO_RUNNER_ID", "configured-runner"),
 		RunnerWorkspaceIDs: splitEnv("CYLO_RUNNER_WORKSPACES", "default"),
 		RunnerScopes:       splitEnv("CYLO_RUNNER_SCOPES", "runner:claim,runner:observe,runner:control:read"),
-		DeviceScopes:       optionalSplitEnv("CYLO_OWNER_SCOPES"),
+		InstanceScopes:     optionalSplitEnv("CYLO_INSTANCE_SCOPES"),
 		DefaultProfileID:   strings.TrimSpace(os.Getenv("CYLO_DEFAULT_PROFILE_ID")),
 		Profiles:           profiles,
 		PushSender:         pushSender,
@@ -206,6 +161,14 @@ func run() error {
 	}
 	if err = store.Migrate(ctx); err != nil {
 		return err
+	}
+	issuedKey, generatedKey, err := control.InitializeInstanceAuth(ctx, store, instanceKey)
+	if err != nil {
+		return err
+	}
+	if generatedKey {
+		fmt.Println("Instance key (shown once; import it on every Apple device):")
+		fmt.Println(issuedKey)
 	}
 	if runnerToken != "" {
 		if err = control.RegisterRunnerCredentialIfMissing(ctx, store, runnerToken, env("CYLO_RUNNER_ID", "configured-runner"), splitEnv("CYLO_RUNNER_WORKSPACES", "default"), splitEnv("CYLO_RUNNER_SCOPES", "runner:claim,runner:observe,runner:control:read")); err != nil {
