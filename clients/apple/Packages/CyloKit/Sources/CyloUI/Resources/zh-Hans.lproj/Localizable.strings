@@ -392,3 +392,13 @@
 "· verified" = "· 已验证";
 "Pending tasks" = "待处理";
 "Ended" = "已结束";
+"Task activity" = "任务动态";
+"Shown" = "已显示";
+"Hidden" = "已隐藏";
+"Search" = "搜索";
+"Clear search" = "清除搜索";
+"Needs attention" = "待你处理";
+"In progress" = "正在推进";
+"Recently completed" = "最近完成";
+"No active tasks" = "暂无进行中的任务";
+"View all" = "查看全部";

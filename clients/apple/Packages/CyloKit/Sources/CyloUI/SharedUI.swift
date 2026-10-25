@@ -51,33 +51,54 @@ func uiTaskCount(_ count: Int) -> String {
     String.localizedStringWithFormat(uiText("%lld tasks"), Int64(count))
 }
 
-/// Preserve source text while giving fenced code its own selectable, horizontal viewport.
+/// Display authoritative message content without adding a source-code viewer.
 struct MessageBody: View {
     let content: String
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(Array(content.components(separatedBy: "```").enumerated()), id: \.offset) { index, segment in
-                if index.isMultiple(of: 2) {
-                    if !segment.isEmpty { Text(segment).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-                } else {
-                    ScrollView(.horizontal) {
-                        Text(codeText(segment))
-                            .font(.system(.body, design: .monospaced))
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: true, vertical: false)
-                            .padding(12)
-                    }
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
-                }
-            }
-        }
-    }
-    private func codeText(_ segment: String) -> String {
-        let lines = segment.split(separator: "\n", omittingEmptySubsequences: false)
-        if lines.count > 1, let first = lines.first, !first.isEmpty,
-           first.allSatisfy({ $0.isLetter || $0.isNumber || ".+-#".contains($0) }) {
-            return lines.dropFirst().joined(separator: "\n").trimmingCharacters(in: .newlines)
-        }
-        return segment.trimmingCharacters(in: .newlines)
+        Text(content)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
+
+func taskStatusSymbol(_ status: TaskStatus) -> String {
+    switch status {
+    case .queued: "clock"
+    case .active: "circle.dotted.circle"
+    case .waiting: "hourglass"
+    case .awaitingUser: "person.crop.circle.badge.exclamationmark"
+    case .paused: "pause.circle"
+    case .complete: "checkmark.circle"
+    case .failed: "exclamationmark.circle"
+    case .canceled: "xmark.circle"
+    }
+}
+
+func taskStatusColor(_ status: TaskStatus) -> Color {
+    switch status {
+    case .active: .accentColor
+    case .awaitingUser, .waiting: .orange
+    case .complete: .green
+    case .failed: .red
+    case .queued, .paused, .canceled: .secondary
+    }
+}
+
+#if os(macOS)
+struct AssistantRowStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Row(configuration: configuration)
+    }
+
+    private struct Row: View {
+        let configuration: ButtonStyleConfiguration
+        @State private var hovering = false
+
+        var body: some View {
+            configuration.label
+                .background(Color.primary.opacity(configuration.isPressed ? 0.08 : hovering ? 0.04 : 0), in: RoundedRectangle(cornerRadius: 8))
+                .onHover { hovering = $0 }
+        }
+    }
+}
+#endif

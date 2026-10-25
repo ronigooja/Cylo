@@ -392,3 +392,13 @@
 "· verified" = "· verified";
 "Pending tasks" = "Pending";
 "Ended" = "Ended";
+"Task activity" = "Task activity";
+"Shown" = "Shown";
+"Hidden" = "Hidden";
+"Search" = "Search";
+"Clear search" = "Clear search";
+"Needs attention" = "Needs attention";
+"In progress" = "In progress";
+"Recently completed" = "Recently completed";
+"No active tasks" = "No active tasks";
+"View all" = "View all";

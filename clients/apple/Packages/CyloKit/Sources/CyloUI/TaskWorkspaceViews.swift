@@ -21,11 +21,10 @@ struct ConversationView: View {
                                     Text(summary).font(.callout).foregroundStyle(.secondary).lineLimit(2)
                                 }
                             }
-                            .padding(12)
+                            .padding(.horizontal, 10).padding(.vertical, 8)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
                             .contentShape(Rectangle())
-                        }.buttonStyle(.plain)
+                        }.buttonStyle(AssistantRowStyle())
                     }
                 }
                 PendingCommandRows(summaries: model.pendingCommandSummaries, model: model)
@@ -81,7 +80,7 @@ struct TaskComposer: View {
                     .accessibilityLabel(uiText("Message Cylo…"))
                 HStack(spacing: 8) {
                     Spacer(minLength: 0)
-                    Button { showVoice = true } label: {
+                    Button { openVoice() } label: {
                         Group {
                             if case .connecting = model.voiceStatus {
                                 ProgressView().controlSize(.small).tint(.white)
@@ -128,9 +127,19 @@ struct TaskComposer: View {
             }
         }
         .padding(16).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18)).overlay(RoundedRectangle(cornerRadius: 18).stroke(.quaternary))
+        #if os(macOS)
+        .popover(isPresented: $showVoice) { VoicePanel(model: model) { transcript in draft.wrappedValue = transcript; showVoice = false } }
+        #else
         .sheet(isPresented: $showVoice) { VoicePanel(model: model) { transcript in draft.wrappedValue = transcript; showVoice = false } }
+        #endif
         .onAppear { restorePendingFeedback() }
         .onChange(of: model.pendingCommandSummaries) { _, _ in restorePendingFeedback() }
+    }
+    private func openVoice() {
+        showVoice = true
+        if case .idle = model.voiceStatus {
+            Task { await model.startVoice() }
+        }
     }
     private var voiceSymbol: String {
         if model.voicePoolStatus?.blocked == true { return "mic.badge.xmark" }
@@ -225,7 +234,6 @@ struct VoicePanel: View {
             }
         }
         .padding(20).frame(width: 440)
-        .task { await model.refreshVoiceReadiness() }
         #else
         NavigationStack {
             Form {
@@ -292,8 +300,13 @@ struct TaskSummary: View {
     @ObservedObject var model: CyloAppModel
     var body: some View {
         HStack(alignment: .top) {
+            #if os(macOS)
+            Image(systemName: taskStatusSymbol(task.status))
+                .foregroundStyle(taskStatusColor(task.status)).frame(width: 18)
+                .padding(.top, 2).accessibilityHidden(true)
+            #endif
             VStack(alignment: .leading, spacing: 5) {
-                Text(task.title).font(.headline).foregroundStyle(.primary).lineLimit(2)
+                Text(task.title).font(.body.weight(.medium)).foregroundStyle(.primary).lineLimit(2)
                 HStack { Text(uiText(task.status.label)); if task.projectId != nil { Text(uiText("·")); Text(model.projectName(task.projectId)) } }.font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -310,7 +323,7 @@ struct TasksView: View {
     private var visible: [TaskRecord] {
         model.tasks.filter { task in
             let matchesSearch = query.isEmpty || task.title.localizedCaseInsensitiveContains(query) || task.goal.localizedCaseInsensitiveContains(query)
-            let needsAttention = task.status == .awaitingUser || model.approvals.contains { $0.taskId == task.id && $0.status == "pending" }
+            let needsAttention = task.status == .awaitingUser || task.status == .failed || task.canAcceptResult || model.approvals.contains { $0.taskId == task.id && $0.status == "pending" }
             let matchesStatus: Bool
             switch filter {
             case "active": matchesStatus = task.status.canAcceptEntries && !needsAttention
