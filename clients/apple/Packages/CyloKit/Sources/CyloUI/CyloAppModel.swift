@@ -1787,6 +1787,11 @@ public final class CyloAppModel: ObservableObject {
                 if exportArtifact != nil {
                     cancelExport(status: uiText("Could not confirm current server authority. The prepared export was removed."))
                 }
+                if let failure = error as? CyloError,
+                   case let .http(status, _, _, _) = failure,
+                   status == 401 || status == 403 {
+                    clearMemoryAndPreparedExport(status: uiText("Server access changed; cached memory and the prepared export were cleared."))
+                }
                 if Self.isAccessDenied(error) {
                     lockWorkspace(clearDrafts: false)
                     authentication = .signedOut(setupRequired: false)
