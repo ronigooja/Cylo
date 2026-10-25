@@ -67,6 +67,8 @@ final class OwnerAuthenticationTests: XCTestCase {
         OwnerAuthURLProtocol.handle = { request in
             let path = request.url!.path
             paths.append(path)
+            XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData)
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cache-Control"), "no-cache, no-store")
             switch path {
             case "/v1/auth/status":
                 XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))

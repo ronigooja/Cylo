@@ -312,6 +312,10 @@ public final class APIClient: @unchecked Sendable {
 
     private func request<Response: Decodable, Body: Encodable>(path: [String], method: String, body: Body? = Optional<NoBody>.none, authenticated: Bool) async throws -> Response {
         var request = URLRequest(url: try makeURL(path: path))
+        if path.starts(with: ["v1", "auth"]) {
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            request.setValue("no-cache, no-store", forHTTPHeaderField: "Cache-Control")
+        }
         request.httpMethod = method
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
