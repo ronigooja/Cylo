@@ -1,0 +1,120 @@
+name: Apple build and tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/**']
+    paths:
+      - 'clients/apple/**'
+      - '.github/workflows/apple.yml'
+  pull_request:
+    paths:
+      - 'clients/apple/**'
+      - '.github/workflows/apple.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apple:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      CI_OUTPUT: ${{ runner.temp }}/cylo-apple
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Record build environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CI_OUTPUT/logs" "$CI_OUTPUT/artifacts"
+          {
+            git rev-parse HEAD
+            sw_vers
+            uname -m
+            xcode-select -p
+            xcodebuild -version
+            swift --version
+          } | tee "$CI_OUTPUT/logs/environment.txt"
+
+      - name: Run Swift package tests
+        shell: bash
+        run: |
+          set -uo pipefail
+          swift test --package-path clients/apple/Packages/CyloKit \
+            --scratch-path "$CI_OUTPUT/swift-build" \
+            --cache-path "$CI_OUTPUT/package-cache" \
+            --config-path "$CI_OUTPUT/swift-config" \
+            --security-path "$CI_OUTPUT/swift-security" \
+            2>&1 | tee "$CI_OUTPUT/logs/swift-tests.log"
+          status=$?
+          echo "$status" > "$CI_OUTPUT/logs/swift-tests.exit"
+          exit "$status"
+
+      - name: Archive unsigned macOS app
+        shell: bash
+        run: |
+          set -uo pipefail
+          xcodebuild -project clients/apple/Cylo.xcodeproj \
+            -scheme CyloMac -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$CI_OUTPUT/mac-derived" \
+            -clonedSourcePackagesDirPath "$CI_OUTPUT/xcode-packages" \
+            -packageCachePath "$CI_OUTPUT/package-cache" \
+            -archivePath "$CI_OUTPUT/CyloMac.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO archive \
+            2>&1 | tee "$CI_OUTPUT/logs/macos-archive.log"
+          status=$?
+          echo "$status" > "$CI_OUTPUT/logs/macos-archive.exit"
+          exit "$status"
+
+      - name: Build unsigned iOS app
+        shell: bash
+        run: |
+          set -uo pipefail
+          xcodebuild -project clients/apple/Cylo.xcodeproj \
+            -scheme CyloMobile -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$CI_OUTPUT/ios-derived" \
+            -clonedSourcePackagesDirPath "$CI_OUTPUT/xcode-packages" \
+            -packageCachePath "$CI_OUTPUT/package-cache" \
+            CODE_SIGNING_ALLOWED=NO build \
+            2>&1 | tee "$CI_OUTPUT/logs/ios-build.log"
+          status=$?
+          echo "$status" > "$CI_OUTPUT/logs/ios-build.exit"
+          exit "$status"
+
+      - name: Package unsigned artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$CI_OUTPUT/CyloMac.xcarchive" "$CI_OUTPUT/artifacts/CyloMac.xcarchive.zip"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$CI_OUTPUT/ios-derived/Build/Products/Release-iphoneos/CyloMobile.app" \
+            "$CI_OUTPUT/artifacts/CyloMobile-unsigned.app.zip"
+          cd "$CI_OUTPUT/artifacts"
+          shasum -a 256 *.zip > SHA256SUMS
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: apple-logs-${{ github.sha }}
+          path: ${{ env.CI_OUTPUT }}/logs
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload unsigned apps
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: apple-unsigned-${{ github.sha }}
+          path: ${{ env.CI_OUTPUT }}/artifacts
+          retention-days: 3
+          if-no-files-found: error
+          compression-level: 0

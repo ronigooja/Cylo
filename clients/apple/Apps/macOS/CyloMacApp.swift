@@ -12,5 +12,10 @@ struct CyloMacApp: App {
                 .frame(minWidth: 840, minHeight: 620)
         }
         .defaultSize(width: 1280, height: 820)
+
+        Settings {
+            CyloSettingsView(model: model)
+                .frame(width: 640, height: 680)
+        }
     }
 }
