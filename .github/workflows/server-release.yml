@@ -1,0 +1,63 @@
+name: Server deployment artifact
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+      - name: Build deployment artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/cylo-release/logs" "$RUNNER_TEMP/cylo-release/artifacts"
+          {
+            git rev-parse HEAD
+            git status --short
+            uname -a
+            go version
+            docker version
+          } > "$RUNNER_TEMP/cylo-release/logs/environment.txt"
+          set +e
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -buildvcs=false -ldflags='-s -w' \
+            -o "$RUNNER_TEMP/cylo-release/artifacts/cylo-server" ./cmd/cylo-server \
+            2>&1 | tee "$RUNNER_TEMP/cylo-release/logs/binary-build.log"
+          status=$?
+          echo "$status" > "$RUNNER_TEMP/cylo-release/logs/binary-build.exit"
+          test "$status" -eq 0 || exit "$status"
+          docker build --platform linux/arm64 -f deploy/linux/Dockerfile.server \
+            -t "cylo-server:owner-login-${GITHUB_SHA:0:12}" . \
+            2>&1 | tee "$RUNNER_TEMP/cylo-release/logs/image-build.log"
+          status=$?
+          echo "$status" > "$RUNNER_TEMP/cylo-release/logs/image-build.exit"
+          test "$status" -eq 0 || exit "$status"
+          set -e
+          docker image inspect "cylo-server:owner-login-${GITHUB_SHA:0:12}" \
+            --format '{{.Id}} {{.Architecture}}' > "$RUNNER_TEMP/cylo-release/artifacts/image.txt"
+          docker save "cylo-server:owner-login-${GITHUB_SHA:0:12}" | gzip > "$RUNNER_TEMP/cylo-release/artifacts/server-image.tar.gz"
+          cd "$RUNNER_TEMP/cylo-release/artifacts"
+          sha256sum cylo-server server-image.tar.gz > SHA256SUMS
+      - name: Upload release logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: server-release-logs-${{ github.sha }}
+          path: ${{ runner.temp }}/cylo-release/logs
+          retention-days: 7
+      - name: Upload deployment artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: server-release-${{ github.sha }}
+          path: ${{ runner.temp }}/cylo-release/artifacts
+          retention-days: 3
+          if-no-files-found: error
+          compression-level: 0
