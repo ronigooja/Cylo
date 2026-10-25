@@ -9,3 +9,5 @@ The redesigned workspace is shared by recent tasks, task search, projects, and l
 The macOS assistant uses compact project/task navigation, a bottom composer with a prominent microphone, and a collapsible task activity rail on wide windows. Tasks show progress, results, evidence summaries, and decisions. The [approved visual direction](../../docs/design/native-assistant-reference.png) is a design preview; native visual and interaction acceptance remain open.
 
 The [visual reference](../../docs/design/apple-redesign.html) is a standalone design artifact. It does not replace native screenshots or device validation. The current redesign verification and remaining acceptance boundaries are recorded in the master plan.
+
+For operator-controlled Xcode access from another host, use the repository's [Xcode MCP over SSH skill](../../.agents/skills/xcode-mcp-ssh/SKILL.md). It includes connection discovery, a batch helper, and real-device startup troubleshooting.
