@@ -6,4 +6,6 @@ Complete app-target builds require an eligible Xcode destination. Direct SDK com
 
 The redesigned workspace is shared by recent tasks, task search, projects, and linked notifications. On iPhone, Conversation, Tasks, and Projects are tabs; on macOS and regular-width iPad they are sidebar destinations. Open notifications from the toolbar and Settings, Memory, or Capabilities from the account menu. Push preferences are in Settings. Voice opens from the composer; review the transcript draft before submitting.
 
+The macOS assistant uses compact project/task navigation, a bottom composer with a prominent microphone, and a collapsible task activity rail on wide windows. Tasks show progress, results, evidence summaries, and decisions. The [approved visual direction](../../docs/design/native-assistant-reference.png) is a design preview; native visual and interaction acceptance remain open.
+
 The [visual reference](../../docs/design/apple-redesign.html) is a standalone design artifact. It does not replace native screenshots or device validation. The current redesign verification and remaining acceptance boundaries are recorded in the master plan.

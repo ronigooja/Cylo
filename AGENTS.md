@@ -9,6 +9,8 @@
 ## UI design
 
 - Follow the UI rule in `docs/master-plan.md`, section 4: communicate function through clear naming, layout, and interaction; omit redundant purpose descriptions and operating tutorials by default. Provide necessary help on demand and state material consequences, risks, and limits at the point of action.
+- Use the approved native assistant direction in that section: compact, readable layouts centered on conversation, task progress, results, and decisions. Present programming work through goals, progress, outcome summaries, and required decisions. Do not add source-code browsers, editors, diff viewers, terminals, or test consoles, including optional or hidden variants.
+- Give voice a prominent, compact microphone control in the composer. Express routine voice state through icons, color, and subtle motion with accessible labels; omit persistent voice explanations, status banners, large waveforms, and separate control strips.
 
 ## Current product and architecture baseline
 
