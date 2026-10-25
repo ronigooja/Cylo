@@ -63,22 +63,22 @@ public final class APIClient: @unchecked Sendable {
         decoder.keyDecodingStrategy = .convertFromSnakeCase
     }
 
-    public func bootstrap(code: String, deviceName: String, identity: DeviceIdentity) async throws -> BootstrapResponse {
-        let body = BootstrapRequest(requestId: identity.bootstrapRequestID, code: code, deviceName: deviceName, deviceToken: identity.deviceToken)
-        return try await request(path: ["v1", "bootstrap"], method: "POST", body: body, authenticated: false)
+    public func authStatus() async throws -> OwnerAuthStatus {
+        try await request(path: ["v1", "auth", "status"], method: "GET", authenticated: false)
     }
 
-    public func requestPairing(deviceName: String, identity: DeviceIdentity) async throws -> PairingResponse {
-        let body = PairingRequest(requestId: identity.pairingRequestID, deviceName: deviceName, deviceToken: identity.deviceToken)
-        return try await request(path: ["v1", "pairings"], method: "POST", body: body, authenticated: false)
+    public func authenticate(password: String, code: String?, deviceName: String, identity: DeviceIdentity) async throws -> DeviceRegistration {
+        let body = OwnerAuthRequest(requestId: identity.bootstrapRequestID, code: code, password: password,
+                                    deviceName: deviceName, deviceToken: identity.deviceToken)
+        return try await request(path: ["v1", "auth", code == nil ? "login" : "setup"], method: "POST", body: body, authenticated: false)
     }
 
-    public func pairingStatus(id: String, identity: DeviceIdentity) async throws -> PairingStatus {
-        let url = try makeURL(path: ["v1", "pairings", id])
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(identity.deviceToken)", forHTTPHeaderField: "Authorization")
-        return try await perform(request)
+    public func authSession() async throws -> OwnerSession {
+        try await request(path: ["v1", "auth", "session"], method: "GET", authenticated: true)
+    }
+
+    public func logout() async throws {
+        let _: JSONValue = try await request(path: ["v1", "auth", "logout"], method: "POST", body: EmptyObject(), authenticated: true)
     }
 
     public func snapshot() async throws -> Snapshot {

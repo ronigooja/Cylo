@@ -20,8 +20,16 @@ public final class CyloAppModel: ObservableObject {
     @Published public private(set) var freshness: ClientFreshness = .loading
     @Published public private(set) var notice: String?
     @Published public private(set) var isBusy = false
-    @Published public private(set) var pairingID: String?
-    @Published public private(set) var pairingStatus: PairingStatus?
+    @Published public private(set) var authentication: OwnerAuthenticationState = .checking
+    private var pendingLoginIdentity: DeviceIdentity?
+    private var pendingLoginIsSetup = false
+    private var pendingLoginAccepted = false
+    private var loginStagingStore: any DeviceIdentityStoring {
+        (credentialStorageChoice ?? .keychain).makeStore(serverURL: URL(string: Self.fixedServerAddress)!,
+                            bundleIdentifier: (Bundle.main.bundleIdentifier ?? "com.cylo.client") + ".pending-owner-login")
+    }
+    private let pendingSetupKey = "cylo.pendingOwnerLogin.setup"
+
     @Published public private(set) var memoryClaims: [MemoryClaim] = []
     @Published public private(set) var memoryMissing: [String] = []
     @Published public private(set) var memoryConflicts: [String] = []
@@ -129,6 +137,10 @@ public final class CyloAppModel: ObservableObject {
 
     func reloadPendingCommandSummariesForTesting() async {
         await reloadPendingCommandSummaries()
+    }
+
+    func setAuthenticationForTesting(_ state: OwnerAuthenticationState) {
+        authentication = state
     }
 
     func setSnapshotForTesting(_ snapshot: Snapshot?) {
@@ -244,27 +256,50 @@ public final class CyloAppModel: ObservableObject {
     public var canEndVoiceSession: Bool { voiceSession != nil }
 
     public func start() async {
-        guard !isConnecting else { return }
+        guard !isConnecting, !isBusy else { return }
         isConnecting = true
         defer { isConnecting = false }
         notice = nil
+        if authentication.deviceID == nil { authentication = .checking }
         freshness = .loading
-        guard credentialStorageChoice != nil else {
-            freshness = .offline(reason: userMessage(CyloError.credentialStorageNotSelected), cursor: snapshot?.eventCursor)
-            notice = userMessage(CyloError.credentialStorageNotSelected)
-            return
-        }
-        let configuredAPI: APIClient
         do {
-            configuredAPI = try configure()
-        } catch {
-            // Configuration can switch origins before reporting a missing identity.
-            // That setup error is current even if configure advanced the generation.
-            setOffline(error)
-            return
-        }
-        let generation = connectionGeneration.value
-        do {
+            guard validServerURL(serverAddress) != nil else { throw CyloError.invalidServerURL }
+            let publicAPI = try APIClient(serverURL: URL(string: Self.fixedServerAddress)!)
+            let status = try await publicAPI.authStatus()
+            if let staged = try loginStagingStore.loadExisting() {
+                pendingLoginIdentity = staged
+                pendingLoginIsSetup = status.setupRequired || defaults.bool(forKey: pendingSetupKey)
+                let stagedAPI = try APIClient(serverURL: URL(string: Self.fixedServerAddress)!, credentials: staged)
+                do {
+                    _ = try await stagedAPI.authSession()
+                    pendingLoginAccepted = true
+                    try (credentialStorageChoice ?? .keychain).makeStore(serverURL: URL(string: Self.fixedServerAddress)!).replace(staged)
+                    try loginStagingStore.reset()
+                    pendingLoginIdentity = nil
+                    pendingLoginAccepted = false
+                    api = nil
+                    coordinator = nil
+                } catch {
+                    if pendingLoginAccepted { throw error }
+                    // A staged request may never have reached the server. Keep its nonce for retry.
+                    if !Self.isAccessDenied(error) { throw error }
+                }
+            }
+            if status.setupRequired {
+                lockWorkspace(clearDrafts: false)
+                authentication = .signedOut(setupRequired: true)
+                return
+            }
+            let configuredAPI: APIClient
+            do { configuredAPI = try configure() }
+            catch CyloError.missingCredential {
+                authentication = .signedOut(setupRequired: false)
+                return
+            }
+            let generation = connectionGeneration.value
+            let session = try await configuredAPI.authSession()
+            guard generation == connectionGeneration.value else { return }
+            authentication = .authenticated(deviceID: session.deviceId)
             await reloadPendingCommandSummaries()
             if pushNotificationsEnabled { NativeNotificationDelivery.shared.registerForRemoteNotifications() }
             try await refreshSnapshot()
@@ -279,11 +314,92 @@ public final class CyloAppModel: ObservableObject {
             guard generation == connectionGeneration.value else { return }
             startEventLoop()
         } catch {
-            if generation == connectionGeneration.value { setOffline(error) }
+            if Self.isAccessDenied(error) {
+                lockWorkspace(clearDrafts: false)
+                authentication = .signedOut(setupRequired: false)
+            } else if authentication.deviceID == nil {
+                authentication = pendingLoginAccepted ? .signedOut(setupRequired: pendingLoginIsSetup) : .unavailable
+            }
+            setOffline(error)
         }
     }
 
     public func reconnect() async { await start() }
+
+    /// A separate Keychain staging record preserves the nonce/token across unknown outcomes and restarts.
+    /// Neither the password nor the setup code is persisted.
+    @discardableResult
+    public func login(password: String, code: String?, deviceName: String) async -> Bool {
+        guard !isBusy, !isConnecting else { return false }
+        isBusy = true
+        notice = nil
+        do {
+            let recoveringAttempt = pendingLoginIdentity != nil
+            if pendingLoginIdentity == nil {
+                let candidate = try DeviceIdentityStore.newLoginIdentity()
+                pendingLoginIsSetup = code != nil
+                defaults.set(pendingLoginIsSetup, forKey: pendingSetupKey)
+                try loginStagingStore.replace(candidate)
+                pendingLoginIdentity = candidate
+            }
+            guard let candidate = pendingLoginIdentity else { throw CyloError.missingCredential }
+            if recoveringAttempt && !pendingLoginAccepted {
+                let recoveryAPI = try APIClient(serverURL: URL(string: Self.fixedServerAddress)!, credentials: candidate)
+                do { _ = try await recoveryAPI.authSession(); pendingLoginAccepted = true }
+                catch { if !Self.isAccessDenied(error) { throw error } }
+            }
+            if !pendingLoginAccepted {
+                let publicAPI = try APIClient(serverURL: URL(string: Self.fixedServerAddress)!)
+                _ = try await publicAPI.authenticate(password: password, code: pendingLoginIsSetup ? code : nil,
+                                                     deviceName: deviceName, identity: candidate)
+                pendingLoginAccepted = true
+            }
+            let store = (credentialStorageChoice ?? .keychain).makeStore(serverURL: URL(string: Self.fixedServerAddress)!)
+            try store.replace(candidate)
+            guard try store.loadExisting() == candidate else { throw CyloError.persistence("The saved identity could not be verified.") }
+            try loginStagingStore.reset()
+            pendingLoginIdentity = nil
+            pendingLoginAccepted = false
+            api = nil
+            identity = nil
+            coordinator = nil
+            journal = nil
+            isBusy = false
+            await start()
+            return authentication.deviceID != nil
+        } catch {
+            if let failure = OwnerAuthFailure.classify(error), failure != .conflict {
+                try? loginStagingStore.reset()
+                pendingLoginIdentity = nil
+                pendingLoginAccepted = false
+                if failure == .setupRequired { authentication = .signedOut(setupRequired: true) }
+                if failure == .setupCompleted { authentication = .signedOut(setupRequired: false) }
+            }
+            notice = pendingLoginAccepted
+                ? uiText("Sign-in succeeded, but this device could not save its session. Retry to save it; your password is not saved.")
+                : (OwnerAuthFailure.classify(error) == nil ? uiText("Sign-in could not be confirmed. Try again with the same password and setup code, if required.") : userMessage(error))
+            isBusy = false
+            return false
+        }
+    }
+
+    public func signOut() async {
+        guard !isBusy, let api else { return }
+        isBusy = true
+        defer { isBusy = false }
+        let store = identity
+        do {
+            // A failed request keeps the session visible so retry can confirm invalidation.
+            do { try await api.logout() }
+            catch { if !Self.isAccessDenied(error) { throw error } }
+            lockWorkspace(clearDrafts: true)
+            authentication = .signedOut(setupRequired: false)
+            pendingLoginIdentity = nil
+            pendingLoginAccepted = false
+            do { try store?.reset() }
+            catch { notice = uiText("Signed out on the server. The saved session could not be removed from this device; it can no longer access Cylo.") }
+        } catch { notice = userMessage(error) }
+    }
 
     public func updateServerAddress() async {
         cancelExport(status: nil)
@@ -350,12 +466,13 @@ public final class CyloAppModel: ObservableObject {
         coordinator = nil
         snapshotCache = nil
         configuredServerURL = nil
-        pairingID = defaults.string(forKey: "cylo.pairingID.\(serverAddress)")
-        pairingStatus = nil
         credentialStorageChoice = choice
         defaults.set(choice.rawValue, forKey: CredentialStorageChoice.defaultsKey(serverURL: url))
         connectionGeneration.switchOrigin(to: url)
         connectionEpoch = connectionGeneration.value
+        authentication = .signedOut(setupRequired: false)
+        pendingLoginIdentity = nil
+        pendingLoginAccepted = false
         freshness = .offline(reason: uiText("Credential storage changed. Connect to continue."), cursor: nil)
         if choice == .privateFile {
             notice = uiText("Local private file is separate from Keychain. It will not inherit an existing device registration unless you explicitly copy the identity.")
@@ -392,72 +509,53 @@ public final class CyloAppModel: ObservableObject {
         }
     }
 
-    @discardableResult
-    public func bootstrap(code: String, deviceName: String) async -> Bool {
-        var accepted = false
-        var generation = connectionGeneration.value
-        do {
-            let api = try configure(allowIdentityCreation: true)
-            generation = connectionGeneration.value
-            guard let identity else { throw CyloError.missingCredential }
-            let deviceIdentity = try identity.loadOrCreate()
-            _ = try configure()
-            _ = try await api.bootstrap(code: code, deviceName: deviceName, identity: deviceIdentity)
-            guard generation == connectionGeneration.value else { return false }
-            accepted = true
-            notice = uiText("This device is registered. Loading the server snapshot…")
-            try await refreshSnapshot()
-            guard generation == connectionGeneration.value else { return false }
-            startEventLoop()
-        } catch {
-            if generation == connectionGeneration.value { notice = userMessage(error) }
+    private func lockWorkspace(clearDrafts: Bool) {
+        connectionGeneration.advance()
+        connectionEpoch = connectionGeneration.value
+        eventTask?.cancel()
+        eventTask = nil
+        cancelExport(status: nil)
+        clearVisibleMemory()
+        snapshot = nil
+        clearTaskContext(clearDrafts: clearDrafts)
+        notifications = []
+        capabilityReleases = []
+        capabilityDeployments = []
+        pendingCommandSummaries = []
+        commandStatusByKey = [:]
+        commandTitleByKey = [:]
+        canRegisterPushToken = false
+        hasLoadedNotificationInbox = false
+        voiceConfig = nil
+        voicePoolStatus = nil
+        if clearDrafts { voiceDraft = "" }
+        api = nil
+        identity = nil
+        journal = nil
+        coordinator = nil
+        snapshotCache = nil
+        // Capture and detach old resources synchronously. Later cleanup cannot target a new session.
+        let oldSession = voiceSession
+        let oldAPI = voiceAPI
+        _ = voiceMediaFence.stop(voiceMediaEpoch)
+        voiceHeartbeat.cancel()
+        let oldTransport = voiceTransport
+        let oldAudio = voiceAudioSession
+        oldTransport?.onDataMessage = nil
+        oldTransport?.onConnectionState = nil
+        oldAudio?.onLifecycleEvent = nil
+        voiceTransport = nil
+        voiceAudioSession = nil
+        voiceSession = nil
+        voiceSessionMediaEpoch = nil
+        voiceSessionMediaClosed = false
+        voiceAPI = nil
+        voiceStatus = .idle
+        try? oldAudio?.deactivate()
+        Task {
+            await oldTransport?.close()
+            if let oldSession, let oldAPI { _ = try? await oldAPI.hangupVoiceSession(oldSession) }
         }
-        return accepted && generation == connectionGeneration.value
-    }
-
-    public func requestPairing(deviceName: String) async {
-        var generation = connectionGeneration.value
-        do {
-            let api = try configure(allowIdentityCreation: true)
-            generation = connectionGeneration.value
-            guard let identity else { throw CyloError.missingCredential }
-            let deviceIdentity = try identity.loadOrCreate()
-            _ = try configure()
-            let result = try await api.requestPairing(deviceName: deviceName, identity: deviceIdentity)
-            guard generation == connectionGeneration.value else { return }
-            pairingID = result.pairingId
-            defaults.set(result.pairingId, forKey: pairingKey)
-            let status = try await api.pairingStatus(id: result.pairingId, identity: deviceIdentity)
-            guard generation == connectionGeneration.value else { return }
-            pairingStatus = status
-            if status.status == "approved" {
-                notice = uiText("This device is already registered and approved. Loading the server snapshot…")
-                try await refreshSnapshot()
-                guard generation == connectionGeneration.value else { return }
-                startEventLoop()
-            } else {
-                notice = uiText("Pairing request sent. An approved device must approve this device before it can read Cylo data.")
-            }
-        } catch { if generation == connectionGeneration.value { notice = userMessage(error) } }
-    }
-
-    public func refreshPairing() async {
-        var generation = connectionGeneration.value
-        do {
-            let api = try configure()
-            generation = connectionGeneration.value
-            guard let id = pairingID ?? defaults.string(forKey: pairingKey), let identity else { return }
-            let status = try await api.pairingStatus(id: id, identity: try currentDeviceIdentity())
-            guard generation == connectionGeneration.value else { return }
-            pairingID = id
-            pairingStatus = status
-            if pairingStatus?.status == "approved" {
-                notice = uiText("This device was approved. Loading the server snapshot…")
-                try await refreshSnapshot()
-                guard generation == connectionGeneration.value else { return }
-                startEventLoop()
-            }
-        } catch { if generation == connectionGeneration.value { notice = userMessage(error) } }
     }
 
     @discardableResult
@@ -902,7 +1000,9 @@ public final class CyloAppModel: ObservableObject {
             if voiceStartInProgress {
                 voiceStartMediaLoss = (voiceMediaEpoch, uiText("Voice setup was stopped locally."))
             }
-            await closeVoiceLocalMedia(mediaEpoch: voiceMediaEpoch)
+            let closingEpoch = voiceMediaEpoch
+            await closeVoiceLocalMedia(mediaEpoch: closingEpoch)
+            guard closingEpoch == voiceMediaEpoch else { return }
             voiceSession = nil
             voiceSessionMediaEpoch = nil
             voiceSessionMediaClosed = false
@@ -1353,10 +1453,6 @@ public final class CyloAppModel: ObservableObject {
         return await send(kind: "task.accept_result", expectedVersion: task.version, payload: .object(payload))
     }
 
-    public func approve(_ device: Device) async {
-        await send(kind: "device.approve", expectedVersion: device.version, payload: .object(["device_id": .string(device.id)]))
-    }
-
     public func revoke(_ device: Device, reason: String? = nil) async {
         var payload: [String: JSONValue] = ["device_id": .string(device.id)]
         if let reason { payload["reason"] = .string(reason) }
@@ -1487,8 +1583,6 @@ public final class CyloAppModel: ObservableObject {
         return projects.first(where: { $0.id == id })?.name ?? uiText("Project unavailable")
     }
 
-    private var pairingKey: String { "cylo.pairingID.\(serverAddress)" }
-
     private func validServerURL(_ address: String) -> URL? {
         let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(), ["https", "http"].contains(scheme), url.host != nil else {
@@ -1531,8 +1625,6 @@ public final class CyloAppModel: ObservableObject {
             snapshot = nil
             clearTaskContext(clearDrafts: true)
             freshness = .loading
-            pairingID = defaults.string(forKey: "cylo.pairingID.\(serverAddress)")
-            pairingStatus = nil
             clearVisibleMemory()
             notifications = []
             capabilityReleases = []
@@ -1550,8 +1642,8 @@ public final class CyloAppModel: ObservableObject {
         }
         eventTask?.cancel()
         let identity = storageChoice.makeStore(serverURL: url)
-        let api = try APIClient(serverURL: url, credentials: identity)
         let deviceIdentity = try identity.loadExisting()
+        let api = try APIClient(serverURL: url, credentials: deviceIdentity)
         self.identity = identity
         self.api = api
         guard let deviceIdentity else {
@@ -1563,7 +1655,7 @@ public final class CyloAppModel: ObservableObject {
         }
         let identityFingerprint = Self.pushIdentityFingerprint(deviceToken: deviceIdentity.deviceToken)
         if let previousFingerprint = pushIdentityFingerprint, previousFingerprint != identityFingerprint {
-            clearTaskContext(clearDrafts: true)
+            clearTaskContext(clearDrafts: false)
             pendingCommandSummaries = []
             commandStatusByKey = [:]
             commandTitleByKey = [:]
@@ -1575,13 +1667,8 @@ public final class CyloAppModel: ObservableObject {
         let journal = try CommandJournal(serverURL: url, deviceToken: deviceIdentity.deviceToken)
         let cache = try SnapshotCache(serverURL: url, deviceToken: deviceIdentity.deviceToken)
         snapshotCache = cache
-        if configuredServerURL == url, snapshot == nil, let cached = try cache.load() {
-            snapshot = cached
-            freshness = .stale(reason: uiText("Showing the last saved server snapshot."), cursor: cached.eventCursor)
-        }
         self.journal = journal
         coordinator = CommandCoordinator(api: api, journal: journal)
-        pairingID = defaults.string(forKey: pairingKey)
         return api
     }
 
@@ -1692,8 +1779,8 @@ public final class CyloAppModel: ObservableObject {
                     cancelExport(status: uiText("Could not confirm current server authority. The prepared export was removed."))
                 }
                 if Self.isAccessDenied(error) {
-                    clearTaskContext(clearDrafts: true)
-                    clearMemoryAndPreparedExport(status: uiText("Server access changed; cached memory and the prepared export were cleared."))
+                    lockWorkspace(clearDrafts: false)
+                    authentication = .signedOut(setupRequired: false)
                 }
             }
             throw error
@@ -2095,8 +2182,8 @@ public final class CyloAppModel: ObservableObject {
                 if let error = error as? CyloError,
                    case let .http(status, _, _, _) = error,
                    status == 401 || status == 403 {
-                    clearTaskContext(clearDrafts: true)
-                    clearMemoryAndPreparedExport(status: uiText("Server access changed; cached memory and the prepared export were cleared."))
+                    lockWorkspace(clearDrafts: false)
+                    authentication = .signedOut(setupRequired: false)
                     setOffline(error)
                     return
                 }
@@ -2334,12 +2421,29 @@ public final class CyloAppModel: ObservableObject {
     }
 
     private func setOffline(_ error: Error) {
+        if Self.isAccessDenied(error), authentication.deviceID != nil {
+            lockWorkspace(clearDrafts: false)
+            authentication = .signedOut(setupRequired: false)
+        }
         let message = userMessage(error)
         freshness = .offline(reason: message, cursor: snapshot?.eventCursor)
         notice = message
     }
 
     private func userMessage(_ error: Error) -> String {
+        if let failure = OwnerAuthFailure.classify(error) {
+            switch failure {
+            case .incorrectPassword: return uiText("The password is incorrect.")
+            case .setupRequired: return uiText("Set up the owner password to continue.")
+            case .setupCode: return uiText("The setup code is invalid or expired. Contact your server administrator.")
+            case .rateLimited: return uiText("Too many attempts. Wait a moment and try again.")
+            case .revoked: return uiText("This session has ended. Sign in again with your owner password.")
+            case .setupCompleted: return uiText("The owner password is already set. Sign in to continue.")
+            case .passwordPolicy: return uiText("Use at least 12 characters. If your password is very long, shorten it and try again.")
+            case .conflict: return uiText("This sign-in attempt changed. Enter your password and try again.")
+            case .unavailable: return uiText("Cylo could not connect. Try again.")
+            }
+        }
         if let error = error as? CyloError,
            case let .http(status, code, _, details) = error,
            status == 409, code == "version_conflict" {
@@ -2354,11 +2458,11 @@ public final class CyloAppModel: ObservableObject {
         if let failure = error as? CyloError {
             switch failure {
             case .missingCredential:
-                return uiText("Approve this device to connect. If this is your first device, use First device setup.")
+                return uiText("Sign in with your owner password to connect.")
             case .http(_, _, let message, _):
                 return uiFormat("Server error: %@", message)
             case .credentialAccessDenied(let storage):
-                return uiFormat("Access to the selected %@ identity was denied. No identity was created or changed. To keep the same server registration, allow access and copy the identity explicitly; a new file identity may need approval from another approved device.", uiText(storage))
+                return uiFormat("Allow Cylo to access %@, then try again.", uiText(storage))
             case .persistence(let message):
                 return uiFormat("Local storage error: %@", message)
             default:

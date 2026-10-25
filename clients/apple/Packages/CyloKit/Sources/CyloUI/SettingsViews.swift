@@ -5,14 +5,11 @@ import UniformTypeIdentifiers
 
 public struct CyloSettingsView: View {
     @ObservedObject var model: CyloAppModel
-    @State private var deviceName = "Apple device"
-    @State private var bootstrapCode = ""
     @State private var showingRevoke: Device?
     @State private var exportScope = "personal"
     @State private var showingExportSave = false
     @State private var validatingExportSave = false
-    @State private var pendingCredentialStorageChoice: CredentialStorageChoice?
-    @State private var showingCredentialStorageConfirmation = false
+    @State private var showingSignOut = false
 
     public init(model: CyloAppModel) {
         self.model = model
@@ -23,6 +20,13 @@ public struct CyloSettingsView: View {
     }
 
     public var body: some View {
+        Group {
+            if model.authentication.deviceID != nil { settingsForm }
+            else { OwnerLoginView(model: model) }
+        }
+    }
+
+    private var settingsForm: some View {
         Form {
             Section(uiText("Connection")) {
                 LabeledContent(uiText("Server"), value: "debian.local:8787")
@@ -38,73 +42,30 @@ public struct CyloSettingsView: View {
                 Button(uiText("Connect")) { Task { await model.reconnect() } }
                     .disabled(model.isConnecting || model.isBusy)
             }
-            Section(uiText("Device authorization")) {
-                TextField(uiText("Device name"), text: $deviceName)
-                DisclosureGroup(uiText("First device setup")) {
-                    SecureField(uiText("One-use bootstrap code"), text: $bootstrapCode)
-                    Button(uiText("Bootstrap first approved device")) {
-                        Task { if await model.bootstrap(code: bootstrapCode, deviceName: deviceName) { bootstrapCode = "" } }
-                    }
-                    .disabled(bootstrapCode.isEmpty || deviceName.isEmpty || model.isBusy || model.credentialStorageChoice == nil)
-                }
-                Button(uiText(model.pairingStatus?.status == "approved" ? "This device is approved" : "Request approval on this device")) {
-                    Task { await model.requestPairing(deviceName: deviceName) }
-                }
-                .disabled(model.isBusy || model.pairingStatus?.status == "approved" || model.credentialStorageChoice == nil)
-                if let pairing = model.pairingStatus {
-                    LabeledContent(uiText("Pairing"), value: uiText(pairing.status.capitalized))
-                    LabeledContent(uiText("Expires"), value: uiDate(pairing.expiresAt))
-                    Button(uiText("Check approval")) { Task { await model.refreshPairing() } }
-                }
-            }
             Section {
-                DisclosureGroup(uiText("Advanced settings")) {
-                    Picker(uiText("Store device identity"), selection: Binding(
-                        get: { model.credentialStorageChoice?.rawValue ?? "" },
-                        set: { rawValue in
-                            guard let choice = CredentialStorageChoice(rawValue: rawValue) else { return }
-                            if let current = model.credentialStorageChoice, current != choice {
-                                pendingCredentialStorageChoice = choice
-                                showingCredentialStorageConfirmation = true
-                            } else {
-                                Task { await model.selectCredentialStorage(choice) }
-                            }
-                        }
-                    )) {
-                        Text(uiText("Choose storage…")).tag("")
-                        ForEach(CredentialStorageChoice.allCases) { choice in
-                            Text(uiText(choice.title)).tag(choice.rawValue)
-                        }
-                    }
-                    Text(uiText(model.credentialStorageChoice?.explanation ?? "Choose credential storage before connecting or authorizing this device."))
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    if model.credentialStorageChoice == .privateFile {
-                        Text(uiText("A file identity is separate from any Keychain identity. To keep the same server registration, explicitly copy the existing identity while Keychain access is available. A new file identity may need approval from another approved device."))
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let current = model.credentialStorageChoice {
-                        let destination: CredentialStorageChoice = current == .keychain ? .privateFile : .keychain
-                        Button(String.localizedStringWithFormat(uiText("Copy current identity to %@"), uiText(destination.title))) {
-                            Task { await model.copyCredentialIdentity(to: destination) }
-                        }
-                        .disabled(model.isBusy)
-                    }
-                }
+                CredentialStorageControls(model: model)
             }
             Section(uiText("Devices")) {
                 if model.devices.isEmpty { Text(uiText("No device records in the server snapshot.")).foregroundStyle(.secondary) }
                 ForEach(model.devices) { device in
                     VStack(alignment: .leading, spacing: 8) {
-                        LabeledContent(device.name, value: uiText(device.status.capitalized))
-                        if device.status == "pending" {
-                            Button(uiText("Approve device")) { Task { await model.approve(device) } }
-                        } else if device.status == "approved" {
+                        LabeledContent(device.name + " · " + String(device.id.suffix(6)), value: uiText(device.status.capitalized))
+                        if device.id == model.authentication.deviceID {
+                            Label(uiText("This device"), systemImage: "checkmark.circle")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        LabeledContent(uiText("Last seen"), value: device.lastSeenAt.map(uiDate) ?? uiText("Never"))
+                            .font(.caption).foregroundStyle(.secondary)
+                        if device.status == "approved" {
                             Button(uiText("Revoke device"), role: .destructive) { showingRevoke = device }
+                                .disabled(model.isBusy)
                         }
                     }
                 }
+            }
+            Section {
+                Button(uiText("Sign out"), role: .destructive) { showingSignOut = true }
+                    .disabled(model.isBusy)
             }
             Section(uiText("Notifications")) {
                 if model.pushNotificationsEnabled {
@@ -168,22 +129,15 @@ public struct CyloSettingsView: View {
             }
             Button(uiText("Cancel"), role: .cancel) { showingRevoke = nil }
         } message: {
-            Text(uiText("Revocation blocks future requests and disconnects its event stream. The server owns the revocation result."))
+            Text(uiText("Revoking this device signs it out, cancels its queued tasks, and requests its active tasks and runtimes to stop. Stop confirmation may require server cleanup.") +
+                 (model.devices.filter { $0.status == "approved" }.count == 1
+                  ? "\n\n" + uiText("This is your last signed-in device. You can sign in again with your owner password; if you forget it, contact your server administrator.") : ""))
         }
-        .confirmationDialog(uiText("Change credential storage?"), isPresented: $showingCredentialStorageConfirmation) {
-            if let destination = pendingCredentialStorageChoice {
-                Button(uiText("Copy current identity and switch")) {
-                    Task { await model.copyCredentialIdentity(to: destination) }
-                    pendingCredentialStorageChoice = nil
-                }
-                Button(uiText("Switch without copying")) {
-                    Task { await model.selectCredentialStorage(destination) }
-                    pendingCredentialStorageChoice = nil
-                }
-            }
-            Button(uiText("Cancel"), role: .cancel) { pendingCredentialStorageChoice = nil }
+        .confirmationDialog(uiText("Sign out?"), isPresented: $showingSignOut) {
+            Button(uiText("Sign out"), role: .destructive) { Task { await model.signOut() } }
+            Button(uiText("Cancel"), role: .cancel) {}
         } message: {
-            Text(uiText("Cylo will not copy or create an identity automatically. Copying requires access to the current store and leaves the original intact. Switching without copying keeps the existing identity where it is; the destination may need separate device approval."))
+            Text(uiText("This device will be signed out, its queued tasks cancelled, and its active tasks and runtimes requested to stop. Local drafts will be cleared."))
         }
     }
 }

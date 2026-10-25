@@ -411,7 +411,7 @@ public enum CyloError: Error, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .invalidServerURL: "Enter a valid Cylo server URL."
-        case .missingCredential: "No identity is saved in the selected storage. To keep an existing registration, explicitly copy its identity from the other store. Otherwise use Bootstrap for the first device or Request approval from another approved device."
+        case .missingCredential: "Sign in with your owner password to connect."
         case .credentialStorageNotSelected: "Choose Keychain or local private file in Settings before connecting."
         case let .credentialAccessDenied(storage): "Access to the selected \(storage) identity was denied. No identity was created or changed. To keep the same server registration, allow access and copy the identity explicitly; a new file identity may need approval from another approved device."
         case .credentialConflict: "A different device identity already exists in the destination storage. It was not overwritten; switch back to the original storage or resolve the conflict before copying."
@@ -480,33 +480,51 @@ public enum ClientFreshness: Equatable, Sendable {
     case offline(reason: String, cursor: String?)
 }
 
-public struct PairingStatus: Codable, Sendable {
-    public var pairingId: String
-    public var status: String
-    public var deviceId: String?
-    public var approvedAt: String?
-    public var expiresAt: String
+
+
+/// The workspace opens only after a server-validated session, never from cached records.
+public enum OwnerAuthenticationState: Equatable, Sendable {
+    case checking
+    case unavailable
+    case signedOut(setupRequired: Bool)
+    case authenticated(deviceID: String)
+
+    public var deviceID: String? {
+        if case let .authenticated(deviceID) = self { return deviceID }
+        return nil
+    }
 }
 
-public struct BootstrapRequest: Encodable, Sendable {
+public struct OwnerAuthStatus: Decodable, Sendable { public let setupRequired: Bool }
+public struct OwnerSession: Decodable, Sendable { public let deviceId: String }
+public struct DeviceRegistration: Decodable, Sendable { public let device: Device }
+public struct OwnerAuthRequest: Encodable, Sendable {
     public let requestId: String
-    public let code: String
+    public let code: String?
+    public let password: String
     public let deviceName: String
     public let deviceToken: String
 }
-
-public struct PairingRequest: Encodable, Sendable {
-    public let requestId: String
-    public let deviceName: String
-    public let deviceToken: String
+public enum OwnerAuthFailure: Equatable, Sendable {
+    case revoked, incorrectPassword, setupRequired, setupCode, rateLimited, setupCompleted, passwordPolicy, conflict, unavailable
+    public static func classify(_ error: Error) -> Self? {
+        guard let error = error as? CyloError, case let .http(status, code, _, _) = error else { return nil }
+        if status == 429 { return .rateLimited }
+        switch code {
+        case "setup_required", "owner_setup_required": return .setupRequired
+        case "owner_already_setup": return .setupCompleted
+        case "invalid_password", "password_policy": return .passwordPolicy
+        case "idempotency_conflict", "device_token_conflict": return .conflict
+        case "invalid_code", "invalid_setup_code", "invalid_bootstrap_code", "setup_code_invalid", "bootstrap_invalid": return .setupCode
+        case "incorrect_password", "invalid_credentials": return .incorrectPassword
+        case "unauthorized", "device_revoked", "invalid_session", "authentication_required": return .revoked
+        default: return status == 401 ? .revoked : nil
+        }
+    }
 }
 
-public struct BootstrapResponse: Decodable, Sendable {
-    public var device: Device
-}
-
-public struct PairingResponse: Decodable, Sendable {
-    public var pairingId: String
-    public var status: String
-    public var expiresAt: String
+public enum OwnerPasswordPolicy {
+    public static func acceptsSetup(_ password: String) -> Bool {
+        password.count >= 12 && password.utf8.count <= 1024
+    }
 }

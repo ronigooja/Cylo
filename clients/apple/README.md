@@ -1,6 +1,8 @@
 # Apple clients
 
-Cylo provides native SwiftUI apps for macOS, iPhone, and iPad. The clients use the Go server as the authority and keep offline snapshots visibly stale. Product flows, voice and notification boundaries, current build evidence, and device acceptance are maintained in the [master plan](../../docs/master-plan.md#4-native-application-flows).
+Cylo provides native SwiftUI apps for macOS, iPhone, and iPad. The clients use the Go server as the authority and keep offline snapshots visibly stale after session validation. Product flows, voice and notification boundaries, current build evidence, and device acceptance are maintained in the [master plan](../../docs/master-plan.md#4-native-application-flows).
+
+The server address is fixed at `http://debian.local:8787`. The first device sets the owner password with a server-admin setup code; additional devices sign in with that password. Successful sessions are saved in Keychain by default and validated before opening the workspace. Settings lists devices and supports revocation and sign-out. Both actions cancel queued tasks and request active tasks and runtimes authorized by the affected device to stop; forgetting the password requires server-admin recovery.
 
 Complete app-target builds require an eligible Xcode destination. Direct SDK compilation provides source-level evidence only. Build, signing, device, APNs, and live voice acceptance must be reported separately; no source check establishes those outcomes. See [milestones and acceptance](../../docs/master-plan.md#12-milestones-and-acceptance) for the evidence boundary.
 

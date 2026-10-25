@@ -156,6 +156,30 @@ public final class PrivateFileDeviceIdentityStore: DeviceIdentityStoring, @unche
         }
     }
 
+    public func replace(_ identity: DeviceIdentity) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        try ensurePrivateDirectories()
+        // Validate an existing path before atomic replacement; never follow an identity symlink.
+        _ = try loadExistingWithoutLock()
+        let data = try JSONEncoder().encode(DeviceIdentityRecord(identity))
+        try data.write(to: fileURL, options: .atomic)
+        guard chmod(fileURL.path, mode_t(S_IRUSR | S_IWUSR)) == 0, fsyncDirectory() else {
+            throw CyloError.persistence("The local identity could not be secured.")
+        }
+    }
+
+    public func reset() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        try ensurePrivateDirectories()
+        _ = try loadExistingWithoutLock()
+        if unlink(fileURL.path) != 0 && errno != ENOENT {
+            throw CyloError.persistence("The local identity could not be removed.")
+        }
+        guard fsyncDirectory() else { throw CyloError.persistence("The local identity removal could not be synchronized.") }
+    }
+
     public func bearerToken() throws -> String {
         guard let identity = try loadExisting() else { throw CyloError.missingCredential }
         return identity.deviceToken

@@ -1,16 +1,19 @@
 import Foundation
 import Security
 
-public struct DeviceIdentity: Equatable, Sendable {
+public struct DeviceIdentity: Equatable, Sendable, BearerTokenProviding {
     public let bootstrapRequestID: String
     public let pairingRequestID: String
     public let deviceToken: String
+    public func bearerToken() throws -> String { deviceToken }
 }
 
 public protocol DeviceIdentityStoring: BearerTokenProviding {
     func loadExisting() throws -> DeviceIdentity?
     func loadOrCreate() throws -> DeviceIdentity
     func storeIfAbsent(_ identity: DeviceIdentity) throws -> DeviceIdentity
+    func replace(_ identity: DeviceIdentity) throws
+    func reset() throws
 }
 
 public final class DeviceIdentityStore: DeviceIdentityStoring, @unchecked Sendable {
@@ -29,7 +32,7 @@ public final class DeviceIdentityStore: DeviceIdentityStoring, @unchecked Sendab
         return value.identity
     }
 
-    /// Call only after an explicit Bootstrap, Request approval, or migration action.
+    /// Used only for an explicit identity migration; owner login creates a fresh staged identity.
     public func loadOrCreate() throws -> DeviceIdentity {
         if let identity = try loadExisting() { return identity }
         return try storeIfAbsent(DeviceIdentityRecord.newIdentity())
@@ -59,6 +62,24 @@ public final class DeviceIdentityStore: DeviceIdentityStoring, @unchecked Sendab
             throw CyloError.persistence("Could not save the device identity in Keychain (\(status)).")
         }
         return identity
+    }
+
+    /// Replaces a revoked or signed-out identity only after a successful explicit login.
+    public func replace(_ identity: DeviceIdentity) throws {
+        let data = try JSONEncoder().encode(DeviceIdentityRecord(identity))
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                   kSecAttrService as String: service,
+                                   kSecAttrAccount as String: "identity"]
+        let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if status == errSecItemNotFound { _ = try storeIfAbsent(identity); return }
+        guard status == errSecSuccess else {
+            if Self.isAccessDenied(status) { throw CyloError.credentialAccessDenied("Keychain") }
+            throw CyloError.persistence("Could not save the device identity in Keychain.")
+        }
+    }
+
+    public static func newLoginIdentity() throws -> DeviceIdentity {
+        try DeviceIdentityRecord.newIdentity()
     }
 
     public func reset() throws {

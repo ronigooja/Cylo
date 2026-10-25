@@ -41,11 +41,15 @@ public struct CyloRootView: View {
 
     public var body: some View {
         Group {
+            if model.authentication.deviceID == nil {
+                OwnerLoginView(model: model)
+            } else {
             #if os(iOS)
             if sizeClass == .compact { phoneNavigation } else { splitNavigation }
             #else
             splitNavigation
             #endif
+            }
         }
         .sheet(isPresented: $showAccount) {
             NavigationStack {
@@ -61,7 +65,13 @@ public struct CyloRootView: View {
             #endif
         }
         .sheet(isPresented: $showInbox) { NavigationStack { NotificationInboxView(model: model, openTask: { id in showInbox = false; area = .conversation; paths[.conversation] = [.task(id)] }).toolbar { ToolbarItem(placement: .confirmationAction) { Button(uiText("Done")) { showInbox = false } } } } }
-        .onChange(of: model.connectionEpoch) { _, _ in resetTaskNavigation() }
+        .onChange(of: model.connectionEpoch) { _, _ in
+            resetTaskNavigation()
+            if model.authentication.deviceID == nil { showAccount = false; showInbox = false }
+        }
+        .onChange(of: model.authentication) { _, state in
+            if state.deviceID == nil { showAccount = false; showInbox = false }
+        }
         .onChange(of: model.snapshot?.authority) { old, new in if let old, let new, old.instanceLineageId != new.instanceLineageId || old.generation != new.generation { resetTaskNavigation() } }
         .task { await model.start() }
     }
