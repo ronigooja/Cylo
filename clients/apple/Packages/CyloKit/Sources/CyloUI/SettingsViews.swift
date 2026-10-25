@@ -24,21 +24,19 @@ public struct CyloSettingsView: View {
 
     public var body: some View {
         Form {
-            if let notice = model.notice {
-                Section(uiText("Connection status")) {
+            Section(uiText("Connection")) {
+                LabeledContent(uiText("Server"), value: "debian.local:8787")
+                if model.isConnecting {
+                    ProgressView(uiText("Connecting…"))
+                } else if case .current = model.freshness {
+                    Label(uiText("Connected"), systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+                if let notice = model.notice {
                     Text(notice).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                 }
-            }
-            Section(uiText("Server")) {
-                TextField(uiText("Server URL"), text: $model.serverAddress)
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                    #endif
-                Button(uiText("Save and connect")) { Task { await model.updateServerAddress() } }
-                    .disabled(model.credentialStorageChoice == nil || model.isBusy)
-                FreshnessBanner(model: model)
+                Button(uiText("Connect")) { Task { await model.reconnect() } }
+                    .disabled(model.isConnecting || model.isBusy)
             }
             Section(uiText("Device authorization")) {
                 TextField(uiText("Device name"), text: $deviceName)
@@ -59,38 +57,40 @@ public struct CyloSettingsView: View {
                     Button(uiText("Check approval")) { Task { await model.refreshPairing() } }
                 }
             }
-            Section(uiText("Credential storage")) {
-                Picker(uiText("Store device identity"), selection: Binding(
-                    get: { model.credentialStorageChoice?.rawValue ?? "" },
-                    set: { rawValue in
-                        guard let choice = CredentialStorageChoice(rawValue: rawValue) else { return }
-                        if let current = model.credentialStorageChoice, current != choice {
-                            pendingCredentialStorageChoice = choice
-                            showingCredentialStorageConfirmation = true
-                        } else {
-                            Task { await model.selectCredentialStorage(choice) }
+            Section {
+                DisclosureGroup(uiText("Advanced settings")) {
+                    Picker(uiText("Store device identity"), selection: Binding(
+                        get: { model.credentialStorageChoice?.rawValue ?? "" },
+                        set: { rawValue in
+                            guard let choice = CredentialStorageChoice(rawValue: rawValue) else { return }
+                            if let current = model.credentialStorageChoice, current != choice {
+                                pendingCredentialStorageChoice = choice
+                                showingCredentialStorageConfirmation = true
+                            } else {
+                                Task { await model.selectCredentialStorage(choice) }
+                            }
+                        }
+                    )) {
+                        Text(uiText("Choose storage…")).tag("")
+                        ForEach(CredentialStorageChoice.allCases) { choice in
+                            Text(uiText(choice.title)).tag(choice.rawValue)
                         }
                     }
-                )) {
-                    Text(uiText("Choose storage…")).tag("")
-                    ForEach(CredentialStorageChoice.allCases) { choice in
-                        Text(uiText(choice.title)).tag(choice.rawValue)
-                    }
-                }
-                Text(uiText(model.credentialStorageChoice?.explanation ?? "Choose credential storage before connecting or authorizing this device."))
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                if model.credentialStorageChoice == .privateFile {
-                    Text(uiText("A file identity is separate from any Keychain identity. To keep the same server registration, explicitly copy the existing identity while Keychain access is available. A new file identity may need approval from another approved device."))
+                    Text(uiText(model.credentialStorageChoice?.explanation ?? "Choose credential storage before connecting or authorizing this device."))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                }
-                if let current = model.credentialStorageChoice {
-                    let destination: CredentialStorageChoice = current == .keychain ? .privateFile : .keychain
-                    Button(String.localizedStringWithFormat(uiText("Copy current identity to %@"), uiText(destination.title))) {
-                        Task { await model.copyCredentialIdentity(to: destination) }
+                    if model.credentialStorageChoice == .privateFile {
+                        Text(uiText("A file identity is separate from any Keychain identity. To keep the same server registration, explicitly copy the existing identity while Keychain access is available. A new file identity may need approval from another approved device."))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     }
-                    .disabled(model.isBusy)
+                    if let current = model.credentialStorageChoice {
+                        let destination: CredentialStorageChoice = current == .keychain ? .privateFile : .keychain
+                        Button(String.localizedStringWithFormat(uiText("Copy current identity to %@"), uiText(destination.title))) {
+                            Task { await model.copyCredentialIdentity(to: destination) }
+                        }
+                        .disabled(model.isBusy)
+                    }
                 }
             }
             Section(uiText("Devices")) {
@@ -159,7 +159,6 @@ public struct CyloSettingsView: View {
             }
         }
         .onChange(of: model.connectionEpoch) { _, _ in showingExportSave = false }
-        .onChange(of: model.serverAddress) { _, _ in model.reloadCredentialStorageChoiceForCurrentServer() }
         .onChange(of: model.exportArtifact?.fileURL) { _, fileURL in
             if fileURL == nil { showingExportSave = false }
         }

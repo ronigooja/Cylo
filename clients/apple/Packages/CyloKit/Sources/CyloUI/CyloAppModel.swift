@@ -12,7 +12,9 @@ public enum TaskSubmissionResult: Equatable, Sendable {
 
 @MainActor
 public final class CyloAppModel: ObservableObject {
-    @Published public var serverAddress: String
+    public static let fixedServerAddress = "http://debian.local:8787"
+    @Published public internal(set) var serverAddress: String
+    @Published public private(set) var isConnecting = false
     @Published public private(set) var credentialStorageChoice: CredentialStorageChoice?
     @Published public private(set) var snapshot: Snapshot?
     @Published public private(set) var freshness: ClientFreshness = .loading
@@ -194,14 +196,14 @@ public final class CyloAppModel: ObservableObject {
     public init(defaults: UserDefaults = .standard) {
         Self.cleanupExpiredExportTemporaries()
         self.defaults = defaults
-        let initialServerAddress = defaults.string(forKey: "cylo.serverAddress") ?? ""
+        let initialServerAddress = Self.fixedServerAddress
         serverAddress = initialServerAddress
-        credentialStorageChoice = Self.loadCredentialStorageChoice(serverAddress: initialServerAddress, defaults: defaults)
+        let storageChoice = Self.loadCredentialStorageChoice(serverAddress: initialServerAddress, defaults: defaults) ?? .keychain
+        credentialStorageChoice = storageChoice
+        defaults.set(initialServerAddress, forKey: "cylo.serverAddress")
+        defaults.set(storageChoice.rawValue, forKey: CredentialStorageChoice.defaultsKey(serverURL: URL(string: initialServerAddress)!))
         pushNotificationsEnabled = defaults.bool(forKey: "cylo.apns.optIn")
         snapshotCache = nil
-        if credentialStorageChoice == nil {
-            freshness = .offline(reason: uiText("Choose Keychain or local private file in Settings before connecting."), cursor: nil)
-        }
         RemotePushBridge.shared.onToken = { [weak self] token in
             Task { @MainActor [weak self] in self?.receiveAPNSToken(token) }
         }
@@ -242,6 +244,11 @@ public final class CyloAppModel: ObservableObject {
     public var canEndVoiceSession: Bool { voiceSession != nil }
 
     public func start() async {
+        guard !isConnecting else { return }
+        isConnecting = true
+        defer { isConnecting = false }
+        notice = nil
+        freshness = .loading
         guard credentialStorageChoice != nil else {
             freshness = .offline(reason: userMessage(CyloError.credentialStorageNotSelected), cursor: snapshot?.eventCursor)
             notice = userMessage(CyloError.credentialStorageNotSelected)
@@ -349,11 +356,11 @@ public final class CyloAppModel: ObservableObject {
         defaults.set(choice.rawValue, forKey: CredentialStorageChoice.defaultsKey(serverURL: url))
         connectionGeneration.switchOrigin(to: url)
         connectionEpoch = connectionGeneration.value
-        freshness = .offline(reason: uiText("Credential storage changed. Review the identity details, then choose Save and connect."), cursor: nil)
+        freshness = .offline(reason: uiText("Credential storage changed. Connect to continue."), cursor: nil)
         if choice == .privateFile {
             notice = uiText("Local private file is separate from Keychain. It will not inherit an existing device registration unless you explicitly copy the identity.")
         } else {
-            notice = uiText("Keychain selected. Save and connect to use the existing Keychain identity.")
+            notice = uiText("Keychain selected. Connect to continue.")
         }
     }
 
@@ -379,7 +386,7 @@ public final class CyloAppModel: ObservableObject {
                 throw CyloError.credentialConflict
             }
             await selectCredentialStorage(destinationChoice)
-            notice = uiFormat("The same device identity was copied to %@. The original remains in %@. Save and connect to continue.", uiText(destinationChoice.title), uiText(sourceChoice.title))
+            notice = uiFormat("The same device identity was copied to %@. The original remains in %@. Connect to continue.", uiText(destinationChoice.title), uiText(sourceChoice.title))
         } catch {
             notice = userMessage(error)
         }
@@ -2346,6 +2353,8 @@ public final class CyloAppModel: ObservableObject {
         }
         if let failure = error as? CyloError {
             switch failure {
+            case .missingCredential:
+                return uiText("Approve this device to connect. If this is your first device, use First device setup.")
             case .http(_, _, let message, _):
                 return uiFormat("Server error: %@", message)
             case .credentialAccessDenied(let storage):

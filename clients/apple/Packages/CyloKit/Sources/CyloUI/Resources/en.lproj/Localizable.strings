@@ -402,3 +402,11 @@
 "Recently completed" = "Recently completed";
 "No active tasks" = "No active tasks";
 "View all" = "View all";
+"Connection" = "Connection";
+"Connect" = "Connect";
+"Connected" = "Connected";
+"Advanced settings" = "Advanced settings";
+"Credential storage changed. Connect to continue." = "Credential storage changed. Connect to continue.";
+"Keychain selected. Connect to continue." = "Keychain selected. Connect to continue.";
+"Approve this device to connect. If this is your first device, use First device setup." = "Approve this device to connect. If this is your first device, use First device setup.";
+"The same device identity was copied to %@. The original remains in %@. Connect to continue." = "The same device identity was copied to %@. The original remains in %@. Connect to continue.";

@@ -402,3 +402,11 @@
 "Recently completed" = "最近完成";
 "No active tasks" = "暂无进行中的任务";
 "View all" = "查看全部";
+"Connection" = "连接";
+"Connect" = "连接";
+"Connected" = "已连接";
+"Advanced settings" = "高级设置";
+"Credential storage changed. Connect to continue." = "凭据存储已更改，点击连接以继续。";
+"Keychain selected. Connect to continue." = "已选择钥匙串，点击连接以继续。";
+"Approve this device to connect. If this is your first device, use First device setup." = "请先批准此设备；如果这是第一台设备，请展开“首次设备设置”。";
+"The same device identity was copied to %@. The original remains in %@. Connect to continue." = "同一设备身份已复制到%@，原身份仍保留在%@。点击连接以继续。";

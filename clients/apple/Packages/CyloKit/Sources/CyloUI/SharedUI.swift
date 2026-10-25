@@ -10,22 +10,20 @@ func uiFormat(_ key: String, _ arguments: CVarArg...) -> String {
 /// Only exceptional connectivity is surfaced in the workspace; protocol detail stays in settings.
 struct FreshnessBanner: View {
     @ObservedObject var model: CyloAppModel
-    @State private var showingReason = false
     var body: some View {
         switch model.freshness {
         case .current: EmptyView()
         case .loading: ProgressView(uiText("Connecting…")).font(.caption)
         case let .offline(reason, _), let .stale(reason, _):
-            HStack {
-                Button { showingReason = true } label: { Label(uiText("Connection unavailable"), systemImage: "wifi.exclamationmark") }.buttonStyle(.plain)
-                Spacer()
-                Button(uiText("Reconnect")) { Task { await model.reconnect() } }
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Label(uiText("Connection unavailable"), systemImage: "wifi.exclamationmark")
+                    Spacer()
+                    Button(uiText("Reconnect")) { Task { await model.reconnect() } }
+                }
+                Text(reason).textSelection(.enabled)
             }
                 .font(.caption).foregroundStyle(.secondary)
-                .help(reason)
-                .alert(uiText("Connection unavailable"), isPresented: $showingReason) {
-                    Button(uiText("OK"), role: .cancel) {}
-                } message: { Text(reason) }
         }
     }
 }

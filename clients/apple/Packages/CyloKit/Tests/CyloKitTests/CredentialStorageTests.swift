@@ -109,16 +109,31 @@ extension CredentialStorageTests {
     }
 
     @MainActor
-    func testStartingWithoutStorageChoiceStopsBeforeConnecting() async {
+    func testFixedServerIgnoresSavedAddressAndDefaultsToKeychain() {
         let suite = "com.cylo.credential-test.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
-        defaults.set("https://no-storage-choice.example", forKey: "cylo.serverAddress")
+        defaults.set("https://old-server.example", forKey: "cylo.serverAddress")
         let model = CyloAppModel(defaults: defaults)
 
-        await model.start()
+        XCTAssertEqual(model.serverAddress, "http://debian.local:8787")
+        XCTAssertEqual(defaults.string(forKey: "cylo.serverAddress"), model.serverAddress)
+        XCTAssertEqual(model.credentialStorageChoice, .keychain)
+        let store = CredentialStorageChoice.defaultsKey(serverURL: URL(string: model.serverAddress)!)
+        XCTAssertEqual(defaults.string(forKey: store), "keychain")
+    }
 
-        XCTAssertEqual(model.freshness, .offline(reason: uiText(CyloError.credentialStorageNotSelected.localizedDescription), cursor: nil))
-        XCTAssertEqual(model.notice, uiText(CyloError.credentialStorageNotSelected.localizedDescription))
+    @MainActor
+    func testFixedServerPreservesExplicitStorageChoice() {
+        let suite = "com.cylo.credential-test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let key = CredentialStorageChoice.defaultsKey(serverURL: URL(string: CyloAppModel.fixedServerAddress)!)
+        defaults.set("privateFile", forKey: key)
+
+        let model = CyloAppModel(defaults: defaults)
+
+        XCTAssertEqual(model.credentialStorageChoice, .privateFile)
+        XCTAssertEqual(defaults.string(forKey: key), "privateFile")
     }
 }
