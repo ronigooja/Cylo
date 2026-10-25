@@ -9,8 +9,11 @@ private final class OwnerAuthURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         do {
-            let (status, body) = try Self.handle!(request)
-            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+            let handler = try XCTUnwrap(Self.handle, "Missing authentication response handler")
+            let (status, body) = try handler(request)
+            let url = try XCTUnwrap(request.url, "Missing authentication request URL")
+            let response = try XCTUnwrap(HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil))
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: body)
             client?.urlProtocolDidFinishLoading(self)
         } catch { client?.urlProtocol(self, didFailWithError: error) }
@@ -19,6 +22,23 @@ private final class OwnerAuthURLProtocol: URLProtocol {
 }
 
 final class OwnerAuthenticationTests: XCTestCase {
+    private static func requestBody(_ request: URLRequest) throws -> Data {
+        if let body = request.httpBody { return body }
+        let stream = try XCTUnwrap(request.httpBodyStream, "Missing authentication request body")
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count < 0 { throw stream.streamError ?? URLError(.cannotDecodeRawData) }
+            if count == 0 { break }
+            data.append(buffer, count: count)
+        }
+        XCTAssertFalse(data.isEmpty, "Authentication request body must not be empty")
+        return data
+    }
+
     private func session() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [OwnerAuthURLProtocol.self]
@@ -42,7 +62,7 @@ final class OwnerAuthenticationTests: XCTestCase {
             XCTAssertEqual(request.url?.path, "/v1/auth/setup")
             XCTAssertEqual(request.httpMethod, "POST")
             XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
-            let body = try JSONDecoder().decode([String: String].self, from: request.httpBody!)
+            let body = try JSONDecoder().decode([String: String].self, from: Self.requestBody(request))
             bodies.append(body)
             XCTAssertEqual(body["device_token"], candidate.deviceToken)
             XCTAssertEqual(body["password"], password)
@@ -58,14 +78,14 @@ final class OwnerAuthenticationTests: XCTestCase {
         let registration = try await api.authenticate(password: password, code: code, deviceName: "Mac", identity: candidate)
         XCTAssertEqual(registration.device.id, "device-result")
         XCTAssertEqual(bodies.count, 2)
-        XCTAssertEqual(bodies[0], bodies[1])
+        if bodies.count == 2 { XCTAssertEqual(bodies[0], bodies[1]) }
     }
 
     func testLoginStatusSessionAndLogoutContract() async throws {
         let identity = try DeviceIdentityStore.newLoginIdentity()
         var paths: [String] = []
         OwnerAuthURLProtocol.handle = { request in
-            let path = request.url!.path
+            let path = try XCTUnwrap(request.url).path
             paths.append(path)
             XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData)
             XCTAssertEqual(request.value(forHTTPHeaderField: "Cache-Control"), "no-cache, no-store")
@@ -74,7 +94,7 @@ final class OwnerAuthenticationTests: XCTestCase {
                 XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
                 return (200, Data(#"{"setup_required":false}"#.utf8))
             case "/v1/auth/login":
-                let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+                let body = try XCTUnwrap(JSONSerialization.jsonObject(with: Self.requestBody(request)) as? [String: Any])
                 XCTAssertNil(body["code"])
                 XCTAssertEqual(body["device_token"] as? String, identity.deviceToken)
                 XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
