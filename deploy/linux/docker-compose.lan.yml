@@ -1,0 +1,6 @@
+# Optional override: retain loopback access and publish the control API on
+# one deployment-selected LAN address.
+services:
+  cylo-server:
+    ports:
+      - "${CYLO_SERVER_LAN_ADDRESS:?set the host LAN IPv4 address}:${CYLO_SERVER_PORT:-8787}:8787"

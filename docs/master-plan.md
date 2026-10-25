@@ -276,6 +276,42 @@ probe or live AO task was performed during installation.
   200. No ChatGPT Web account was imported. Cylo voice stays disabled pending
   trusted HTTPS and the required account/media lifecycle evidence.
 
+#### Fixed local server and connection settings (2026-10-25)
+
+The user selected `http://debian.local:8787` as the fixed native client endpoint.
+The client ignores previously saved server addresses and omits the address editor.
+New installations default to Keychain; an existing explicit storage choice for
+this origin is preserved. Storage selection and identity copying remain available
+under Advanced settings. This supersedes the mandatory initial storage selection
+in the earlier installation notes. Identity records are not automatically copied
+between origins or stores, and device approval remains server-authoritative.
+
+The settings form places connection state, inline errors, and one Connect action
+together. Reconnect shows progress and ignores overlapping connection attempts.
+Missing identities direct the user to device approval or first-device setup.
+Both Apple targets declare local network access for the fixed `.local` endpoint.
+[GitHub Actions run 40226323307](https://github.com/ronigooja/Cylo/actions/runs/40226323307)
+built source `36ffb6f1dc28515cdb398c66c2cab5a46b470c65` on a GitHub-hosted
+arm64 macOS 15.7.9 runner with Xcode 16.4 and Swift 6.1.2. All 71 Swift tests,
+the unsigned universal macOS archive, and the unsigned iOS build passed, each
+with recorded exit status 0. Exact commands are in `.github/workflows/apple.yml`.
+Logs, exit-status files, unsigned artifacts, and verified SHA-256 manifests were
+retrieved to `/tmp/cylo-fixed-server-ci/run-40226323307/`. Existing uncommitted
+controller documentation and operator-skill changes were excluded from CI inputs.
+
+The CI Mac archive was ad-hoc signed, installed at `/Applications/Cylo.app`, and
+launched without Mac-side compilation. Strict signature verification passed and
+both arm64 and x86_64 slices were retained. At the user's explicit request,
+Cylo's local preferences, caches, command/snapshot data, and private-file identity
+data were deleted before launch. No Cylo Keychain identities were present. The
+fresh app saved only the fixed endpoint and default Keychain choice; no saved
+pairing or private-file identity remained. The Mac's LAN health request returned
+HTTP 200. Installation/reset scripts, archive, signature checks, and logs are
+under `~/Developer/Cylo/runs/fixed-server-ui-20261025/`; the install log was also
+retrieved alongside the CI logs. Installation and reset exited 0. Device approval,
+authenticated task flows, native visual acceptance, and iOS installation were not
+exercised by this update.
+
 #### Apple redesign installation refresh
 
 The user authorized installing the redesigned Mac app in Applications/Launchpad, deleting old application versions and all local Cylo data/device identities, and copying the universal iPhone/iPad build artifacts to the Mac Desktop. The source candidate `8282bd6` was built with Xcode 16.2 on `zhuwei@macair`. Build inputs, logs, result bundles, and staging live under `/Users/zhuwei/terminal/cylo-redesign-1466808-20261024`.

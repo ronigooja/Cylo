@@ -28,7 +28,14 @@ curl --fail http://127.0.0.1:8787/healthz
 curl --fail http://127.0.0.1:18001/readyz
 ```
 
-The control server binds host loopback port 8787. AO binds host loopback port
+The control server binds port 8787 on both host loopback and the authorized
+LAN interface. The LAN endpoint is `http://debian.local:8787`.
+The deployment override `/etc/cylo/control.lan.compose.yaml` adds this binding;
+`/etc/systemd/system/cylo-compose.service.d/lan.conf` includes the override in
+the service's Compose commands. The source template is
+`deploy/linux/docker-compose.lan.yml`; set `CYLO_SERVER_LAN_ADDRESS` to the
+host LAN address. Update that setting if the host address changes.
+AO binds host loopback port
 18001; its listener uses the trusted local-process boundary and does not
 enforce bearer authentication. Health/readiness responses do not prove model
 execution, memory processing, or task completion.
@@ -38,8 +45,9 @@ execution, memory processing, or task completion.
 The app is installed at
 `/Users/zhuwei/terminal/cylo-native-install-20261024/Cylo.app`.
 All Mac deployment artifacts remain below that dedicated directory. The app
-uses `http://127.0.0.1:8787`, forwarded over SSH to the Linux server. This URL
-depends on the SSH tunnel and does not expose the server on the LAN.
+can use `http://debian.local:8787` directly on the LAN. The existing
+`http://127.0.0.1:8787` endpoint remains available through the SSH tunnel.
+The LAN URL uses plain HTTP and is intended for the trusted local network.
 
 The first device must register through **More > Settings** in the app. Enter a device
 name and the deployment-provided one-use bootstrap code, then select
@@ -48,9 +56,10 @@ at `bootstrap-code.tmp` within the dedicated install directory. Remove that
 temporary copy after successful registration. Do not paste the code into
 chat or repository files.
 
-In **More > Settings > Credential storage**, choose **Keychain (recommended)**
-or **Local private file** for this server. Until a choice is saved the app does
-not access credentials or connect automatically. Keychain may request system
+The updated client fixes the server address to `http://debian.local:8787` and
+defaults to Keychain, preserving any existing explicit storage choice for that
+origin. There is no address field or mandatory storage picker. Storage controls
+are available under **Settings > Advanced settings**. Keychain may request system
 permission. Local files use private directories (0700) and files (0600) below
 `~/Library/Application Support/com.cylo.mac/DeviceIdentities/<origin-hash>/`.
 Local file credentials are not encrypted by Keychain.
