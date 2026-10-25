@@ -517,7 +517,15 @@ func (s *Server) Handler() http.Handler {
 	root.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiError(http.StatusNotFound, "not_found", "route not found", nil))
 	}))
-	return requestLimit(s.cfg.MaxRequestBytes, root)
+	limited := requestLimit(s.cfg.MaxRequestBytes, root)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Set this outside routing and authentication so failures, including
+		// stale sessions and unsupported methods, cannot be cached either.
+		if strings.HasPrefix(r.URL.Path, "/v1/auth/") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		limited.ServeHTTP(w, r)
+	})
 }
 
 func PrincipalFromContext(ctx context.Context) (contracts.Principal, bool) {
