@@ -1,11 +1,7 @@
 # Repository guidance
 
-## Language and documentation
+## Documentation
 
-- Write repository documentation in English and use English for routine progress updates.
-- Use Chinese for final reports and important findings, decisions, or questions.
-- Use English filenames for new repository files.
-- Translate archived Markdown into English while preserving raw evidence and source quotations verbatim. Do not preserve all narrative prose verbatim when translating.
 - Treat archived documents as historical evidence. Do not describe them as the current plan.
 - Keep implementation status honest. A design, static check, fixture, or proof of concept is not production implementation or end-to-end acceptance.
 - Keep decisions and acceptance boundaries in `docs/master-plan.md`; keep the README concise.
@@ -32,8 +28,3 @@
 - Never put credentials, tokens, private account data, or secret values in source, documentation, logs, or test fixtures. Refer to secret names or deployment-provided references only.
 - Do not change external services or the existing CLIProxyAPI deployment as part of repository work unless explicitly authorized.
 - Prefer evidence that can be repeated. Report commands and outcomes accurately; do not claim checks that were not run.
-
-## Build and test execution
-
-- Before building or testing, read and follow [the development rules](docs/development.md).
-- Linux builds, Docker builds, and executable tests run on Vultr; native Apple builds and tests run on macOS/Xcode. Only documentation and lightweight static checks run locally.

@@ -300,7 +300,7 @@ activation steps are in [local deployment operations](local-deployment.md).
 
 ## 11. Repository and workflow
 
-Repository documents, new filenames, and routine progress updates are in English. Use Chinese for final reports and important findings, decisions, or questions. Archived Markdown narrative is translated into English while source quotations and raw evidence remain verbatim. Archived proposals are historical evidence, not the current decision. Keep secrets out of tracked files. Report verification commands and results honestly; static checks, fixtures, and prototypes must be labeled by what they actually prove.
+Archived proposals are historical evidence, not the current decision. Keep secrets out of tracked files. Report verification commands and results honestly; static checks, fixtures, and prototypes must be labeled by what they actually prove.
 
 Concurrent work uses separate branches and worktrees under `$HOME/subagents` with explicit file ownership. The main agent coordinates planning, assignments, dependencies, review, and integration. Implementation uses GPT-6 Luna subagents at high reasoning effort; substantive independent verification uses GPT-6.1 at medium reasoning effort. Use at most four concurrent implementation subagents and reserve one independent review slot. Coordinate cross-module API/data changes with affected owners before editing. Review commits before integration. Before a task or fresh-context handoff, record the branch, ownership, commit, completed and remaining work, verification, and limitations.
 
@@ -320,12 +320,6 @@ internal/notifications/     linked delivery records and deduplication
 Create only directories that contain tracked files. Other contributors will own native clients, AO/runner/deployment, memory, voice, and capability implementations. Core interfaces must let those modules register authenticated routes and command handlers without replacing server composition. On the Mac, all generated, cloned, and build files must stay beneath `/Users/zhuwei/terminal/<dedicated-folder>`; do not write Mac-side files elsewhere.
 
 Available integration machines/tools: macOS host `zhuwei@macair`, Xcode 16.2, Swift 6.0.3, Go 1.26.4 at `/root/environment/go1.26.4/bin/go`, and the planned Go module uses `modernc.org/sqlite` for pure-Go SQLite. All Mac-side files must be beneath `/Users/zhuwei/terminal/<dedicated-folder>`. Availability does not mean a device build, voice test, or deployment has passed.
-
-### Build and test execution policy
-
-Linux builds and executable tests run on Vultr to keep dependency, Docker, and test caches off the controller. Native Apple builds and tests use macOS/Xcode. The execution rules are maintained in [development rules](development.md); the `vultr-tasks` skill owns the worker lifecycle procedure.
-
-These workers are development tooling, not Cylo product runtimes; AO runtime ownership and external-service restrictions still apply. Build/test success proves only the scope exercised and does not by itself establish deployment or end-to-end acceptance.
 
 ## 12. Milestones and acceptance
 
