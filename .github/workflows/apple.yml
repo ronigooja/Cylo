@@ -23,8 +23,6 @@ jobs:
   apple:
     runs-on: macos-15
     timeout-minutes: 30
-    env:
-      CI_OUTPUT: ${{ runner.temp }}/cylo-apple
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -32,6 +30,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          CI_OUTPUT="$RUNNER_TEMP/cylo-apple"
+          echo "CI_OUTPUT=$CI_OUTPUT" >> "$GITHUB_ENV"
           mkdir -p "$CI_OUTPUT/logs" "$CI_OUTPUT/artifacts"
           {
             git rev-parse HEAD
