@@ -47,7 +47,19 @@ public struct CyloRootView: View {
             splitNavigation
             #endif
         }
-        .sheet(isPresented: $showAccount) { NavigationStack { AccountView(model: model).toolbar { ToolbarItem(placement: .confirmationAction) { Button(uiText("Done")) { showAccount = false } } } } }
+        .sheet(isPresented: $showAccount) {
+            NavigationStack {
+                AccountView(model: model)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button(uiText("Done")) { showAccount = false }
+                        }
+                    }
+            }
+            #if os(macOS)
+            .frame(minWidth: 560, idealWidth: 640, minHeight: 520, idealHeight: 680)
+            #endif
+        }
         .sheet(isPresented: $showInbox) { NavigationStack { NotificationInboxView(model: model, openTask: { id in showInbox = false; area = .conversation; paths[.conversation] = [.task(id)] }).toolbar { ToolbarItem(placement: .confirmationAction) { Button(uiText("Done")) { showInbox = false } } } } }
         .onChange(of: model.connectionEpoch) { _, _ in resetTaskNavigation() }
         .onChange(of: model.snapshot?.authority) { old, new in if let old, let new, old.instanceLineageId != new.instanceLineageId || old.generation != new.generation { resetTaskNavigation() } }

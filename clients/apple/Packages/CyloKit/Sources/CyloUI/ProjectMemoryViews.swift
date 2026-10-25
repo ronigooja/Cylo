@@ -83,7 +83,7 @@ struct AccountView: View {
         List {
             NavigationLink { MemoryView(model: model) } label: { Label(uiText("Memory"), systemImage: "brain.head.profile") }
             NavigationLink { CapabilitiesView(model: model) } label: { Label(uiText("Capabilities"), systemImage: "puzzlepiece.extension") }
-            NavigationLink { SettingsView(model: model) } label: { Label(uiText("Settings"), systemImage: "gearshape") }
+            NavigationLink { CyloSettingsView(model: model) } label: { Label(uiText("Settings"), systemImage: "gearshape") }
         }
         .navigationTitle(uiText("Account & Settings"))
     }

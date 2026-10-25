@@ -3,7 +3,7 @@ import SwiftUI
 
 import UniformTypeIdentifiers
 
-struct SettingsView: View {
+public struct CyloSettingsView: View {
     @ObservedObject var model: CyloAppModel
     @State private var deviceName = "Apple device"
     @State private var bootstrapCode = ""
@@ -14,11 +14,15 @@ struct SettingsView: View {
     @State private var pendingCredentialStorageChoice: CredentialStorageChoice?
     @State private var showingCredentialStorageConfirmation = false
 
+    public init(model: CyloAppModel) {
+        self.model = model
+    }
+
     private var exportDocument: ScopedExportFileDocument {
         ScopedExportFileDocument(fileURL: model.exportArtifact?.fileURL ?? FileManager.default.temporaryDirectory)
     }
 
-    var body: some View {
+    public var body: some View {
         Form {
             if let notice = model.notice {
                 Section(uiText("Connection status")) {
@@ -146,6 +150,7 @@ struct SettingsView: View {
                 }
             }
         }
+        .formStyle(.grouped)
         .navigationTitle(uiText("Settings"))
         .fileExporter(isPresented: $showingExportSave, document: exportDocument, contentType: .zip, defaultFilename: model.exportArtifact?.filename ?? "cylo-export.zip") { result in
             switch result {
