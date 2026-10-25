@@ -322,8 +322,6 @@ activation steps are in [local deployment operations](local-deployment.md).
 
 Archived proposals are historical evidence, not the current decision. Keep secrets out of tracked files. Report verification commands and results honestly; static checks, fixtures, and prototypes must be labeled by what they actually prove.
 
-Concurrent work uses separate branches and worktrees under `$HOME/subagents` with explicit file ownership. The main agent coordinates planning, assignments, dependencies, review, and integration. Implementation uses GPT-6 Luna subagents at high reasoning effort; substantive independent verification uses GPT-6.1 at medium reasoning effort. Use at most four concurrent implementation subagents and reserve one independent review slot. Coordinate cross-module API/data changes with affected owners before editing. Review commits before integration. Before a task or fresh-context handoff, record the branch, ownership, commit, completed and remaining work, verification, and limitations.
-
 Implementation begins after the archive stage is complete and the main agent freezes the API contract. Do not create placeholder directories. Once implementation begins, add only directories that contain tracked files. The planned core Go module is `github.com/ronigooja/Cylo` (`go.mod` and `go.sum` at repository root), targeting Go 1.26 and pure-Go SQLite through `modernc.org/sqlite`. The initial ownership tree is:
 
 ```text
