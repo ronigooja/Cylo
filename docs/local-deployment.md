@@ -42,69 +42,56 @@ execution, memory processing, or task completion.
 
 ## macOS application
 
-### Password-login replacement: rollout boundary
+### Installed owner-password release — 2026-10-25
 
-The approved replacement uses the fixed endpoint `http://debian.local:8787`,
-one-use owner setup with a password, and password login on additional devices.
-The address is not editable. Password login does not require another device to
-be online. This source change does not update the running server or installed
-apps; the earlier installed-device procedure below describes that installation
-until rollout is performed and verified.
+The control server now uses `cylo-server:owner-login-f62b55f3a964`, built on a
+GitHub-hosted ARM64 runner in [run 40231799160](https://github.com/ronigooja/Cylo/actions/runs/40231799160).
+The macOS application at `/Applications/Cylo.app` was replaced with the verified
+Apple CI artifact from revision `2d9d779`, signed ad hoc locally and launched.
+Mac inputs, signing/install scripts, current artifacts, and logs are under
+`~/Developer/Cylo/runs/owner-login-20261025/`. No local compilation or automated
+suite was used for this rollout.
 
-An existing installation whose bootstrap code was already consumed requires a
-fresh setup code from a server administrator. After stopping the server, run
-the replacement server binary on its host:
+The fixed endpoint is `http://debian.local:8787`; there is no address input.
+First setup requires a fresh one-use setup code and the new owner password.
+Other devices subsequently sign in with the password without another device
+being online. Device settings provide sign-out and remote revocation. Those
+operations cancel that device's queued tasks and request active runs to stop;
+a stop request does not prove termination.
+
+This rollout migrated the existing database in place, preserving the owner
+identity and business records while revoking all three legacy device credentials.
+The host recovery operation was:
 
 ```sh
-cylo-server recover-owner --database /path/to/cylo.db --confirm-revoke-all-devices
+cylo-server recover-owner --database /var/lib/cylo/server/data/cylo.sqlite --confirm-revoke-all-devices
 ```
 
-The operation requires the exclusive database lock, preserves the owner identity
-and business data, clears the password for setup, revokes device sessions, and
-requests active runs to stop. Keep the generated code private and enter it in
-the replacement app's first-setup form with the new owner password. The stored
-recovery code takes precedence over the original deployment bootstrap code;
-do not paste either code or the password into chat or repository files. A stop
-request is not termination proof. Back up authoritative data before rollout;
-run this command only as an intentional migration or recovery operation.
+The command ran while the stack was stopped, under the authority-data UID with
+its existing host parent-directory access group. The stored recovery code takes
+precedence over the original deployment code. It was delivered to the Mac
+clipboard without printing its value, and its temporary plaintext file was
+deleted. The owner must paste it into the first-setup form and choose the
+password; the agent did not set or retain a password. If the clipboard is lost
+before setup, an administrator must intentionally stop the stack and repeat
+recovery to obtain a fresh code. Never paste secrets into chat or repository files.
 
-The fixed endpoint currently uses plain HTTP on the trusted LAN. Password and
-session transport protection remains an acceptance gap; this source change
-does not establish HTTPS or modify the deployed network configuration.
+The user explicitly required no backups: none were created. Four old server
+image tags/images and seven old Mac app/archive products in the earlier task
+roots were removed. The active runner release and persistent data were retained.
+The user deferred iOS installation/testing; this rollout's local iOS downloads,
+staging bundle, and signing entitlements were removed, and the original combined
+CI app artifact was deleted. The phone's existing application was not changed.
 
-### Earlier installed client
-
-The app is installed at `/Applications/Cylo.app`. Current update artifacts and
-logs are under `~/Developer/Cylo/runs/fixed-server-ui-20261025/`. The app
-can use `http://debian.local:8787` directly on the LAN. The existing
-`http://127.0.0.1:8787` endpoint remains available through the SSH tunnel.
-The LAN URL uses plain HTTP and is intended for the trusted local network.
-
-The first device must register through **More > Settings** in the app. Enter a device
-name and the deployment-provided one-use bootstrap code, then select
-**Bootstrap first approved device**. Use a current deployment-provided code;
-remove any temporary private copy after registration. Do not paste the code
-into chat or repository files. Additional devices request approval from an
-already approved device.
-
-The updated client fixes the server address to `http://debian.local:8787` and
-defaults to Keychain, preserving any existing explicit storage choice for that
-origin. There is no address field or mandatory storage picker. Storage controls
-are available under **Settings > Advanced settings**. Keychain may request system
-permission. Local files use private directories (0700) and files (0600) below
-`~/Library/Application Support/com.cylo.mac/DeviceIdentities/<origin-hash>/`.
-Local file credentials are not encrypted by Keychain.
-
-Changing storage does not automatically copy or overwrite an identity. Use the
-explicit copy-and-switch action to preserve an existing approved identity; this
-may require allowing the old Keychain record to be read once. Switching without
-copying uses a separate identity and requires device approval. Denied Keychain
-access does not erase the existing credential.
-
-Remote automation cannot bypass macOS Keychain access controls or
-Accessibility permissions. An installed/running app is not evidence of
-successful device registration. The local app uses ad-hoc signing; APNs and
-distribution signing require separate configuration and acceptance.
+Keychain remains the default credential store, with an existing explicit storage
+choice preserved. Advanced settings offer private-file storage and explicit
+copying; switching does not silently move an identity. Private-file credentials
+are not encrypted by Keychain. Remote automation cannot bypass macOS Keychain
+or screenshot permissions. Signing verification, launch, process existence,
+and an application window were confirmed; screenshot capture failed, and live
+owner setup/password login remains unaccepted until performed by the owner.
+The fixed plain-HTTP LAN endpoint still lacks protected password/session
+transport; this rollout did not change network configuration or external services.
 
 ## Voice gateway
 
