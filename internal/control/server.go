@@ -466,6 +466,10 @@ func (s *Server) DeviceTransaction(ctx context.Context, fn func(*sql.Tx, contrac
 		return err
 	}
 	defer tx.Rollback()
+	if err = requireOwnerSessionTx(ctx, tx, p); err != nil {
+		return err
+	}
+
 	if err = fn(tx, p); err != nil {
 		return err
 	}
@@ -494,9 +498,17 @@ func (s *Server) Handler() http.Handler {
 	s.sealed = true
 	s.mu.Unlock()
 	root := http.NewServeMux()
-	root.Handle("POST /v1/bootstrap", s.restoreDeletionGate(http.HandlerFunc(s.handleBootstrap)))
-	root.Handle("POST /v1/pairings", s.restoreDeletionGate(http.HandlerFunc(s.handlePairingCreate)))
-	root.Handle("GET /v1/pairings/{pairing_id}", s.deviceAuth(s.restoreDeletionGate(http.HandlerFunc(s.handlePairingStatus))))
+	root.Handle("GET /v1/auth/status", s.restoreDeletionGate(http.HandlerFunc(s.handleOwnerStatus)))
+	root.Handle("POST /v1/auth/setup", s.restoreDeletionGate(http.HandlerFunc(s.handleOwnerSetup)))
+	root.Handle("POST /v1/auth/login", s.restoreDeletionGate(http.HandlerFunc(s.handleOwnerLogin)))
+	root.Handle("GET /v1/auth/session", s.deviceAuth(s.restoreDeletionGate(http.HandlerFunc(s.handleOwnerSession))))
+	root.Handle("POST /v1/auth/logout", s.deviceAuth(s.restoreDeletionGate(http.HandlerFunc(s.handleOwnerLogout))))
+	legacy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, apiError(410, "legacy_auth_disabled", "use owner password authentication", nil))
+	})
+	root.Handle("POST /v1/bootstrap", s.restoreDeletionGate(legacy))
+	root.Handle("POST /v1/pairings", s.restoreDeletionGate(legacy))
+	root.Handle("GET /v1/pairings/{pairing_id}", s.restoreDeletionGate(legacy))
 	root.Handle("/v1/", s.deviceAuth(s.restoreDeletionGate(s.device)))
 	root.Handle("/runner/v1/", s.runnerAuth(s.restoreDeletionGate(s.runner)))
 	root.Handle("/healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

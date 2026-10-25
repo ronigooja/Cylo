@@ -60,7 +60,7 @@ func TestComposedServerRegistersDerivedWorkerCredentialAndFailsClosedWithoutVoic
 	}
 	seedComposedMemoryClaim(t, store.DB())
 	handler := server.Handler()
-	bootstrap := compositionRequest(t, handler, http.MethodPost, "/v1/bootstrap", "", map[string]any{"request_id": "composition-bootstrap", "code": bootstrapCode, "device_name": "composition-test", "device_token": deviceToken})
+	bootstrap := compositionRequest(t, handler, http.MethodPost, "/v1/auth/setup", "", map[string]any{"password": "owner-test-password", "request_id": "composition-bootstrap", "code": bootstrapCode, "device_name": "composition-test", "device_token": deviceToken})
 	if bootstrap.Code != http.StatusCreated {
 		t.Fatalf("bootstrap status=%d body=%s", bootstrap.Code, bootstrap.Body.String())
 	}

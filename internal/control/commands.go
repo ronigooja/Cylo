@@ -25,7 +25,6 @@ func (s *Server) registerCoreRoutes() {
 	_ = s.RegisterCommand("task.accept_result", s.commandTaskAcceptResult)
 	_ = s.RegisterCommand("child.approve", s.commandChildDecision)
 	_ = s.RegisterCommand("child.reject", s.commandChildDecision)
-	_ = s.RegisterCommand("device.approve", s.commandDeviceApprove)
 	_ = s.RegisterCommand("device.revoke", s.commandDeviceRevoke)
 	_ = s.RegisterCommand("device.push_token.register", s.commandPushTokenRegister)
 	_ = s.RegisterCommand("device.push_token.revoke", s.commandPushTokenRevoke)
@@ -115,6 +114,10 @@ func (s *Server) ExecuteCommand(ctx context.Context, p contracts.Principal, key 
 		return contracts.CommandReceipt{}, err
 	}
 	defer tx.Rollback()
+	if err = requireOwnerSessionTx(ctx, tx, p); err != nil {
+		return contracts.CommandReceipt{}, err
+	}
+
 	var oldHash, receiptJSON []byte
 	err = tx.QueryRowContext(ctx, `SELECT request_hash,receipt_json FROM command_receipts WHERE workspace_id=? AND subject_id=? AND idempotency_key=?`, p.WorkspaceID, p.SubjectID, key).Scan(&oldHash, &receiptJSON)
 	if err == nil {

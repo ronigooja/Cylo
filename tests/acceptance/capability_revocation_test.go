@@ -99,12 +99,12 @@ func TestCapabilityRevocationFencesClaimsAndRequiresProvenCleanup(t *testing.T) 
 	}
 	ownerRevoke := contracts.CommandRequest{Kind: "capability.deployment.revoke", ExpectedVersion: &version, Payload: mustJSON(t, map[string]any{"deployment_id": deploymentID})}
 	_, err = server.ExecuteCommand(t.Context(), contracts.Principal{WorkspaceID: "default", SubjectID: "different-owner", DeviceID: "other-device", Scopes: []string{"client:command", "capability:deployment:revoke"}}, "rev-not-owner", ownerRevoke, []byte("owner-negative"))
-	if apiErr, ok := err.(*control.APIError); !ok || apiErr.Status != http.StatusForbidden {
-		t.Fatalf("non-owner revocation error=%v, want forbidden", err)
+	if apiErr, ok := err.(*control.APIError); !ok || apiErr.Status != http.StatusUnauthorized {
+		t.Fatalf("non-owner revocation error=%v, want unauthenticated owner session", err)
 	}
 	_, err = server.ExecuteCommand(t.Context(), contracts.Principal{WorkspaceID: "default", SubjectID: "different-subject", DeviceID: "other-device", Scopes: []string{"client:command"}}, "rev-no-scope", ownerRevoke, []byte("scope-negative"))
-	if apiErr, ok := err.(*control.APIError); !ok || apiErr.Status != http.StatusForbidden {
-		t.Fatalf("revocation without scope error=%v, want forbidden", err)
+	if apiErr, ok := err.(*control.APIError); !ok || apiErr.Status != http.StatusUnauthorized {
+		t.Fatalf("revocation without scope error=%v, want unauthenticated owner session", err)
 	}
 	claimResponse := reviewRequest(handler, http.MethodPost, "/runner/v1/deployments/claims", runnerToken, "", nil)
 	var active contracts.DeploymentClaim

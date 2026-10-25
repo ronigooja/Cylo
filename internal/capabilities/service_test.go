@@ -853,6 +853,10 @@ func TestCapabilityTriggerRunnerAOResultChain(t *testing.T) {
 	acceptBytes, _ := json.Marshal(acceptRequest)
 	acceptHash := sha256.Sum256(acceptBytes)
 	acceptPrincipal := contracts.Principal{WorkspaceID: "default", SubjectID: "owner", DeviceID: "device", Scopes: []string{"client:command"}}
+	// Direct command fixture establishes the same owner session checked by HTTP.
+	if _, err = store.DB().ExecContext(ctx, `UPDATE owner_auth SET subject_id='owner',password_hash=X'01',password_salt=X'02' WHERE id=1; UPDATE devices SET owner_generation=1 WHERE id='device'`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = server.ExecuteCommand(ctx, acceptPrincipal, "accept-trigger-result", acceptRequest, acceptHash[:]); err != nil {
 		t.Fatalf("authorized result acceptance: %v", err)
 	}

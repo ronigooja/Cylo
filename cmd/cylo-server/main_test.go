@@ -17,7 +17,7 @@ import (
 
 func TestServerSubprocessBootstrapAndRestart(t *testing.T) {
 	binary := filepath.Join(t.TempDir(), "cylo-server")
-	build := exec.Command("/root/environment/go1.26.4/bin/go", "build", "-o", binary, ".")
+	build := exec.Command("go", "build", "-o", binary, ".")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build server: %v\n%s", err, output)
 	}
@@ -92,13 +92,22 @@ func TestServerSubprocessBootstrapAndRestart(t *testing.T) {
 		}
 		time.Sleep(30 * time.Millisecond)
 	}
-	regBody := map[string]string{"request_id": "subprocess-bootstrap", "code": code, "device_name": "subprocess-test", "device_token": token}
-	res, _, err := call(http.MethodPost, "/v1/bootstrap", "", regBody)
+	regBody := map[string]string{"password": "owner-test-password", "request_id": "subprocess-bootstrap", "code": code, "device_name": "subprocess-test", "device_token": token}
+	res, _, err := call(http.MethodPost, "/v1/auth/setup", "", regBody)
 	if err != nil || res.StatusCode != http.StatusCreated {
 		t.Fatalf("bootstrap status=%v err=%v", responseStatus(res), err)
 	}
+	// Recovery must refuse to operate while the server holds the host DB lock.
+	lockedRecovery := exec.Command(binary, "recover-owner", "--database", db, "--confirm-revoke-all-devices")
+	if output, e := lockedRecovery.Output(); e == nil || len(output) != 0 {
+		t.Fatal("recovery ran or disclosed a code while server owned the database")
+	}
+	res, body, e := callCommand(token, "preserved-project", map[string]any{"kind": "project.create", "payload": map[string]string{"name": "preserved owner data"}})
+	if e != nil || res.StatusCode != http.StatusOK {
+		t.Fatalf("pre-recovery project=%v %v %s", responseStatus(res), e, body)
+	}
 	stopServer(t, cmd)
-	recovery := exec.Command(binary, "recover-bootstrap", "--database", db, "--confirm-revoke-all-devices")
+	recovery := exec.Command(binary, "recover-owner", "--database", db, "--confirm-revoke-all-devices")
 	recoveryOutput, err := recovery.Output()
 	if err != nil {
 		t.Fatalf("offline administrator recovery failed: %v", err)
@@ -122,18 +131,20 @@ func TestServerSubprocessBootstrapAndRestart(t *testing.T) {
 		}
 		time.Sleep(30 * time.Millisecond)
 	}
-	var body []byte
 	res, body, err = call(http.MethodGet, "/v1/snapshot", token, nil)
 	if err != nil || res.StatusCode < http.StatusBadRequest {
 		t.Fatalf("recovery left old bearer valid: status=%v err=%v", responseStatus(res), err)
 	}
-	res, body, err = call(http.MethodPost, "/v1/bootstrap", "", map[string]string{"request_id": "recovery-bootstrap", "code": code, "device_name": "recovered", "device_token": newToken})
+	res, body, err = call(http.MethodPost, "/v1/auth/setup", "", map[string]string{"password": "owner-test-password", "request_id": "recovery-bootstrap", "code": code, "device_name": "recovered", "device_token": newToken})
 	if err != nil || res.StatusCode != http.StatusCreated {
 		t.Fatalf("recovered bootstrap status=%v err=%v", responseStatus(res), err)
 	}
 	res, body, err = call(http.MethodGet, "/v1/snapshot", newToken, nil)
 	if err != nil || res.StatusCode != http.StatusOK {
 		t.Fatalf("snapshot after restart status=%v err=%v body=%s", responseStatus(res), err, body)
+	}
+	if !bytes.Contains(body, []byte("preserved owner data")) {
+		t.Fatal("recovery changed owner subject or lost project")
 	}
 	res, body, err = callCommand(newToken, "memory-smoke", map[string]any{"kind": "memory.remember", "payload": map[string]any{"scope": map[string]string{"kind": "personal"}, "subject": "server restart", "key": "memory readiness", "content": "memory command is available after restart", "source_kind": "user_note"}})
 	if err != nil || res.StatusCode != http.StatusOK {

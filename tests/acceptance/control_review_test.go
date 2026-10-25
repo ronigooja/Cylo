@@ -69,7 +69,7 @@ func reviewRequest(h http.Handler, method, path, token, key string, body any) *h
 }
 func reviewBootstrap(t *testing.T, h http.Handler, code, token string) contracts.DeviceRegistration {
 	t.Helper()
-	w := reviewRequest(h, "POST", "/v1/bootstrap", "", "", contracts.BootstrapRequest{RequestID: "bootstrap", Code: code, DeviceName: "review", DeviceToken: token})
+	w := reviewRequest(h, "POST", "/v1/auth/setup", "", "", contracts.OwnerAuthRequest{Password: "owner-test-password", RequestID: "bootstrap", Code: code, DeviceName: "review", DeviceToken: token})
 	if w.Code != 201 {
 		t.Fatalf("bootstrap status=%d", w.Code)
 	}
@@ -84,7 +84,7 @@ func TestReviewHTTPIdentityAndReceipts(t *testing.T) {
 	token := reviewToken(t)
 	s, h := reviewServer(t, control.Config{BootstrapCode: code}, nil)
 	d := reviewBootstrap(t, h, code, token)
-	retry := reviewRequest(h, "POST", "/v1/bootstrap", "", "", contracts.BootstrapRequest{RequestID: "bootstrap", Code: code, DeviceName: "review", DeviceToken: token})
+	retry := reviewRequest(h, "POST", "/v1/auth/setup", "", "", contracts.OwnerAuthRequest{Password: "owner-test-password", RequestID: "bootstrap", Code: code, DeviceName: "review", DeviceToken: token})
 	if retry.Code != 200 {
 		t.Fatalf("lost ACK retry=%d", retry.Code)
 	}
@@ -93,25 +93,14 @@ func TestReviewHTTPIdentityAndReceipts(t *testing.T) {
 	if again.Device.ID != d.Device.ID {
 		t.Error("bootstrap retry changed identity")
 	}
-	mismatch := reviewRequest(h, "POST", "/v1/bootstrap", "", "", contracts.BootstrapRequest{RequestID: "bootstrap", Code: code, DeviceName: "changed", DeviceToken: token})
+	mismatch := reviewRequest(h, "POST", "/v1/auth/setup", "", "", contracts.OwnerAuthRequest{Password: "owner-test-password", RequestID: "bootstrap", Code: code, DeviceName: "changed", DeviceToken: token})
 	if mismatch.Code != 409 {
 		t.Errorf("bootstrap mismatch=%d", mismatch.Code)
 	}
-	pendingToken := reviewToken(t)
-	pair := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{RequestID: "pairing", DeviceName: "pending", DeviceToken: pendingToken})
-	if pair.Code != 201 {
-		t.Fatalf("pair=%d", pair.Code)
-	}
-	var p contracts.PairingStatus
-	json.Unmarshal(pair.Body.Bytes(), &p)
-	for _, path := range []string{"/v1/snapshot", "/v1/commands?key=k", "/v1/pairings/other"} {
-		w := reviewRequest(h, "GET", path, pendingToken, "", nil)
-		if w.Code < 400 {
-			t.Errorf("pending permitted %s", path)
-		}
-	}
-	if w := reviewRequest(h, "GET", "/v1/pairings/"+p.PairingID, pendingToken, "", nil); w.Code != 200 {
-		t.Errorf("own pairing status=%d", w.Code)
+	secondToken := reviewToken(t)
+	login := reviewRequest(h, "POST", "/v1/auth/login", "", "", contracts.OwnerAuthRequest{RequestID: "second-login", Password: "owner-test-password", DeviceName: "second", DeviceToken: secondToken})
+	if login.Code != 201 {
+		t.Fatalf("second login=%d %s", login.Code, login.Body.String())
 	}
 	req := contracts.CommandRequest{Kind: "project.create", Payload: json.RawMessage(`{"name":"review"}`)}
 	first := reviewRequest(h, "POST", "/v1/commands", token, "project", req)
@@ -137,7 +126,11 @@ func TestReviewHTTPIdentityAndReceipts(t *testing.T) {
 		if e := s.DB().QueryRow("SELECT count(*) FROM " + table).Scan(&n); e != nil {
 			t.Fatal(e)
 		}
-		if n != 1 {
+		want := 1
+		if table == "events" {
+			want = 4
+		}
+		if n != want {
 			t.Errorf("%s rows=%d", table, n)
 		}
 	}
@@ -150,110 +143,70 @@ func TestReviewHTTPIdentityAndReceipts(t *testing.T) {
 	}
 }
 
-func TestReviewPairingReusesExistingDeviceToken(t *testing.T) {
+func TestReviewOwnerLoginAndSessionRevocation(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
-	s, h := reviewServer(t, control.Config{BootstrapCode: code}, nil)
-	registered := reviewBootstrap(t, h, code, token)
-
-	// The app can show the pairing screen after bootstrap. Reusing its device
-	// token must return the approved identity rather than hit devices.token_hash
-	// UNIQUE and surface a 500.
-	retry := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{
-		RequestID: "pairing-after-bootstrap", DeviceName: "same-device", DeviceToken: token,
-	})
-	if retry.Code != http.StatusOK {
-		t.Fatalf("existing approved pairing status=%d body=%s", retry.Code, retry.Body.String())
+	store, h := reviewServer(t, control.Config{BootstrapCode: code}, nil)
+	reviewBootstrap(t, h, code, token)
+	for _, path := range []string{"/v1/bootstrap", "/v1/pairings"} {
+		if w := reviewRequest(h, "POST", path, "", "", map[string]string{}); w.Code != 410 {
+			t.Fatalf("legacy %s=%d", path, w.Code)
+		}
 	}
-	var approved contracts.PairingStatus
-	if err := json.Unmarshal(retry.Body.Bytes(), &approved); err != nil {
-		t.Fatal(err)
+	req := contracts.OwnerAuthRequest{RequestID: "login", Password: "owner-test-password", DeviceName: "phone", DeviceToken: reviewToken(t)}
+	wrong := req
+	wrong.Password = "incorrect-password"
+	if w := reviewRequest(h, "POST", "/v1/auth/login", "", "", wrong); w.Code != 401 {
+		t.Fatalf("wrong password=%d", w.Code)
 	}
-	if approved.PairingID != registered.Device.ID || approved.Status != "approved" || approved.ApprovedAt == nil {
-		t.Fatalf("existing approved pairing=%+v", approved)
+	first := reviewRequest(h, "POST", "/v1/auth/login", "", "", req)
+	if first.Code != 201 {
+		t.Fatalf("login=%d %s", first.Code, first.Body.String())
 	}
-	var devices, authRequests int
-	if err := s.DB().QueryRow("SELECT count(*) FROM devices").Scan(&devices); err != nil {
-		t.Fatal(err)
+	retry := reviewRequest(h, "POST", "/v1/auth/login", "", "", req)
+	if retry.Code != 200 || !bytes.Equal(first.Body.Bytes(), retry.Body.Bytes()) {
+		t.Fatal("login retry changed session")
 	}
-	if err := s.DB().QueryRow("SELECT count(*) FROM auth_requests").Scan(&authRequests); err != nil {
-		t.Fatal(err)
+	if w := reviewRequest(h, "GET", "/v1/auth/session", req.DeviceToken, "", nil); w.Code != 200 {
+		t.Fatalf("session=%d", w.Code)
 	}
-	if devices != 1 || authRequests != 1 {
-		t.Fatalf("existing approved pairing created rows: devices=%d auth_requests=%d", devices, authRequests)
+	if w := reviewRequest(h, "POST", "/v1/auth/logout", req.DeviceToken, "", nil); w.Code != 200 {
+		t.Fatalf("logout=%d", w.Code)
 	}
-
-	pendingToken := reviewToken(t)
-	first := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{
-		RequestID: "pending-first", DeviceName: "pending", DeviceToken: pendingToken,
-	})
-	if first.Code != http.StatusCreated {
-		t.Fatalf("new pairing status=%d body=%s", first.Code, first.Body.String())
+	if w := reviewRequest(h, "GET", "/v1/snapshot", req.DeviceToken, "", nil); w.Code < 400 {
+		t.Fatal("logout session remains authorized")
 	}
-	var pending contracts.PairingStatus
-	if err := json.Unmarshal(first.Body.Bytes(), &pending); err != nil {
-		t.Fatal(err)
+	if w := reviewRequest(h, "POST", "/v1/auth/login", "", "", req); w.Code != 409 {
+		t.Fatalf("revoked retry=%d", w.Code)
 	}
-	second := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{
-		RequestID: "pending-retry", DeviceName: "renamed-locally", DeviceToken: pendingToken,
-	})
-	if second.Code != http.StatusOK {
-		t.Fatalf("existing pending pairing status=%d body=%s", second.Code, second.Body.String())
+	if w := reviewRequest(h, "GET", "/v1/auth/session", token, "", nil); w.Code != 200 {
+		t.Fatal("logout revoked another session")
 	}
-	var pendingRetry contracts.PairingStatus
-	if err := json.Unmarshal(second.Body.Bytes(), &pendingRetry); err != nil {
-		t.Fatal(err)
-	}
-	if pendingRetry.PairingID != pending.PairingID || pendingRetry.Status != "pending" || !pendingRetry.ExpiresAt.Equal(pending.ExpiresAt) {
-		t.Fatalf("existing pending pairing changed: first=%+v retry=%+v", pending, pendingRetry)
-	}
-
-	if _, err := s.DB().Exec("UPDATE devices SET pairing_expires_at=? WHERE id=?", time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano), pending.PairingID); err != nil {
-		t.Fatal(err)
-	}
-	expired := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{
-		RequestID: "pending-expired-retry", DeviceName: "pending", DeviceToken: pendingToken,
-	})
-	if expired.Code != http.StatusGone {
-		t.Fatalf("expired pending retry status=%d body=%s", expired.Code, expired.Body.String())
-	}
-	expiredOriginal := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{
-		RequestID: "pending-first", DeviceName: "pending", DeviceToken: pendingToken,
-	})
-	if expiredOriginal.Code != http.StatusGone {
-		t.Fatalf("expired original pairing retry status=%d body=%s", expiredOriginal.Code, expiredOriginal.Body.String())
-	}
-
-	if _, err := s.DB().Exec("UPDATE devices SET status='revoked',revoked_at=? WHERE id=?", time.Now().UTC().Format(time.RFC3339Nano), pending.PairingID); err != nil {
-		t.Fatal(err)
-	}
-	revoked := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{
-		RequestID: "pending-revoked-retry", DeviceName: "pending", DeviceToken: pendingToken,
-	})
-	if revoked.Code != http.StatusConflict || !bytes.Contains(revoked.Body.Bytes(), []byte(`"code":"device_revoked"`)) {
-		t.Fatalf("revoked pairing status=%d body=%s", revoked.Code, revoked.Body.String())
-	}
-	revokedOriginal := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{
-		RequestID: "pending-first", DeviceName: "pending", DeviceToken: pendingToken,
-	})
-	if revokedOriginal.Code != http.StatusConflict || !bytes.Contains(revokedOriginal.Body.Bytes(), []byte(`"code":"device_revoked"`)) {
-		t.Fatalf("revoked original pairing retry status=%d body=%s", revokedOriginal.Code, revokedOriginal.Body.String())
-	}
-
-	// request_id is shared by bootstrap and pairing records; reject a cross-kind
-	// reuse as a typed conflict instead of surfacing SQLite's PRIMARY KEY error.
-	conflict := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{
-		RequestID: "bootstrap", DeviceName: "another", DeviceToken: reviewToken(t),
-	})
-	if conflict.Code != http.StatusConflict || !bytes.Contains(conflict.Body.Bytes(), []byte(`"code":"idempotency_conflict"`)) {
-		t.Fatalf("cross-kind request reuse status=%d body=%s", conflict.Code, conflict.Body.String())
-	}
-	conflictWithExistingToken := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{
-		RequestID: "bootstrap", DeviceName: "another", DeviceToken: token,
-	})
-	if conflictWithExistingToken.Code != http.StatusConflict || !bytes.Contains(conflictWithExistingToken.Body.Bytes(), []byte(`"code":"idempotency_conflict"`)) {
-		t.Fatalf("cross-kind existing-token reuse status=%d body=%s", conflictWithExistingToken.Code, conflictWithExistingToken.Body.String())
+	var subjectCount int
+	if err := store.DB().QueryRow("SELECT count(DISTINCT subject_id) FROM devices").Scan(&subjectCount); err != nil || subjectCount != 1 {
+		t.Fatalf("sessions have different owners: %d %v", subjectCount, err)
 	}
 }
+
+func TestReviewOwnerBruteForceLimitSurvivesServerRecreation(t *testing.T) {
+	code, token := reviewToken(t), reviewToken(t)
+	store, h := reviewServer(t, control.Config{BootstrapCode: code}, nil)
+	reviewBootstrap(t, h, code, token)
+	req := contracts.OwnerAuthRequest{RequestID: "guess", Password: "incorrect-password", DeviceName: "guess", DeviceToken: reviewToken(t)}
+	for i := 0; i < 5; i++ {
+		if w := reviewRequest(h, "POST", "/v1/auth/login", "", "", req); w.Code != 401 {
+			t.Fatalf("guess %d=%d", i, w.Code)
+		}
+	}
+	srv, err := control.NewServer(store, control.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Password = "owner-test-password"
+	if w := reviewRequest(srv.Handler(), "POST", "/v1/auth/login", "", "", req); w.Code != 429 {
+		t.Fatalf("durable rate limit=%d", w.Code)
+	}
+}
+
 func TestReviewExtensionRollback(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
 	s, h := reviewServer(t, control.Config{BootstrapCode: code}, func(srv *control.Server) {
@@ -277,7 +230,11 @@ func TestReviewExtensionRollback(t *testing.T) {
 		if e := s.DB().QueryRow("SELECT count(*) FROM " + table).Scan(&n); e != nil {
 			t.Fatal(e)
 		}
-		if n != 0 {
+		want := 0
+		if table == "events" {
+			want = 2
+		}
+		if n != want {
 			t.Errorf("partial %s persisted", table)
 		}
 	}
@@ -329,28 +286,18 @@ func TestReviewExplicitDeviceScopesAreNotExpanded(t *testing.T) {
 	if w := reviewRequest(h, "POST", "/v1/commands", token, "project", contracts.CommandRequest{Kind: "project.create", Payload: json.RawMessage(`{"name":"allowed"}`)}); w.Code != http.StatusOK {
 		t.Errorf("configured command grant was lost: %d", w.Code)
 	}
-	if w := reviewRequest(h, "POST", "/v1/commands", token, "approve-device", contracts.CommandRequest{Kind: "device.approve", Payload: json.RawMessage(`{"device_id":"anything"}`)}); w.Code != http.StatusForbidden {
+	if w := reviewRequest(h, "POST", "/v1/commands", token, "approve-device", contracts.CommandRequest{Kind: "device.approve", Payload: json.RawMessage(`{"device_id":"anything"}`)}); w.Code < 400 {
 		t.Errorf("device management was implicitly granted: %d", w.Code)
 	}
 }
 
-func TestReviewExpiredPairingCannotBeApproved(t *testing.T) {
+func TestReviewLegacyDeviceApprovalCannotCreateSession(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
-	_, h := reviewServer(t, control.Config{BootstrapCode: code, PairingTTL: time.Nanosecond}, nil)
+	_, h := reviewServer(t, control.Config{BootstrapCode: code}, nil)
 	reviewBootstrap(t, h, code, token)
-	w := reviewRequest(h, "POST", "/v1/pairings", "", "", contracts.PairingRequest{RequestID: "expire", DeviceName: "expired", DeviceToken: reviewToken(t)})
-	if w.Code != 201 {
-		t.Fatalf("pair status=%d", w.Code)
-	}
-	var pair contracts.PairingStatus
-	if e := json.Unmarshal(w.Body.Bytes(), &pair); e != nil {
-		t.Fatal(e)
-	}
-	time.Sleep(time.Millisecond)
-	payload, _ := json.Marshal(map[string]string{"device_id": pair.PairingID})
-	w = reviewRequest(h, "POST", "/v1/commands", token, "approve-expired", contracts.CommandRequest{Kind: "device.approve", Payload: payload})
+	w := reviewRequest(h, "POST", "/v1/commands", token, "approve", contracts.CommandRequest{Kind: "device.approve", Payload: json.RawMessage(`{"device_id":"legacy"}`)})
 	if w.Code < 400 {
-		t.Errorf("expired pairing approved: status=%d", w.Code)
+		t.Fatal("legacy device approval remains available")
 	}
 }
 func TestReviewSSERevocationBlocksNewEvents(t *testing.T) {
@@ -378,8 +325,8 @@ func TestReviewSSERevocationBlocksNewEvents(t *testing.T) {
 	if _, e = s.DB().Exec("UPDATE devices SET status='revoked',revoked_at='now' WHERE id=?", d.Device.ID); e != nil {
 		t.Fatal(e)
 	}
-	payload := `{"schema_version":1,"event_id":"after-revoke","cursor":"1","type":"review.after_revoke","occurred_at":"2026-10-21T00:00:00Z","workspace_id":"default","aggregate_type":"review","aggregate_id":"review","aggregate_version":1,"payload":{}}`
-	if _, e = s.DB().Exec("INSERT INTO events(event_id,workspace_id,cursor,schema_version,event_type,occurred_at,aggregate_type,aggregate_id,aggregate_version,payload) VALUES('after-revoke','default',1,1,'review.after_revoke','now','review','review',1,?)", payload); e != nil {
+	payload := `{"schema_version":1,"event_id":"after-revoke","cursor":"3","type":"review.after_revoke","occurred_at":"2026-10-21T00:00:00Z","workspace_id":"default","aggregate_type":"review","aggregate_id":"review","aggregate_version":1,"payload":{}}`
+	if _, e = s.DB().Exec("INSERT INTO events(event_id,workspace_id,cursor,schema_version,event_type,occurred_at,aggregate_type,aggregate_id,aggregate_version,payload) VALUES('after-revoke','default',3,1,'review.after_revoke','now','review','review',1,?)", payload); e != nil {
 		t.Fatal(e)
 	}
 	scanner := bufio.NewScanner(response.Body)
@@ -407,7 +354,11 @@ func TestReviewLateCommitFailureRollsBackReceiptWorkAndOutbox(t *testing.T) {
 		if e := s.DB().QueryRow("SELECT count(*) FROM " + table).Scan(&n); e != nil {
 			t.Fatal(e)
 		}
-		if n != 0 {
+		want := 0
+		if table == "events" {
+			want = 2
+		}
+		if n != want {
 			t.Errorf("%s survived failed work insertion", table)
 		}
 	}
@@ -415,7 +366,7 @@ func TestReviewLateCommitFailureRollsBackReceiptWorkAndOutbox(t *testing.T) {
 	if e := s.DB().QueryRow("SELECT current_cursor FROM event_counters WHERE workspace_id='default'").Scan(&cursor); e != nil {
 		t.Fatal(e)
 	}
-	if cursor != 0 {
+	if cursor != 2 {
 		t.Error("event cursor increment survived rollback")
 	}
 }
@@ -470,6 +421,11 @@ func TestReviewProtectedRoutesAndReceiptIsolation(t *testing.T) {
 	}
 	if _, e = s.DB().Exec("INSERT INTO devices(id,workspace_id,subject_id,name,status,token_hash,version,created_at) VALUES('other-device','other','other-subject','other','approved',?,1,'2026-10-21T00:00:00Z')", hash[:]); e != nil {
 		t.Fatal(e)
+	}
+	// Select the persisted owner fixture to exercise row-level isolation below
+	// password admission. Production login cannot create a second subject.
+	if _, err := s.DB().Exec(`UPDATE owner_auth SET subject_id=? WHERE id=1; UPDATE devices SET owner_generation=1 WHERE id=?`, "other-subject", "other-device"); err != nil {
+		t.Fatal(err)
 	}
 	for _, path := range []string{"/v1/commands/" + receipt.CommandID, "/v1/commands?key=shared-key"} {
 		if w := reviewRequest(h, "GET", path, otherToken, "", nil); w.Code != 404 {

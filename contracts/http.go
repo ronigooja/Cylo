@@ -298,22 +298,22 @@ type ExternalEffect struct {
 }
 
 type RunnerObservation struct {
-	ObservationID    string                `json:"observation_id"`
-	RunID            string                `json:"run_id"`
-	AttemptID        string                `json:"attempt_id"`
-	Fence            uint64                `json:"fence"`
-	Kind             string                `json:"kind"`
-	OccurredAt       time.Time             `json:"occurred_at"`
-	AOProjectID      string                `json:"ao_project_id,omitempty"`
-	AOSessionID      string                `json:"ao_session_id,omitempty"`
-	Evidence         []Evidence            `json:"evidence"`
-	Result           json.RawMessage       `json:"result,omitempty"`
-	Error            string                `json:"error,omitempty"`
-	ExternalEffects  []ExternalEffect      `json:"external_effects"`
-	TerminationProof *TerminationProof     `json:"termination_proof,omitempty"`
-	NoEffectProof    *NoEffectProof        `json:"no_effect_proof,omitempty"`
-	CreateRejection  *CreateRejectionProof `json:"create_rejection,omitempty"`
-	BudgetReservationID string `json:"budget_reservation_id,omitempty"`
+	ObservationID       string                `json:"observation_id"`
+	RunID               string                `json:"run_id"`
+	AttemptID           string                `json:"attempt_id"`
+	Fence               uint64                `json:"fence"`
+	Kind                string                `json:"kind"`
+	OccurredAt          time.Time             `json:"occurred_at"`
+	AOProjectID         string                `json:"ao_project_id,omitempty"`
+	AOSessionID         string                `json:"ao_session_id,omitempty"`
+	Evidence            []Evidence            `json:"evidence"`
+	Result              json.RawMessage       `json:"result,omitempty"`
+	Error               string                `json:"error,omitempty"`
+	ExternalEffects     []ExternalEffect      `json:"external_effects"`
+	TerminationProof    *TerminationProof     `json:"termination_proof,omitempty"`
+	NoEffectProof       *NoEffectProof        `json:"no_effect_proof,omitempty"`
+	CreateRejection     *CreateRejectionProof `json:"create_rejection,omitempty"`
+	BudgetReservationID string                `json:"budget_reservation_id,omitempty"`
 }
 
 // CreateRejectionProof is a sanitized AO response contract proving that AO
@@ -342,4 +342,21 @@ type TerminationProof struct {
 	SessionID       string    `json:"session_id"`
 	VerifiedAt      time.Time `json:"verified_at"`
 	CleanupComplete bool      `json:"cleanup_complete"`
+}
+
+// OwnerAuthRequest establishes a separate device session using the one owner
+// password. Code is required only for the first setup or host recovery.
+type OwnerAuthRequest struct {
+	RequestID   string `json:"request_id"`
+	Code        string `json:"code,omitempty"`
+	Password    string `json:"password"`
+	DeviceName  string `json:"device_name"`
+	DeviceToken string `json:"device_token"`
+}
+
+type OwnerAuthStatus struct {
+	SetupRequired bool `json:"setup_required"`
+}
+type OwnerSession struct {
+	DeviceID string `json:"device_id"`
 }

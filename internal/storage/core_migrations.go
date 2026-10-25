@@ -370,5 +370,8 @@ ALTER TABLE runs ADD COLUMN harness TEXT NOT NULL DEFAULT 'codex';
 	}}); err != nil {
 		return err
 	}
+	if err := RegisterOwnerAuthMigration(s); err != nil {
+		return err
+	}
 	return RegisterRunBudgetMigrations(s)
 }

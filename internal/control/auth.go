@@ -9,7 +9,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/ronigooja/Cylo/contracts"
 )
@@ -48,21 +47,9 @@ func (s *Server) deviceAuth(next http.Handler) http.Handler {
 		}
 		var p contracts.Principal
 		var status, expires string
-		err = s.store.DB().QueryRowContext(r.Context(), `SELECT workspace_id,subject_id,id,status,coalesce(pairing_expires_at,'') FROM devices WHERE token_hash=?`, provided).Scan(&p.WorkspaceID, &p.SubjectID, &p.DeviceID, &status, &expires)
+		err = s.store.DB().QueryRowContext(r.Context(), `SELECT d.workspace_id,d.subject_id,d.id,d.status,coalesce(d.pairing_expires_at,'') FROM devices d JOIN owner_auth o ON o.id=1 AND o.password_hash IS NOT NULL AND o.generation=d.owner_generation AND o.subject_id=d.subject_id WHERE d.token_hash=?`, provided).Scan(&p.WorkspaceID, &p.SubjectID, &p.DeviceID, &status, &expires)
 		if err != nil {
 			writeError(w, apiError(http.StatusUnauthorized, "unauthenticated", "device credential is not recognized", nil))
-			return
-		}
-		if status == "pending" && r.Method == http.MethodGet && r.URL.Path == "/v1/pairings/"+p.DeviceID {
-			if expires != "" {
-				deadline, parseErr := time.Parse(time.RFC3339Nano, expires)
-				if parseErr == nil && time.Now().After(deadline) {
-					writeError(w, apiError(http.StatusGone, "pairing_expired", "pairing request has expired", nil))
-					return
-				}
-			}
-			p.Scopes = []string{"pairing:status"}
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), devicePrincipalKey{}, p)))
 			return
 		}
 		if status != "approved" {
@@ -77,6 +64,20 @@ func (s *Server) deviceAuth(next http.Handler) http.Handler {
 		_, _ = s.store.DB().ExecContext(r.Context(), `UPDATE devices SET last_seen_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`, p.DeviceID)
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), devicePrincipalKey{}, p)))
 	})
+}
+
+// Recheck within each mutation transaction so revocation and mutation commits
+// have a defined order even if middleware authenticated an earlier request.
+func requireOwnerSessionTx(ctx context.Context, tx *sql.Tx, p contracts.Principal) error {
+	var count int
+	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM devices d JOIN owner_auth o ON o.id=1 AND o.password_hash IS NOT NULL AND o.generation=d.owner_generation AND o.subject_id=d.subject_id WHERE d.id=? AND d.workspace_id=? AND d.subject_id=? AND d.status='approved'`, p.DeviceID, p.WorkspaceID, p.SubjectID).Scan(&count)
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return apiError(401, "unauthenticated", "device session has been revoked", nil)
+	}
+	return nil
 }
 
 func requiredCoreDeviceScope(r *http.Request) string {

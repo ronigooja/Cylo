@@ -91,7 +91,7 @@ func TestAOLiveCyloTaskReceiptRunnerCodexProof(t *testing.T) {
 			controlHTTP.Close()
 		}
 	}()
-	_, status, err := liveControlRequest(t, controlHTTP.Client(), controlHTTP.URL, http.MethodPost, "/v1/bootstrap", "", "", contracts.BootstrapRequest{RequestID: "live-bootstrap", Code: bootstrapCode, DeviceName: "Codex live acceptance", DeviceToken: deviceToken})
+	_, status, err := liveControlRequest(t, controlHTTP.Client(), controlHTTP.URL, http.MethodPost, "/v1/auth/setup", "", "", contracts.OwnerAuthRequest{Password: "owner-test-password", RequestID: "live-bootstrap", Code: bootstrapCode, DeviceName: "Codex live acceptance", DeviceToken: deviceToken})
 	if err != nil || status != http.StatusCreated {
 		t.Fatalf("bootstrap device status=%d request_error=%T", status, err)
 	}

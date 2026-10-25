@@ -54,8 +54,8 @@ func TestDockerBackedCapabilityDeploymentHTTPRecoveryLifecycle(t *testing.T) {
 		httpServer.Close()
 		_ = store.Close()
 	}()
-	capabilityHTTP(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/v1/bootstrap", "", "", map[string]string{
-		"request_id": "docker-capability-bootstrap", "code": bootstrapCode, "device_name": "local-docker-test", "device_token": deviceToken,
+	capabilityHTTP(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/v1/auth/setup", "", "", map[string]string{
+		"password": "owner-test-password", "request_id": "docker-capability-bootstrap", "code": bootstrapCode, "device_name": "local-docker-test", "device_token": deviceToken,
 	}, http.StatusCreated, nil)
 
 	manifestV1 := capabilityServiceManifest(image, "--directory", "/tmp")

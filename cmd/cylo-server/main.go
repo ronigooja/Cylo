@@ -29,9 +29,9 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "recover-bootstrap" {
-		if err := recoverBootstrap(os.Args[2:]); err != nil {
-			log.Printf("bootstrap recovery failed: %v", err)
+	if len(os.Args) > 1 && os.Args[1] == "recover-owner" {
+		if err := recoverOwner(os.Args[2:]); err != nil {
+			log.Printf("owner recovery failed: %v", err)
 			os.Exit(1)
 		}
 		return
@@ -42,15 +42,15 @@ func main() {
 	}
 }
 
-func recoverBootstrap(args []string) error {
-	flags := flag.NewFlagSet("recover-bootstrap", flag.ContinueOnError)
+func recoverOwner(args []string) error {
+	flags := flag.NewFlagSet("recover-owner", flag.ContinueOnError)
 	dbPath := flags.String("database", "", "path to the control database")
 	confirmed := flags.Bool("confirm-revoke-all-devices", false, "revoke all device credentials and request active runs to stop")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if *dbPath == "" || !*confirmed || flags.NArg() != 0 {
-		return errors.New("usage: cylo-server recover-bootstrap --database PATH --confirm-revoke-all-devices")
+		return errors.New("usage: cylo-server recover-owner --database PATH --confirm-revoke-all-devices")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -100,11 +100,19 @@ func recoverBootstrap(args []string) error {
 	if _, err = tx.ExecContext(ctx, `UPDATE push_deliveries SET status='disabled',updated_at=? WHERE status='pending'`, now); err != nil {
 		return err
 	}
+	if _, err = tx.ExecContext(ctx, `UPDATE tasks SET status='canceled',version=version+1,updated_at=?,finished_at=? WHERE status='queued'`, now, now); err != nil {
+		return err
+	}
 	var stopCount int64
 	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM runs WHERE status IN ('dispatching','active','uncertain') AND desired_control!='stop'`).Scan(&stopCount); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE runs SET desired_control='stop',control_version=control_version+1 WHERE status IN ('dispatching','active','uncertain') AND desired_control!='stop'`); err != nil {
+		return err
+	}
+	// storage.Open holds the same exclusive host lock as the running server.
+	// Recovery cannot operate while the server process owns this database.
+	if _, err = tx.ExecContext(ctx, `UPDATE owner_auth SET password_salt=NULL,password_hash=NULL,generation=generation+1,failed_attempts=0,blocked_until=0 WHERE id=1`); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO bootstrap_state(id,code_hash) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET code_hash=excluded.code_hash,consumed_by_device_id=NULL,consumed_at=NULL`, hash[:]); err != nil {
@@ -118,15 +126,15 @@ func recoverBootstrap(args []string) error {
 	if err = tx.QueryRowContext(ctx, `UPDATE event_counters SET current_cursor=current_cursor+1 WHERE workspace_id='default' RETURNING current_cursor`).Scan(&cursor); err != nil {
 		return err
 	}
-	event := map[string]any{"event_id": eventID, "cursor": fmt.Sprint(cursor), "schema_version": 1, "type": "admin.bootstrap_recovered", "occurred_at": now, "workspace_id": "default", "aggregate_type": "admin", "aggregate_id": "bootstrap", "aggregate_version": cursor, "payload": map[string]any{"revoked_device_count": revoked, "stop_requested_run_count": stopCount}}
+	event := map[string]any{"event_id": eventID, "cursor": fmt.Sprint(cursor), "schema_version": 1, "type": "admin.owner_recovered", "occurred_at": now, "workspace_id": "default", "aggregate_type": "admin", "aggregate_id": "owner", "aggregate_version": cursor, "payload": map[string]any{"revoked_device_count": revoked, "stop_requested_run_count": stopCount}}
 	payload, _ := json.Marshal(event)
-	if _, err = tx.ExecContext(ctx, `INSERT INTO events(event_id,workspace_id,cursor,schema_version,event_type,occurred_at,aggregate_type,aggregate_id,aggregate_version,payload) VALUES(?,?,?,?,?,?,?,?,?,?)`, eventID, "default", cursor, 1, "admin.bootstrap_recovered", now, "admin", "bootstrap", cursor, payload); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO events(event_id,workspace_id,cursor,schema_version,event_type,occurred_at,aggregate_type,aggregate_id,aggregate_version,payload) VALUES(?,?,?,?,?,?,?,?,?,?)`, eventID, "default", cursor, 1, "admin.owner_recovered", now, "admin", "owner", cursor, payload); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
 		return err
 	}
-	fmt.Println("Bootstrap recovery code (store it in deployment-managed secret configuration; shown once):")
+	fmt.Println("Owner setup recovery code (shown once; enter it with the new owner password):")
 	fmt.Println(code)
 	return nil
 }
@@ -155,7 +163,7 @@ func run() error {
 	}
 	bootstrapCode := os.Getenv("CYLO_BOOTSTRAP_CODE")
 	runnerToken := os.Getenv("CYLO_RUNNER_TOKEN")
-	if !validBearer(bootstrapCode) {
+	if bootstrapCode != "" && !validBearer(bootstrapCode) {
 		return errors.New("CYLO_BOOTSTRAP_CODE must be a 32-byte base64url credential")
 	}
 	if runnerToken != "" && !validBearer(runnerToken) {
