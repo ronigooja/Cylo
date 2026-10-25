@@ -45,7 +45,10 @@ func TestWorkspacePeersCannotReadOrMutateUnsharedProjectAndTasks(t *testing.T) {
 	}
 	// Select the persisted owner fixture to exercise row-level isolation below
 	// password admission. Production login cannot create a second subject.
-	if _, err := store.DB().Exec(`UPDATE owner_auth SET subject_id=? WHERE id=1; UPDATE devices SET owner_generation=1 WHERE id=?`, peerSubject, "peer-device"); err != nil {
+	if _, err := store.DB().Exec(`UPDATE owner_auth SET subject_id=? WHERE id=1`, peerSubject); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().Exec(`UPDATE devices SET owner_generation=1 WHERE id=?`, "peer-device"); err != nil {
 		t.Fatal(err)
 	}
 	snapshot := reviewRequest(h, http.MethodGet, "/v1/snapshot", peerToken, "", nil)

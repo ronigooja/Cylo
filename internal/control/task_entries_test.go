@@ -228,6 +228,12 @@ func TestTaskEntriesHTTPRequiresDeviceReadScope(t *testing.T) {
 	if _, err := fixture.store.DB().Exec(`UPDATE devices SET token_hash=? WHERE id='entries-device'`, hash); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := fixture.store.DB().Exec(`UPDATE owner_auth SET subject_id='entries-owner',password_hash=X'01',password_salt=X'02' WHERE id=1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.DB().Exec(`UPDATE devices SET owner_generation=1 WHERE id='entries-device'`); err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name   string
 		scopes []string

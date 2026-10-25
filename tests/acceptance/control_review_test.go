@@ -424,7 +424,10 @@ func TestReviewProtectedRoutesAndReceiptIsolation(t *testing.T) {
 	}
 	// Select the persisted owner fixture to exercise row-level isolation below
 	// password admission. Production login cannot create a second subject.
-	if _, err := s.DB().Exec(`UPDATE owner_auth SET subject_id=? WHERE id=1; UPDATE devices SET owner_generation=1 WHERE id=?`, "other-subject", "other-device"); err != nil {
+	if _, err := s.DB().Exec(`UPDATE owner_auth SET subject_id=? WHERE id=1`, "other-subject"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().Exec(`UPDATE devices SET owner_generation=1 WHERE id=?`, "other-device"); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{"/v1/commands/" + receipt.CommandID, "/v1/commands?key=shared-key"} {

@@ -116,7 +116,7 @@ func TestServerSubprocessBootstrapAndRestart(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("recovery should print one code only after commit")
 	}
-	code = string(lines[1])
+	recoveryCode := string(lines[1])
 	newToken := subprocessSecret(t)
 	cmd = start()
 	t.Cleanup(func() { stopServer(t, cmd) })
@@ -135,7 +135,7 @@ func TestServerSubprocessBootstrapAndRestart(t *testing.T) {
 	if err != nil || res.StatusCode < http.StatusBadRequest {
 		t.Fatalf("recovery left old bearer valid: status=%v err=%v", responseStatus(res), err)
 	}
-	res, body, err = call(http.MethodPost, "/v1/auth/setup", "", map[string]string{"password": "owner-test-password", "request_id": "recovery-bootstrap", "code": code, "device_name": "recovered", "device_token": newToken})
+	res, body, err = call(http.MethodPost, "/v1/auth/setup", "", map[string]string{"password": "owner-test-password", "request_id": "recovery-bootstrap", "code": recoveryCode, "device_name": "recovered", "device_token": newToken})
 	if err != nil || res.StatusCode != http.StatusCreated {
 		t.Fatalf("recovered bootstrap status=%v err=%v", responseStatus(res), err)
 	}
