@@ -188,6 +188,10 @@ struct VoicePanel: View {
     @ObservedObject var model: CyloAppModel
     var useDraft: (String) -> Void
     @Environment(\.dismiss) private var dismiss
+    private var canStopVoice: Bool {
+        if case .connecting = model.voiceStatus { return true }
+        return model.canEndVoiceSession
+    }
     var body: some View {
         #if os(macOS)
         VStack(alignment: .leading, spacing: 16) {
@@ -213,7 +217,7 @@ struct VoicePanel: View {
                         .disabled(model.canEndVoiceSession || model.isBusy)
                 }
                 Spacer(minLength: 0)
-                if model.canEndVoiceSession {
+                if canStopVoice {
                     Button(uiText("End voice"), role: .destructive) { Task { await model.endVoiceSession() } }
                 }
             }
@@ -253,7 +257,7 @@ struct VoicePanel: View {
                     Text(uiText("Review before sending. Using this draft does not submit a task.")).font(.caption).foregroundStyle(.secondary)
                     Button(uiText("Use draft")) { useDraft(model.voiceDraft) }.disabled(model.voiceDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                if model.canEndVoiceSession { Button(uiText("End voice"), role: .destructive) { Task { await model.endVoiceSession() } } }
+                if canStopVoice { Button(uiText("End voice"), role: .destructive) { Task { await model.endVoiceSession() } } }
             }.navigationTitle(uiText("Voice"))
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button(uiText("Done")) { dismiss() } } }
                 .task { await model.refreshVoiceReadiness() }
