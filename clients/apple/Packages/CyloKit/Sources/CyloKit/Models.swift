@@ -517,7 +517,7 @@ public enum OwnerAuthFailure: Equatable, Sendable {
         case "idempotency_conflict", "device_token_conflict": return .conflict
         case "invalid_code", "invalid_setup_code", "invalid_bootstrap_code", "setup_code_invalid", "bootstrap_invalid": return .setupCode
         case "incorrect_password", "invalid_credentials": return .incorrectPassword
-        case "unauthorized", "device_revoked", "invalid_session", "authentication_required": return .revoked
+        case "unauthorized", "device_revoked", "device_not_approved", "invalid_session", "authentication_required": return .revoked
         default: return status == 401 ? .revoked : nil
         }
     }

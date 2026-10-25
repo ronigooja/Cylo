@@ -2188,9 +2188,7 @@ public final class CyloAppModel: ObservableObject {
                 setStale(uiText("The event stream ended; reconnecting."))
             } catch {
                 if Task.isCancelled || generation != connectionGeneration.value { return }
-                if let error = error as? CyloError,
-                   case let .http(status, _, _, _) = error,
-                   status == 401 || status == 403 {
+                if Self.isAccessDenied(error) {
                     lockWorkspace(clearDrafts: false)
                     authentication = .signedOut(setupRequired: false)
                     setOffline(error)
@@ -2421,8 +2419,8 @@ public final class CyloAppModel: ObservableObject {
 
     private static func isAccessDenied(_ error: Error) -> Bool {
         guard let failure = error as? CyloError,
-              case let .http(status, _, _, _) = failure else { return false }
-        return status == 401 || status == 403
+              case let .http(status, code, _, _) = failure else { return false }
+        return status == 401 || (status == 403 && ["device_not_approved", "device_revoked"].contains(code))
     }
 
     private func setStale(_ reason: String) {

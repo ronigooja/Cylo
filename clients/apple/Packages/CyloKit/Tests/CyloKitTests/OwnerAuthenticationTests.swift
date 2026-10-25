@@ -163,12 +163,25 @@ final class OwnerAuthenticationTests: XCTestCase {
         XCTAssertEqual(model.taskDrafts["task"], "Unsent task message")
     }
 
+    @MainActor
+    func testPermissionDenialDoesNotEndValidatedSession() async throws {
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        model.setAuthenticationForTesting(.authenticated(deviceID: "current-device"))
+        let snapshot = Snapshot(serverVersion: "1", eventCursor: "1", projects: [], tasks: [], approvals: [], devices: [], runs: [])
+        model.setSnapshotForTesting(snapshot)
+        model.snapshotFetchOverrideForTesting = { throw CyloError.http(status: 403, code: "forbidden", message: "scope denied", details: nil) }
+        do { try await model.refreshSnapshotForTesting(); XCTFail("Permission denial must fail refresh") } catch {}
+        XCTAssertEqual(model.authentication, .authenticated(deviceID: "current-device"))
+        XCTAssertEqual(model.snapshot, snapshot)
+        XCTAssertNil(OwnerAuthFailure.classify(CyloError.http(status: 403, code: "forbidden", message: "", details: nil)))
+    }
+
     func testPasswordPolicyAndTypedFailures() {
         XCTAssertFalse(OwnerPasswordPolicy.acceptsSetup("short"))
         XCTAssertFalse(OwnerPasswordPolicy.acceptsSetup(String(repeating: "字", count: 4)))
         XCTAssertTrue(OwnerPasswordPolicy.acceptsSetup(String(repeating: "字", count: 12)))
         XCTAssertFalse(OwnerPasswordPolicy.acceptsSetup(String(repeating: "字", count: 400)))
-        for (status, code, expected) in [(401, "invalid_credentials", OwnerAuthFailure.incorrectPassword), (429, "auth_rate_limited", .rateLimited), (409, "setup_required", .setupRequired), (409, "device_revoked", .revoked)] {
+        for (status, code, expected) in [(401, "invalid_credentials", OwnerAuthFailure.incorrectPassword), (429, "auth_rate_limited", .rateLimited), (409, "setup_required", .setupRequired), (409, "device_revoked", .revoked), (403, "device_not_approved", .revoked)] {
             XCTAssertEqual(OwnerAuthFailure.classify(CyloError.http(status: status, code: code, message: "", details: nil)), expected)
         }
     }
