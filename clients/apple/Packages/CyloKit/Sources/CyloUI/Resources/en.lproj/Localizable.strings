@@ -445,3 +445,5 @@
 "Sign in with your owner password to connect." = "Sign in with your owner password to connect.";
 "Allow Cylo to access %@, then try again." = "Allow Cylo to access %@, then try again.";
 "Sign-in could not be confirmed. Try again with the same password and setup code, if required." = "Sign-in could not be confirmed. Try again with the same password and setup code, if required.";
+
+"The setup code or password is incorrect. Check your setup code or contact your server administrator." = "The setup code or password is incorrect. Check your setup code or contact your server administrator.";

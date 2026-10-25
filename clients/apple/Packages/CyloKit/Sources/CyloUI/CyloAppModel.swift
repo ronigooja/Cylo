@@ -280,9 +280,14 @@ public final class CyloAppModel: ObservableObject {
                     api = nil
                     coordinator = nil
                 } catch {
-                    if pendingLoginAccepted { throw error }
-                    // A staged request may never have reached the server. Keep its nonce for retry.
-                    if !Self.isAccessDenied(error) { throw error }
+                    if Self.isAccessDenied(error), pendingLoginAccepted {
+                        try loginStagingStore.reset()
+                        pendingLoginIdentity = nil
+                        pendingLoginAccepted = false
+                    } else {
+                        // A staged request may never have reached the server. Keep its nonce for retry.
+                        if !Self.isAccessDenied(error) { throw error }
+                    }
                 }
             }
             if status.setupRequired {
@@ -343,10 +348,10 @@ public final class CyloAppModel: ObservableObject {
                 pendingLoginIdentity = candidate
             }
             guard let candidate = pendingLoginIdentity else { throw CyloError.missingCredential }
-            if recoveringAttempt && !pendingLoginAccepted {
+            if recoveringAttempt {
                 let recoveryAPI = try APIClient(serverURL: URL(string: Self.fixedServerAddress)!, credentials: candidate)
                 do { _ = try await recoveryAPI.authSession(); pendingLoginAccepted = true }
-                catch { if !Self.isAccessDenied(error) { throw error } }
+                catch { if pendingLoginAccepted || !Self.isAccessDenied(error) { throw error } }
             }
             if !pendingLoginAccepted {
                 let publicAPI = try APIClient(serverURL: URL(string: Self.fixedServerAddress)!)
@@ -373,11 +378,13 @@ public final class CyloAppModel: ObservableObject {
                 pendingLoginIdentity = nil
                 pendingLoginAccepted = false
                 if failure == .setupRequired { authentication = .signedOut(setupRequired: true) }
-                if failure == .setupCompleted { authentication = .signedOut(setupRequired: false) }
+                if failure == .setupCompleted || failure == .revoked { authentication = .signedOut(setupRequired: false) }
             }
             notice = pendingLoginAccepted
                 ? uiText("Sign-in succeeded, but this device could not save its session. Retry to save it; your password is not saved.")
-                : (OwnerAuthFailure.classify(error) == nil ? uiText("Sign-in could not be confirmed. Try again with the same password and setup code, if required.") : userMessage(error))
+                : (OwnerAuthFailure.classify(error) == .incorrectPassword && pendingLoginIsSetup
+                   ? uiText("The setup code or password is incorrect. Check your setup code or contact your server administrator.")
+                   : (OwnerAuthFailure.classify(error) == nil ? uiText("Sign-in could not be confirmed. Try again with the same password and setup code, if required.") : userMessage(error)))
             isBusy = false
             return false
         }
@@ -1023,6 +1030,8 @@ public final class CyloAppModel: ObservableObject {
         if !voiceSessionMediaClosed {
             guard voiceMediaEpoch == mediaEpoch else { return }
             await closeVoiceLocalMedia(mediaEpoch: mediaEpoch)
+            guard voiceSession?.voiceSessionId == session.voiceSessionId,
+                  voiceSessionMediaEpoch == mediaEpoch else { return }
             voiceSessionMediaClosed = true
         }
         voiceHangupInFlightSessionID = session.voiceSessionId

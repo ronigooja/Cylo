@@ -445,3 +445,5 @@
 "Sign in with your owner password to connect." = "请使用所有者密码登录以连接。";
 "Allow Cylo to access %@, then try again." = "请允许 Cylo 访问 %@，然后重试。";
 "Sign-in could not be confirmed. Try again with the same password and setup code, if required." = "无法确认登录结果。请使用相同的密码重试；如需设置码，请使用原设置码。";
+
+"The setup code or password is incorrect. Check your setup code or contact your server administrator." = "设置码或密码不正确。请检查设置码，或联系服务器管理员。";

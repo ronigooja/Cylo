@@ -125,7 +125,7 @@ struct CredentialStorageControls: View {
             if let current = model.credentialStorageChoice {
                 let other: CredentialStorageChoice = current == .keychain ? .privateFile : .keychain
                 Button(uiFormat("Copy current identity to %@", uiText(other.title))) {
-                    Task { await model.copyCredentialIdentity(to: other); await model.reconnect() }
+                    Task { await model.copyCredentialIdentity(to: other); if model.credentialStorageChoice == other { await model.reconnect() } }
                 }.disabled(model.isBusy || model.isConnecting)
             }
         }
@@ -134,7 +134,7 @@ struct CredentialStorageControls: View {
         .confirmationDialog(uiText("Change credential storage?"), isPresented: $showingConfirmation) {
             if let destination {
                 Button(uiText("Copy current identity and switch")) {
-                    Task { await model.copyCredentialIdentity(to: destination); await model.reconnect() }
+                    Task { await model.copyCredentialIdentity(to: destination); if model.credentialStorageChoice == destination { await model.reconnect() } }
                 }
                 Button(uiText("Switch without copying")) {
                     Task { await model.selectCredentialStorage(destination); await model.reconnect() }
