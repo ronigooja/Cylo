@@ -9,8 +9,7 @@ struct CyloMacApp: App {
     var body: some Scene {
         WindowGroup {
             CyloRootView(model: model)
-                .frame(minWidth: 900, minHeight: 660)
+                .frame(minWidth: 840, minHeight: 620)
         }
-        .defaultSize(width: 1180, height: 800)
     }
 }
