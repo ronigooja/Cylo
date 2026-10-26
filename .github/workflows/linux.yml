@@ -6,12 +6,18 @@ on:
     branches: [main, 'codex/**']
     paths:
       - '**/*.go'
+      - 'tools/cylo_export.py'
+      - 'tools/cylo_destroy.py'
+      - 'tools/test_instance_lifecycle_cli.py'
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/linux.yml'
   pull_request:
     paths:
       - '**/*.go'
+      - 'tools/cylo_export.py'
+      - 'tools/cylo_destroy.py'
+      - 'tools/test_instance_lifecycle_cli.py'
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/linux.yml'
@@ -47,6 +53,7 @@ jobs:
       - name: Run Go tests
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           go test ./... 2>&1 | tee "$RUNNER_TEMP/cylo-linux/logs/go-tests.log"
           status=$?
@@ -55,6 +62,7 @@ jobs:
       - name: Race-check authorization
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           go test -race ./internal/control ./cmd/cylo-server 2>&1 | tee "$RUNNER_TEMP/cylo-linux/logs/auth-race.log"
           status=$?

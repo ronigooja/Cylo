@@ -3,7 +3,7 @@ name: Server deployment artifact
 on:
   workflow_dispatch:
   push:
-    branches: ['codex/owner-password-login']
+    branches: ['codex/single-instance-key']
     paths: ['.github/workflows/server-release.yml']
 
 permissions:
