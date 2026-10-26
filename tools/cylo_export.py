@@ -36,7 +36,7 @@ def read_instance_key(path: Path, key_format: str) -> str:
 
 def export_archive(server: str, key_path: Path, key_format: str, output: Path, scope: str, opener=None) -> None:
     parsed = urllib.parse.urlsplit(server)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.username is not None or any(c in server for c in "?#\\") or parsed.netloc.endswith(":"):
+    if parsed.scheme not in ("http", "https") or not parsed.netloc or not parsed.hostname or parsed.username is not None or any(c in server for c in "?#\\") or parsed.netloc.endswith(":"):
         raise ValueError("server must be an HTTP(S) URL without credentials, query, or fragment")
     if parsed.port is not None and not 1 <= parsed.port <= 65535:
         raise ValueError("server port is invalid")

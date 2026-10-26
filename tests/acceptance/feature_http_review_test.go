@@ -80,6 +80,14 @@ func TestRestoreDeletionGateClosesBusinessRoutesButAllowsDiagnostics(t *testing.
 	if before.Code != http.StatusOK || !strings.Contains(before.Body.String(), "snapshot-only private memory") {
 		t.Fatalf("fresh instance did not serve memory before restore gate: status=%d body=%s", before.Code, before.Body.String())
 	}
+	for _, path := range []string{"/v1/bootstrap", "/v1/pairings", "/v1/pairings/no-such-pairing"} {
+		if response := reviewRequest(h, "POST", path, owner, "", nil); response.Code != http.StatusNotFound {
+			t.Errorf("removed route %s=%d", path, response.Code)
+		}
+		if response := reviewRequest(h, "POST", path, "", "", nil); response.Code != http.StatusUnauthorized {
+			t.Errorf("missing instance key on %s=%d", path, response.Code)
+		}
+	}
 	if _, err := store.DB().Exec(`UPDATE cylo_instance_state SET restore_deletion_reconciliation_required=1,dispatch_enabled=0,derived_retrieval_enabled=0 WHERE singleton=1`); err != nil {
 		t.Fatal(err)
 	}
@@ -94,9 +102,6 @@ func TestRestoreDeletionGateClosesBusinessRoutesButAllowsDiagnostics(t *testing.
 		{"GET", "/v1/snapshot", owner, nil},
 		{"GET", "/v1/commands", owner, nil},
 		{"POST", "/v1/commands", owner, map[string]any{"kind": "task.create"}},
-		{"POST", "/v1/bootstrap", "", map[string]any{"request_id": "gate-bootstrap", "code": "unavailable", "device_name": "blocked", "device_token": "unavailable"}},
-		{"POST", "/v1/pairings", owner, map[string]any{"name": "blocked"}},
-		{"GET", "/v1/pairings/no-such-pairing", owner, nil},
 		{"GET", "/runner/v1/instance", runnerToken, nil},
 		{"POST", "/runner/v1/claims", runnerToken, map[string]any{"limit": 1}},
 	}
