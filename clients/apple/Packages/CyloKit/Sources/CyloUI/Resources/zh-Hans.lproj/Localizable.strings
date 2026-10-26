@@ -423,3 +423,6 @@
 "Enter the 43-character instance key from your server." = "请输入服务器提供的 43 字符实例密钥。";
 "No installation QR code was found in this image." = "此图片中未找到安装二维码。";
 "Choose an image containing one installation QR code." = "请选择只包含一个安装二维码的图片。";
+"Scan QR code" = "扫描二维码";
+"Camera access is disabled. Allow access in Settings or import a QR image." = "相机访问已关闭。请在设置中允许访问，或导入二维码图片。";
+"The camera is unavailable. Import a QR image instead." = "相机不可用。请导入二维码图片。";

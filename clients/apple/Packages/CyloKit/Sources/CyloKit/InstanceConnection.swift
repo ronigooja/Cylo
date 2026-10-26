@@ -50,7 +50,7 @@ public enum ServerAddress {
     }
 }
 
-/// Import is staged for review. Opening a link never sends its credential to a server.
+/// Validated installation details. The caller decides whether the user authorized connection.
 public struct InstallationConnection: Equatable, Sendable {
     public let serverURL: URL
     public let key: InstanceKey
@@ -67,6 +67,15 @@ public struct InstallationConnection: Equatable, Sendable {
               let fragment = parts.fragment, fragment.hasPrefix("key="),
               !fragment.contains("&"), !fragment.contains("%") else { throw ConnectionInputError.invalidLink }
         try self.init(serverAddress: server, key: String(fragment.dropFirst(4)))
+    }
+
+    /// Shared camera/image policy: never select one credential from multiple QR payloads.
+    public static func decodeQRPayloads(_ payloads: [String]) throws -> InstallationConnection {
+        let unique = Set(payloads)
+        guard !unique.isEmpty else { throw ConnectionInputError.missingQRCode }
+        guard unique.count == 1, let payload = unique.first else { throw ConnectionInputError.ambiguousQRCode }
+        guard let link = URL(string: payload) else { throw ConnectionInputError.invalidLink }
+        return try InstallationConnection(link: link)
     }
 }
 

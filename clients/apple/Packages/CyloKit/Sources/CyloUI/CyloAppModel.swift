@@ -301,6 +301,12 @@ public final class CyloAppModel: ObservableObject {
     public func dismissConnectionImport() { pendingConnectionImport = nil }
     public func dismissConnectionImportError() { connectionImportError = nil }
 
+    /// Only explicit camera/image import actions use this path. External links remain staged for review.
+    @discardableResult
+    public func connectImportedConnection(_ connection: InstallationConnection) async -> Bool {
+        await connect(serverAddress: connection.serverURL.absoluteString, key: (try? connection.key.bearerToken()) ?? "")
+    }
+
     /// Validates a candidate before replacing the active connection. Imported keys stay in memory until confirmed.
     @discardableResult
     public func connect(serverAddress address: String, key: String) async -> Bool {

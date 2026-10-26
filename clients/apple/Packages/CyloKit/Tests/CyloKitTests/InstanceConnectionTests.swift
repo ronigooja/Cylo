@@ -100,6 +100,81 @@ final class InstanceConnectionTests: XCTestCase {
         for raw in invalid { XCTAssertThrowsError(try InstallationConnection(link: XCTUnwrap(URL(string: raw)))) }
     }
 
+    func testCameraPayloadPolicyRejectsAmbiguityAndAcceptsRepeatedDetection() throws {
+        let payload = link(key: key()).absoluteString
+        let expected = try InstallationConnection(link: link(key: key()))
+        XCTAssertEqual(try InstallationConnection.decodeQRPayloads([payload, payload]), expected)
+        XCTAssertThrowsError(try InstallationConnection.decodeQRPayloads([]))
+        XCTAssertThrowsError(try InstallationConnection.decodeQRPayloads([payload, link(key: key(2)).absoluteString]))
+        XCTAssertThrowsError(try InstallationConnection.decodeQRPayloads([payload, "unrelated QR content"]))
+        XCTAssertThrowsError(try InstallationConnection.decodeQRPayloads(["https://untrusted.example"]))
+    }
+
+    func testCLIQueryEncodedInstallationLinkIsAccepted() throws {
+        // Go url.QueryEscape escapes every reserved character in the server query value.
+        let raw = "cylo://connect?server=https%3A%2F%2Fcylo.example%3A8787%2Fprivate#key=\(key())"
+        let imported = try InstallationConnection(link: XCTUnwrap(URL(string: raw)))
+        XCTAssertEqual(imported.serverURL.absoluteString, "https://cylo.example:8787/private")
+        XCTAssertEqual(try imported.key.bearerToken(), key())
+    }
+
+    @MainActor
+    func testExplicitQRImportConnectsAndStoresOnlyAfterValidation() async throws {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let model = CyloAppModel(defaults: defaults)
+        let store = MemoryInstanceKeyStore()
+        model.keyStoreOverrideForTesting = { _ in store }
+        model.connectionAPIOverrideForTesting = { url, credential, installation in
+            try APIClient(serverURL: url, credentials: credential, session: self.session(), installationID: installation)
+        }
+        model.suppressConnectionFollowupsForTesting = true
+        let body = snapshotData
+        var requests = 0
+        InstanceURLProtocol.handle = { request in
+            requests += 1
+            XCTAssertEqual(request.url?.host, "cylo.example")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer \(self.key())")
+            if requests == 1 { XCTAssertNil(try store.load()) }
+            return (200, body)
+        }
+        let imported = try InstallationConnection.decodeQRPayloads([link(key: key()).absoluteString])
+        let accepted = await model.connectImportedConnection(imported)
+        XCTAssertTrue(accepted)
+        XCTAssertGreaterThan(requests, 0)
+        XCTAssertTrue(model.authentication.isConnected)
+        XCTAssertEqual(try store.load(), imported.key)
+        XCTAssertEqual(model.serverAddress, imported.serverURL.absoluteString)
+        XCTAssertFalse(defaults.dictionaryRepresentation().values.contains { String(describing: $0).contains(key()) })
+    }
+
+    @MainActor
+    func testExplicitQRImportCannotReplaceAnotherSavedServerOrUnvalidatedKey() async throws {
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let store = MemoryInstanceKeyStore()
+        try store.replace(InstanceKey(key()))
+        model.keyStoreOverrideForTesting = { _ in store }
+        model.serverAddress = "https://cylo.example"
+        model.setAuthenticationForTesting(.connected)
+        model.updateTaskDraft("Keep local work")
+        model.connectionAPIOverrideForTesting = { _, _, _ in
+            XCTFail("Different-server QR imports must be rejected before network access")
+            throw CyloError.invalidServerURL
+        }
+        let different = try InstallationConnection(link: link(server: "https://another.example", key: key(2)))
+        let switched = await model.connectImportedConnection(different)
+        XCTAssertFalse(switched)
+        model.connectionAPIOverrideForTesting = { url, credential, installation in
+            try APIClient(serverURL: url, credentials: credential, session: self.session(), installationID: installation)
+        }
+        InstanceURLProtocol.handle = { _ in (401, Data()) }
+        let rejected = await model.connectImportedConnection(try InstallationConnection(serverAddress: model.serverAddress, key: key(2)))
+        XCTAssertFalse(rejected)
+        XCTAssertEqual(model.serverAddress, "https://cylo.example")
+        XCTAssertEqual(model.authentication, .connected)
+        XCTAssertEqual(try store.load(), try InstanceKey(key()))
+        XCTAssertEqual(model.newTaskDraft, "Keep local work")
+    }
+
     func testSnapshotWithoutDevicesUsesBearerAndIndependentInstallationHeader() async throws {
         let installation = UUID().uuidString.lowercased()
         let credential = try InstanceKey(key())

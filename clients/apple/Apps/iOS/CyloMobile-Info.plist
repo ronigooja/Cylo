@@ -45,6 +45,8 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Cylo connects to your private server on the local network.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Cylo uses the camera to scan your server connection QR code.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Cylo uses the microphone for live voice conversations.</string>
 	<key>UIBackgroundModes</key>

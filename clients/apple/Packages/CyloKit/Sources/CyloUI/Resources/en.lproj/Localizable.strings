@@ -423,3 +423,6 @@
 "Enter the 43-character instance key from your server." = "Enter the 43-character instance key from your server.";
 "No installation QR code was found in this image." = "No installation QR code was found in this image.";
 "Choose an image containing one installation QR code." = "Choose an image containing one installation QR code.";
+"Scan QR code" = "Scan QR code";
+"Camera access is disabled. Allow access in Settings or import a QR image." = "Camera access is disabled. Allow access in Settings or import a QR image.";
+"The camera is unavailable. Import a QR image instead." = "The camera is unavailable. Import a QR image instead.";

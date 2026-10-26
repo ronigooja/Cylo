@@ -11,6 +11,9 @@ struct InstanceConnectionView: View {
     @State private var address = ""
     @State private var key = ""
     @State private var showingImageImport = false
+    #if os(iOS)
+    @State private var showingCamera = false
+    #endif
     @State private var isDecoding = false
     @State private var confirmingClear = false
     @State private var importNotice: String?
@@ -36,6 +39,10 @@ struct InstanceConnectionView: View {
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
                 #endif
+            #if os(iOS)
+            Button(uiText("Scan QR code"), systemImage: "qrcode.viewfinder") { showingCamera = true }
+                .disabled(isDecoding || model.isBusy || model.isConnecting)
+            #endif
             Button(uiText("Import QR image…"), systemImage: "qrcode") { showingImageImport = true }
                 .disabled(isDecoding || model.isBusy || model.isConnecting)
             if replacing && !model.authentication.isConnected {
@@ -86,6 +93,17 @@ struct InstanceConnectionView: View {
         } message: {
             Text(uiText("The saved key, queued local commands, caches, and drafts will be removed from this app. The shared server key stays valid on other devices. Running server tasks continue."))
         }
+        #if os(iOS)
+        .sheet(isPresented: $showingCamera) {
+            InstallationCameraScanner { result in
+                showingCamera = false
+                switch result {
+                case .success(let imported): Task { await connectImported(imported) }
+                case .failure(let error): importNotice = uiText(error.localizedDescription)
+                }
+            }
+        }
+        #endif
         .fileImporter(isPresented: $showingImageImport, allowedContentTypes: [.image]) { result in
             switch result {
             case .failure: importNotice = uiText("The QR image could not be opened.")
@@ -94,16 +112,25 @@ struct InstanceConnectionView: View {
                 Task {
                     do {
                         let imported = try await Task.detached(priority: .userInitiated) { try InstallationQRImage.decode(url) }.value
-                        if replacing && imported.serverURL.absoluteString != model.serverAddress {
-                            throw CyloError.invalidServerURL
-                        }
-                        address = imported.serverURL.absoluteString
-                        key = try imported.key.bearerToken()
-                        importNotice = nil
+                        await connectImported(imported)
                     } catch { importNotice = uiText(error.localizedDescription) }
                     isDecoding = false
                 }
             }
+        }
+    }
+
+    @MainActor
+    private func connectImported(_ imported: InstallationConnection) async {
+        // Keep the locked address visible if the imported code targets another server.
+        if !replacing || imported.serverURL.absoluteString == model.serverAddress {
+            address = imported.serverURL.absoluteString
+            key = (try? imported.key.bearerToken()) ?? ""
+        }
+        importNotice = nil
+        if await model.connectImportedConnection(imported) {
+            key = ""
+            dismiss()
         }
     }
 
@@ -118,7 +145,7 @@ struct InstanceConnectionView: View {
     }
 }
 
-/// Decode locally without uploading the image or automatically connecting to an imported address.
+/// Decode locally without uploading or retaining the image.
 enum InstallationQRImage {
     static func decode(_ url: URL) throws -> InstallationConnection {
         let scoped = url.startAccessingSecurityScopedResource()
@@ -134,10 +161,6 @@ enum InstallationQRImage {
         let request = VNDetectBarcodesRequest()
         request.symbologies = [.qr]
         try VNImageRequestHandler(cgImage: image).perform([request])
-        let payloads = Set((request.results ?? []).compactMap(\.payloadStringValue))
-        guard !payloads.isEmpty else { throw ConnectionInputError.missingQRCode }
-        guard payloads.count == 1, let payload = payloads.first else { throw ConnectionInputError.ambiguousQRCode }
-        guard let link = URL(string: payload) else { throw ConnectionInputError.invalidLink }
-        return try InstallationConnection(link: link)
+        return try InstallationConnection.decodeQRPayloads((request.results ?? []).compactMap(\.payloadStringValue))
     }
 }
