@@ -13,6 +13,8 @@ import (
 	"github.com/ronigooja/Cylo/internal/voice"
 	"net/url"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -33,11 +35,11 @@ func manageInstanceKey(command string, args []string) error {
 		return errors.New("specify --database and exactly one of --output or --stdout")
 	}
 	if *server != "" {
-		u, err := url.Parse(*server)
-		if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-			return errors.New("server must be an http(s) URL without credentials, query, or fragment")
+		if err := validateInstallationServer(*server); err != nil {
+			return err
 		}
 	}
+
 	var file *os.File
 	var err error
 	if *output != "" {
@@ -126,4 +128,27 @@ func registerKeyCommandMigrations(store *storage.Store) error {
 		return err
 	}
 	return capabilities.RegisterMigrations(store)
+}
+
+func validateInstallationServer(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || strings.ContainsAny(raw, "?#\\") || strings.HasSuffix(u.Host, ":") {
+		return errors.New("server must be a valid http(s) URL without credentials, query, or fragment")
+	}
+	if port := u.Port(); port != "" {
+		n, e := strconv.Atoi(port)
+		if e != nil || n < 1 || n > 65535 {
+			return errors.New("server port must be between 1 and 65535")
+		}
+	}
+	escaped := strings.ToLower(u.EscapedPath())
+	if strings.Contains(escaped, "%2f") || strings.Contains(escaped, "%5c") {
+		return errors.New("server path cannot contain encoded separators")
+	}
+	for _, segment := range strings.Split(u.Path, "/") {
+		if segment == "." || segment == ".." {
+			return errors.New("server path cannot contain dot segments")
+		}
+	}
+	return nil
 }

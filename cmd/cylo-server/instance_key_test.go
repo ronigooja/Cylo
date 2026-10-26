@@ -89,3 +89,16 @@ func TestFailedKeyInitializationRemovesUncommittedExport(t *testing.T) {
 		t.Fatal("uncommitted export left behind")
 	}
 }
+
+func TestInstallationLinksRejectServerAddressesAppleCannotImport(t *testing.T) {
+	for _, server := range []string{"https://host:65536", "https://host:0", "https://host:", "https://host/a/../b", "https://host/%2E/child", "https://host/encoded%2fsegment", "https://host/back\\slash", "https://host?", "https://host#"} {
+		if err := validateInstallationServer(server); err == nil {
+			t.Errorf("unimportable server accepted: %s", server)
+		}
+	}
+	for _, server := range []string{"https://host/base", "http://localhost:8787", "https://[::1]:443/base"} {
+		if err := validateInstallationServer(server); err != nil {
+			t.Errorf("valid server rejected: %s: %v", server, err)
+		}
+	}
+}
