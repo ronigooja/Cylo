@@ -2,7 +2,7 @@
 set -euo pipefail
 
 expected="7c83bd68c1e60c85b6a90e3ffa1340c859e4a3ff"
-expected_tree="3b966147a7b94c9a6fd1e675b2cfec911940157c"
+expected_tree="eb2da2d0133907ee7669da53e7e7964b37c05ab8"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 apply_script="$repo_root/deploy/linux/apply-ao-patch.sh"
 ao_source="${1:-}"
