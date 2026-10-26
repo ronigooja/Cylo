@@ -25,7 +25,7 @@ jobs:
           bash deploy/linux/apply-ao-patch.sh "$RUNNER_TEMP/ao"
       - name: Test AO container and provider adapters
         working-directory: ${{ runner.temp }}/ao/backend
-        run: go test ./internal/adapters/chatdriver/codexappserver ./internal/adapters/agentaccount
+        run: go test ./internal/adapters/chatdriver/codexappserver ./internal/adapters/agentaccount ./internal/session_manager ./internal/service/session ./internal/httpd/controllers
       - name: Build AO and runtime image
         run: |
           mkdir -p "$RUNNER_TEMP/artifacts"

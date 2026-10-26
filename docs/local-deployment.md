@@ -54,6 +54,51 @@ Export logical records with `python3 tools/cylo_export.py --server URL --key-fil
 
 For destruction planning, use `python3 tools/cylo_destroy.py --manifest PRIVATE_MANIFEST --receipt NEW_RECEIPT`. The [example inventory](../deploy/linux/destroy-inventory.example.json) requires a dedicated owned directory and deployment-specific executable cleanup adapter; it does not automatically describe the historical installation above. No real external cleanup adapter is shipped. Execution requires `--execute --confirm-instance INSTANCE_ID`, stops/fences the instance, and retains owned files unless exact external cleanup proof passes. A failed operation can leave services stopped; inspect its private receipt and service state. See the [master plan](master-plan.md) for scope, proof contract, and acceptance limits. These commands have not destroyed or migrated the recorded installation.
 
+## Unknown AO creation reconciliation
+
+Unknown create outcomes keep their execution slots and must never be retried as
+new AO creates. The operator command changes authority only through the normal
+runner observation API; it does not delete journal rows, task/run history, or
+container records.
+
+Use a runner built from the same reviewed source as the control server and the
+patched AO gateway. Stop `cylo-runner` first so the maintenance command can take
+the deployment-host and journal locks. Restart AO after stopping the runner to
+drain the original create connections. Reconciliation requires a direct AO
+daemon connection without a proxy that buffers or retries create requests; the complete inventory must report a
+server start time later than the journal's unknown-create update. Keep the runner
+stopped until reconciliation finishes. Run the command under the existing
+runner service account and deployment environment/secret-entrypoint boundary:
+
+```sh
+cylo-runner --reconcile-runs RUN_ID --actor OPERATOR --confirm-no-effect
+```
+
+Supply exact run IDs and a non-secret operator identity. Run each ID separately
+if every refusal must be inspected: a multi-ID invocation stops at the first
+failure. The command checks the original journal claim, current server claim,
+instance fence, complete AO inventory and `clientRequestId` absence, and a
+complete Docker inventory. Missing identities, unavailable evidence, or any AO
+or potentially uncorrelated managed runtime container cause refusal. A stopped
+or never-started container record also causes refusal and is retained. Do not
+remove a container or edit a database to force this check to pass.
+
+The journal's `journal_reconciliations` table audits both successful and refused
+checks. Successful checks persist an immutable `no_effect_terminal` receipt with
+the operator and absence evidence before delivery. Repeating the same operation
+replays that receipt; it does not emit another terminal transition. The control
+plane validates ownership, attempt/fence, instance, and prior effect history,
+marks the run/task failed, and publishes the normal event used by client refresh.
+Restart `cylo-runner` after maintenance. A refusal keeps the run uncertain and its
+slot occupied; it requires further lifecycle evidence or a separately authorized
+AO recovery operation.
+
+The snapshot's `execution_capacity` reports the global four-slot gate, active and
+uncertain counts, available slots, and a stable blocking reason. Queued tasks
+report `execution_reconciliation_required` when uncertain runs contribute to
+saturation. Clients display that reason and refresh through existing events;
+clients must not resubmit unknown runs.
+
 ## macOS application
 
 ### Current connection candidate — single instance key

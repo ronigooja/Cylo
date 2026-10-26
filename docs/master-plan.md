@@ -621,3 +621,29 @@ End-to-end chat acceptance remains blocked: the host currently uses `10.211.55.8
 The user authorized binding the service through `debian.local`. Docker publish addresses are numeric, so `/etc/cylo/resolve-server-address.py` now resolves that name at each `cylo-compose` systemd start, requires exactly one matching local non-loopback IPv4 address, and updates only `CYLO_SERVER_LAN_ADDRESS` in the deployment environment file before Compose reads it. Source: `deploy/linux/resolve-server-address.py`. The systemd LAN override runs the resolver before its existing configuration check. No host DNS, SSH, routing, interface settings, or external services were changed; no backup was created.
 
 After restarting the Cylo stack, `debian.local` resolved to `10.211.55.8`; Docker published port 8787 on that address and `127.0.0.1`. Both `http://debian.local:8787/healthz` and the loopback health endpoint returned `{"status":"ok"}`. Cylo, runner, and AO were active. The previously recorded control connection blocker is resolved. Source syntax and whitespace checks passed locally; this operational verification did not compile code, build images, or run an automated test suite. Existing uncertain runs remain unchanged. No owner key was available on the server for submitting a fresh client command, so a new chat reply and macOS interaction remain unverified.
+
+### Unknown-create reconciliation and queue capacity — source candidate
+
+A timed-out or otherwise ambiguous AO create remains `effect_unknown`; it is
+never replayed automatically. Explicit runner maintenance may reconcile only an
+unbound unknown create after the same-fence journal/server checks, a complete AO
+inventory with request identities, and complete Docker absence evidence. AO must
+have restarted after the unknown journal update to exclude an original request
+still awaiting handling. The inventory also waits for entered create calls and
+includes durable preparation/uncertain rows. Any incomplete evidence or existing
+runtime/container record retains the uncertain state. Successful reconciliation
+uses the existing audited, idempotent observation protocol to fail the run/task
+and release its slot. Refused attempts are retained in the runner audit journal.
+
+The patched AO protocol uses `worker_boot_failed` only after supervised startup
+failure, verified runtime cleanup, successful workspace rollback, and verified
+absence of the session row. Other failures remain uncertain. Snapshot capacity
+and per-task queue reasons expose the same global admission gate to the Apple
+conversation and task views; existing drafts, command keys, and event refresh
+remain authoritative. See [the operator runbook](local-deployment.md#unknown-ao-creation-reconciliation).
+
+This section describes source behavior pending hosted verification and deployment
+evidence below. It does not establish successful live worker/provider execution
+or recovery of the four existing uncertain runs. An existing created-state AO
+container was observed during read-only inspection; it must be retained and
+causes the conservative reconciliation check to refuse.
