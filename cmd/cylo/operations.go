@@ -60,7 +60,11 @@ func providerConfigureOperation(args []string, in io.Reader, out, errOut io.Writ
 	secret := []byte(*token)
 	var err error
 	if len(secret) == 0 {
-		secret, err = readHiddenToken(in, out)
+		tokenInput := io.Reader(reader)
+		if _, terminal := in.(*os.File); terminal {
+			tokenInput = in
+		}
+		secret, err = readHiddenToken(tokenInput, out)
 		if err != nil {
 			return err
 		}
