@@ -2,6 +2,8 @@ package control
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -47,7 +49,8 @@ func instanceRequest(handler http.Handler, method, path, key string, body string
 	if key != "" {
 		r.Header.Set("Authorization", "Bearer "+key)
 	}
-	r.Header.Set("Idempotency-Key", path+body)
+	digest := sha256.Sum256([]byte(path + body))
+	r.Header.Set("Idempotency-Key", hex.EncodeToString(digest[:]))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, r)
 	return w

@@ -81,7 +81,10 @@ func reviewRequest(h http.Handler, method, path, token, key string, body any) *h
 	return w
 }
 
-type reviewAuditActor struct{ ID string }
+type reviewAuditActor struct {
+	ID          string
+	WorkspaceID string
+}
 type reviewInstanceIdentity struct{ Device reviewAuditActor }
 type reviewHandler struct {
 	http.Handler
@@ -97,7 +100,7 @@ func reviewBootstrap(t *testing.T, h http.Handler, code, token string) reviewIns
 	if _, _, err := control.InitializeInstanceAuth(context.Background(), fixture.store, token); err != nil {
 		t.Fatal(err)
 	}
-	return reviewInstanceIdentity{Device: reviewAuditActor{ID: "instance"}}
+	return reviewInstanceIdentity{Device: reviewAuditActor{ID: "instance", WorkspaceID: "default"}}
 }
 func bindReviewHandler(h http.Handler, store *storage.Store) http.Handler {
 	return &reviewHandler{Handler: h, store: store}
