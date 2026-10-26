@@ -9,3 +9,7 @@ The Go control plane owns authoritative task, authorization, event, and memory r
 Fresh deployments use one shared instance key. Native clients connect with a user-entered server URL and key, an installation link, or a QR image; the key is stored only in Keychain. Password login and device approval are outside the current model. This source candidate still requires CI and separate installation acceptance.
 
 The recorded local installation is described in [local deployment operations](docs/local-deployment.md).
+
+Build the `cylo` operator binary and run it without arguments to open the
+interactive maintenance menu; it also accepts explicit `setup`, provider,
+key, and `status` commands for automation.
