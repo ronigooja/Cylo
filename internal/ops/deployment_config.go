@@ -389,7 +389,7 @@ func (m Manager) ConfigureProvider(ctx context.Context, d Deployment, c Provider
 		return result, rollback(err)
 	}
 	if err = saveProviderCheck(d, result); err != nil {
-		return result, fmt.Errorf("provider applied but check metadata could not be saved: %w", err)
+		return result, rollback(fmt.Errorf("save provider check metadata: %w", err))
 	}
 	return result, nil
 }
