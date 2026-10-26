@@ -10,6 +10,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import shutil
@@ -26,6 +27,21 @@ def canonical(path: str) -> Path:
     if not value.is_absolute() or value != value.resolve() or ".." in value.parts:
         raise ValueError("paths must be absolute and free of symlinks or parent traversal")
     return value
+
+def mounted_paths() -> set[Path]:
+    # ismount alone misses bind mounts on the same filesystem. Linux mountinfo
+    # is authoritative for the only supported deployment topology.
+    result = set()
+    for line in Path("/proc/self/mountinfo").read_text().splitlines():
+        fields = line.split()
+        if len(fields) < 6:
+            raise ValueError("cannot inspect Linux mount boundaries")
+        decoded = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), fields[4])
+        result.add(Path(decoded))
+    if not result:
+        raise ValueError("cannot inspect Linux mount boundaries")
+    return result
+
 
 def protected_file(path: Path, executable: bool = False) -> None:
     info = path.lstat()
@@ -49,6 +65,8 @@ def validate_manifest(manifest: dict, receipt: Path) -> dict:
     # Require a dedicated instance directory, never a shared host root.
     if len(root.parts) < 4 or not root.is_dir() or root.is_mount() or root.stat().st_uid != os.geteuid() or root.stat().st_mode & 0o022:
         raise ValueError("deployment root must be an operator-owned dedicated instance directory")
+    if any(mount == root or root in mount.parents for mount in mounted_paths()):
+        raise ValueError("dedicated deployment root contains mounted resources; detach them before destruction")
     roots = manifest["roots"]
     if not isinstance(roots, list) or {item.get("category") for item in roots} != REQUIRED_CATEGORIES:
         raise ValueError("enumerate data, artifacts, backups, and config roots explicitly")

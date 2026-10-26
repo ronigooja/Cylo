@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 from tools import cylo_destroy, cylo_export
 
 class LifecycleCLI(unittest.TestCase):
@@ -91,6 +92,9 @@ class LifecycleCLI(unittest.TestCase):
         unsafe = [{**item, "path": "/"} if item["category"] == "config" else item for item in manifest["roots"]]
         with self.assertRaises(ValueError):
             cylo_destroy.destroy({**manifest, "roots": unsafe}, receipt, False, "")
+        with mock.patch.object(cylo_destroy, "mounted_paths", return_value={Path(manifest["roots"][0]["path"])}):
+            with self.assertRaises(ValueError):
+                cylo_destroy.destroy(manifest, receipt, False, "")
         link = Path(manifest["roots"][0]["path"]) / "outside"
         link.symlink_to(self.root)
         with self.assertRaises(ValueError):
