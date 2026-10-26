@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -110,39 +111,64 @@ func TestUnknownAOCreateRemainsFencedAfterJournalRestartWithoutLookup(t *testing
 }
 
 func TestDefiniteCreateRejectionReplaysJournalReceiptWithoutCallingAO(t *testing.T) {
-	ctx := context.Background()
-	claim := validClaim()
-	path := filepath.Join(t.TempDir(), "runner.db")
-	firstJournal, err := OpenJournal(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer firstJournal.Close()
-	agent := &fakeAO{createErr: ao.CreateRejectedError{Status: 400, Code: "INVALID_REQUEST"}}
-	firstControl := &fakeControl{control: contracts.RunControl{DesiredControl: "run", ControlVersion: 1}, loseObservationNumber: 2}
-	engine := &Engine{Control: firstControl, AO: agent, Journal: firstJournal, Routes: map[string]Route{"worker-safe": {ProfileID: "worker-safe", RuntimeRouteID: "codex", ModelRouteID: "sol", IsolationPolicy: CodexWorkspaceWritePolicy, Harness: "codex", Model: "gpt-6.1-sol", ApprovalMode: "accept-edits"}}, Isolation: permitIsolation{}}
-	if err := engine.Process(ctx, claim); err == nil {
-		t.Fatal("expected simulated lost receipt acknowledgement")
-	}
-	if agent.createN != 1 || len(firstControl.observations) != 2 || firstControl.observations[1].Kind != "create_rejected" {
-		t.Fatalf("create calls=%d observations=%+v", agent.createN, firstControl.observations)
-	}
-	if err := firstJournal.Close(); err != nil {
-		t.Fatal(err)
-	}
-	secondJournal, err := OpenJournal(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer secondJournal.Close()
-	engine.Journal = secondJournal
-	secondControl := &fakeControl{control: contracts.RunControl{DesiredControl: "run", ControlVersion: 1}}
-	engine.Control = secondControl
-	if err := engine.Process(ctx, claim); err != nil {
-		t.Fatal(err)
-	}
-	if agent.createN != 1 || len(secondControl.observations) != 1 || secondControl.observations[0].Kind != "create_rejected" {
-		t.Fatalf("replayed AO create after restart: calls=%d observations=%+v", agent.createN, secondControl.observations)
+	for _, rejection := range []ao.CreateRejectedError{{Status: 400, Code: "INVALID_REQUEST"}, {Status: 409, Code: "worker_boot_failed"}} {
+		t.Run(rejection.Code, func(t *testing.T) {
+			ctx := context.Background()
+			claim := validClaim()
+			path := filepath.Join(t.TempDir(), "runner.db")
+			firstJournal, err := OpenJournal(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer firstJournal.Close()
+			agent := &fakeAO{createErr: rejection}
+			firstControl := &fakeControl{control: contracts.RunControl{DesiredControl: "run", ControlVersion: 1}, loseObservationNumber: 2}
+			engine := &Engine{Control: firstControl, AO: agent, Journal: firstJournal, Routes: map[string]Route{"worker-safe": {ProfileID: "worker-safe", RuntimeRouteID: "codex", ModelRouteID: "sol", IsolationPolicy: CodexWorkspaceWritePolicy, Harness: "codex", Model: "gpt-6.1-sol", ApprovalMode: "accept-edits"}}, Isolation: permitIsolation{}}
+			if err := engine.Process(ctx, claim); err == nil {
+				t.Fatal("expected simulated lost receipt acknowledgement")
+			}
+			if agent.createN != 1 || len(firstControl.observations) != 2 || firstControl.observations[1].Kind != "create_rejected" {
+				t.Fatalf("create calls=%d observations=%+v", agent.createN, firstControl.observations)
+			}
+			receipt := firstControl.observations[1]
+			if receipt.CreateRejection == nil || receipt.CreateRejection.HTTPStatus != rejection.Status || receipt.CreateRejection.ErrorCode != rejection.Code {
+				t.Fatalf("wrong rejection proof: %+v", receipt)
+			}
+			durable, ok, err := firstJournal.Entry(ctx, claim.RunID)
+			if err != nil || !ok || durable.Phase != "create_rejected" || durable.Session != "" || durable.Container != "" {
+				t.Fatalf("rejection journal entry=%+v ok=%v err=%v", durable, ok, err)
+			}
+			pending, err := firstJournal.PendingObservations(ctx, claim.RunID)
+			if err != nil || len(pending) != 1 || !reflect.DeepEqual(pending[0].Body, receipt) {
+				t.Fatalf("durable rejection receipt=%+v err=%v", pending, err)
+			}
+			if err := firstJournal.Close(); err != nil {
+				t.Fatal(err)
+			}
+			secondJournal, err := OpenJournal(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer secondJournal.Close()
+			engine.Journal = secondJournal
+			secondControl := &fakeControl{control: contracts.RunControl{DesiredControl: "run", ControlVersion: 1}}
+			engine.Control = secondControl
+			if err := engine.Process(ctx, claim); err != nil {
+				t.Fatal(err)
+			}
+			if agent.createN != 1 || len(secondControl.observations) != 1 || secondControl.observations[0].Kind != "create_rejected" {
+				t.Fatalf("replayed AO create after restart: calls=%d observations=%+v", agent.createN, secondControl.observations)
+			}
+			if !reflect.DeepEqual(secondControl.observations[0], receipt) {
+				t.Fatal("recovery changed the durable rejection proof")
+			}
+			if err := engine.Process(ctx, claim); err != nil {
+				t.Fatal(err)
+			}
+			if agent.createN != 1 || len(secondControl.observations) != 1 {
+				t.Fatal("acknowledged rejection was replayed or AO create repeated")
+			}
+		})
 	}
 }
 

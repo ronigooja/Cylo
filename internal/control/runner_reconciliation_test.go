@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -96,6 +97,75 @@ func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
 			var receipts int
 			if err = server.store.DB().QueryRow(`SELECT count(*) FROM runner_observations WHERE kind='no_effect_terminal'`).Scan(&receipts); err != nil || receipts != 1 {
 				t.Fatalf("receipt count=%d err=%v", receipts, err)
+			}
+		})
+	}
+}
+
+func TestWorkerBootRejectionReleasesCapacityOnlyForStable409Proof(t *testing.T) {
+	for _, status := range []int{409, 503} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			server, closeStore := budgetTestServer(t, contracts.RunBudgetSnapshot{})
+			defer closeStore()
+			if _, err := server.store.DB().Exec(`UPDATE runs SET status='dispatching',ao_project_id='project' WHERE id='budget-run'`); err != nil {
+				t.Fatal(err)
+			}
+			observe := func(obs contracts.RunnerObservation) *httptest.ResponseRecorder {
+				body, err := json.Marshal(obs)
+				if err != nil {
+					t.Fatal(err)
+				}
+				req := httptest.NewRequest("POST", "/runner/v1/runs/budget-run/observations", bytes.NewReader(body))
+				req.SetPathValue("run_id", "budget-run")
+				req.Header.Set("Idempotency-Key", obs.ObservationID)
+				req = req.WithContext(context.WithValue(req.Context(), runnerPrincipalKey{}, contracts.RunnerPrincipal{RunnerID: "budget-runner", WorkspaceIDs: []string{"default"}, Scopes: []string{"runner:observe"}}))
+				w := httptest.NewRecorder()
+				server.handleObservation(w, req)
+				return w
+			}
+			started := contracts.RunnerObservation{ObservationID: "started", RunID: "budget-run", AttemptID: "budget-attempt", Fence: 91, Kind: "dispatch_started", AOProjectID: "project"}
+			if w := observe(started); w.Code != 200 {
+				t.Fatalf("dispatch_started: %d %s", w.Code, w.Body.String())
+			}
+			rejected := contracts.RunnerObservation{ObservationID: "rejected", RunID: "budget-run", AttemptID: "budget-attempt", Fence: 91, Kind: "create_rejected", AOProjectID: "project", CreateRejection: &contracts.CreateRejectionProof{HTTPStatus: status, ErrorCode: "worker_boot_failed"}}
+			w := observe(rejected)
+			var runStatus, taskStatus string
+			if err := server.store.DB().QueryRow(`SELECT runs.status,tasks.status FROM runs JOIN tasks ON tasks.id=runs.task_id WHERE runs.id='budget-run'`).Scan(&runStatus, &taskStatus); err != nil {
+				t.Fatal(err)
+			}
+			if status == 503 {
+				if w.Code != 409 || runStatus != "active" || taskStatus != "active" {
+					t.Fatalf("untrusted 503 released run: %d %s run=%s task=%s", w.Code, w.Body.String(), runStatus, taskStatus)
+				}
+				unknown := contracts.RunnerObservation{ObservationID: "unknown", RunID: "budget-run", AttemptID: "budget-attempt", Fence: 91, Kind: "effect_unknown", ExternalEffects: []contracts.ExternalEffect{{ID: "create", Kind: "ao_worker_create", Status: "unknown"}}}
+				if w := observe(unknown); w.Code != 200 {
+					t.Fatalf("unknown: %d %s", w.Code, w.Body.String())
+				}
+			} else {
+				if w.Code != 200 || runStatus != "failed" || taskStatus != "failed" {
+					t.Fatalf("stable rejection: %d %s run=%s task=%s", w.Code, w.Body.String(), runStatus, taskStatus)
+				}
+				if replay := observe(rejected); replay.Code != 200 {
+					t.Fatalf("rejection receipt replay: %d %s", replay.Code, replay.Body.String())
+				}
+			}
+			var occupied, receipts int
+			if err := server.store.DB().QueryRow(`SELECT count(*) FROM runs WHERE status IN ('dispatching','active','uncertain')`).Scan(&occupied); err != nil {
+				t.Fatal(err)
+			}
+			if err := server.store.DB().QueryRow(`SELECT count(*) FROM runner_observations WHERE kind='create_rejected'`).Scan(&receipts); err != nil {
+				t.Fatal(err)
+			}
+			if status == 409 && (occupied != 0 || receipts != 1) {
+				t.Fatalf("rejection leaked capacity or duplicated receipt: slots=%d receipts=%d", occupied, receipts)
+			}
+			if status == 503 {
+				if err := server.store.DB().QueryRow(`SELECT status FROM runs WHERE id='budget-run'`).Scan(&runStatus); err != nil {
+					t.Fatal(err)
+				}
+				if occupied != 1 || receipts != 0 || runStatus != "uncertain" {
+					t.Fatalf("ambiguous 503 lost fencing: slots=%d receipts=%d status=%s", occupied, receipts, runStatus)
+				}
 			}
 		})
 	}
