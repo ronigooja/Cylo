@@ -506,7 +506,7 @@ new file mode 100644
 index 000000000..a69c3567a
 --- /dev/null
 +++ b/backend/internal/adapters/chatdriver/codexappserver/container.go
-@@ -0,0 +1,352 @@
+@@ -0,0 +1,383 @@
 +package codexappserver
 +
 +import (
@@ -558,7 +558,7 @@ index 000000000..a69c3567a
 +	if info, err := os.Stat(home); err != nil || !info.IsDir() {
 +		return nil, errors.New("supervised Codex home is unavailable")
 +	}
-+	broker, err := startProviderBroker(values[providerUpstreamEnv], providerKey, providerModel)
++	broker, err := startProviderBroker(values[providerUpstreamEnv], providerKey, providerModel, filepath.Dir(home))
 +	if err != nil {
 +		return nil, err
 +	}
@@ -660,13 +660,13 @@ index 000000000..a69c3567a
 +		cancelProcess()
 +		if cleanupErr == nil {
 +			_ = broker.Close()
-+			return nil, startupError(err, stderrCapture.String())
++			return nil, startupError(err, strings.ReplaceAll(stderrCapture.String(), providerKey, "[redacted]"))
 +		}
 +		// A failed creation has no process handle for AO to retry through. Close
 +		// the credential-bearing broker even if exact container cleanup cannot be
 +		// verified; the session labels remain available to supervisor recovery.
 +		_ = broker.Close()
-+		return nil, fmt.Errorf("%w; supervised Codex startup cleanup could not be verified: %v", startupError(err, stderrCapture.String()), cleanupErr)
++		return nil, fmt.Errorf("%w; supervised Codex startup cleanup could not be verified: %v", startupError(err, strings.ReplaceAll(stderrCapture.String(), providerKey, "[redacted]")), cleanupErr)
 +	}
 +	var stopMu sync.Mutex
 +	stopped := false
@@ -1659,7 +1659,7 @@ new file mode 100644
 index 000000000..a88922439
 --- /dev/null
 +++ b/backend/internal/adapters/chatdriver/codexappserver/provider_broker.go
-@@ -0,0 +1,239 @@
+@@ -0,0 +1,243 @@
 +package codexappserver
 +
 +import (
@@ -1688,7 +1688,7 @@ index 000000000..a88922439
 +	root     string
 +}
 +
-+func startProviderBroker(upstream, key, selectedModel string) (*providerBroker, error) {
++func startProviderBroker(upstream, key, selectedModel string, socketRoots ...string) (*providerBroker, error) {
 +	upstream, key = strings.TrimRight(strings.TrimSpace(upstream), "/"), strings.TrimSpace(key)
 +	selectedModel = strings.TrimSpace(selectedModel)
 +	if key == "" || selectedModel == "" || strings.ContainsAny(selectedModel, "\r\n\x00") {
@@ -1701,7 +1701,11 @@ index 000000000..a88922439
 +	if !strings.HasSuffix(strings.TrimRight(target.Path, "/"), "/v1") && target.Path != "/v1" {
 +		target.Path = strings.TrimRight(target.Path, "/") + "/v1"
 +	}
-+	root, err := os.MkdirTemp(os.TempDir(), "cylo-codex-proxy-")
++	socketRoot := os.TempDir()
++	if len(socketRoots) > 0 {
++		socketRoot = socketRoots[0]
++	}
++	root, err := os.MkdirTemp(socketRoot, "cylo-codex-proxy-")
 +	if err != nil {
 +		return nil, err
 +	}
@@ -3095,3 +3099,24 @@ index a0c8d9d77..0c9194d25 100644
  		break
  	}
  	if drained == nil {
+diff --git a/backend/internal/adapters/chatdriver/codexappserver/deployment_socket_test.go b/backend/internal/adapters/chatdriver/codexappserver/deployment_socket_test.go
+new file mode 100644
+--- /dev/null
++++ b/backend/internal/adapters/chatdriver/codexappserver/deployment_socket_test.go
+@@ -0,0 +1,16 @@
++package codexappserver
++
++import (
++    "path/filepath"
++    "strings"
++    "testing"
++)
++
++func TestDeploymentSocketUsesDaemonVisibleRoot(t *testing.T) {
++    root := t.TempDir()
++    broker, err := startProviderBroker("https://example.invalid/v1", "synthetic-key", "synthetic-model", root)
++    if err != nil { t.Fatal(err) }
++    defer broker.Close()
++    relative, err := filepath.Rel(root, broker.SocketPath())
++    if err != nil || strings.HasPrefix(relative, "..") { t.Fatal("socket escaped daemon-visible root") }
++}

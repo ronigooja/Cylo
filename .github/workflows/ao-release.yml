@@ -1,0 +1,38 @@
+name: AO deployment artifact
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  release:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Fetch pinned AO and apply patch
+        run: |
+          git clone --filter=blob:none https://github.com/OrchestratorInc/agent-orchestrator.git "$RUNNER_TEMP/ao"
+          git -C "$RUNNER_TEMP/ao" checkout 7c83bd68c1e60c85b6a90e3ffa1340c859e4a3ff
+          bash deploy/linux/apply-ao-patch.sh "$RUNNER_TEMP/ao"
+      - name: Test AO container and provider adapters
+        working-directory: ${{ runner.temp }}/ao/backend
+        run: go test ./internal/adapters/chatdriver/codexappserver ./internal/adapters/agentaccount
+      - name: Build AO and runtime image
+        run: |
+          mkdir -p "$RUNNER_TEMP/artifacts"
+          cd "$RUNNER_TEMP/ao/backend"
+          CGO_ENABLED=0 go build -trimpath -buildvcs=false -o "$RUNNER_TEMP/artifacts/ao" ./cmd/ao
+          cd "$GITHUB_WORKSPACE"
+          docker build -t "cylo-ao-codex:${GITHUB_SHA:0:12}" deploy/linux/AO/runtime
+          docker save "cylo-ao-codex:${GITHUB_SHA:0:12}" | gzip > "$RUNNER_TEMP/artifacts/runtime-image.tar.gz"
+          cd "$RUNNER_TEMP/artifacts"
+          sha256sum ao runtime-image.tar.gz > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ao-release-${{ github.sha }}
+          path: ${{ runner.temp }}/artifacts
+          retention-days: 1
+          compression-level: 0
