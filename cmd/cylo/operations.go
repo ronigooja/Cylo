@@ -1,19 +1,18 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/ronigooja/Cylo/internal/ops"
+	"github.com/skip2/go-qrcode"
 	"golang.org/x/sys/unix"
 )
 
@@ -27,112 +26,140 @@ func init() {
 }
 
 func setupOperation(args []string, in io.Reader, out, errOut io.Writer) error {
+	fmt.Fprintln(out, "Setup checks the installed deployment and configures its provider.")
 	return providerConfigureOperation(args, in, out, errOut)
 }
 
+// providerFlags are shared by setup, configure, test and status so the same
+// deployment is used by interactive and scripted operations.
+type providerFlags struct {
+	root, base, model, secret, token *string
+	aoEnv, aoService                 *string
+}
+
+func addProviderFlags(fs *flag.FlagSet, token bool) providerFlags {
+	f := providerFlags{root: fs.String("root", "", "deployment configuration root (default /etc/cylo)"), base: fs.String("url", "", "override provider URL"), model: fs.String("model", "", "override model"), secret: fs.String("secret-file", "", "override private token file"), aoEnv: fs.String("ao-env", "", "override AO environment file")}
+	f.aoService = fs.String("ao-service", "", "AO service name when discovery cannot determine it")
+	if token {
+		f.token = fs.String("token", "", "compatibility token input; shell history and process arguments may retain it (prefer prompt)")
+	}
+	return f
+}
+
+var opsManager = func() ops.Manager { return ops.NewManager(nil) }
+
+func providerDeployment(ctx context.Context, f providerFlags) (ops.Deployment, ops.ProviderConfig, error) {
+	d, err := ops.DiscoverDeployment(ctx, opsManager(), *f.root)
+	if err != nil {
+		return d, ops.ProviderConfig{}, err
+	}
+	if *f.aoEnv != "" {
+		d.AOEnv = *f.aoEnv
+	}
+	if *f.aoService != "" {
+		d.AOService = *f.aoService
+	}
+	cfg, err := d.ProviderConfig()
+	if err != nil {
+		return d, cfg, err
+	}
+	if *f.base != "" {
+		cfg.BaseURL = *f.base
+	}
+	if *f.model != "" {
+		cfg.Model = *f.model
+	}
+	if *f.secret != "" {
+		cfg.SecretPath = *f.secret
+	}
+	return d, cfg, nil
+}
 func providerConfigureOperation(args []string, in io.Reader, out, errOut io.Writer) error {
 	fs := flag.NewFlagSet("provider configure", flag.ContinueOnError)
 	fs.SetOutput(errOut)
-	base := fs.String("url", os.Getenv("AO_CODEX_EXTERNAL_BASE_URL"), "CLIProxyAPI base URL")
-	model := fs.String("model", os.Getenv("AO_CODEX_EXTERNAL_MODEL"), "model name")
-	secretDefault := os.Getenv("AO_CODEX_EXTERNAL_API_KEY_FILE")
-	if strings.TrimSpace(secretDefault) == "" {
-		secretDefault = ops.DefaultProviderSecretPath
-	}
-	secretPath := fs.String("secret-file", secretDefault, "private token file")
-	aoEnv := fs.String("ao-env", os.Getenv("CYLO_AO_ENV_FILE"), "AO environment file")
-	if strings.TrimSpace(*aoEnv) == "" {
-		*aoEnv = "/etc/cylo/ao.env"
-	}
-	token := fs.String("token", "", "API token (shell history may retain this value)")
+	f := addProviderFlags(fs, true)
+	nonInteractive := fs.Bool("non-interactive", false, "require all provider values without prompts")
+	tokenFile := fs.String("token-file", "", "read a private token file (preferred for scripts)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	reader := bufio.NewReader(in)
-	if strings.TrimSpace(*base) == "" {
-		fmt.Fprint(out, "CLIProxyAPI URL: ")
-		*base = readLine(reader)
+	if fs.NArg() != 0 {
+		return errors.New("unexpected arguments")
 	}
-	if strings.TrimSpace(*model) == "" {
-		fmt.Fprint(out, "Model: ")
-		*model = readLine(reader)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	d, cfg, err := providerDeployment(ctx, f)
+	if err != nil {
+		return err
 	}
-	secret := []byte(*token)
-	var err error
-	if len(secret) == 0 {
-		tokenInput := io.Reader(reader)
-		if _, terminal := in.(*os.File); terminal {
-			tokenInput = in
+	fmt.Fprintf(out, "Deployment: %s\nDatabase: %s\nAO config: %s\nAO service: %s\n", d.Mode, d.DatabasePath, d.AOEnv, d.AOService)
+	in = sharedInput(in)
+	prompt := func(label string, value *string) error {
+		if strings.TrimSpace(*value) != "" {
+			return nil
 		}
-		secret, err = readHiddenToken(tokenInput, out)
+		if *nonInteractive {
+			return fmt.Errorf("%s is required", label)
+		}
+		fmt.Fprintf(out, "%s: ", label)
+		v, err := inputLine(in)
+		if err != nil {
+			return err
+		}
+		*value = v
+		return nil
+	}
+	if err := prompt("CLIProxyAPI URL", &cfg.BaseURL); err != nil {
+		return err
+	}
+	if err := prompt("Model", &cfg.Model); err != nil {
+		return err
+	}
+	if *f.token != "" && *tokenFile != "" {
+		return errors.New("use only one of --token and --token-file")
+	}
+	secret := []byte(*f.token)
+	if *tokenFile != "" {
+		secret, err = os.ReadFile(*tokenFile)
+		if err != nil {
+			return errors.New("cannot read token file")
+		}
+	}
+	if len(secret) == 0 {
+		if *nonInteractive {
+			return errors.New("--token-file or --token is required for non-interactive configure")
+		}
+		secret, err = readHiddenToken(in, out)
 		if err != nil {
 			return err
 		}
 	}
-	cfg, err := (ops.ProviderConfig{BaseURL: *base, Model: *model, SecretPath: *secretPath, Secret: string(secret)}).Normalized()
-	if err != nil {
+	cfg.Secret = strings.TrimSpace(string(secret))
+	if _, err := opsManager().ConfigureProvider(ctx, d, cfg, nil); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	probePath, err := temporarySecretPath(cfg.SecretPath, secret)
-	if err != nil {
-		return err
-	}
-	defer os.Remove(probePath)
-	probeCfg := cfg
-	probeCfg.SecretPath = probePath
-	probe := ops.Probe(ctx, probeCfg, nil)
-	if !probe.OK() {
-		_ = recordProviderCheck(probe)
-		return fmt.Errorf("provider check failed: %s (HTTP %d)", probe.ErrorCategory, probe.HTTPStatus)
-	}
-	oldSecret, oldSecretErr := os.ReadFile(cfg.SecretPath)
-	oldEnv, oldEnvErr := os.ReadFile(*aoEnv)
-	if err = ops.WriteSecretAtomic(cfg.SecretPath, secret); err != nil {
-		return err
-	}
-	if err = ops.WriteAOEnvAtomic(*aoEnv, cfg); err != nil {
-		rollbackSecret(cfg.SecretPath, oldSecret, oldSecretErr)
-		return err
-	}
-	manager := ops.NewManager(nil)
-	if err = manager.Reload(ctx, ops.DetectMode(), nil, "", ""); err != nil {
-		rollbackSecret(cfg.SecretPath, oldSecret, oldSecretErr)
-		rollbackFile(*aoEnv, oldEnv, oldEnvErr)
-		return err
-	}
-	if err = recordProviderCheck(probe); err != nil {
-		return fmt.Errorf("provider configured, but status record failed: %w", err)
-	}
-	fmt.Fprintln(out, "Provider configured and services reloaded.")
+	fmt.Fprintln(out, "Provider configured, checked and services reloaded.")
 	return nil
 }
-
-func providerTestOperation(args []string, in io.Reader, out, errOut io.Writer) error {
+func providerTestOperation(args []string, _ io.Reader, out, errOut io.Writer) error {
 	fs := flag.NewFlagSet("provider test", flag.ContinueOnError)
 	fs.SetOutput(errOut)
-	base := fs.String("url", os.Getenv("AO_CODEX_EXTERNAL_BASE_URL"), "provider URL")
-	model := fs.String("model", os.Getenv("AO_CODEX_EXTERNAL_MODEL"), "model")
-	secretDefault := os.Getenv("AO_CODEX_EXTERNAL_API_KEY_FILE")
-	if strings.TrimSpace(secretDefault) == "" {
-		secretDefault = ops.DefaultProviderSecretPath
-	}
-	secretPath := fs.String("secret-file", secretDefault, "private token file")
+	f := addProviderFlags(fs, false)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if fs.NArg() != 0 {
+		return errors.New("unexpected arguments")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	result := ops.Probe(ctx, ops.ProviderConfig{BaseURL: *base, Model: *model, SecretPath: *secretPath}, nil)
-	if err := recordProviderCheck(result); err != nil {
-		return fmt.Errorf("provider check status could not be recorded: %w", err)
+	d, cfg, err := providerDeployment(ctx, f)
+	if err != nil {
+		return err
 	}
-	fmt.Fprintf(out, "HTTP status: %d\nModel: %s\nAvailable: %t\nResult: %s\n", result.HTTPStatus, result.Model, result.ModelAvailable, result.ErrorCategory)
-	if !result.OK() {
-		return errors.New("provider check failed")
-	}
-	return nil
+	result, err := opsManager().TestProvider(ctx, d, cfg, nil)
+	fmt.Fprintf(out, "HTTP status: %d\nModel available: %t\nResult: %s\n", result.HTTPStatus, result.ModelAvailable, safeLabel(result.ErrorCategory))
+	return err
 }
 
 func keyInitOperation(args []string, in io.Reader, out, errOut io.Writer) error {
@@ -142,30 +169,101 @@ func keyRotateOperation(args []string, in io.Reader, out, errOut io.Writer) erro
 	return keyOperation(true, args, in, out, errOut)
 }
 
+// secretTerminal is separate from stdout so shell redirection never captures
+// a newly generated credential or QR. Tests can replace this boundary.
+var secretTerminal = func() (io.WriteCloser, error) { return os.OpenFile("/dev/tty", os.O_WRONLY, 0) }
+
 func keyOperation(rotate bool, args []string, in io.Reader, out, errOut io.Writer) error {
 	fs := flag.NewFlagSet("key", flag.ContinueOnError)
 	fs.SetOutput(errOut)
+	root := fs.String("root", "/etc/cylo", "deployment configuration root")
 	db := fs.String("database", os.Getenv("CYLO_DATABASE_PATH"), "control database path")
-	server := fs.String("server", "", "server URL for installation link")
-	output := fs.String("output", "", "private JSON export path")
+	server := fs.String("server", os.Getenv("CYLO_SERVER_URL"), "required server URL for app connection")
+	output := fs.String("output", "", "private 0600 JSON export (default beside database)")
+	nonInteractive := fs.Bool("non-interactive", false, "require server URL without a prompt")
+	confirm := fs.Bool("yes", false, "confirm immediate invalidation of the old key on rotation")
+	offline := fs.Bool("offline", false, "skip managed service pause; require exclusive database lock")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *db == "" {
-		*db = "/var/lib/cylo/server/data/cylo.sqlite"
+	if fs.NArg() != 0 {
+		return errors.New("unexpected arguments")
 	}
+	if *db == "" {
+		d, err := ops.DiscoverDeployment(context.Background(), opsManager(), *root)
+		if err != nil {
+			return err
+		}
+		*db = d.DatabasePath
+	}
+	in = sharedInput(in)
 	if strings.TrimSpace(*server) == "" {
+		if *nonInteractive {
+			return errors.New("--server is required")
+		}
 		fmt.Fprint(out, "Cylo server URL: ")
-		*server = readLine(bufio.NewReader(in))
-		if strings.TrimSpace(*server) == "" {
-			return errors.New("server URL is required to create an app installation link")
+		value, err := inputLine(in)
+		if err != nil {
+			return err
+		}
+		*server = value
+	}
+	if err := ops.ValidateServerURL(*server); err != nil {
+		return err
+	}
+	if rotate {
+		fmt.Fprintln(out, "Rotating immediately invalidates the old instance key on every connected app.")
+		if !*confirm {
+			if *nonInteractive {
+				return errors.New("rotation requires --yes")
+			}
+			fmt.Fprint(out, "Rotate key now? [y/N]: ")
+			answer, err := inputLine(in)
+			if err != nil {
+				return err
+			}
+			if !strings.EqualFold(answer, "y") && !strings.EqualFold(answer, "yes") {
+				return errors.New("rotation cancelled")
+			}
 		}
 	}
+	if err := checkDeploymentKeySources(*root); err != nil {
+		return err
+	}
+	if *output == "" {
+		*output = filepath.Join(filepath.Dir(*db), "instance-key-"+time.Now().UTC().Format("20060102T150405.000000000")+".json")
+	}
+	fmt.Fprintln(out, "Checking exclusive database ownership.")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	// Serialize key maintenance with provider configuration and other operator
+	// actions. The database lock protects SQLite state; this deployment lock
+	// also prevents a concurrent service reconfiguration from racing the stop
+	// and restart window below.
+	releaseDeployment, err := ops.LockDeployment(ctx, ops.Deployment{Root: *root})
+	if err != nil {
+		return fmt.Errorf("acquire deployment operation lock: %w", err)
+	}
+	defer releaseDeployment()
+	resume := func() error { return nil }
+	if !*offline {
+		var pauseErr error
+		resume, pauseErr = pauseControl(ctx, *root)
+		if pauseErr != nil {
+			return pauseErr
+		}
+	}
+	resumed := false
+	defer func() {
+		if !resumed {
+			if err := resume(); err != nil {
+				fmt.Fprintln(errOut, "Service recovery failed; restart the control service manually.")
+			}
+		}
+	}()
+	options := ops.KeyOptions{DatabasePath: *db, OutputPath: *output, ServerURL: *server}
 	var result ops.KeyResult
 	var err error
-	options := ops.KeyOptions{DatabasePath: *db, OutputPath: *output, ServerURL: *server}
 	if rotate {
 		result, err = ops.RotateKey(ctx, options)
 	} else {
@@ -174,103 +272,168 @@ func keyOperation(rotate bool, args []string, in io.Reader, out, errOut io.Write
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Server URL: %s\n", *server)
-	fmt.Fprintln(out, "Instance key and installation link (displayed once):")
-	if err := result.Display(out); err != nil {
+	if err := resume(); err != nil {
+		return fmt.Errorf("key committed to private export %s; service restart failed: %w", *output, err)
+	}
+	resumed = true
+	fmt.Fprintf(out, "Private key export: %s (0600)\n", *output)
+	terminal, err := secretTerminal()
+	if err != nil {
+		fmt.Fprintln(out, "No controlling terminal; connection details are saved only in the private export.")
+		return nil
+	}
+	defer terminal.Close()
+	fmt.Fprintf(terminal, "Server URL: %s\nInstance key and app connection link (shown once):\n", *server)
+	if err := result.Display(terminal); err != nil {
 		return err
 	}
-	if result.InstallationURL != "" {
-		renderQR(ctx, result.InstallationURL, out)
+	return renderQR(ctx, result.InstallationURL, terminal)
+}
+
+// pauseControl stops only a currently running managed control service and
+// returns a recovery action. Lock acquisition in ops is still authoritative.
+func pauseControl(ctx context.Context, root string) (func() error, error) {
+	m := opsManager()
+	d, err := ops.DiscoverDeployment(ctx, m, root)
+	if err != nil {
+		return nil, fmt.Errorf("discover control service (use --offline only after stopping it manually): %w", err)
+	}
+	recovery := func(name string, args ...string) func() error {
+		return func() error {
+			recoveryCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_, err := m.Run(recoveryCtx, name, args...)
+			return err
+		}
+	}
+	if d.Mode == ops.ModeSystemd {
+		state, err := m.Run(ctx, "systemctl", "is-active", "cylo-compose.service")
+		if strings.TrimSpace(string(state)) == "inactive" {
+			return func() error { return nil }, nil
+		}
+		if err != nil || strings.TrimSpace(string(state)) != "active" {
+			return nil, errors.New("cannot establish control service state; stop it manually and use --offline")
+		}
+		if _, err := m.Run(ctx, "systemctl", "stop", "cylo-compose.service"); err != nil {
+			return nil, errors.New("cannot stop control service")
+		}
+		return recovery("systemctl", "start", "cylo-compose.service"), nil
+	}
+	if d.Mode != ops.ModeCompose || d.ComposeFile == "" {
+		return nil, errors.New("unknown control deployment; stop it manually and use --offline")
+	}
+	base := []string{"compose", "--env-file", d.StackEnv, "--file", d.ComposeFile}
+	if d.ComposeProject != "" {
+		base = append(base, "--project-name", d.ComposeProject)
+	}
+	running, err := m.Run(ctx, "docker", append(append([]string{}, base...), "ps", "--status", "running", "--services")...)
+	if err != nil {
+		return nil, errors.New("cannot inspect control container")
+	}
+	active := false
+	for _, service := range strings.Fields(string(running)) {
+		if service == "cylo-server" {
+			active = true
+		}
+	}
+	if !active {
+		return func() error { return nil }, nil
+	}
+	if _, err := m.Run(ctx, "docker", append(append([]string{}, base...), "stop", "cylo-server")...); err != nil {
+		return nil, errors.New("cannot stop control container")
+	}
+	return recovery("docker", append(base, "start", "cylo-server")...), nil
+}
+
+// Startup credentials supplied by the deployment can overwrite or reject a
+// rotated database key. Refuse mutation rather than leave a stale deployment.
+func checkDeploymentKeySources(root string) error {
+	for _, name := range []string{"CYLO_INSTANCE_KEY", "CYLO_INSTANCE_KEY_FILE"} {
+		if os.Getenv(name) != "" {
+			return fmt.Errorf("%s is set; remove the startup credential source before offline key maintenance, then configure the new private key before restarting", name)
+		}
+	}
+	for _, file := range []string{"cylo-stack.env", "cylo-server.env", "cylo-runner.env", "ao.env", ".env"} {
+		data, err := os.ReadFile(filepath.Join(root, file))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("cannot inspect deployment credential sources: %w", err)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "export "))
+			name, value, ok := strings.Cut(line, "=")
+			if ok && (strings.TrimSpace(name) == "CYLO_INSTANCE_KEY" || strings.TrimSpace(name) == "CYLO_INSTANCE_KEY_FILE") && strings.Trim(strings.TrimSpace(value), "\"'") != "" {
+				return fmt.Errorf("%s configures a startup instance credential; remove or migrate that source before offline key maintenance to avoid stale credentials on restart", file)
+			}
+		}
 	}
 	return nil
 }
 
-// renderQR keeps the one-time key presentation useful on a terminal while
-// retaining a complete installation link fallback for systems without
-// qrencode. It is called only by explicit key init/rotate actions.
-func renderQR(ctx context.Context, link string, out io.Writer) {
-	cmd := exec.CommandContext(ctx, "qrencode", "-t", "ANSIUTF8", "-o", "-", "-")
-	cmd.Stdin = strings.NewReader(link + "\n")
-	data, err := cmd.Output()
-	if err == nil && len(data) > 0 {
-		_, _ = out.Write(data)
-		return
+// renderQR is self-contained; sensitive links never become process arguments.
+func renderQR(_ context.Context, link string, out io.Writer) error {
+	code, err := qrcode.New(link, qrcode.Medium)
+	if err != nil {
+		return fmt.Errorf("encode installation QR: %w", err)
 	}
-	fmt.Fprintln(out, "二维码工具不可用；请手动导入完整安装链接：")
-	fmt.Fprintln(out, link)
+	matrix := code.Bitmap()
+	for y := 0; y < len(matrix); y += 2 {
+		if _, err := io.WriteString(out, "\x1b[30;47m"); err != nil {
+			return err
+		}
+		for x := range matrix[y] {
+			top := matrix[y][x]
+			bottom := y+1 < len(matrix) && matrix[y+1][x]
+			glyph := " "
+			switch {
+			case top && bottom:
+				glyph = "█"
+			case top:
+				glyph = "▀"
+			case bottom:
+				glyph = "▄"
+			}
+			if _, err := io.WriteString(out, glyph); err != nil {
+				return err
+			}
+		}
+		if _, err := io.WriteString(out, "\x1b[0m\n"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func statusOperation(args []string, _ io.Reader, out, errOut io.Writer) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(errOut)
-	secretDefault := os.Getenv("AO_CODEX_EXTERNAL_API_KEY_FILE")
-	if strings.TrimSpace(secretDefault) == "" {
-		secretDefault = ops.DefaultProviderSecretPath
-	}
-	secret := fs.String("secret-file", secretDefault, "private token file path")
-	urlValue := fs.String("url", os.Getenv("AO_CODEX_EXTERNAL_BASE_URL"), "provider URL")
-	model := fs.String("model", os.Getenv("AO_CODEX_EXTERNAL_MODEL"), "provider model")
+	f := addProviderFlags(fs, false)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	lastCheck := readProviderCheckStatus()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if fs.NArg() != 0 {
+		return errors.New("unexpected arguments")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	status := ops.NewManager(nil).Inspect(ctx, ops.InspectConfig{SecretPath: *secret, ProviderBaseURL: *urlValue, ProviderModel: safeLabel(*model), ProviderConfigSource: "AO_CODEX_EXTERNAL_*", ProviderLastCheck: lastCheck})
+	d, cfg, err := providerDeployment(ctx, f)
+	if err != nil {
+		return err
+	}
+	inspect := d.InspectConfig()
+	inspect.SecretPath = cfg.SecretPath
+	inspect.ProviderBaseURL = cfg.BaseURL
+	inspect.ProviderModel = cfg.Model
+	status := opsManager().Inspect(ctx, inspect)
 	fmt.Fprintf(out, "Deployment: %s\n", status.Mode)
 	for _, service := range status.Services {
-		fmt.Fprintf(out, "%s: %s (%s)\n", service.Name, service.State, service.Source)
+		fmt.Fprintf(out, "%s: %s (%s)\n", safeLabel(service.Name), safeLabel(service.State), safeLabel(service.Source))
 	}
-	fmt.Fprintf(out, "Provider: %s model=%s source=%s last-check=%s\n", status.Provider.BaseURL, status.Provider.Model, status.Provider.ConfigSource, status.Provider.LastCheck)
-	fmt.Fprintf(out, "Secret: %s exists=%t mode=%s owner=%s\n", status.Secret.Path, status.Secret.Exists, status.Secret.Mode, status.Secret.Owner)
+	fmt.Fprintf(out, "Provider: %s model=%s source=%s last-check=%s\n", safeLabel(status.Provider.BaseURL), safeLabel(status.Provider.Model), safeLabel(status.Provider.ConfigSource), safeLabel(ops.LastProviderCheck(d)))
+	fmt.Fprintf(out, "Secret: %s exists=%t mode=%s owner=%s\n", safeLabel(status.Secret.Path), status.Secret.Exists, safeLabel(status.Secret.Mode), safeLabel(status.Secret.Owner))
 	return nil
-}
-
-func readLine(r *bufio.Reader) string {
-	value, _ := r.ReadString('\n')
-	return strings.TrimSpace(value)
-}
-
-func temporarySecretPath(finalPath string, secret []byte) (string, error) {
-	dir := filepath.Dir(finalPath)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	f, err := os.CreateTemp(dir, ".cylo-provider-probe-*")
-	if err != nil {
-		return "", err
-	}
-	path := f.Name()
-	if err = f.Close(); err != nil {
-		_ = os.Remove(path)
-		return "", err
-	}
-	if err = os.Remove(path); err != nil {
-		return "", err
-	}
-	if err = ops.WriteSecretAtomic(path, secret); err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
-func providerCheckPath() string {
-	if path := strings.TrimSpace(os.Getenv("CYLO_PROVIDER_CHECK_FILE")); path != "" {
-		return path
-	}
-	return "/etc/cylo/provider-check.status"
-}
-
-func readProviderCheckStatus() string {
-	data, err := os.ReadFile(providerCheckPath())
-	if err != nil {
-		return "unavailable"
-	}
-	fields := strings.Fields(string(data))
-	if len(fields) != 4 || !strings.Contains(fields[1], "_") && fields[1] != "ok" {
-		return "invalid"
-	}
-	return safeLabel(fields[1])
 }
 
 func safeLabel(value string) string {
@@ -286,75 +449,34 @@ func safeLabel(value string) string {
 	return value
 }
 
-func recordProviderCheck(result ops.ProbeResult) error {
-	path := providerCheckPath()
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".cylo-provider-check-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if err = tmp.Chmod(0o600); err == nil {
-		category := result.ErrorCategory
-		if category == "" {
-			category = "ok"
-		}
-		_, err = fmt.Fprintf(tmp, "%s %s http=%d model_available=%t\n", time.Now().UTC().Format(time.RFC3339), category, result.HTTPStatus, result.ModelAvailable)
-	}
-	if err == nil {
-		err = tmp.Sync()
-	}
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	if err = os.Rename(tmpPath, path); err != nil {
-		return err
-	}
-	d, err := os.Open(dir)
-	if err == nil {
-		err = d.Sync()
-		_ = d.Close()
-	}
-	return err
-}
-
 func readHiddenToken(in io.Reader, out io.Writer) ([]byte, error) {
-	if file, ok := in.(*os.File); ok {
+	in = sharedInput(in)
+	hidden := false
+	if file := terminalFile(in); file != nil {
 		if term, err := unix.IoctlGetTermios(int(file.Fd()), unix.TCGETS); err == nil {
 			old := *term
 			term.Lflag &^= unix.ECHO
-			if err = unix.IoctlSetTermios(int(file.Fd()), unix.TCSETS, term); err == nil {
-				fmt.Fprint(out, "API token: ")
-				value, readErr := bufio.NewReader(file).ReadBytes('\n')
-				_ = unix.IoctlSetTermios(int(file.Fd()), unix.TCSETS, &old)
-				fmt.Fprintln(out)
-				return []byte(strings.TrimSpace(string(value))), readErr
+			if err := unix.IoctlSetTermios(int(file.Fd()), unix.TCSETS, term); err != nil {
+				return nil, errors.New("cannot disable terminal echo")
 			}
+			defer unix.IoctlSetTermios(int(file.Fd()), unix.TCSETS, &old)
+			hidden = true
 		}
 	}
-	fmt.Fprint(out, "API token (input hidden by terminal): ")
-	value, err := bufio.NewReader(in).ReadBytes('\n')
-	return []byte(strings.TrimSpace(string(value))), err
-}
-
-func rollbackSecret(path string, data []byte, err error) {
-	if err == nil {
-		_ = ops.WriteSecretAtomic(path, data)
+	if hidden {
+		fmt.Fprint(out, "API token (hidden): ")
 	} else {
-		_ = os.Remove(path)
+		fmt.Fprint(out, "API token (non-terminal input): ")
 	}
-}
-func rollbackFile(path string, data []byte, err error) {
-	if err == nil {
-		_ = ops.WriteFileAtomic(path, data, 0o600)
-	} else {
-		_ = os.Remove(path)
+	value, err := inputLine(in)
+	if hidden {
+		fmt.Fprintln(out)
 	}
+	if err != nil {
+		return nil, err
+	}
+	if value == "" {
+		return nil, errors.New("API token is required")
+	}
+	return []byte(value), nil
 }

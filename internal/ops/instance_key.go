@@ -64,10 +64,8 @@ func run(ctx context.Context, options KeyOptions, rotate bool) (result KeyResult
 	if options.DatabasePath == "" {
 		return result, errors.New("database path is required")
 	}
-	if options.ServerURL != "" {
-		if err := ValidateServerURL(options.ServerURL); err != nil {
-			return result, err
-		}
+	if err := ValidateServerURL(options.ServerURL); err != nil {
+		return result, err
 	}
 	store, err := storage.Open(ctx, storage.Config{Path: options.DatabasePath})
 	if err != nil {
@@ -96,7 +94,7 @@ func run(ctx context.Context, options KeyOptions, rotate bool) (result KeyResult
 			return KeyResult{}, err
 		}
 		if count != 0 {
-			return KeyResult{}, errors.New("instance credential already exists; use rotate-key")
+			return KeyResult{}, errors.New("instance credential already exists; use cylo key rotate")
 		}
 	}
 

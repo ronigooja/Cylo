@@ -34,3 +34,38 @@ func TestMenuDispatchesSelectedOperationAndExits(t *testing.T) {
 		t.Fatalf("menu output/call mismatch: called=%v out=%q err=%q", called, out.String(), errOut.String())
 	}
 }
+
+func TestMenuSharesInputAcrossPromptsAndActions(t *testing.T) {
+	old := operations["provider configure"]
+	t.Cleanup(func() { operations["provider configure"] = old })
+	calls := 0
+	operations["provider configure"] = func(_ []string, in io.Reader, out, _ io.Writer) error {
+		calls++
+		url, err := inputLine(in)
+		if err != nil {
+			return err
+		}
+		model, err := inputLine(in)
+		if err != nil {
+			return err
+		}
+		token, err := readHiddenToken(in, out)
+		if err != nil {
+			return err
+		}
+		if url != "https://provider/v1" || model != "model" || string(token) != "private" {
+			t.Errorf("prompt input lost or reordered")
+		}
+		return nil
+	}
+	var out, errOut bytes.Buffer
+	if err := menu(strings.NewReader("2\nhttps://provider/v1\nmodel\nprivate\n2\nhttps://provider/v1\nmodel\nprivate\n0\n"), &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || errOut.Len() != 0 {
+		t.Fatalf("calls=%d diagnostics=%s", calls, &errOut)
+	}
+	if strings.Contains(out.String(), "private") || strings.Contains(out.String(), "hidden") {
+		t.Fatal("non-terminal prompt claims hidden input or reveals token")
+	}
+}

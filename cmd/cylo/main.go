@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -55,6 +54,7 @@ func main() {
 }
 
 func run(args []string, in io.Reader, out, errOut io.Writer) error {
+	in = sharedInput(in)
 	if len(args) == 0 {
 		return menu(in, out, errOut)
 	}
@@ -95,7 +95,7 @@ func usageError() error {
 }
 
 func menu(in io.Reader, out, errOut io.Writer) error {
-	scanner := bufio.NewScanner(in)
+	in = sharedInput(in)
 	for {
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Cylo maintenance")
@@ -107,13 +107,14 @@ func menu(in io.Reader, out, errOut io.Writer) error {
 		fmt.Fprintln(out, "  6) Show status")
 		fmt.Fprintln(out, "  0) Exit")
 		fmt.Fprint(out, "Select an option: ")
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
-				return err
+		line, err := inputLine(in)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
 			}
-			return nil
+			return err
 		}
-		choice := strings.TrimSpace(scanner.Text())
+		choice := strings.TrimSpace(line)
 		if choice == "0" || strings.EqualFold(choice, "q") || strings.EqualFold(choice, "quit") || strings.EqualFold(choice, "exit") {
 			return nil
 		}
@@ -122,7 +123,7 @@ func menu(in io.Reader, out, errOut io.Writer) error {
 			fmt.Fprintln(errOut, "Please choose a number from 0 to 6.")
 			continue
 		}
-		if err := operations[name](nil, scanner, out, errOut); err != nil {
+		if err := operations[name](nil, in, out, errOut); err != nil {
 			fmt.Fprintln(errOut, "Error:", err)
 		}
 	}
