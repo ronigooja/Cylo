@@ -140,7 +140,7 @@ func TestReviewTaskContextExcludesUnrelatedProjectMemory(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	statements := []string{
-		`INSERT INTO devices(id,workspace_id,subject_id,name,status,token_hash,created_at) VALUES('review-device','default','user-1','review','approved',x'010203',?)`,
+		`INSERT INTO actors(id,workspace_id,subject_id,name,status,created_at) VALUES('review-device','default','user-1','review','approved',?)`,
 		`INSERT INTO projects(id,workspace_id,name,status,version,created_at,updated_at,owner_subject_id) VALUES('review-project-a','default','A','active',1,?,?,'user-1')`,
 		`INSERT INTO projects(id,workspace_id,name,status,version,created_at,updated_at,owner_subject_id) VALUES('review-project-b','default','B','active',1,?,?,'user-1')`,
 		`INSERT INTO tasks(id,workspace_id,project_id,title,goal,source,profile_id,status,version,created_at,updated_at,created_by_device_id,command_id,owner_subject_id) VALUES('review-task-a','default','review-project-a','task','goal','text','profile','queued',1,?,?,'review-device','command','user-1')`,

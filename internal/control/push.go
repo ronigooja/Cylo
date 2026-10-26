@@ -310,7 +310,7 @@ func DispatchPushDeliveries(ctx context.Context, store *storage.Store, sender Pu
 			continue
 		}
 		var stillAuthorized int
-		if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM push_deliveries pd JOIN device_push_tokens pt ON pt.id=pd.push_token_id JOIN devices dev ON dev.id=pt.device_id WHERE pd.id=? AND pd.status='pending' AND pt.status='active' AND dev.status='approved'`, d.id).Scan(&stillAuthorized); err != nil {
+		if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM push_deliveries pd JOIN device_push_tokens pt ON pt.id=pd.push_token_id JOIN actors dev ON dev.id=pt.device_id WHERE pd.id=? AND pd.status='pending' AND pt.status='active' AND dev.status='approved'`, d.id).Scan(&stillAuthorized); err != nil {
 			return err
 		}
 		if stillAuthorized == 0 {

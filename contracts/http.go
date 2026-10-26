@@ -126,17 +126,6 @@ type TaskMessage struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-type Device struct {
-	ID          string     `json:"id"`
-	WorkspaceID string     `json:"workspace_id"`
-	Name        string     `json:"name"`
-	Status      string     `json:"status"`
-	Version     int64      `json:"version"`
-	CreatedAt   time.Time  `json:"created_at"`
-	ApprovedAt  *time.Time `json:"approved_at,omitempty"`
-	LastSeenAt  *time.Time `json:"last_seen_at,omitempty"`
-}
-
 type Approval struct {
 	ID                    string          `json:"id"`
 	TaskID                string          `json:"task_id"`
@@ -191,10 +180,6 @@ type Run struct {
 	StoppedAt            *time.Time `json:"stopped_at,omitempty"`
 	TerminationConfirmed bool       `json:"termination_confirmed"`
 	Evidence             []Evidence `json:"evidence"`
-}
-
-type DeviceRegistration struct {
-	Device Device `json:"device"`
 }
 
 type JobAuthorization struct {

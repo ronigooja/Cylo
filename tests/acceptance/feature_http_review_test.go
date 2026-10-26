@@ -129,7 +129,7 @@ func TestRestoreDeletionGateClosesBusinessRoutesButAllowsDiagnostics(t *testing.
 func TestReviewVoiceAtomicTaskSourceOverHTTP(t *testing.T) {
 	store, h, token, device, _ := reviewFeatureServer(t)
 	var subject string
-	if err := store.DB().QueryRow(`SELECT subject_id FROM devices WHERE id=?`, device).Scan(&subject); err != nil {
+	if err := store.DB().QueryRow(`SELECT subject_id FROM actors WHERE id=?`, device).Scan(&subject); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)

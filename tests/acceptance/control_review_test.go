@@ -81,12 +81,14 @@ func reviewRequest(h http.Handler, method, path, token, key string, body any) *h
 	return w
 }
 
+type reviewAuditActor struct{ ID string }
+type reviewInstanceIdentity struct{ Device reviewAuditActor }
 type reviewHandler struct {
 	http.Handler
 	store *storage.Store
 }
 
-func reviewBootstrap(t *testing.T, h http.Handler, code, token string) contracts.DeviceRegistration {
+func reviewBootstrap(t *testing.T, h http.Handler, code, token string) reviewInstanceIdentity {
 	t.Helper()
 	fixture, ok := h.(*reviewHandler)
 	if !ok {
@@ -95,7 +97,7 @@ func reviewBootstrap(t *testing.T, h http.Handler, code, token string) contracts
 	if _, _, err := control.InitializeInstanceAuth(context.Background(), fixture.store, token); err != nil {
 		t.Fatal(err)
 	}
-	return contracts.DeviceRegistration{Device: contracts.Device{ID: "instance", WorkspaceID: "default", Name: "This instance", Status: "approved", Version: 1}}
+	return reviewInstanceIdentity{Device: reviewAuditActor{ID: "instance"}}
 }
 func bindReviewHandler(h http.Handler, store *storage.Store) http.Handler {
 	return &reviewHandler{Handler: h, store: store}
@@ -138,7 +140,7 @@ func TestReviewHTTPIdentityAndReceipts(t *testing.T) {
 		}
 	}
 	var hashes int
-	if e := s.DB().QueryRow("SELECT count(*) FROM devices WHERE length(token_hash)=32").Scan(&hashes); e != nil {
+	if e := s.DB().QueryRow("SELECT count(*) FROM instance_auth WHERE length(key_hash)=32").Scan(&hashes); e != nil {
 		t.Fatal(e)
 	}
 	if hashes != 1 {
@@ -188,7 +190,7 @@ func TestReviewCanonicalHashPreservesLargeIntegers(t *testing.T) {
 		w := reviewRequest(h, "POST", "/v1/commands", token, "large", contracts.CommandRequest{Kind: "review.integer", Payload: json.RawMessage(payload)})
 		want := 200
 		if i == 1 {
-			want = 109
+			want = 409
 		}
 		if w.Code != want {
 			t.Errorf("request %d status=%d want=%d: distinct integers collide", i, w.Code, want)
@@ -308,7 +310,7 @@ func TestReviewLateCommitFailureRollsBackReceiptWorkAndOutbox(t *testing.T) {
 
 func TestReviewProtectedRoutesAndReceiptIsolation(t *testing.T) {
 	code, token, runnerToken := reviewToken(t), reviewToken(t), reviewToken(t)
-	s, h := reviewServer(t, control.Config{RunnerToken: runnerToken}, func(srv *control.Server) {
+	_, h := reviewServer(t, control.Config{RunnerToken: runnerToken}, func(srv *control.Server) {
 		srv.RegisterAuthenticatedRoutes(func(mux *http.ServeMux) {
 			mux.HandleFunc("GET /v1/review", func(w http.ResponseWriter, r *http.Request) {
 				p, ok := control.PrincipalFromContext(r.Context())

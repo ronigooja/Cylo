@@ -65,13 +65,13 @@ func scopedExportServer(t *testing.T) (*storage.Store, http.Handler, string, str
 	h := bindReviewHandler(server.Handler(), store)
 	registration := reviewBootstrap(t, h, code, token)
 	var subject string
-	if err = store.DB().QueryRow(`SELECT subject_id FROM devices WHERE id=?`, registration.Device.ID).Scan(&subject); err != nil {
+	if err = store.DB().QueryRow(`SELECT subject_id FROM actors WHERE id=?`, registration.Device.ID).Scan(&subject); err != nil {
 		t.Fatal(err)
 	}
 	return store, h, token, subject, registration.Device.ID
 }
 
-func TestScopedExportHTTPHonorsMembershipMemoryVersionsAndTombstones(t *testing.T) {
+func TestScopedExportHTTPHonorsOwnerMemoryVersionsAndTombstones(t *testing.T) {
 	store, handler, token, subject, deviceID := scopedExportServer(t)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	seedExportProjectTask(t, store.DB(), "visible-project", "visible-task", "default", subject, deviceID, now)
@@ -462,11 +462,11 @@ func TestScopedExportKeepsNarrowMemoryGrantNarrow(t *testing.T) {
 	h := bindReviewHandler(server.Handler(), store)
 	registration := reviewBootstrap(t, h, code, token)
 	var subject string
-	if err = store.DB().QueryRow(`SELECT subject_id FROM devices WHERE id=?`, registration.Device.ID).Scan(&subject); err != nil {
+	if err = store.DB().QueryRow(`SELECT subject_id FROM actors WHERE id=?`, registration.Device.ID).Scan(&subject); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	seedExportProjectTask(t, store.DB(), "project-a", "task-a", "default", "other-owner", registration.Device.ID, now)
+	seedExportProjectTask(t, store.DB(), "project-a", "task-a", "default", subject, registration.Device.ID, now)
 
 	seedExportMemory(t, store.DB(), "allowed-project-memory", "project", "project-a", "", "allowed", "allowed project text", "", false, now)
 	seedExportMemory(t, store.DB(), "denied-project-memory", "project", "project-b", "", "denied", "denied project text", "", false, now)

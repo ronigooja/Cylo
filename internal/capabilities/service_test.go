@@ -896,7 +896,7 @@ func begin(t *testing.T, db *sql.DB) *sql.Tx {
 
 func insertCapabilityTestDevice(t *testing.T, store *storage.Store, deviceID, subjectID string) {
 	t.Helper()
-	if _, err := store.DB().ExecContext(context.Background(), `INSERT INTO devices(id,workspace_id,subject_id,name,status,token_hash,created_at) VALUES(?, 'default', ?, 'capability test', 'approved', X'01', ?)`, deviceID, subjectID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if _, err := store.DB().ExecContext(context.Background(), `INSERT INTO actors(id,workspace_id,subject_id,name,status,created_at) VALUES(?, 'default', ?, 'capability test', 'approved', ?)`, deviceID, subjectID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 }

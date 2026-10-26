@@ -45,7 +45,7 @@ func TestUncertainTaskDispatchRemainsNonDispatchableWithoutMutation(t *testing.T
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.DB().ExecContext(ctx, `INSERT INTO devices(id,workspace_id,subject_id,name,status,token_hash,created_at) VALUES('device','default','owner','test','approved',x'01',?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO actors(id,workspace_id,subject_id,name,status,created_at) VALUES('device','default','owner','test','approved',?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
 	server, err := NewServer(store, Config{})
@@ -108,7 +108,7 @@ func TestProductionControlClientRechecksLiveTaskAuthorizationOverHTTP(t *testing
 		t.Fatal(err)
 	}
 	at := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := store.DB().ExecContext(ctx, `INSERT INTO devices(id,workspace_id,subject_id,name,status,token_hash,created_at) VALUES('device','default','owner','test','approved',x'01',?)`, at); err != nil {
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO actors(id,workspace_id,subject_id,name,status,created_at) VALUES('device','default','owner','test','approved',?)`, at); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.DB().ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,title,goal,source,profile_id,status,version,created_at,updated_at,created_by_device_id,command_id) VALUES('task','default','test','test','user','profile','active',1,?,?, 'device','command')`, at, at); err != nil {
@@ -180,7 +180,7 @@ func TestProductionHTTPRecoveryDoesNotReplayPersistedAOCreateAttempt(t *testing.
 		t.Fatal(err)
 	}
 	at := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := store.DB().ExecContext(ctx, `INSERT INTO devices(id,workspace_id,subject_id,name,status,token_hash,created_at) VALUES('device','default','owner','test','approved',x'01',?)`, at); err != nil {
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO actors(id,workspace_id,subject_id,name,status,created_at) VALUES('device','default','owner','test','approved',?)`, at); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.DB().ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,title,goal,source,profile_id,status,version,created_at,updated_at,created_by_device_id,command_id) VALUES('task','default','test','test','user','profile','active',1,?,?, 'device','command')`, at, at); err != nil {

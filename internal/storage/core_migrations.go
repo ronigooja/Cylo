@@ -14,20 +14,19 @@ CREATE TABLE workspaces (
   created_at TEXT NOT NULL
 );
 INSERT INTO workspaces(id,name,created_at) VALUES('default','Default',strftime('%Y-%m-%dT%H:%M:%fZ','now'));
-CREATE TABLE devices (
+CREATE TABLE actors (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id),
   subject_id TEXT NOT NULL,
   name TEXT NOT NULL,
   status TEXT NOT NULL CHECK(status IN ('pending','approved','revoked')),
-  token_hash BLOB NOT NULL UNIQUE,
   version INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   approved_at TEXT,
   last_seen_at TEXT,
   revoked_at TEXT
 );
-CREATE INDEX devices_subject ON devices(workspace_id,subject_id,status);
+CREATE INDEX devices_subject ON actors(workspace_id,subject_id,status);
 CREATE TABLE projects (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id),
@@ -57,7 +56,7 @@ CREATE TABLE tasks (
   finished_at TEXT,
   result TEXT NOT NULL DEFAULT '',
   error TEXT NOT NULL DEFAULT '',
-  created_by_device_id TEXT NOT NULL REFERENCES devices(id),
+  created_by_device_id TEXT NOT NULL REFERENCES actors(id),
   command_id TEXT NOT NULL,
   FOREIGN KEY(workspace_id,project_id) REFERENCES projects(workspace_id,id)
 );
@@ -68,7 +67,7 @@ CREATE TABLE task_entries (
   workspace_id TEXT NOT NULL REFERENCES workspaces(id),
   kind TEXT NOT NULL,
   content TEXT NOT NULL,
-  author_device_id TEXT NOT NULL REFERENCES devices(id),
+  author_device_id TEXT NOT NULL REFERENCES actors(id),
   created_at TEXT NOT NULL
 );
 CREATE TABLE approvals (
@@ -84,7 +83,7 @@ CREATE TABLE approvals (
   created_at TEXT NOT NULL,
   expires_at TEXT,
   decided_at TEXT,
-  decided_by_device_id TEXT REFERENCES devices(id)
+  decided_by_device_id TEXT REFERENCES actors(id)
 );
 CREATE INDEX approvals_workspace_status ON approvals(workspace_id,status,created_at);
 CREATE TABLE command_receipts (
@@ -135,7 +134,7 @@ CREATE TABLE runs (
   control_version INTEGER NOT NULL DEFAULT 1,
   fence INTEGER NOT NULL UNIQUE,
   runner_id TEXT NOT NULL DEFAULT '',
-  authorized_device_id TEXT NOT NULL REFERENCES devices(id),
+  authorized_device_id TEXT NOT NULL REFERENCES actors(id),
   command_id TEXT NOT NULL,
   goal TEXT NOT NULL,
   profile_id TEXT NOT NULL,
@@ -221,7 +220,7 @@ CREATE INDEX notifications_inbox ON notifications(workspace_id,subject_id,create
 ALTER TABLE projects ADD COLUMN owner_subject_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN owner_subject_id TEXT NOT NULL DEFAULT '';
 UPDATE projects SET owner_subject_id=coalesce((SELECT e.subject_id FROM events e WHERE e.aggregate_type='project' AND e.aggregate_id=projects.id AND e.event_type='project.created' AND e.subject_id IS NOT NULL ORDER BY e.cursor LIMIT 1),'');
-UPDATE tasks SET owner_subject_id=coalesce((SELECT d.subject_id FROM devices d WHERE d.id=tasks.created_by_device_id),'');
+UPDATE tasks SET owner_subject_id=coalesce((SELECT d.subject_id FROM actors d WHERE d.id=tasks.created_by_device_id),'');
 `)
 		return err
 	}}); err != nil {
@@ -263,7 +262,7 @@ CREATE TABLE child_proposals (
   child_task_id TEXT REFERENCES tasks(id),
   created_at TEXT NOT NULL,
   decided_at TEXT,
-  decided_by_device_id TEXT REFERENCES devices(id),
+  decided_by_device_id TEXT REFERENCES actors(id),
   UNIQUE(run_id,attempt_id,proposal_id),
   UNIQUE(workspace_id,subject_id,proposal_id)
 );
@@ -295,7 +294,7 @@ CREATE TABLE device_push_tokens (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id),
   subject_id TEXT NOT NULL,
-  device_id TEXT NOT NULL REFERENCES devices(id),
+  device_id TEXT NOT NULL REFERENCES actors(id),
   installation_id TEXT NOT NULL,
   platform TEXT NOT NULL CHECK(platform IN ('ios','macos')),
   token_hex TEXT NOT NULL,

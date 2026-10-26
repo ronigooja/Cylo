@@ -253,14 +253,14 @@ func (s *Store) RegisterMigration(m Migration) error {
 
 func (s *Store) Migrate(ctx context.Context) error {
 	var legacy int
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('owner_auth','bootstrap_requests','pairing_requests','owner_auth_requests')`).Scan(&legacy); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('owner_auth','bootstrap_requests','pairing_requests','owner_auth_requests','devices','bootstrap_state')`).Scan(&legacy); err != nil {
 		return err
 	}
 	if legacy != 0 {
 		return errors.New("legacy owner/device authentication database is unsupported; deploy a fresh single-key instance")
 	}
 	var devices, instance int
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='devices'`).Scan(&devices); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='actors'`).Scan(&devices); err != nil {
 		return err
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='instance_auth'`).Scan(&instance); err != nil {

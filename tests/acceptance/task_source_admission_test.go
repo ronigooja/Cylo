@@ -119,7 +119,7 @@ func TestTaskSourceAdmissionSharesCommandTransaction(t *testing.T) {
 		t.Fatalf("rejected duplicate created a task: count=%d", after)
 	}
 	var subject string
-	if err := store.DB().QueryRow(`SELECT subject_id FROM devices WHERE id=?`, device.Device.ID).Scan(&subject); err != nil {
+	if err := store.DB().QueryRow(`SELECT subject_id FROM actors WHERE id=?`, device.Device.ID).Scan(&subject); err != nil {
 		t.Fatal(err)
 	}
 	principal := contracts.Principal{WorkspaceID: device.Device.WorkspaceID, SubjectID: subject, DeviceID: device.Device.ID}

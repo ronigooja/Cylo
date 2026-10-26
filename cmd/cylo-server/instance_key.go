@@ -74,6 +74,23 @@ func manageInstanceKey(command string, args []string) error {
 	if err != nil {
 		return err
 	}
+	export := struct {
+		Key             string `json:"key"`
+		InstallationURL string `json:"installation_url,omitempty"`
+	}{Key: key}
+	if *server != "" {
+		export.InstallationURL = "cylo://connect?" + url.Values{"server": {*server}}.Encode() + "#" + url.Values{"key": {key}}.Encode()
+	}
+	// Persist a private file before committing the hash, so disk failures cannot
+	// leave an initialized instance whose generated key was never saved.
+	if file != nil {
+		if err = json.NewEncoder(file).Encode(export); err != nil {
+			return err
+		}
+		if err = file.Sync(); err != nil {
+			return err
+		}
+	}
 	if command == "init-key" {
 		var count int
 		if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM instance_auth`).Scan(&count); err != nil {
@@ -90,22 +107,10 @@ func manageInstanceKey(command string, args []string) error {
 		return err
 	}
 	committed = true
-	export := struct {
-		Key             string `json:"key"`
-		InstallationURL string `json:"installation_url,omitempty"`
-	}{Key: key}
-	if *server != "" {
-		export.InstallationURL = "cylo://connect?" + url.Values{"server": {*server}}.Encode() + "#" + url.Values{"key": {key}}.Encode()
-	}
-	writer := os.Stdout
-	if file != nil {
-		writer = file
-	}
-	if err = json.NewEncoder(writer).Encode(export); err != nil {
-		return fmt.Errorf("key committed but export failed; rotate again with a usable destination: %w", err)
-	}
-	if file != nil {
-		return file.Sync()
+	if file == nil {
+		if err = json.NewEncoder(os.Stdout).Encode(export); err != nil {
+			return fmt.Errorf("key committed but stdout export failed; rotate again with --output: %w", err)
+		}
 	}
 	return nil
 }

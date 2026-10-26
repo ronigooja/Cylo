@@ -93,7 +93,7 @@ func enqueueEventNotification(ctx context.Context, tx *sql.Tx, e contracts.Event
 		return errors.New("notification event is missing task identity")
 	}
 	var subjectID string
-	err := tx.QueryRowContext(ctx, `SELECT d.subject_id FROM tasks t JOIN devices d ON d.id=t.created_by_device_id WHERE t.id=? AND t.workspace_id=?`, payload.TaskID, e.WorkspaceID).Scan(&subjectID)
+	err := tx.QueryRowContext(ctx, `SELECT d.subject_id FROM tasks t JOIN actors d ON d.id=t.created_by_device_id WHERE t.id=? AND t.workspace_id=?`, payload.TaskID, e.WorkspaceID).Scan(&subjectID)
 	if err != nil {
 		return err
 	}

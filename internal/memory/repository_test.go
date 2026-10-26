@@ -393,7 +393,7 @@ func TestTaskContextExcludesMemoriesFromOtherProjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = store.DB().ExecContext(ctx, `INSERT INTO devices(id,workspace_id,subject_id,name,status,token_hash,created_at) VALUES('device-a','default','owner','test','approved',X'01','now')`)
+	_, err = store.DB().ExecContext(ctx, `INSERT INTO actors(id,workspace_id,subject_id,name,status,created_at) VALUES('device-a','default','owner','test','approved','now')`)
 	if err != nil {
 		t.Fatal(err)
 	}

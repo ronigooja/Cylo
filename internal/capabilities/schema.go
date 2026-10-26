@@ -163,7 +163,7 @@ UPDATE capability_trigger_definitions SET enabled=0;`)
 		return err
 	}
 	if err := store.RegisterMigration(storage.Migration{Namespace: "capabilities", Version: 303, Name: "capability_grant_authorizing_device_v1", Up: func(ctx context.Context, tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `ALTER TABLE capability_grants ADD COLUMN authorized_by_device_id TEXT REFERENCES devices(id);`)
+		_, err := tx.ExecContext(ctx, `ALTER TABLE capability_grants ADD COLUMN authorized_by_device_id TEXT REFERENCES actors(id);`)
 		return err
 	}}); err != nil {
 		return err
@@ -172,10 +172,10 @@ UPDATE capability_trigger_definitions SET enabled=0;`)
 		_, err := tx.ExecContext(ctx, `
 ALTER TABLE capability_deployments ADD COLUMN revoked_at TEXT;
 ALTER TABLE capability_deployments ADD COLUMN revoked_by TEXT NOT NULL DEFAULT '';
-ALTER TABLE capability_deployments ADD COLUMN revoked_by_device_id TEXT REFERENCES devices(id);
+ALTER TABLE capability_deployments ADD COLUMN revoked_by_device_id TEXT REFERENCES actors(id);
 ALTER TABLE capability_grants ADD COLUMN revoked_at TEXT;
 ALTER TABLE capability_grants ADD COLUMN revoked_by TEXT NOT NULL DEFAULT '';
-ALTER TABLE capability_grants ADD COLUMN revoked_by_device_id TEXT REFERENCES devices(id);
+ALTER TABLE capability_grants ADD COLUMN revoked_by_device_id TEXT REFERENCES actors(id);
 ALTER TABLE capability_deployment_jobs ADD COLUMN cleanup_only INTEGER NOT NULL DEFAULT 0 CHECK(cleanup_only IN (0,1));
 `)
 		return err

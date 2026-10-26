@@ -114,7 +114,7 @@ func InitializeInstanceAuth(ctx context.Context, store *storage.Store, configure
 func ensureInstanceActor(ctx context.Context, db *sql.Tx, now string) error {
 	// Existing domain tables retain a synthetic owner row for foreign-key and
 	// audit compatibility; it is never used for authentication or approval.
-	_, err := db.ExecContext(ctx, `INSERT INTO devices(id,workspace_id,subject_id,name,status,token_hash,created_at,approved_at) VALUES('instance','default','owner','This instance','approved',X'',?,?) ON CONFLICT(id) DO NOTHING`, now, now)
+	_, err := db.ExecContext(ctx, `INSERT INTO actors(id,workspace_id,subject_id,name,status,created_at,approved_at) VALUES('instance','default','owner','This instance','approved',?,?) ON CONFLICT(id) DO NOTHING`, now, now)
 	return err
 }
 

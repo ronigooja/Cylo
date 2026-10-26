@@ -29,7 +29,7 @@ func budgetTestServer(t *testing.T, limits contracts.RunBudgetSnapshot) (*Server
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err = store.DB().Exec(`INSERT INTO devices(id,workspace_id,subject_id,name,status,token_hash,created_at) VALUES('budget-device','default','budget-owner','test','approved',? ,?)`, []byte("budget-device-hash"), now); err != nil {
+	if _, err = store.DB().Exec(`INSERT INTO actors(id,workspace_id,subject_id,name,status,created_at) VALUES('budget-device','default','budget-owner','test','approved',?)`, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = store.DB().Exec(`INSERT INTO tasks(id,workspace_id,title,goal,source,profile_id,status,version,created_at,updated_at,accepted_at,created_by_device_id,command_id) VALUES('budget-task','default','budget','budget','user','worker','active',1,?,?,?,?,?)`, now, now, now, "budget-device", "budget-command"); err != nil {

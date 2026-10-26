@@ -928,7 +928,7 @@ func mayDeleteScope(p contracts.Principal, scope Scope) bool {
 
 // A workspace grant includes records attached to that principal's workspace
 // projects and tasks. Narrower project/task grants remain available for
-// devices and workers that should see only selected scopes.
+// actors and workers that should see only selected scopes.
 func hasMemoryAction(p contracts.Principal, action string, scope Scope) bool {
 	if scope.Kind == ScopePersonal && scope.PrincipalID != p.SubjectID {
 		return false
