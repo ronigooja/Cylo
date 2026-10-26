@@ -444,3 +444,84 @@ func TestUnmanagedNonAOInventoryRequiresCompleteIdentityAndState(t *testing.T) {
 		})
 	}
 }
+
+func TestDockerInventoryNormalizesOnlyUnorderedMounts(t *testing.T) {
+	for _, kind := range []string{"retained", "preexisting", "unmanaged"} {
+		t.Run(kind, func(t *testing.T) {
+			for _, change := range []string{"mount-order", "mount-source", "mount-destination", "mount-value", "env-order", "command-order", "health-state"} {
+				t.Run(change, func(t *testing.T) {
+					e, c, inventory, _ := prepareReconciliation(t)
+					id := strings.Repeat("a", 64)
+					fixture := neverStartedContainerFixture(id)
+					opts := ReconciliationOptions{RetainNeverStartedContainerIDs: []string{id}}
+					if kind != "retained" {
+						fixture = preexistingCapabilityFixture(id)
+						opts = ReconciliationOptions{}
+						if kind == "preexisting" {
+							recordOriginalDispatch(t, e)
+							opts.UnrelatedPreexistingCapabilityContainerIDs = []string{id}
+						} else {
+							fixture["Name"] = "/memory-worker"
+							fixture["Config"].(map[string]any)["Labels"] = map[string]string{}
+						}
+					}
+					firstMount := map[string]any{"Type": "bind", "Source": "/source/z", "Destination": "/z", "RW": true, "Propagation": "rprivate"}
+					secondMount := map[string]any{"Type": "bind", "Source": "/source/a", "Destination": "/a", "RW": false, "Propagation": "rprivate"}
+					fixture["Mounts"] = []any{firstMount, secondMount}
+					config := fixture["Config"].(map[string]any)
+					config["Env"] = []string{"A=1", "B=2"}
+					config["Cmd"] = []string{"python", "worker"}
+					fixture["State"].(map[string]any)["Health"] = map[string]any{"Status": "healthy"}
+					docker := &completeInventoryDocker{containers: map[string]map[string]any{id: fixture}, change: func(round int, _ map[string]map[string]any) {
+						if round != 2 {
+							return
+						}
+						fixture["Mounts"] = []any{secondMount, firstMount}
+						switch change {
+						case "mount-source":
+							firstMount["Source"] = "/different"
+						case "mount-destination":
+							firstMount["Destination"] = "/different"
+						case "mount-value":
+							firstMount["RW"] = false
+						case "env-order":
+							config["Env"] = []string{"B=2", "A=1"}
+						case "command-order":
+							config["Cmd"] = []string{"worker", "python"}
+						case "health-state":
+							fixture["State"].(map[string]any)["Health"].(map[string]any)["Status"] = "unhealthy"
+						}
+					}}
+					err := e.ReconcileNoEffect(context.Background(), []string{"run-1"}, "operator", true, inventory, docker, opts)
+					if change == "mount-order" {
+						if err != nil || len(c.observations) != 1 {
+							t.Fatalf("mount order alone changed inventory: %v observations=%d", err, len(c.observations))
+						}
+					} else {
+						if err == nil || len(c.observations) != 0 {
+							t.Fatalf("semantic change %s was ignored: %v", change, err)
+						}
+					}
+					if docker.mutations != 0 {
+						t.Fatal("inventory reconciliation mutated Docker")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestCanonicalDockerInspectionPreservesValuesAndUnknownArrayOrder(t *testing.T) {
+	canonical, err := canonicalDockerInspection([]byte(`{"Mounts":[{"Destination":"/z","Source":"b","Type":"bind","Size":9007199254740993},{"Destination":"/a","Source":"a","Type":"bind"}],"Config":{"Env":["B=2","A=1"]},"State":{"Pid":42}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(canonical), "9007199254740993") || !strings.Contains(string(canonical), `"Env":["B=2","A=1"]`) || strings.Index(string(canonical), `"Destination":"/a"`) > strings.Index(string(canonical), `"Destination":"/z"`) {
+		t.Fatalf("canonicalization changed values or non-mount arrays: %s", canonical)
+	}
+	for _, body := range []string{`null`, `{"Mounts":{}}`, `{"Mounts":[null]}`, `{"Mounts":[]} {}`} {
+		if _, err := canonicalDockerInspection([]byte(body)); err == nil {
+			t.Fatalf("invalid inventory accepted: %s", body)
+		}
+	}
+}

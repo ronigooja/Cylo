@@ -1,12 +1,14 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"sort"
 	"strings"
@@ -300,24 +302,18 @@ func (e *Engine) reconciliationDockerSnapshot(ctx context.Context, docker Docker
 		if json.Unmarshal(body, &container) != nil || container.ID != id || container.Name == "" || container.Config.Image == "" || container.Config.Labels == nil || container.Created.IsZero() || container.State.Status == "" || container.State.Running == nil || container.State.Paused == nil || container.State.Restarting == nil || container.State.Dead == nil || container.State.PID == nil || container.State.StartedAt == nil || container.State.FinishedAt == nil {
 			return snapshot, errors.New("Docker inventory identity is incomplete")
 		}
-		var fullSnapshot any
-		if json.Unmarshal(body, &fullSnapshot) != nil {
-			return snapshot, errors.New("Docker container inspection is invalid")
+		canonicalBody, canonicalErr := canonicalDockerInspection(body)
+		if canonicalErr != nil {
+			return snapshot, canonicalErr
 		}
-		canonicalBody, _ := json.Marshal(fullSnapshot)
 		fullDigest := sha256.Sum256(canonicalBody)
 		snapshot.hashes[id] = hex.EncodeToString(fullDigest[:])
 		labels := container.Config.Labels
 		legacy := strings.ToLower(container.Name + " " + container.Config.Image)
 		if _, selected := preexistingIDs[id]; selected {
 			checkedAt := time.Now().UTC()
-			var canonical any
-			if json.Unmarshal(body, &canonical) != nil {
-				return snapshot, errors.New("Docker inspection is invalid")
-			}
-			encoded, _ := json.Marshal(canonical)
-			digest := sha256.Sum256(encoded)
-			proof := contracts.PreexistingCapabilityContainer{ID: id, Name: container.Name, Image: container.Config.Image, Labels: labels, CreatedAt: container.Created, Status: container.State.Status, Running: container.State.Running, Paused: container.State.Paused, Restarting: container.State.Restarting, Dead: container.State.Dead, PID: container.State.PID, StartedAt: container.State.StartedAt, FirstCheckedAt: checkedAt, RecheckedAt: checkedAt, SnapshotSHA256: hex.EncodeToString(digest[:])}
+
+			proof := contracts.PreexistingCapabilityContainer{ID: id, Name: container.Name, Image: container.Config.Image, Labels: labels, CreatedAt: container.Created, Status: container.State.Status, Running: container.State.Running, Paused: container.State.Paused, Restarting: container.State.Restarting, Dead: container.State.Dead, PID: container.State.PID, StartedAt: container.State.StartedAt, FirstCheckedAt: checkedAt, RecheckedAt: checkedAt, SnapshotSHA256: hex.EncodeToString(fullDigest[:])}
 			if !proof.Valid(runStartedAt, aoStartedAt, checkedAt) {
 				return snapshot, errors.New("explicit preexisting capability container identity, state or creation boundary is unproven")
 			}
@@ -336,15 +332,8 @@ func (e *Engine) reconciliationDockerSnapshot(ctx context.Context, docker Docker
 		aoRuntime := hasRuntimeLabel || hasSessionLabel || strings.Contains(legacy, "codex") || strings.Contains(legacy, "opencode") || strings.Contains(legacy, "ao-worker")
 		if selected {
 			checkedAt := time.Now().UTC()
-			// Canonicalize the whole inspect response, including state and ownership,
-			// for a stable comparison without persisting environment or private data.
-			var canonical any
-			if json.Unmarshal(body, &canonical) != nil {
-				return snapshot, errors.New("Docker container inspection is invalid")
-			}
-			encoded, _ := json.Marshal(canonical)
-			digest := sha256.Sum256(encoded)
-			proof := contracts.RetainedNeverStartedContainer{ID: id, Managed: labels[aoContainerManagedLabel], Runtime: labels[aoContainerRuntimeLabel], SessionID: labels[aoContainerSessionLabel], Status: container.State.Status, Running: container.State.Running, Paused: container.State.Paused, Restarting: container.State.Restarting, Dead: container.State.Dead, OOMKilled: container.State.OOMKilled, ExitCode: container.State.ExitCode, Error: container.State.Error, PID: container.State.PID, StartedAt: container.State.StartedAt, FinishedAt: container.State.FinishedAt, CreatedAt: container.Created, RestartCount: container.RestartCount, RestartPolicy: container.HostConfig.RestartPolicy.Name, FirstCheckedAt: checkedAt, RecheckedAt: checkedAt, SnapshotSHA256: hex.EncodeToString(digest[:])}
+
+			proof := contracts.RetainedNeverStartedContainer{ID: id, Managed: labels[aoContainerManagedLabel], Runtime: labels[aoContainerRuntimeLabel], SessionID: labels[aoContainerSessionLabel], Status: container.State.Status, Running: container.State.Running, Paused: container.State.Paused, Restarting: container.State.Restarting, Dead: container.State.Dead, OOMKilled: container.State.OOMKilled, ExitCode: container.State.ExitCode, Error: container.State.Error, PID: container.State.PID, StartedAt: container.State.StartedAt, FinishedAt: container.State.FinishedAt, CreatedAt: container.Created, RestartCount: container.RestartCount, RestartPolicy: container.HostConfig.RestartPolicy.Name, FirstCheckedAt: checkedAt, RecheckedAt: checkedAt, SnapshotSHA256: hex.EncodeToString(fullDigest[:])}
 			if !proof.Valid(aoStartedAt, checkedAt) {
 				return snapshot, errors.New("explicitly retained AO container is not fully verified as never started")
 			}
@@ -468,4 +457,61 @@ func (e *Engine) originalDispatchTime(ctx context.Context, claim contracts.JobCl
 		return time.Time{}, err
 	}
 	return time.Time{}, errors.New("preexisting capability exclusion requires the original journaled dispatch observation")
+}
+
+// canonicalDockerInspection normalizes only Docker's unordered top-level
+// Mounts inventory. All values and every other array retain their order.
+func canonicalDockerInspection(body []byte) ([]byte, error) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var inspection map[string]any
+	if err := decoder.Decode(&inspection); err != nil || inspection == nil {
+		return nil, errors.New("Docker container inspection is invalid")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, errors.New("Docker container inspection contains trailing data")
+	}
+	if rawMounts, exists := inspection["Mounts"]; exists && rawMounts != nil {
+		mounts, ok := rawMounts.([]any)
+		if !ok {
+			return nil, errors.New("Docker mount inventory is invalid")
+		}
+		type sortableMount struct {
+			value                                map[string]any
+			destination, source, kind, canonical string
+		}
+		ordered := make([]sortableMount, 0, len(mounts))
+		for _, raw := range mounts {
+			mount, ok := raw.(map[string]any)
+			if !ok || mount == nil {
+				return nil, errors.New("Docker mount inventory entry is invalid")
+			}
+			encoded, err := json.Marshal(mount)
+			if err != nil {
+				return nil, err
+			}
+			destination, _ := mount["Destination"].(string)
+			source, _ := mount["Source"].(string)
+			kind, _ := mount["Type"].(string)
+			ordered = append(ordered, sortableMount{mount, destination, source, kind, string(encoded)})
+		}
+		sort.Slice(ordered, func(i, j int) bool {
+			a, b := ordered[i], ordered[j]
+			if a.destination != b.destination {
+				return a.destination < b.destination
+			}
+			if a.source != b.source {
+				return a.source < b.source
+			}
+			if a.kind != b.kind {
+				return a.kind < b.kind
+			}
+			return a.canonical < b.canonical
+		})
+		for i, mount := range ordered {
+			mounts[i] = mount.value
+		}
+	}
+	return json.Marshal(inspection)
 }
