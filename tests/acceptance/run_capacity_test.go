@@ -15,7 +15,7 @@ func TestGlobalFourRunCapKeepsUnknownOutcomeFenced(t *testing.T) {
 	code, deviceToken := reviewToken(t), reviewToken(t)
 	runnerTokens := []string{reviewToken(t), reviewToken(t), reviewToken(t), reviewToken(t), reviewToken(t)}
 	profile := control.RuntimeProfile{ID: "worker", AOProjectID: "workers", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "native-sandbox"}
-	_, h := reviewServer(t, control.Config{BootstrapCode: code, DefaultProfileID: "worker", Profiles: map[string]control.RuntimeProfile{"worker": profile}}, func(s *control.Server) {
+	_, h := reviewServer(t, control.Config{DefaultProfileID: "worker", Profiles: map[string]control.RuntimeProfile{"worker": profile}}, func(s *control.Server) {
 		for i, token := range runnerTokens {
 			if err := s.RegisterRunnerCredential(context.Background(), token, "runner-"+strconv.Itoa(i), []string{"default"}, []string{"runner:claim", "runner:observe", "runner:control:read"}); err != nil {
 				t.Fatal(err)

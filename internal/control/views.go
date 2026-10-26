@@ -37,7 +37,7 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 }
 
 func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (contracts.Snapshot, error) {
-	out := contracts.Snapshot{ServerVersion: "1", Projects: []contracts.Project{}, Tasks: []contracts.Task{}, Approvals: []contracts.Approval{}, Devices: []contracts.Device{}, Runs: []contracts.Run{}}
+	out := contracts.Snapshot{WorkspaceID: workspace, SubjectID: subject, ServerVersion: "1", Projects: []contracts.Project{}, Tasks: []contracts.Task{}, Approvals: []contracts.Approval{}, Runs: []contracts.Run{}}
 	var cursor int64
 	if err := tx.QueryRowContext(ctx, `SELECT current_cursor FROM event_counters WHERE workspace_id=?`, workspace).Scan(&cursor); err != nil {
 		return out, err
@@ -46,7 +46,7 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (c
 	if err := tx.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&out.Authority.InstanceLineageID, &out.Authority.Generation, &out.Authority.DeletionSequence); err != nil {
 		return out, err
 	}
-	projects, err := tx.QueryContext(ctx, `SELECT id,name,description,status,version,created_at,updated_at FROM projects p WHERE workspace_id=? AND (owner_subject_id=? OR EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=p.workspace_id AND m.project_id=p.id AND m.subject_id=? AND m.status='active')) ORDER BY created_at,id`, workspace, subject, subject)
+	projects, err := tx.QueryContext(ctx, `SELECT id,name,description,status,version,created_at,updated_at FROM projects p WHERE workspace_id=? AND (owner_subject_id=?) ORDER BY created_at,id`, workspace, subject)
 	if err != nil {
 		return out, err
 	}
@@ -66,7 +66,7 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (c
 		return out, err
 	}
 	projects.Close()
-	tasks, err := tx.QueryContext(ctx, `SELECT id,coalesce(project_id,''),title,goal,source,profile_id,status,version,created_at,updated_at,accepted_at,started_at,finished_at,result,error FROM tasks t WHERE workspace_id=? AND (owner_subject_id=? OR (project_id IS NOT NULL AND EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=t.workspace_id AND m.project_id=t.project_id AND m.subject_id=? AND m.status='active'))) ORDER BY created_at,id`, workspace, subject, subject)
+	tasks, err := tx.QueryContext(ctx, `SELECT id,coalesce(project_id,''),title,goal,source,profile_id,status,version,created_at,updated_at,accepted_at,started_at,finished_at,result,error FROM tasks t WHERE workspace_id=? AND (owner_subject_id=?) ORDER BY created_at,id`, workspace, subject)
 	if err != nil {
 		return out, err
 	}
@@ -112,7 +112,7 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (c
 		return out, err
 	}
 	tasks.Close()
-	approvals, err := tx.QueryContext(ctx, `SELECT a.id,a.task_id,a.task_version,a.status,a.prompt,a.version,a.created_at,a.expires_at,a.requested_action,a.requested_action_digest FROM approvals a JOIN tasks t ON t.id=a.task_id AND t.workspace_id=a.workspace_id WHERE a.workspace_id=? AND (t.owner_subject_id=? OR (t.project_id IS NOT NULL AND EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=t.workspace_id AND m.project_id=t.project_id AND m.subject_id=? AND m.status='active'))) ORDER BY a.created_at,a.id`, workspace, subject, subject)
+	approvals, err := tx.QueryContext(ctx, `SELECT a.id,a.task_id,a.task_version,a.status,a.prompt,a.version,a.created_at,a.expires_at,a.requested_action,a.requested_action_digest FROM approvals a JOIN tasks t ON t.id=a.task_id AND t.workspace_id=a.workspace_id WHERE a.workspace_id=? AND (t.owner_subject_id=?) ORDER BY a.created_at,a.id`, workspace, subject)
 	if err != nil {
 		return out, err
 	}
@@ -140,35 +140,7 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (c
 		return out, err
 	}
 	approvals.Close()
-	devices, err := tx.QueryContext(ctx, `SELECT id,workspace_id,name,status,version,created_at,approved_at,last_seen_at FROM devices WHERE workspace_id=? AND subject_id=? ORDER BY created_at,id`, workspace, subject)
-	if err != nil {
-		return out, err
-	}
-	for devices.Next() {
-		var d contracts.Device
-		var created string
-		var approved, last sql.NullString
-		if err = devices.Scan(&d.ID, &d.WorkspaceID, &d.Name, &d.Status, &d.Version, &created, &approved, &last); err != nil {
-			devices.Close()
-			return out, err
-		}
-		d.CreatedAt = parseTime(created)
-		if approved.Valid {
-			v := parseTime(approved.String)
-			d.ApprovedAt = &v
-		}
-		if last.Valid {
-			v := parseTime(last.String)
-			d.LastSeenAt = &v
-		}
-		out.Devices = append(out.Devices, d)
-	}
-	if err = devices.Err(); err != nil {
-		devices.Close()
-		return out, err
-	}
-	devices.Close()
-	runs, err := tx.QueryContext(ctx, `SELECT r.id,r.task_id,r.attempt_id,r.status,r.desired_control,r.control_version,r.started_at,r.stopped_at FROM runs r JOIN tasks t ON t.id=r.task_id AND t.workspace_id=r.workspace_id WHERE r.workspace_id=? AND (t.owner_subject_id=? OR (t.project_id IS NOT NULL AND EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=t.workspace_id AND m.project_id=t.project_id AND m.subject_id=? AND m.status='active'))) ORDER BY r.started_at,r.id`, workspace, subject, subject)
+	runs, err := tx.QueryContext(ctx, `SELECT r.id,r.task_id,r.attempt_id,r.status,r.desired_control,r.control_version,r.started_at,r.stopped_at FROM runs r JOIN tasks t ON t.id=r.task_id AND t.workspace_id=r.workspace_id WHERE r.workspace_id=? AND (t.owner_subject_id=?) ORDER BY r.started_at,r.id`, workspace, subject)
 	if err != nil {
 		return out, err
 	}
@@ -278,18 +250,17 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	defer ticker.Stop()
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
-	credential, _ := tokenHash(bearer(r))
 	for {
 		tx, err := s.store.DB().BeginTx(r.Context(), &sql.TxOptions{ReadOnly: true})
 		if err != nil {
 			return
 		}
-		var status string
-		if err = tx.QueryRowContext(r.Context(), `SELECT status FROM devices WHERE token_hash=?`, credential).Scan(&status); err != nil || status != "approved" {
+		if err = requireOwnerSessionTx(r.Context(), tx, p); err != nil {
 			_ = tx.Rollback()
 			return
 		}
-		rows, err := tx.QueryContext(r.Context(), `SELECT e.cursor,e.event_type,e.payload,(e.subject_id=? OR ?=1 OR (e.aggregate_type='project' AND EXISTS(SELECT 1 FROM projects p WHERE p.workspace_id=e.workspace_id AND p.id=e.aggregate_id AND (p.owner_subject_id=? OR EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=p.workspace_id AND m.project_id=p.id AND m.subject_id=? AND m.status='active')))) OR (e.aggregate_type='task' AND EXISTS(SELECT 1 FROM tasks t WHERE t.workspace_id=e.workspace_id AND t.id=e.aggregate_id AND (t.owner_subject_id=? OR (t.project_id IS NOT NULL AND EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=t.workspace_id AND m.project_id=t.project_id AND m.subject_id=? AND m.status='active'))))) OR (e.aggregate_type='run' AND EXISTS(SELECT 1 FROM runs r JOIN tasks t ON t.id=r.task_id AND t.workspace_id=r.workspace_id WHERE r.workspace_id=e.workspace_id AND r.id=e.aggregate_id AND (t.owner_subject_id=? OR (t.project_id IS NOT NULL AND EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=t.workspace_id AND m.project_id=t.project_id AND m.subject_id=? AND m.status='active')))))) AS visible FROM events e WHERE e.workspace_id=? AND e.cursor>? ORDER BY e.cursor LIMIT 100`, p.SubjectID, HasScope(p, "device:manage"), p.SubjectID, p.SubjectID, p.SubjectID, p.SubjectID, p.SubjectID, p.SubjectID, p.WorkspaceID, cursor)
+
+		rows, err := tx.QueryContext(r.Context(), `SELECT e.cursor,e.event_type,e.payload,(e.subject_id=? OR ?=1 OR (e.aggregate_type='project' AND EXISTS(SELECT 1 FROM projects p WHERE p.workspace_id=e.workspace_id AND p.id=e.aggregate_id AND (p.owner_subject_id=?))) OR (e.aggregate_type='task' AND EXISTS(SELECT 1 FROM tasks t WHERE t.workspace_id=e.workspace_id AND t.id=e.aggregate_id AND (t.owner_subject_id=?))) OR (e.aggregate_type='run' AND EXISTS(SELECT 1 FROM runs r JOIN tasks t ON t.id=r.task_id AND t.workspace_id=r.workspace_id WHERE r.workspace_id=e.workspace_id AND r.id=e.aggregate_id AND (t.owner_subject_id=?)))) AS visible FROM events e WHERE e.workspace_id=? AND e.cursor>? ORDER BY e.cursor LIMIT 100`, p.SubjectID, true, p.SubjectID, p.SubjectID, p.SubjectID, p.WorkspaceID, cursor)
 		if err != nil {
 			_ = tx.Rollback()
 			return

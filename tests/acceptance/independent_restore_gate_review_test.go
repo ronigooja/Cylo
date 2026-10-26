@@ -41,7 +41,7 @@ func TestIndependentStagedRestoreCannotServeAuthorityBeforePrepare(t *testing.T)
 	if err = control.RegisterInstanceMaintenanceMigration(target); err != nil {
 		t.Fatal(err)
 	}
-	server, err := control.NewServer(target, control.Config{DeviceScopes: exportDeviceScopes})
+	server, err := control.NewServer(target, control.Config{InstanceScopes: exportInstanceScopes})
 	if err != nil {
 		t.Fatal(err)
 	}

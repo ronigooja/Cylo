@@ -16,7 +16,7 @@ func TestTaskSourceAdmissionSharesCommandTransaction(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
 	profile := control.RuntimeProfile{ID: "worker", AOProjectID: "workers", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "native-sandbox"}
 	var server *control.Server
-	store, h := reviewServer(t, control.Config{BootstrapCode: code, DefaultProfileID: "worker", Profiles: map[string]control.RuntimeProfile{"worker": profile}}, func(s *control.Server) {
+	store, h := reviewServer(t, control.Config{DefaultProfileID: "worker", Profiles: map[string]control.RuntimeProfile{"worker": profile}}, func(s *control.Server) {
 		server = s
 		if err := s.RegisterTaskSourceHandler("voice", func(ctx context.Context, tx *sql.Tx, principal contracts.Principal, taskID string, task *control.TaskSourceRequest, ref json.RawMessage, _ time.Time) ([]contracts.Event, error) {
 			if principal.DeviceID == "" || !json.Valid(ref) {

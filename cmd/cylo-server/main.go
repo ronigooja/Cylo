@@ -1,16 +1,12 @@
-// cylo-server starts the private control plane. Runtime profiles and bootstrap
-// the instance key is generated at first start and shown once; no credentials
-// are read from source-controlled files.
+// cylo-server starts the private control plane. Instance keys are provisioned
+// using init-key with explicit secure output, or a deployment-provided secret.
 package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"flag"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -28,8 +24,8 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "rotate-key" {
-		if err := rotateInstanceKey(os.Args[2:]); err != nil {
+	if len(os.Args) > 1 {
+		if err := manageInstanceKey(os.Args[1], os.Args[2:]); err != nil {
 			log.Printf("instance key rotation failed: %v", err)
 			os.Exit(1)
 		}
@@ -39,71 +35,6 @@ func main() {
 		log.Printf("cylo-server stopped: %v", err)
 		os.Exit(1)
 	}
-}
-
-func rotateInstanceKey(args []string) error {
-	flags := flag.NewFlagSet("rotate-key", flag.ContinueOnError)
-	dbPath := flags.String("database", "", "path to the control database")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if *dbPath == "" || flags.NArg() != 0 {
-		return errors.New("usage: cylo-server rotate-key --database PATH")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	store, err := storage.Open(ctx, storage.Config{Path: *dbPath})
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-	if err = storage.RegisterCoreMigrations(store); err != nil {
-		return err
-	}
-	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
-		return err
-	}
-	if err = memory.RegisterMigrations(store); err != nil {
-		return err
-	}
-	if err = voice.RegisterMigrations(store); err != nil {
-		return err
-	}
-	if err = capabilities.RegisterMigrations(store); err != nil {
-		return err
-	}
-	if err = store.Migrate(ctx); err != nil {
-		return err
-	}
-	key, err := control.GenerateInstanceKey()
-	if err != nil {
-		return err
-	}
-	digest := sha256.Sum256([]byte{})
-	// Hash the raw 32-byte key, matching the server's bearer digest.
-	raw, err := base64.RawURLEncoding.DecodeString(key)
-	if err != nil {
-		return err
-	}
-	digest = sha256.Sum256(raw)
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	tx, err := store.DB().BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `UPDATE instance_auth SET key_hash=?,rotated_at=? WHERE singleton=1`, digest[:], now); err != nil {
-		return err
-	}
-	if _, err = tx.ExecContext(ctx, `UPDATE devices SET token_hash=?,status='approved',revoked_at=NULL,version=version+1 WHERE id='instance'`, digest[:]); err != nil {
-		return err
-	}
-	if err = tx.Commit(); err != nil {
-		return err
-	}
-	fmt.Println("Instance key (shown once; import it on every Apple device):")
-	fmt.Println(key)
-	return nil
 }
 
 func run() error {
@@ -162,13 +93,8 @@ func run() error {
 	if err = store.Migrate(ctx); err != nil {
 		return err
 	}
-	issuedKey, generatedKey, err := control.InitializeInstanceAuth(ctx, store, instanceKey)
-	if err != nil {
+	if _, _, err = control.InitializeInstanceAuth(ctx, store, instanceKey); err != nil {
 		return err
-	}
-	if generatedKey {
-		fmt.Println("Instance key (shown once; import it on every Apple device):")
-		fmt.Println(issuedKey)
 	}
 	if runnerToken != "" {
 		if err = control.RegisterRunnerCredentialIfMissing(ctx, store, runnerToken, env("CYLO_RUNNER_ID", "configured-runner"), splitEnv("CYLO_RUNNER_WORKSPACES", "default"), splitEnv("CYLO_RUNNER_SCOPES", "runner:claim,runner:observe,runner:control:read")); err != nil {

@@ -25,7 +25,6 @@ CREATE TABLE devices (
   created_at TEXT NOT NULL,
   approved_at TEXT,
   last_seen_at TEXT,
-  pairing_expires_at TEXT,
   revoked_at TEXT
 );
 CREATE INDEX devices_subject ON devices(workspace_id,subject_id,status);
@@ -221,17 +220,6 @@ CREATE TABLE notifications (
 CREATE INDEX notifications_inbox ON notifications(workspace_id,subject_id,created_at,id);
 ALTER TABLE projects ADD COLUMN owner_subject_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN owner_subject_id TEXT NOT NULL DEFAULT '';
-CREATE TABLE project_memberships (
-  workspace_id TEXT NOT NULL REFERENCES workspaces(id),
-  project_id TEXT NOT NULL,
-  subject_id TEXT NOT NULL,
-  role TEXT NOT NULL CHECK(role IN ('owner','member','viewer')),
-  status TEXT NOT NULL CHECK(status IN ('active','revoked')),
-  created_at TEXT NOT NULL,
-  PRIMARY KEY(workspace_id,project_id,subject_id),
-  FOREIGN KEY(workspace_id,project_id) REFERENCES projects(workspace_id,id)
-);
-CREATE INDEX project_memberships_subject ON project_memberships(workspace_id,subject_id,status);
 UPDATE projects SET owner_subject_id=coalesce((SELECT e.subject_id FROM events e WHERE e.aggregate_type='project' AND e.aggregate_id=projects.id AND e.event_type='project.created' AND e.subject_id IS NOT NULL ORDER BY e.cursor LIMIT 1),'');
 UPDATE tasks SET owner_subject_id=coalesce((SELECT d.subject_id FROM devices d WHERE d.id=tasks.created_by_device_id),'');
 `)
@@ -308,6 +296,7 @@ CREATE TABLE device_push_tokens (
   workspace_id TEXT NOT NULL REFERENCES workspaces(id),
   subject_id TEXT NOT NULL,
   device_id TEXT NOT NULL REFERENCES devices(id),
+  installation_id TEXT NOT NULL,
   platform TEXT NOT NULL CHECK(platform IN ('ios','macos')),
   token_hex TEXT NOT NULL,
   token_hash BLOB NOT NULL UNIQUE,
@@ -316,7 +305,7 @@ CREATE TABLE device_push_tokens (
   updated_at TEXT NOT NULL,
   disabled_at TEXT
 );
-CREATE UNIQUE INDEX device_push_tokens_active_device_platform ON device_push_tokens(device_id,platform) WHERE status='active';
+CREATE UNIQUE INDEX device_push_tokens_active_device_platform ON device_push_tokens(installation_id,platform) WHERE status='active';
 CREATE INDEX device_push_tokens_subject ON device_push_tokens(workspace_id,subject_id,status);
 CREATE TABLE push_deliveries (
   id TEXT PRIMARY KEY,

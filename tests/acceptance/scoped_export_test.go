@@ -27,7 +27,7 @@ import (
 	"github.com/ronigooja/Cylo/internal/voice"
 )
 
-var exportDeviceScopes = []string{"client:read", "client:command", "export:read", "memory:read:personal", "memory:read:workspace"}
+var exportInstanceScopes = []string{"client:read", "client:command", "export:read", "memory:read:personal", "memory:read:workspace"}
 
 func scopedExportServer(t *testing.T) (*storage.Store, http.Handler, string, string, string) {
 	t.Helper()
@@ -43,7 +43,7 @@ func scopedExportServer(t *testing.T) (*storage.Store, http.Handler, string, str
 	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
 		t.Fatal(err)
 	}
-	server, err := control.NewServer(store, control.Config{BootstrapCode: code, DeviceScopes: exportDeviceScopes})
+	server, err := control.NewServer(store, control.Config{InstanceScopes: exportInstanceScopes})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func scopedExportServer(t *testing.T) (*storage.Store, http.Handler, string, str
 	if err = store.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	h := server.Handler()
+	h := bindReviewHandler(server.Handler(), store)
 	registration := reviewBootstrap(t, h, code, token)
 	var subject string
 	if err = store.DB().QueryRow(`SELECT subject_id FROM devices WHERE id=?`, registration.Device.ID).Scan(&subject); err != nil {
@@ -74,10 +74,8 @@ func scopedExportServer(t *testing.T) (*storage.Store, http.Handler, string, str
 func TestScopedExportHTTPHonorsMembershipMemoryVersionsAndTombstones(t *testing.T) {
 	store, handler, token, subject, deviceID := scopedExportServer(t)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	seedExportProjectTask(t, store.DB(), "visible-project", "visible-task", "default", "other-subject", deviceID, now)
-	if _, err := store.DB().Exec(`INSERT INTO project_memberships(workspace_id,project_id,subject_id,role,status,created_at) VALUES('default','visible-project',?,'viewer','active',?)`, subject, now); err != nil {
-		t.Fatal(err)
-	}
+	seedExportProjectTask(t, store.DB(), "visible-project", "visible-task", "default", subject, deviceID, now)
+
 	seedExportProjectTask(t, store.DB(), "hidden-project", "hidden-task", "default", "someone-else", deviceID, now)
 	if _, err := store.DB().Exec(`INSERT INTO workspaces(id,name,created_at) VALUES('other-workspace','private',?)`, now); err != nil {
 		t.Fatal(err)
@@ -398,7 +396,7 @@ func TestScopedExportRequiresSeparateExportAndMemoryReadGrants(t *testing.T) {
 	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
 		t.Fatal(err)
 	}
-	server, err := control.NewServer(store, control.Config{BootstrapCode: code, DeviceScopes: []string{"client:read", "memory:read:personal", "memory:read:workspace"}})
+	server, err := control.NewServer(store, control.Config{InstanceScopes: []string{"client:read", "memory:read:personal", "memory:read:workspace"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +415,7 @@ func TestScopedExportRequiresSeparateExportAndMemoryReadGrants(t *testing.T) {
 	if err = store.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	h := server.Handler()
+	h := bindReviewHandler(server.Handler(), store)
 	reviewBootstrap(t, h, code, token)
 	resp := reviewRequest(h, http.MethodGet, "/v1/export?scope=personal", token, "", nil)
 	if resp.Code != http.StatusForbidden || strings.Contains(resp.Body.String(), "sqlite") {
@@ -442,7 +440,7 @@ func TestScopedExportKeepsNarrowMemoryGrantNarrow(t *testing.T) {
 	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
 		t.Fatal(err)
 	}
-	server, err := control.NewServer(store, control.Config{BootstrapCode: code, DeviceScopes: []string{"client:read", "export:read", "memory:read:project:project-a"}})
+	server, err := control.NewServer(store, control.Config{InstanceScopes: []string{"client:read", "export:read", "memory:read:project:project-a"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +459,7 @@ func TestScopedExportKeepsNarrowMemoryGrantNarrow(t *testing.T) {
 	if err = store.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	h := server.Handler()
+	h := bindReviewHandler(server.Handler(), store)
 	registration := reviewBootstrap(t, h, code, token)
 	var subject string
 	if err = store.DB().QueryRow(`SELECT subject_id FROM devices WHERE id=?`, registration.Device.ID).Scan(&subject); err != nil {
@@ -469,9 +467,7 @@ func TestScopedExportKeepsNarrowMemoryGrantNarrow(t *testing.T) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	seedExportProjectTask(t, store.DB(), "project-a", "task-a", "default", "other-owner", registration.Device.ID, now)
-	if _, err = store.DB().Exec(`INSERT INTO project_memberships(workspace_id,project_id,subject_id,role,status,created_at) VALUES('default','project-a',?,'viewer','active',?)`, subject, now); err != nil {
-		t.Fatal(err)
-	}
+
 	seedExportMemory(t, store.DB(), "allowed-project-memory", "project", "project-a", "", "allowed", "allowed project text", "", false, now)
 	seedExportMemory(t, store.DB(), "denied-project-memory", "project", "project-b", "", "denied", "denied project text", "", false, now)
 	seedExportMemory(t, store.DB(), "denied-workspace-memory", "workspace", "", "", "workspace", "denied workspace text", "", false, now)

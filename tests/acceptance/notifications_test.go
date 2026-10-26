@@ -25,7 +25,7 @@ func (s *recordingPushSender) Send(_ context.Context, req control.PushRequest) c
 
 func TestNotificationInboxDurableAndSubjectScoped(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
-	s, h := reviewServer(t, control.Config{BootstrapCode: code}, func(srv *control.Server) {
+	s, h := reviewServer(t, control.Config{}, func(srv *control.Server) {
 		if err := srv.RegisterCommand("review.notification", func(ctx context.Context, tx *sql.Tx, c control.CommandContext, _ contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
 			return contracts.CommandResult{}, []contracts.Event{{Type: "run.runtime_terminated", AggregateType: "run", AggregateID: "run1", AggregateVersion: 1, Payload: json.RawMessage(`{"task_id":"task1","task_status":"awaiting_user"}`)}}, nil
 		}); err != nil {
@@ -69,7 +69,7 @@ func TestNotificationInboxDurableAndSubjectScoped(t *testing.T) {
 func TestPushRegistrationCreatesSilentWakeupDelivery(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
 	sender := &recordingPushSender{response: control.PushResponse{StatusCode: http.StatusInternalServerError}}
-	s, h := reviewServer(t, control.Config{BootstrapCode: code, PushSender: sender}, func(srv *control.Server) {
+	s, h := reviewServer(t, control.Config{PushSender: sender}, func(srv *control.Server) {
 		if err := srv.RegisterCommand("review.notification", func(ctx context.Context, tx *sql.Tx, c control.CommandContext, _ contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
 			return contracts.CommandResult{}, []contracts.Event{{Type: "run.runtime_terminated", AggregateType: "run", AggregateID: "run-push", AggregateVersion: 1, Payload: json.RawMessage(`{"task_id":"task-push","task_status":"awaiting_user"}`)}}, nil
 		}); err != nil {
@@ -150,7 +150,7 @@ func TestPushRegistrationCreatesSilentWakeupDelivery(t *testing.T) {
 
 func TestPushRevocationStopsSelectedUnsentDeliveries(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
-	s, h := reviewServer(t, control.Config{BootstrapCode: code}, func(srv *control.Server) {
+	s, h := reviewServer(t, control.Config{}, func(srv *control.Server) {
 		if err := srv.RegisterCommand("review.notification", func(ctx context.Context, tx *sql.Tx, c control.CommandContext, _ contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
 			return contracts.CommandResult{}, []contracts.Event{{Type: "run.runtime_terminated", AggregateType: "run", AggregateID: "run-push-revoke", AggregateVersion: 1, Payload: json.RawMessage(`{"task_id":"task-push-revoke","task_status":"awaiting_user"}`)}}, nil
 		}); err != nil {

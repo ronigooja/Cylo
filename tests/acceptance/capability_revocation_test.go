@@ -24,9 +24,8 @@ func TestCapabilityRevocationFencesClaimsAndRequiresProvenCleanup(t *testing.T) 
 	}
 	bootstrap, deviceToken, runnerToken := reviewToken(t), reviewToken(t), reviewToken(t)
 	server, err := control.NewServer(store, control.Config{
-		BootstrapCode: bootstrap,
-		DeviceScopes:  []string{"client:read", "client:command", "capability:read", "capability:release:submit", "capability:deployment:request", "capability:deployment:authorize", "capability:deployment:revoke"},
-		RunnerToken:   runnerToken, RunnerID: "revocation-runner", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"capability:deploy"},
+		InstanceScopes: []string{"client:read", "client:command", "capability:read", "capability:release:submit", "capability:deployment:request", "capability:deployment:authorize", "capability:deployment:revoke"},
+		RunnerToken:    runnerToken, RunnerID: "revocation-runner", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"capability:deploy"},
 	})
 	if err != nil {
 		t.Fatal(err)

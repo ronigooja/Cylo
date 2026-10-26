@@ -47,20 +47,15 @@ func TestMaintenanceRESTEncryptedRestoreDrill(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// This drill exercises maintenance with an explicitly established owner fixture.
-	if _, err = store.DB().ExecContext(ctx, `UPDATE owner_auth SET subject_id='ops-owner',password_hash=X'01',password_salt=X'02' WHERE id=1`); err != nil {
-		t.Fatal(err)
-	}
 	deviceToken := randomBearer(t)
-	deviceHash := hashBearer(t, deviceToken)
-	if _, err = store.DB().ExecContext(ctx, `INSERT INTO devices(id,workspace_id,subject_id,name,status,token_hash,created_at,approved_at,owner_generation) VALUES('ops-owner','default','ops-owner','ops drill','approved',?,?,?,1)`, deviceHash, time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if _, _, err = control.InitializeInstanceAuth(ctx, store, deviceToken); err != nil {
 		t.Fatal(err)
 	}
 	runnerToken := randomBearer(t)
 	if err = control.RegisterRunnerCredentialIfMissing(ctx, store, runnerToken, "ops-drill-runner", []string{"default"}, []string{"runner:control:read"}); err != nil {
 		t.Fatal(err)
 	}
-	server, err := control.NewServer(store, control.Config{DeviceScopes: []string{"instance:admin"}, RunnerToken: runnerToken, RunnerID: "ops-drill-runner", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:control:read"}})
+	server, err := control.NewServer(store, control.Config{InstanceScopes: []string{"instance:admin"}, RunnerToken: runnerToken, RunnerID: "ops-drill-runner", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:control:read"}})
 	if err != nil {
 		t.Fatal(err)
 	}

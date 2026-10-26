@@ -7,10 +7,12 @@ import (
 
 // Principal is populated exclusively from authenticated server state.
 type Principal struct {
-	WorkspaceID string   `json:"-"`
-	SubjectID   string   `json:"-"`
-	DeviceID    string   `json:"-"`
-	Scopes      []string `json:"-"`
+	Generation     int64    `json:"-"`
+	InstallationID string   `json:"-"`
+	WorkspaceID    string   `json:"-"`
+	SubjectID      string   `json:"-"`
+	DeviceID       string   `json:"-"`
+	Scopes         []string `json:"-"`
 }
 
 type RunnerPrincipal struct {
@@ -149,13 +151,14 @@ type Approval struct {
 }
 
 type Snapshot struct {
+	WorkspaceID   string           `json:"workspace_id"`
+	SubjectID     string           `json:"subject_id"`
 	ServerVersion string           `json:"server_version"`
 	EventCursor   string           `json:"event_cursor"`
 	Authority     AuthorityVersion `json:"authority"`
 	Projects      []Project        `json:"projects"`
 	Tasks         []Task           `json:"tasks"`
 	Approvals     []Approval       `json:"approvals"`
-	Devices       []Device         `json:"devices"`
 	Runs          []Run            `json:"runs"`
 }
 
@@ -188,27 +191,6 @@ type Run struct {
 	StoppedAt            *time.Time `json:"stopped_at,omitempty"`
 	TerminationConfirmed bool       `json:"termination_confirmed"`
 	Evidence             []Evidence `json:"evidence"`
-}
-
-type BootstrapRequest struct {
-	RequestID   string `json:"request_id"`
-	Code        string `json:"code"`
-	DeviceName  string `json:"device_name"`
-	DeviceToken string `json:"device_token"`
-}
-
-type PairingRequest struct {
-	RequestID   string `json:"request_id"`
-	DeviceName  string `json:"device_name"`
-	DeviceToken string `json:"device_token"`
-}
-
-type PairingStatus struct {
-	PairingID  string     `json:"pairing_id"`
-	Status     string     `json:"status"`
-	DeviceID   string     `json:"device_id,omitempty"`
-	ExpiresAt  time.Time  `json:"expires_at"`
-	ApprovedAt *time.Time `json:"approved_at,omitempty"`
 }
 
 type DeviceRegistration struct {
@@ -342,21 +324,4 @@ type TerminationProof struct {
 	SessionID       string    `json:"session_id"`
 	VerifiedAt      time.Time `json:"verified_at"`
 	CleanupComplete bool      `json:"cleanup_complete"`
-}
-
-// OwnerAuthRequest establishes a separate device session using the one owner
-// password. Code is required only for the first setup or host recovery.
-type OwnerAuthRequest struct {
-	RequestID   string `json:"request_id"`
-	Code        string `json:"code,omitempty"`
-	Password    string `json:"password"`
-	DeviceName  string `json:"device_name"`
-	DeviceToken string `json:"device_token"`
-}
-
-type OwnerAuthStatus struct {
-	SetupRequired bool `json:"setup_required"`
-}
-type OwnerSession struct {
-	DeviceID string `json:"device_id"`
 }

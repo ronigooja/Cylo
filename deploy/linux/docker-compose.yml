@@ -31,7 +31,7 @@ services:
       CYLO_MEMORY_RUNNER_WORKSPACES: ${CYLO_MEMORY_RUNNER_WORKSPACES:-default}
       CYLO_MEMORY_RUNNER_SCOPES: memory:jobs:claim,memory:jobs:complete,memory:propose
       CYLO_VOICE_GATEWAY_URL: ${CYLO_VOICE_GATEWAY_URL:-}
-      CYLO_SECRET_FILE_MAP: CYLO_BOOTSTRAP_CODE=/run/secrets/bootstrap_code,CYLO_RUNNER_TOKEN=/run/secrets/runner_token
+      CYLO_SECRET_FILE_MAP: CYLO_INSTANCE_KEY=/run/secrets/instance_key,CYLO_RUNNER_TOKEN=/run/secrets/runner_token
     entrypoint: ["/usr/local/bin/cylo-secret-entrypoint"]
     command: ["/usr/local/bin/cylo-server"]
     volumes:
@@ -39,8 +39,8 @@ services:
         source: ${CYLO_SERVER_DATA_ROOT:?set a private server authority root}
         target: /var/lib/cylo/server
     secrets:
-      - source: bootstrap_code
-        target: bootstrap_code
+      - source: instance_key
+        target: instance_key
       - source: runner_token
         target: runner_token
       - source: memory_runner_token
@@ -108,8 +108,8 @@ networks:
     external: true
 
 secrets:
-  bootstrap_code:
-    file: ${CYLO_BOOTSTRAP_CODE_FILE:?set a private bootstrap code file path}
+  instance_key:
+    file: ${CYLO_INSTANCE_KEY_FILE:?set a private instance key file path}
   runner_token:
     file: ${CYLO_RUNNER_TOKEN_FILE:?set a private runner token file path}
   memory_runner_token:

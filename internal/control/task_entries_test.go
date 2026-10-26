@@ -182,56 +182,15 @@ func TestTaskEntriesEmptyAuthenticationAndCursorScope(t *testing.T) {
 	}
 }
 
-func TestTaskEntriesAllowsActiveProjectViewerAndRechecksRevocation(t *testing.T) {
-	server, closeStore := taskEntriesTestServer(t)
-	defer closeStore()
-	ctx := context.Background()
-	for _, statement := range []string{
-		`INSERT INTO projects(id,workspace_id,name,status,version,created_at,updated_at,owner_subject_id) VALUES('entries-project','default','Project','active',1,'2026-10-24T12:00:00Z','2026-10-24T12:00:00Z','private-owner')`,
-		`UPDATE tasks SET project_id='entries-project' WHERE id='private-task'`,
-		`INSERT INTO project_memberships(workspace_id,project_id,subject_id,role,status,created_at) VALUES('default','entries-project','entries-owner','viewer','active','2026-10-24T12:00:00Z')`,
-		`INSERT INTO task_entries(id,task_id,workspace_id,kind,content,author_device_id,created_at) VALUES('private-entry','private-task','default','user_message','Shared history','entries-device','2026-10-24T12:00:00Z')`,
-	} {
-		if _, err := server.store.DB().ExecContext(ctx, statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	response := getTaskEntries(server, "private-task", "", "entries-owner")
-	if response.Code != 200 {
-		t.Fatalf("viewer status=%d body=%s", response.Code, response.Body.String())
-	}
-	var page taskEntriesPage
-	if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
-		t.Fatal(err)
-	}
-	if len(page.Messages) != 1 || page.Messages[0].ID != "private-entry" {
-		t.Fatalf("viewer history: %+v", page)
-	}
-	if _, err := server.store.DB().ExecContext(ctx, `UPDATE project_memberships SET status='revoked' WHERE subject_id='entries-owner'`); err != nil {
-		t.Fatal(err)
-	}
-	response = getTaskEntries(server, "private-task", "", "entries-owner")
-	if response.Code != 404 {
-		t.Fatalf("revoked viewer status=%d body=%s", response.Code, response.Body.String())
-	}
-}
-
 func TestTaskEntriesHTTPRequiresDeviceReadScope(t *testing.T) {
 	fixture, closeStore := taskEntriesTestServer(t)
 	defer closeStore()
 	// A synthetic bearer is stored only as a digest, matching device middleware.
 	token := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
-	hash, err := tokenHash(token)
-	if err != nil {
+	if _, _, err := InitializeInstanceAuth(context.Background(), fixture.store, token); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.store.DB().Exec(`UPDATE devices SET token_hash=? WHERE id='entries-device'`, hash); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := fixture.store.DB().Exec(`UPDATE owner_auth SET subject_id='entries-owner',password_hash=X'01',password_salt=X'02' WHERE id=1`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := fixture.store.DB().Exec(`UPDATE devices SET owner_generation=1 WHERE id='entries-device'`); err != nil {
+	if _, err := fixture.store.DB().Exec(`UPDATE tasks SET owner_subject_id='owner' WHERE id='entries-task'`); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
@@ -244,7 +203,7 @@ func TestTaskEntriesHTTPRequiresDeviceReadScope(t *testing.T) {
 		{"read", []string{"client:read"}, 200},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			server, err := NewServer(fixture.store, Config{DeviceScopes: test.scopes})
+			server, err := NewServer(fixture.store, Config{InstanceScopes: test.scopes})
 			if err != nil {
 				t.Fatal(err)
 			}

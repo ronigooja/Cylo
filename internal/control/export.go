@@ -260,15 +260,15 @@ func (s *Server) handleScopedExport(w http.ResponseWriter, r *http.Request) {
 	}
 	defer auditTx.Rollback()
 	var currentCursor int64
-	var deviceStatus string
 	if err = auditTx.QueryRowContext(r.Context(), `SELECT current_cursor FROM event_counters WHERE workspace_id=?`, p.WorkspaceID).Scan(&currentCursor); err != nil || currentCursor != cursor {
 		writeError(w, apiError(http.StatusConflict, "export_snapshot_stale", "authoritative data changed while preparing the export; retry the request", nil))
 		return
 	}
-	if err = auditTx.QueryRowContext(r.Context(), `SELECT status FROM devices WHERE id=? AND workspace_id=? AND subject_id=?`, p.DeviceID, p.WorkspaceID, p.SubjectID).Scan(&deviceStatus); err != nil || deviceStatus != "approved" {
-		writeError(w, apiError(http.StatusForbidden, "forbidden", "device authorization changed while preparing the export", nil))
+	if err = requireOwnerSessionTx(r.Context(), auditTx, p); err != nil {
+		writeError(w, err)
 		return
 	}
+
 	currentPermissionFingerprint, err := exportAuthorizationFingerprint(r.Context(), auditTx, p, scope)
 	if err != nil {
 		writeExportFailure(w)
@@ -663,7 +663,7 @@ func writeExportDocument(ctx context.Context, tx *sql.Tx, out io.Writer, p contr
 	if _, err := io.WriteString(out, `,"tasks":`); err != nil {
 		return err
 	}
-	if err := writeRows(ctx, tx, out, &counts.Tasks, `SELECT json_object('id',t.id,'project_id',CASE WHEN EXISTS(SELECT 1 FROM projects p WHERE p.workspace_id=t.workspace_id AND p.id=t.project_id AND p.status='active' AND (p.owner_subject_id=?2 OR EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=p.workspace_id AND m.project_id=p.id AND m.subject_id=?2 AND m.status='active'))) THEN t.project_id ELSE '' END,'title',t.title,'goal',t.goal,'source',t.source,'profile_id',t.profile_id,'status',t.status,'version',t.version,'created_at',t.created_at,'updated_at',t.updated_at,'accepted_at',t.accepted_at,'started_at',t.started_at,'finished_at',t.finished_at,'result',t.result,'error',t.error) FROM tasks t WHERE t.workspace_id=?1 AND `+visible.task+` ORDER BY t.created_at,t.id`, append([]any(nil), args...)); err != nil {
+	if err := writeRows(ctx, tx, out, &counts.Tasks, `SELECT json_object('id',t.id,'project_id',CASE WHEN EXISTS(SELECT 1 FROM projects p WHERE p.workspace_id=t.workspace_id AND p.id=t.project_id AND p.status='active' AND (p.owner_subject_id=?2)) THEN t.project_id ELSE '' END,'title',t.title,'goal',t.goal,'source',t.source,'profile_id',t.profile_id,'status',t.status,'version',t.version,'created_at',t.created_at,'updated_at',t.updated_at,'accepted_at',t.accepted_at,'started_at',t.started_at,'finished_at',t.finished_at,'result',t.result,'error',t.error) FROM tasks t WHERE t.workspace_id=?1 AND `+visible.task+` ORDER BY t.created_at,t.id`, append([]any(nil), args...)); err != nil {
 		return err
 	}
 	if _, err := io.WriteString(out, `,"task_dependencies":`); err != nil {
@@ -723,10 +723,10 @@ type visibility struct{ project, task, taskOther, taskOnT string }
 
 func exportVisibilityPredicate() visibility {
 	return visibility{
-		project:   `(p.owner_subject_id=?2 OR EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=p.workspace_id AND m.project_id=p.id AND m.subject_id=?2 AND m.status='active'))`,
-		task:      `(t.owner_subject_id=?2 OR (t.project_id IS NOT NULL AND EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=t.workspace_id AND m.project_id=t.project_id AND m.subject_id=?2 AND m.status='active')))`,
-		taskOther: `(dep.owner_subject_id=?2 OR (dep.project_id IS NOT NULL AND EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=dep.workspace_id AND m.project_id=dep.project_id AND m.subject_id=?2 AND m.status='active')))`,
-		taskOnT:   `(t.owner_subject_id=?2 OR (t.project_id IS NOT NULL AND EXISTS(SELECT 1 FROM project_memberships m WHERE m.workspace_id=t.workspace_id AND m.project_id=t.project_id AND m.subject_id=?2 AND m.status='active')))`}
+		project:   `(p.owner_subject_id=?2)`,
+		task:      `(t.owner_subject_id=?2)`,
+		taskOther: `(dep.owner_subject_id=?2)`,
+		taskOnT:   `(t.owner_subject_id=?2)`}
 }
 
 func hasAnyExportMemoryGrant(p contracts.Principal) bool {

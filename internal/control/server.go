@@ -17,22 +17,18 @@ import (
 )
 
 type Config struct {
-	BootstrapCode      string
 	RunnerToken        string
 	RunnerID           string
 	RunnerWorkspaceIDs []string
 	RunnerScopes       []string
-	// InstanceScopes controls the single instance principal. DeviceScopes is retained only as a source compatibility alias.
-	InstanceScopes   []string
-	DeviceScopes     []string
-	DefaultProfileID string
-	RoleProfiles     map[string]string
-	RuntimeRouteID   string
-	ModelRouteID     string
-	Profiles         map[string]RuntimeProfile
-	PairingTTL       time.Duration
-	MaxRequestBytes  int64
-	PushSender       PushSender
+	InstanceScopes     []string
+	DefaultProfileID   string
+	RoleProfiles       map[string]string
+	RuntimeRouteID     string
+	ModelRouteID       string
+	Profiles           map[string]RuntimeProfile
+	MaxRequestBytes    int64
+	PushSender         PushSender
 }
 
 type RuntimeProfile struct {
@@ -155,25 +151,25 @@ type TaskDispatchGuard func(context.Context, *sql.Tx, string, string, time.Time)
 // for feature modules running within a device transaction.
 func PrincipalCanAccessProject(ctx context.Context, tx *sql.Tx, p contracts.Principal, projectID string) (bool, error) {
 	var count int
-	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM projects p WHERE p.id=? AND p.workspace_id=? AND p.status='active' AND (p.owner_subject_id=? OR EXISTS (SELECT 1 FROM project_memberships m WHERE m.workspace_id=p.workspace_id AND m.project_id=p.id AND m.subject_id=? AND m.status='active'))`, projectID, p.WorkspaceID, p.SubjectID, p.SubjectID).Scan(&count)
+	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM projects p WHERE p.id=? AND p.workspace_id=? AND p.status='active' AND (p.owner_subject_id=?)`, projectID, p.WorkspaceID, p.SubjectID).Scan(&count)
 	return count == 1, err
 }
 
 func PrincipalCanWriteProject(ctx context.Context, tx *sql.Tx, p contracts.Principal, projectID string) (bool, error) {
 	var count int
-	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM projects p WHERE p.id=? AND p.workspace_id=? AND p.status='active' AND (p.owner_subject_id=? OR EXISTS (SELECT 1 FROM project_memberships m WHERE m.workspace_id=p.workspace_id AND m.project_id=p.id AND m.subject_id=? AND m.status='active' AND m.role IN ('owner','member')))`, projectID, p.WorkspaceID, p.SubjectID, p.SubjectID).Scan(&count)
+	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM projects p WHERE p.id=? AND p.workspace_id=? AND p.status='active' AND (p.owner_subject_id=?)`, projectID, p.WorkspaceID, p.SubjectID).Scan(&count)
 	return count == 1, err
 }
 
 func PrincipalCanAccessTask(ctx context.Context, tx *sql.Tx, p contracts.Principal, taskID string) (bool, error) {
 	var count int
-	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM tasks t WHERE t.id=? AND t.workspace_id=? AND (t.owner_subject_id=? OR (t.project_id IS NOT NULL AND EXISTS (SELECT 1 FROM project_memberships m WHERE m.workspace_id=t.workspace_id AND m.project_id=t.project_id AND m.subject_id=? AND m.status='active')))`, taskID, p.WorkspaceID, p.SubjectID, p.SubjectID).Scan(&count)
+	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM tasks t WHERE t.id=? AND t.workspace_id=? AND (t.owner_subject_id=?)`, taskID, p.WorkspaceID, p.SubjectID).Scan(&count)
 	return count == 1, err
 }
 
 func PrincipalCanWriteTask(ctx context.Context, tx *sql.Tx, p contracts.Principal, taskID string) (bool, error) {
 	var count int
-	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM tasks t WHERE t.id=? AND t.workspace_id=? AND (t.owner_subject_id=? OR (t.project_id IS NOT NULL AND EXISTS (SELECT 1 FROM project_memberships m WHERE m.workspace_id=t.workspace_id AND m.project_id=t.project_id AND m.subject_id=? AND m.status='active' AND m.role IN ('owner','member'))))`, taskID, p.WorkspaceID, p.SubjectID, p.SubjectID).Scan(&count)
+	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM tasks t WHERE t.id=? AND t.workspace_id=? AND (t.owner_subject_id=?)`, taskID, p.WorkspaceID, p.SubjectID).Scan(&count)
 	return count == 1, err
 }
 
@@ -217,8 +213,8 @@ type Server struct {
 
 func DefaultOwnerScopes() []string {
 	return []string{
-		"client:read", "client:command", "device:manage", "device:push", "capability:deployment:revoke",
-		"export:read",
+		"client:read", "client:command", "device:push", "capability:deployment:revoke",
+		"export:read", "instance:admin", "client:admin", "capability:read", "capability:release:submit", "capability:deployment:request", "capability:deployment:authorize", "voice:read", "voice:open", "voice:pool:reconcile", "voice:turn:commit", "memory:context:any",
 		"memory:read:personal", "memory:write:personal", "memory:delete:personal",
 		"memory:read:workspace", "memory:write:workspace", "memory:delete:workspace",
 	}
@@ -228,9 +224,7 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 	if store == nil || store.DB() == nil {
 		return nil, errors.New("control server requires an open store")
 	}
-	if cfg.PairingTTL <= 0 {
-		cfg.PairingTTL = 15 * time.Minute
-	}
+
 	if cfg.MaxRequestBytes <= 0 {
 		cfg.MaxRequestBytes = 1 << 20
 	}
@@ -261,11 +255,7 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 	}
 	cfg.RoleProfiles = roleProfiles
 	if cfg.InstanceScopes == nil {
-		if cfg.DeviceScopes != nil {
-			cfg.InstanceScopes = append([]string(nil), cfg.DeviceScopes...)
-		} else {
-			cfg.InstanceScopes = DefaultOwnerScopes()
-		}
+		cfg.InstanceScopes = DefaultOwnerScopes()
 	} else {
 		cfg.InstanceScopes = append([]string(nil), cfg.InstanceScopes...)
 	}
@@ -518,7 +508,7 @@ func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Set this outside routing and authentication so failures, including
 		// stale sessions and unsupported methods, cannot be cached either.
-		if false {
+		if strings.HasPrefix(r.URL.Path, "/v1/") || strings.HasPrefix(r.URL.Path, "/runner/v1/") {
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		limited.ServeHTTP(w, r)

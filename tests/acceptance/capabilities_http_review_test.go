@@ -23,8 +23,7 @@ func TestCapabilityHTTPCompositionRequiresConfiguredCapabilityID(t *testing.T) {
 	code, deviceToken := reviewToken(t), reviewToken(t)
 	runnerToken := reviewToken(t)
 	server, err := control.NewServer(store, control.Config{
-		BootstrapCode: code,
-		DeviceScopes: []string{
+		InstanceScopes: []string{
 			"client:read", "client:command", "capability:read", "capability:release:submit",
 			"capability:deployment:request", "capability:deployment:authorize",
 		},

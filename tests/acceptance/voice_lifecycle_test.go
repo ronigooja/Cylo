@@ -39,7 +39,7 @@ func newHangupHarnessWithMedia(t *testing.T, gatewayHandler http.Handler, media 
 	gateway := httptest.NewTLSServer(gatewayHandler)
 	t.Cleanup(gateway.Close)
 	bootstrapCode, deviceToken := reviewToken(t), reviewToken(t)
-	server, err := control.NewServer(store, control.Config{BootstrapCode: bootstrapCode, DeviceScopes: []string{"client:command", "voice:pool:reconcile"}})
+	server, err := control.NewServer(store, control.Config{InstanceScopes: []string{"client:command", "voice:pool:reconcile"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func newHangupHarnessWithMedia(t *testing.T, gatewayHandler http.Handler, media 
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	registration := reviewBootstrap(t, server.Handler(), bootstrapCode, deviceToken)
+	registration := reviewBootstrap(t, bindReviewHandler(server.Handler(), store), bootstrapCode, deviceToken)
 	var ownerID string
 	if err := store.DB().QueryRowContext(ctx, `SELECT subject_id FROM devices WHERE id=?`, registration.Device.ID).Scan(&ownerID); err != nil {
 		t.Fatal(err)
@@ -132,7 +132,7 @@ func TestVoiceReconciliationCannotRaceInFlightTrustedHangup(t *testing.T) {
 	defer gateway.Close()
 	adapter := gatedAccountMedia{entered: make(chan struct{}), resume: make(chan struct{})}
 	bootstrapCode, deviceToken := reviewToken(t), reviewToken(t)
-	server, err := control.NewServer(store, control.Config{BootstrapCode: bootstrapCode, DeviceScopes: []string{"client:command", "voice:pool:reconcile"}})
+	server, err := control.NewServer(store, control.Config{InstanceScopes: []string{"client:command", "voice:pool:reconcile"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestVoiceReconciliationCannotRaceInFlightTrustedHangup(t *testing.T) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	handler := server.Handler()
+	handler := bindReviewHandler(server.Handler(), store)
 	registration := reviewBootstrap(t, handler, bootstrapCode, deviceToken)
 	var ownerID string
 	if err := store.DB().QueryRowContext(ctx, `SELECT subject_id FROM devices WHERE id=?`, registration.Device.ID).Scan(&ownerID); err != nil {

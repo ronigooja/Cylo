@@ -54,9 +54,9 @@ func TestDockerBackedCapabilityDeploymentHTTPRecoveryLifecycle(t *testing.T) {
 		httpServer.Close()
 		_ = store.Close()
 	}()
-	capabilityHTTP(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/v1/auth/setup", "", "", map[string]string{
-		"password": "owner-test-password", "request_id": "docker-capability-bootstrap", "code": bootstrapCode, "device_name": "local-docker-test", "device_token": deviceToken,
-	}, http.StatusCreated, nil)
+	if _, _, err := control.InitializeInstanceAuth(ctx, store, deviceToken); err != nil {
+		t.Fatal(err)
+	}
 
 	manifestV1 := capabilityServiceManifest(image, "--directory", "/tmp")
 	releaseV1 := submitCapabilityRelease(t, httpServer.Client(), httpServer.URL, deviceToken, manifestV1, "release-v1")
@@ -180,7 +180,7 @@ func startCapabilityHTTPFixture(t *testing.T, databasePath, bootstrapCode, runne
 		t.Fatal(err)
 	}
 	deviceScopes := []string{"client:read", "client:command", "capability:read", "capability:release:submit", "capability:deployment:request", "capability:deployment:authorize", "capability:deployment:revoke"}
-	server, err := control.NewServer(store, control.Config{BootstrapCode: bootstrapCode, RunnerToken: runnerToken, RunnerID: "local-capability-runner", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim", "runner:observe", "runner:control:read", "capability:deploy"}, DeviceScopes: deviceScopes})
+	server, err := control.NewServer(store, control.Config{RunnerToken: runnerToken, RunnerID: "local-capability-runner", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim", "runner:observe", "runner:control:read", "capability:deploy"}, InstanceScopes: deviceScopes})
 	if err != nil {
 		_ = store.Close()
 		t.Fatal(err)
@@ -195,6 +195,9 @@ func startCapabilityHTTPFixture(t *testing.T, databasePath, bootstrapCode, runne
 	}
 	if err = control.RegisterInstanceRoutes(server); err != nil {
 		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err = server.RegisterRunnerCredential(ctx, runnerToken, "local-capability-runner", []string{"default"}, []string{"runner:claim", "runner:observe", "runner:control:read", "capability:deploy"}); err != nil {
 		t.Fatal(err)
 	}
 	handler := server.Handler()

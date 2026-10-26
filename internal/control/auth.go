@@ -64,27 +64,31 @@ func InitializeInstanceAuth(ctx context.Context, store *storage.Store, configure
 			return "", false, errors.New("instance key must be a 32-byte base64url credential")
 		}
 	}
+	tx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, err
+	}
+	defer tx.Rollback()
 	var hash []byte
-	err := store.DB().QueryRowContext(ctx, `SELECT key_hash FROM instance_auth WHERE singleton=1`).Scan(&hash)
+	err = tx.QueryRowContext(ctx, `SELECT key_hash FROM instance_auth WHERE singleton=1`).Scan(&hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		key := configured
 		generated := false
 		if key == "" {
-			key, err = GenerateInstanceKey()
-			if err != nil {
-				return "", false, err
-			}
-			generated = true
+			return "", false, errors.New("instance key is not initialized; run init-key with an explicit secure output destination")
 		}
 		digest, e := instanceKeyHash(key)
 		if e != nil {
 			return "", false, e
 		}
 		now := time.Now().UTC().Format(time.RFC3339Nano)
-		if _, e = store.DB().ExecContext(ctx, `INSERT INTO instance_auth(singleton,key_hash,created_at,rotated_at) VALUES(1,?,?,?)`, digest, now, now); e != nil {
+		if _, e = tx.ExecContext(ctx, `INSERT INTO instance_auth(singleton,key_hash,created_at,rotated_at) VALUES(1,?,?,?)`, digest, now, now); e != nil {
 			return "", false, e
 		}
-		if e = ensureInstanceDevice(ctx, store.DB(), digest, now); e != nil {
+		if e = ensureInstanceActor(ctx, tx, now); e != nil {
+			return "", false, e
+		}
+		if e = tx.Commit(); e != nil {
 			return "", false, e
 		}
 		return key, generated, nil
@@ -101,16 +105,16 @@ func InitializeInstanceAuth(ctx context.Context, store *storage.Store, configure
 			return "", false, errors.New("configured instance key does not match the stored instance credential")
 		}
 	}
-	if err = ensureInstanceDevice(ctx, store.DB(), hash, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if err = ensureInstanceActor(ctx, tx, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return "", false, err
 	}
-	return "", false, nil
+	return "", false, tx.Commit()
 }
 
-func ensureInstanceDevice(ctx context.Context, db *sql.DB, digest []byte, now string) error {
+func ensureInstanceActor(ctx context.Context, db *sql.Tx, now string) error {
 	// Existing domain tables retain a synthetic owner row for foreign-key and
 	// audit compatibility; it is never used for authentication or approval.
-	_, err := db.ExecContext(ctx, `INSERT INTO devices(id,workspace_id,subject_id,name,status,token_hash,created_at,approved_at) VALUES('instance','default','owner','This instance','approved',?,?,?) ON CONFLICT(id) DO UPDATE SET token_hash=excluded.token_hash,status='approved',revoked_at=NULL`, digest, now, now)
+	_, err := db.ExecContext(ctx, `INSERT INTO devices(id,workspace_id,subject_id,name,status,token_hash,created_at,approved_at) VALUES('instance','default','owner','This instance','approved',X'',?,?) ON CONFLICT(id) DO NOTHING`, now, now)
 	return err
 }
 
@@ -122,11 +126,16 @@ func (s *Server) instanceAuth(next http.Handler) http.Handler {
 			return
 		}
 		var expected []byte
-		if err = s.store.DB().QueryRowContext(r.Context(), `SELECT key_hash FROM instance_auth WHERE singleton=1`).Scan(&expected); err != nil || len(expected) != len(provided) || subtle.ConstantTimeCompare(expected, provided) != 1 {
+		var generation int64
+		if err = s.store.DB().QueryRowContext(r.Context(), `SELECT key_hash,generation FROM instance_auth WHERE singleton=1`).Scan(&expected, &generation); err != nil || len(expected) != len(provided) || subtle.ConstantTimeCompare(expected, provided) != 1 {
 			writeError(w, apiError(http.StatusUnauthorized, "unauthenticated", "instance credential is not recognized", nil))
 			return
 		}
-		p := contracts.Principal{WorkspaceID: "default", SubjectID: "owner", DeviceID: "instance", Scopes: append([]string(nil), s.cfg.InstanceScopes...)}
+		p := contracts.Principal{Generation: generation, InstallationID: r.Header.Get("X-Cylo-Installation-ID"), WorkspaceID: "default", SubjectID: "owner", DeviceID: "instance", Scopes: append([]string(nil), s.cfg.InstanceScopes...)}
+		if required := requiredCoreDeviceScope(r); required != "" && !HasScope(p, required) {
+			writeError(w, apiError(403, "forbidden", "instance lacks required scope", nil))
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), devicePrincipalKey{}, p)))
 	})
 }
@@ -139,7 +148,7 @@ func requireOwnerSessionTx(ctx context.Context, tx *sql.Tx, p contracts.Principa
 		return apiError(401, "unauthenticated", "instance session is invalid", nil)
 	}
 	var present int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM instance_auth WHERE singleton=1`).Scan(&present); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM instance_auth WHERE singleton=1 AND generation=?`, p.Generation).Scan(&present); err != nil {
 		return err
 	}
 	if present != 1 {
@@ -148,32 +157,102 @@ func requireOwnerSessionTx(ctx context.Context, tx *sql.Tx, p contracts.Principa
 	return nil
 }
 
+func requiredCoreDeviceScope(r *http.Request) string {
+	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/tasks/") {
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/tasks/"), "/")
+		if len(parts) == 2 && parts[0] != "" && parts[1] == "entries" {
+			return "client:read"
+		}
+	}
+	switch r.URL.Path {
+	case "/v1/snapshot", "/v1/events", "/v1/notifications":
+		return "client:read"
+	case "/v1/commands":
+		if r.Method == http.MethodGet {
+			return "client:read"
+		}
+		if r.Method == http.MethodPost {
+			return "client:command"
+		}
+	}
+	return ""
+}
+
 func (s *Server) runnerAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		provided := bearer(r)
-		digest, err := instanceKeyHash(provided)
+		hash, err := tokenHash(bearer(r))
 		if err != nil {
-			writeError(w, apiError(http.StatusUnauthorized, "unauthenticated", "valid instance bearer required", nil))
+			writeError(w, apiError(http.StatusUnauthorized, "unauthenticated", "valid runner bearer required", nil))
 			return
 		}
-		var expected []byte
-		if err = s.store.DB().QueryRowContext(r.Context(), `SELECT key_hash FROM instance_auth WHERE singleton=1`).Scan(&expected); err != nil || len(expected) != len(digest) || subtle.ConstantTimeCompare(expected, digest) != 1 {
-			writeError(w, apiError(http.StatusUnauthorized, "unauthenticated", "instance credential is not recognized", nil))
+		var p contracts.RunnerPrincipal
+		var workspaceJSON, scopesJSON []byte
+		var revoked sql.NullString
+		err = s.store.DB().QueryRowContext(r.Context(), `SELECT runner_id,workspace_ids,scopes,revoked_at FROM runner_credentials WHERE token_hash=?`, hash).Scan(&p.RunnerID, &workspaceJSON, &scopesJSON, &revoked)
+		if err == nil {
+			if revoked.Valid {
+				writeError(w, apiError(http.StatusUnauthorized, "unauthenticated", "runner credential is revoked", nil))
+				return
+			}
+			if e := jsonUnmarshal(workspaceJSON, &p.WorkspaceIDs); e != nil {
+				writeError(w, apiError(500, "internal", "runner credential record is invalid", nil))
+				return
+			}
+			if e := jsonUnmarshal(scopesJSON, &p.Scopes); e != nil {
+				writeError(w, apiError(500, "internal", "runner credential record is invalid", nil))
+				return
+			}
+		} else {
+			writeError(w, apiError(http.StatusUnauthorized, "unauthenticated", "runner credential is not recognized", nil))
 			return
 		}
-		scopes := append([]string(nil), s.cfg.RunnerScopes...)
-		if len(scopes) == 0 {
-			scopes = []string{"runner:claim", "runner:observe", "runner:control:read", "runner:propose", "runner:budget"}
-		}
-		workspaces := append([]string(nil), s.cfg.RunnerWorkspaceIDs...)
-		if len(workspaces) == 0 {
-			workspaces = []string{"default"}
-		}
-		id := s.cfg.RunnerID
-		if id == "" {
-			id = "instance-runner"
-		}
-		p := contracts.RunnerPrincipal{RunnerID: id, WorkspaceIDs: workspaces, Scopes: scopes}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), runnerPrincipalKey{}, p)))
 	})
+}
+
+// RegisterRunnerCredential stores only a digest of a deployment-provisioned bearer.
+func (s *Server) RegisterRunnerCredential(ctx context.Context, token, runnerID string, workspaceIDs, scopes []string) error {
+	return RegisterRunnerCredentialIfMissing(ctx, s.store, token, runnerID, workspaceIDs, scopes)
+}
+
+// RegisterRunnerCredentialIfMissing provisions the deployment credential once
+// and preserves a later database revocation across server restarts.
+func RegisterRunnerCredentialIfMissing(ctx context.Context, store interface{ DB() *sql.DB }, token, runnerID string, workspaceIDs, scopes []string) error {
+	if store == nil || store.DB() == nil {
+		return errors.New("open control store is required")
+	}
+	hash, err := tokenHash(token)
+	if err != nil {
+		return err
+	}
+	workspaces, _ := jsonMarshal(workspaceIDs)
+	scopeBytes, _ := jsonMarshal(scopes)
+	_, err = store.DB().ExecContext(ctx, `INSERT OR IGNORE INTO runner_credentials(token_hash,runner_id,workspace_ids,scopes) VALUES(?,?,?,?)`, hash, runnerID, workspaces, scopeBytes)
+	return err
+}
+
+// RotateInstanceKey atomically replaces the owner key and increments its fence.
+// Runners retain independent credentials and continue observing existing tasks.
+func RotateInstanceKey(ctx context.Context, store *storage.Store, key string) error {
+	digest, err := instanceKeyHash(key)
+	if err != nil {
+		return err
+	}
+	tx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE instance_auth SET key_hash=?,generation=generation+1,rotated_at=? WHERE singleton=1`, digest, time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return errors.New("instance credential is not initialized")
+	}
+	return tx.Commit()
 }

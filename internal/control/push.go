@@ -163,9 +163,10 @@ func (s *APNSSender) Send(ctx context.Context, p PushRequest) PushResponse {
 }
 
 type pushTokenPayload struct {
-	Platform string `json:"platform"`
-	Token    string `json:"token"`
-	TokenID  string `json:"token_id,omitempty"`
+	Platform       string `json:"platform"`
+	Token          string `json:"token"`
+	TokenID        string `json:"token_id,omitempty"`
+	InstallationID string `json:"installation_id,omitempty"`
 }
 
 func (s *Server) commandPushTokenRegister(ctx context.Context, tx *sql.Tx, c CommandContext, req contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
@@ -175,6 +176,12 @@ func (s *Server) commandPushTokenRegister(ctx context.Context, tx *sql.Tx, c Com
 	var p pushTokenPayload
 	if err := decodePayload(req.Payload, &p); err != nil {
 		return contracts.CommandResult{}, nil, err
+	}
+	if p.InstallationID == "" {
+		p.InstallationID = c.Principal.InstallationID
+	}
+	if !validInstallationID(p.InstallationID) {
+		return contracts.CommandResult{}, nil, apiError(400, "invalid_request", "installation_id UUID is required", nil)
 	}
 	p.Platform = strings.ToLower(strings.TrimSpace(p.Platform))
 	p.Token = strings.TrimSpace(p.Token)
@@ -191,33 +198,33 @@ func (s *Server) commandPushTokenRegister(ctx context.Context, tx *sql.Tx, c Com
 	err = tx.QueryRowContext(ctx, `SELECT id FROM device_push_tokens WHERE token_hash=?`, hash[:]).Scan(&tokenID)
 	if err == nil {
 		var registeredDevice, registeredPlatform string
-		if err = tx.QueryRowContext(ctx, `SELECT device_id,platform FROM device_push_tokens WHERE id=?`, tokenID).Scan(&registeredDevice, &registeredPlatform); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT installation_id,platform FROM device_push_tokens WHERE id=?`, tokenID).Scan(&registeredDevice, &registeredPlatform); err != nil {
 			return contracts.CommandResult{}, nil, err
 		}
-		if registeredDevice != c.Principal.DeviceID || registeredPlatform != p.Platform {
+		if registeredDevice != p.InstallationID || registeredPlatform != p.Platform {
 			return contracts.CommandResult{}, nil, apiError(http.StatusConflict, "token_conflict", "push token is already registered to another device", nil)
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE device_push_tokens SET status='disabled',disabled_at=?,updated_at=? WHERE device_id=? AND platform=? AND status='active' AND id<>?`, at, at, c.Principal.DeviceID, p.Platform, tokenID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE device_push_tokens SET status='disabled',disabled_at=?,updated_at=? WHERE installation_id=? AND platform=? AND status='active' AND id<>?`, at, at, p.InstallationID, p.Platform, tokenID); err != nil {
 			return contracts.CommandResult{}, nil, err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE push_deliveries SET status='disabled',updated_at=? WHERE status='pending' AND push_token_id IN (SELECT id FROM device_push_tokens WHERE device_id=? AND platform=? AND status='disabled')`, at, c.Principal.DeviceID, p.Platform); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE push_deliveries SET status='disabled',updated_at=? WHERE status='pending' AND push_token_id IN (SELECT id FROM device_push_tokens WHERE installation_id=? AND platform=? AND status='disabled')`, at, p.InstallationID, p.Platform); err != nil {
 			return contracts.CommandResult{}, nil, err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE device_push_tokens SET workspace_id=?,subject_id=?,device_id=?,platform=?,token_hex=?,status='active',created_at=?,updated_at=?,disabled_at=NULL WHERE id=?`, c.Principal.WorkspaceID, c.Principal.SubjectID, c.Principal.DeviceID, p.Platform, p.Token, at, at, tokenID); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE device_push_tokens SET workspace_id=?,subject_id=?,device_id=?,installation_id=?,platform=?,token_hex=?,status='active',created_at=?,updated_at=?,disabled_at=NULL WHERE id=?`, c.Principal.WorkspaceID, c.Principal.SubjectID, c.Principal.DeviceID, p.InstallationID, p.Platform, p.Token, at, at, tokenID); err != nil {
 			return contracts.CommandResult{}, nil, err
 		}
 	} else if errors.Is(err, sql.ErrNoRows) {
-		if _, err = tx.ExecContext(ctx, `UPDATE device_push_tokens SET status='disabled',disabled_at=?,updated_at=? WHERE device_id=? AND platform=? AND status='active'`, at, at, c.Principal.DeviceID, p.Platform); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE device_push_tokens SET status='disabled',disabled_at=?,updated_at=? WHERE installation_id=? AND platform=? AND status='active'`, at, at, p.InstallationID, p.Platform); err != nil {
 			return contracts.CommandResult{}, nil, err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE push_deliveries SET status='disabled',updated_at=? WHERE status='pending' AND push_token_id IN (SELECT id FROM device_push_tokens WHERE device_id=? AND platform=? AND status='disabled')`, at, c.Principal.DeviceID, p.Platform); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE push_deliveries SET status='disabled',updated_at=? WHERE status='pending' AND push_token_id IN (SELECT id FROM device_push_tokens WHERE installation_id=? AND platform=? AND status='disabled')`, at, p.InstallationID, p.Platform); err != nil {
 			return contracts.CommandResult{}, nil, err
 		}
 		tokenID, err = randomID()
 		if err != nil {
 			return contracts.CommandResult{}, nil, err
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO device_push_tokens(id,workspace_id,subject_id,device_id,platform,token_hex,token_hash,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'active',?,?)`, tokenID, c.Principal.WorkspaceID, c.Principal.SubjectID, c.Principal.DeviceID, p.Platform, p.Token, hash[:], at, at); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO device_push_tokens(id,workspace_id,subject_id,device_id,installation_id,platform,token_hex,token_hash,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'active',?,?)`, tokenID, c.Principal.WorkspaceID, c.Principal.SubjectID, c.Principal.DeviceID, p.InstallationID, p.Platform, p.Token, hash[:], at, at); err != nil {
 			return contracts.CommandResult{}, nil, err
 		}
 	} else {
@@ -238,8 +245,14 @@ func (s *Server) commandPushTokenRevoke(ctx context.Context, tx *sql.Tx, c Comma
 	if p.TokenID == "" {
 		return contracts.CommandResult{}, nil, apiError(http.StatusBadRequest, "invalid_request", "token_id is required", nil)
 	}
+	if p.InstallationID == "" {
+		p.InstallationID = c.Principal.InstallationID
+	}
+	if !validInstallationID(p.InstallationID) {
+		return contracts.CommandResult{}, nil, apiError(400, "invalid_request", "installation_id UUID is required", nil)
+	}
 	at := c.AcceptedAt.Format(time.RFC3339Nano)
-	result, err := tx.ExecContext(ctx, `UPDATE device_push_tokens SET status='disabled',disabled_at=?,updated_at=? WHERE id=? AND workspace_id=? AND subject_id=? AND device_id=? AND status='active'`, at, at, p.TokenID, c.Principal.WorkspaceID, c.Principal.SubjectID, c.Principal.DeviceID)
+	result, err := tx.ExecContext(ctx, `UPDATE device_push_tokens SET status='disabled',disabled_at=?,updated_at=? WHERE id=? AND workspace_id=? AND subject_id=? AND installation_id=? AND status='active'`, at, at, p.TokenID, c.Principal.WorkspaceID, c.Principal.SubjectID, p.InstallationID)
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
@@ -397,4 +410,23 @@ func randomUUID() (string, error) {
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
+}
+
+// Installation metadata separates APNs targets; it never grants API authority.
+func validInstallationID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for i, c := range value {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+			continue
+		}
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }

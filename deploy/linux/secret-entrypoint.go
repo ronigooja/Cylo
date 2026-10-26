@@ -11,7 +11,7 @@ import (
 )
 
 var allowedNames = map[string]bool{
-	"CYLO_BOOTSTRAP_CODE":       true,
+	"CYLO_INSTANCE_KEY":       true,
 	"CYLO_RUNNER_TOKEN":         true,
 	"CYLO_AO_TOKEN":             true,
 	"CYLO_VOICE_GATEWAY_API_KEY": true,

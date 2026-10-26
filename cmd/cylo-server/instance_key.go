@@ -1,0 +1,124 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"github.com/ronigooja/Cylo/internal/capabilities"
+	"github.com/ronigooja/Cylo/internal/control"
+	"github.com/ronigooja/Cylo/internal/memory"
+	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Cylo/internal/voice"
+	"net/url"
+	"os"
+	"time"
+)
+
+// Key material is exported only at an explicit operator-selected destination.
+func manageInstanceKey(command string, args []string) error {
+	if command != "init-key" && command != "rotate-key" {
+		return errors.New("usage: cylo-server init-key|rotate-key --database PATH (--output PATH | --stdout) [--server URL]")
+	}
+	flags := flag.NewFlagSet(command, flag.ContinueOnError)
+	dbPath := flags.String("database", "", "control database path (stop the server first)")
+	output := flags.String("output", "", "new private key export file; must not already exist")
+	stdout := flags.Bool("stdout", false, "explicitly export key to standard output")
+	server := flags.String("server", "", "public server URL to include in Apple installation link")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *dbPath == "" || flags.NArg() != 0 || (*output == "") == (!*stdout) {
+		return errors.New("specify --database and exactly one of --output or --stdout")
+	}
+	if *server != "" {
+		u, err := url.Parse(*server)
+		if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return errors.New("server must be an http(s) URL without credentials, query, or fragment")
+		}
+	}
+	var file *os.File
+	var err error
+	if *output != "" {
+		file, err = os.OpenFile(*output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+	}
+	committed := false
+	defer func() {
+		if !committed && file != nil {
+			_ = os.Remove(*output)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	store, err := storage.Open(ctx, storage.Config{Path: *dbPath})
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if err = storage.RegisterCoreMigrations(store); err != nil {
+		return err
+	}
+	// Register the complete migration set before opening an existing instance.
+	if err = registerKeyCommandMigrations(store); err != nil {
+		return err
+	}
+	if err = store.Migrate(ctx); err != nil {
+		return err
+	}
+	key, err := control.GenerateInstanceKey()
+	if err != nil {
+		return err
+	}
+	if command == "init-key" {
+		var count int
+		if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM instance_auth`).Scan(&count); err != nil {
+			return err
+		}
+		if count != 0 {
+			return errors.New("instance credential already exists; use rotate-key")
+		}
+		_, _, err = control.InitializeInstanceAuth(ctx, store, key)
+	} else {
+		err = control.RotateInstanceKey(ctx, store, key)
+	}
+	if err != nil {
+		return err
+	}
+	committed = true
+	export := struct {
+		Key             string `json:"key"`
+		InstallationURL string `json:"installation_url,omitempty"`
+	}{Key: key}
+	if *server != "" {
+		export.InstallationURL = "cylo://connect?" + url.Values{"server": {*server}}.Encode() + "#" + url.Values{"key": {key}}.Encode()
+	}
+	writer := os.Stdout
+	if file != nil {
+		writer = file
+	}
+	if err = json.NewEncoder(writer).Encode(export); err != nil {
+		return fmt.Errorf("key committed but export failed; rotate again with a usable destination: %w", err)
+	}
+	if file != nil {
+		return file.Sync()
+	}
+	return nil
+}
+
+func registerKeyCommandMigrations(store *storage.Store) error {
+	if err := control.RegisterInstanceMaintenanceMigration(store); err != nil {
+		return err
+	}
+	if err := memory.RegisterMigrations(store); err != nil {
+		return err
+	}
+	if err := voice.RegisterMigrations(store); err != nil {
+		return err
+	}
+	return capabilities.RegisterMigrations(store)
+}

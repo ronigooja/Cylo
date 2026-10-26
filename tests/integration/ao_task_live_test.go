@@ -45,7 +45,7 @@ func TestAOLiveCyloTaskReceiptRunnerCodexProof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create private live evidence directory failed (%T)", err)
 	}
-	bootstrapCode, deviceToken, runnerToken := liveToken(t), liveToken(t), liveToken(t)
+	deviceToken, runnerToken := liveToken(t), liveToken(t)
 	profileID := "codex-live-worker"
 	profile := control.RuntimeProfile{
 		ID: profileID, AOProjectID: aoProject, RuntimeRouteID: "codex", ModelRouteID: "gpt-6-luna",
@@ -74,8 +74,7 @@ func TestAOLiveCyloTaskReceiptRunnerCodexProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	server, err := control.NewServer(store, control.Config{
-		BootstrapCode: bootstrapCode,
-		RunnerToken:   runnerToken, RunnerID: "live-codex-runner", RunnerWorkspaceIDs: []string{"default"},
+		RunnerToken: runnerToken, RunnerID: "live-codex-runner", RunnerWorkspaceIDs: []string{"default"},
 		RunnerScopes:     []string{"runner:claim", "runner:observe", "runner:control:read"},
 		DefaultProfileID: profileID, Profiles: map[string]control.RuntimeProfile{profileID: profile},
 	})
@@ -91,9 +90,11 @@ func TestAOLiveCyloTaskReceiptRunnerCodexProof(t *testing.T) {
 			controlHTTP.Close()
 		}
 	}()
-	_, status, err := liveControlRequest(t, controlHTTP.Client(), controlHTTP.URL, http.MethodPost, "/v1/auth/setup", "", "", contracts.OwnerAuthRequest{Password: "owner-test-password", RequestID: "live-bootstrap", Code: bootstrapCode, DeviceName: "Codex live acceptance", DeviceToken: deviceToken})
-	if err != nil || status != http.StatusCreated {
-		t.Fatalf("bootstrap device status=%d request_error=%T", status, err)
+	if _, _, err = control.InitializeInstanceAuth(ctx, store, deviceToken); err != nil {
+		t.Fatal(err)
+	}
+	if err = server.RegisterRunnerCredential(ctx, runnerToken, "live-codex-runner", []string{"default"}, []string{"runner:claim", "runner:observe", "runner:control:read"}); err != nil {
+		t.Fatal(err)
 	}
 	projectReceipt, status, _ := liveCommand(t, controlHTTP.Client(), controlHTTP.URL, deviceToken, "live-project", "project.create", map[string]any{"name": "AO Codex live acceptance"})
 	if status != http.StatusOK {

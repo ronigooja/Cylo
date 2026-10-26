@@ -17,7 +17,7 @@ func (f reviewPushCallback) Send(c context.Context, r control.PushRequest) contr
 }
 func TestReviewPushRevocationStopsAlreadySelectedUnsentDeliveries(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
-	s, h := reviewServer(t, control.Config{BootstrapCode: code}, func(srv *control.Server) {
+	s, h := reviewServer(t, control.Config{}, func(srv *control.Server) {
 		if err := srv.RegisterCommand("review.notification", func(ctx context.Context, tx *sql.Tx, c control.CommandContext, _ contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
 			return contracts.CommandResult{}, []contracts.Event{{Type: "run.runtime_terminated", AggregateType: "run", AggregateID: "run-push", AggregateVersion: 1, Payload: json.RawMessage(`{"task_id":"task-push","task_status":"awaiting_user"}`)}}, nil
 		}); err != nil {

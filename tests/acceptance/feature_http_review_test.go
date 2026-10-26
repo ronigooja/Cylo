@@ -33,7 +33,7 @@ func reviewFeatureServer(t *testing.T) (*storage.Store, http.Handler, string, st
 	}
 	runnerToken := reviewToken(t)
 	cfg := reviewRuntimeConfig(code, runnerToken)
-	cfg.DeviceScopes = append(control.DefaultOwnerScopes(), "instance:admin")
+	cfg.InstanceScopes = append(control.DefaultOwnerScopes(), "instance:admin")
 	srv, err := control.NewServer(store, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +53,10 @@ func reviewFeatureServer(t *testing.T) (*storage.Store, http.Handler, string, st
 	if err = store.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	h := srv.Handler()
+	if err := srv.RegisterRunnerCredential(context.Background(), runnerToken, "review", []string{"default"}, cfg.RunnerScopes); err != nil {
+		t.Fatal(err)
+	}
+	h := bindReviewHandler(srv.Handler(), store)
 	registration := reviewBootstrap(t, h, code, token)
 	return store, h, token, registration.Device.ID, runnerToken
 }
@@ -70,47 +73,6 @@ func featureCommand(t *testing.T, h http.Handler, token, key, kind string, paylo
 	}
 	return &receipt
 }
-func TestReviewMemoryACLTwoAuthenticatedSubjects(t *testing.T) {
-	store, h, owner, _, _ := reviewFeatureServer(t)
-	peer := reviewToken(t)
-	addMembershipDevice(t, store.DB(), peer, "peer-subject", "peer-device")
-	project := featureCommand(t, h, owner, "project", "project.create", map[string]any{"name": "private"})
-	task := featureCommand(t, h, owner, "task", "task.create", map[string]any{"project_id": project.ResourceID, "title": "private", "goal": "private", "source": "user"})
-	for _, scope := range []map[string]any{{"kind": "project", "id": project.ResourceID}, {"kind": "task", "id": task.ResourceID}} {
-		featureCommand(t, h, owner, "remember-"+scope["kind"].(string), "memory.remember", map[string]any{"scope": scope, "subject": "database", "key": "decision", "content": "restricted SQLite evidence", "source_kind": "user_note"})
-	}
-	// Select a persisted owner fixture after creating private rows, so this
-	// lower-level ACL regression still exercises a separate historical subject.
-	if _, err := store.DB().Exec(`UPDATE owner_auth SET subject_id='peer-subject' WHERE id=1; UPDATE devices SET owner_generation=1 WHERE id='peer-device'`); err != nil {
-		t.Fatal(err)
-	}
-	search := func(want bool) {
-		t.Helper()
-		w := reviewRequest(h, "GET", "/v1/memory?q=SQLite", peer, "", nil)
-		if w.Code != 200 {
-			t.Fatalf("search=%d", w.Code)
-		}
-		if strings.Contains(w.Body.String(), "restricted SQLite evidence") != want {
-			t.Fatalf("memory access=%v wanted=%v", strings.Contains(w.Body.String(), "restricted SQLite evidence"), want)
-		}
-	}
-	search(false)
-	at := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := store.DB().Exec(`INSERT INTO project_memberships(workspace_id,project_id,subject_id,role,status,created_at) VALUES('default',?,'peer-subject','viewer','active',?)`, project.ResourceID, at); err != nil {
-		t.Fatal(err)
-	}
-	search(true)
-	raw, _ := json.Marshal(map[string]any{"scope": map[string]any{"kind": "project", "id": project.ResourceID}, "subject": "database", "key": "viewer-write", "content": "viewer mutation", "source_kind": "user_note"})
-	w := reviewRequest(h, "POST", "/v1/commands", peer, "viewer-memory-write", contracts.CommandRequest{Kind: "memory.remember", Payload: raw})
-	if w.Code < 400 {
-		t.Errorf("project viewer changed memory with typed write grant: status=%d", w.Code)
-	}
-	if _, err := store.DB().Exec(`UPDATE project_memberships SET status='revoked' WHERE project_id=? AND subject_id='peer-subject'`, project.ResourceID); err != nil {
-		t.Fatal(err)
-	}
-	search(false)
-}
-
 func TestRestoreDeletionGateClosesBusinessRoutesButAllowsDiagnostics(t *testing.T) {
 	store, h, owner, _, runnerToken := reviewFeatureServer(t)
 	featureCommand(t, h, owner, "gate-memory", "memory.remember", map[string]any{"scope": map[string]any{"kind": "personal"}, "subject": "restore gate", "key": "private", "content": "snapshot-only private memory", "source_kind": "user_note"})

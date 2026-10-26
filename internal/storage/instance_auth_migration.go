@@ -13,7 +13,8 @@ func RegisterInstanceAuthMigration(s *Store) error {
 		_, err := tx.ExecContext(ctx, `
 CREATE TABLE instance_auth (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-  key_hash BLOB NOT NULL,
+  key_hash BLOB NOT NULL CHECK(length(key_hash)=32),
+  generation INTEGER NOT NULL DEFAULT 1 CHECK(generation>0),
   created_at TEXT NOT NULL,
   rotated_at TEXT NOT NULL
 );`)

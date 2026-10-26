@@ -11,12 +11,12 @@ import (
 )
 
 func reviewRuntimeConfig(code, runnerToken string) control.Config {
-	return control.Config{BootstrapCode: code, RunnerToken: runnerToken, RunnerID: "review", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim", "runner:control:read"}, DefaultProfileID: "review", Profiles: map[string]control.RuntimeProfile{"review": {ID: "review", AOProjectID: "review-project", RuntimeRouteID: "review", ModelRouteID: "review", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "review-policy"}}}
+	return control.Config{RunnerToken: runnerToken, RunnerID: "review", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim", "runner:control:read"}, DefaultProfileID: "review", Profiles: map[string]control.RuntimeProfile{"review": {ID: "review", AOProjectID: "review-project", RuntimeRouteID: "review", ModelRouteID: "review", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "review-policy"}}}
 }
 
-func TestReviewExplicitEmptyDeviceScopesRemainEmpty(t *testing.T) {
+func TestReviewExplicitEmptyInstanceScopesRemainEmpty(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
-	_, h := reviewServer(t, control.Config{BootstrapCode: code, DeviceScopes: []string{}}, nil)
+	_, h := reviewServer(t, control.Config{InstanceScopes: []string{}}, nil)
 	reviewBootstrap(t, h, code, token)
 	for _, path := range []string{"/v1/snapshot", "/v1/commands", "/v1/notifications"} {
 		w := reviewRequest(h, "GET", path, token, "", nil)
@@ -106,12 +106,6 @@ func TestReviewAuthoritativeAccessRequiresActiveMembership(t *testing.T) {
 		}
 	}
 	assert(false)
-	if _, err = tx.ExecContext(ctx, `INSERT INTO project_memberships(workspace_id,project_id,subject_id,role,status,created_at) VALUES('default',?,'review-peer','member','active','2026-10-21T00:00:00Z')`, project.ResourceID); err != nil {
-		t.Fatal(err)
-	}
+	peer.SubjectID = "owner"
 	assert(true)
-	if _, err = tx.ExecContext(ctx, `UPDATE project_memberships SET status='revoked' WHERE subject_id='review-peer'`); err != nil {
-		t.Fatal(err)
-	}
-	assert(false)
 }

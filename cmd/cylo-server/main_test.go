@@ -28,10 +28,10 @@ func TestServerSubprocessBootstrapAndRestart(t *testing.T) {
 	addr := probe.Addr().String()
 	_ = probe.Close()
 	db := filepath.Join(t.TempDir(), "state", "cylo.db")
-	code, token := subprocessSecret(t), subprocessSecret(t)
+	token := subprocessSecret(t)
 	start := func() *exec.Cmd {
 		cmd := exec.Command(binary)
-		cmd.Env = append(os.Environ(), "CYLO_LISTEN_ADDR="+addr, "CYLO_DATABASE_PATH="+db, "CYLO_BOOTSTRAP_CODE="+code, "CYLO_VOICE_GATEWAY_URL=", "CYLO_VOICE_GATEWAY_API_KEY=")
+		cmd.Env = append(os.Environ(), "CYLO_LISTEN_ADDR="+addr, "CYLO_DATABASE_PATH="+db, "CYLO_INSTANCE_KEY="+token, "CYLO_VOICE_GATEWAY_URL=", "CYLO_VOICE_GATEWAY_API_KEY=")
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -92,32 +92,29 @@ func TestServerSubprocessBootstrapAndRestart(t *testing.T) {
 		}
 		time.Sleep(30 * time.Millisecond)
 	}
-	regBody := map[string]string{"password": "owner-test-password", "request_id": "subprocess-bootstrap", "code": code, "device_name": "subprocess-test", "device_token": token}
-	res, _, err := call(http.MethodPost, "/v1/auth/setup", "", regBody)
-	if err != nil || res.StatusCode != http.StatusCreated {
-		t.Fatalf("bootstrap status=%v err=%v", responseStatus(res), err)
-	}
-	// Recovery must refuse to operate while the server holds the host DB lock.
-	lockedRecovery := exec.Command(binary, "recover-owner", "--database", db, "--confirm-revoke-all-devices")
-	if output, e := lockedRecovery.Output(); e == nil || len(output) != 0 {
-		t.Fatal("recovery ran or disclosed a code while server owned the database")
+	lockedRotation := exec.Command(binary, "rotate-key", "--database", db, "--stdout")
+	if output, e := lockedRotation.Output(); e == nil || len(output) != 0 {
+		t.Fatal("rotation ran or disclosed secret while server owned database")
 	}
 	res, body, e := callCommand(token, "preserved-project", map[string]any{"kind": "project.create", "payload": map[string]string{"name": "preserved owner data"}})
 	if e != nil || res.StatusCode != http.StatusOK {
 		t.Fatalf("pre-recovery project=%v %v %s", responseStatus(res), e, body)
 	}
 	stopServer(t, cmd)
-	recovery := exec.Command(binary, "recover-owner", "--database", db, "--confirm-revoke-all-devices")
-	recoveryOutput, err := recovery.Output()
+	rotation := exec.Command(binary, "rotate-key", "--database", db, "--stdout")
+	output, err := rotation.Output()
 	if err != nil {
-		t.Fatalf("offline administrator recovery failed: %v", err)
+		t.Fatalf("offline rotation: %v", err)
 	}
-	lines := bytes.Split(bytes.TrimSpace(recoveryOutput), []byte("\n"))
-	if len(lines) != 2 {
-		t.Fatalf("recovery should print one code only after commit")
+	var exported struct {
+		Key string `json:"key"`
 	}
-	recoveryCode := string(lines[1])
-	newToken := subprocessSecret(t)
+	if err = json.Unmarshal(output, &exported); err != nil || exported.Key == "" {
+		t.Fatal("missing explicit key export")
+	}
+	oldToken := token
+	token = exported.Key
+	newToken := token
 	cmd = start()
 	t.Cleanup(func() { stopServer(t, cmd) })
 	deadline = time.Now().Add(8 * time.Second)
@@ -131,13 +128,9 @@ func TestServerSubprocessBootstrapAndRestart(t *testing.T) {
 		}
 		time.Sleep(30 * time.Millisecond)
 	}
-	res, body, err = call(http.MethodGet, "/v1/snapshot", token, nil)
+	res, body, err = call(http.MethodGet, "/v1/snapshot", oldToken, nil)
 	if err != nil || res.StatusCode < http.StatusBadRequest {
 		t.Fatalf("recovery left old bearer valid: status=%v err=%v", responseStatus(res), err)
-	}
-	res, body, err = call(http.MethodPost, "/v1/auth/setup", "", map[string]string{"password": "owner-test-password", "request_id": "recovery-bootstrap", "code": recoveryCode, "device_name": "recovered", "device_token": newToken})
-	if err != nil || res.StatusCode != http.StatusCreated {
-		t.Fatalf("recovered bootstrap status=%v err=%v", responseStatus(res), err)
 	}
 	res, body, err = call(http.MethodGet, "/v1/snapshot", newToken, nil)
 	if err != nil || res.StatusCode != http.StatusOK {

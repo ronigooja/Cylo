@@ -40,10 +40,6 @@ type approvePayload struct {
 	Decision   string `json:"decision"`
 	Comment    string `json:"comment,omitempty"`
 }
-type devicePayload struct {
-	DeviceID string `json:"device_id"`
-	Reason   string `json:"reason,omitempty"`
-}
 
 func decodePayload(raw json.RawMessage, dst any) error {
 	d := json.NewDecoder(strings.NewReader(string(raw)))
@@ -447,56 +443,6 @@ func validTaskTransition(from, to string) bool {
 		return to == "queued" || to == "canceled" || to == "failed"
 	}
 	return false
-}
-
-func (s *Server) commandDeviceRevoke(ctx context.Context, tx *sql.Tx, c CommandContext, req contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {
-	if !HasScope(c.Principal, "device:manage") {
-		return contracts.CommandResult{}, nil, apiError(http.StatusForbidden, "forbidden", "device management scope is required", nil)
-	}
-	var p devicePayload
-	if err := decodePayload(req.Payload, &p); err != nil {
-		return contracts.CommandResult{}, nil, err
-	}
-	return s.revokeOwnerDeviceTx(ctx, tx, c, p, req.ExpectedVersion)
-}
-
-func (s *Server) revokeOwnerDeviceTx(ctx context.Context, tx *sql.Tx, c CommandContext, p devicePayload, expected *int64) (contracts.CommandResult, []contracts.Event, error) {
-	var version int64
-	var status string
-	err := tx.QueryRowContext(ctx, `SELECT version,status FROM devices WHERE id=? AND workspace_id=? AND subject_id=?`, p.DeviceID, c.Principal.WorkspaceID, c.Principal.SubjectID).Scan(&version, &status)
-	if errors.Is(err, sql.ErrNoRows) {
-		return contracts.CommandResult{}, nil, apiError(404, "not_found", "device not found", nil)
-	}
-	if err != nil {
-		return contracts.CommandResult{}, nil, err
-	}
-	if err = checkVersion(expected, version); err != nil {
-		return contracts.CommandResult{}, nil, err
-	}
-	if status == "revoked" {
-		return contracts.CommandResult{}, nil, apiError(409, "state_conflict", "device is already revoked", nil)
-	}
-	at := c.AcceptedAt.Format(time.RFC3339Nano)
-	version++
-	_, err = tx.ExecContext(ctx, `UPDATE devices SET status='revoked',version=?,revoked_at=? WHERE id=?`, version, at, p.DeviceID)
-	if err != nil {
-		return contracts.CommandResult{}, nil, err
-	}
-	_, err = tx.ExecContext(ctx, `UPDATE tasks SET status=CASE WHEN status='queued' THEN 'canceled' ELSE status END,version=version+1,updated_at=?,finished_at=CASE WHEN status='queued' THEN ? ELSE finished_at END WHERE created_by_device_id=? AND workspace_id=? AND status IN ('queued','active','waiting','awaiting_user','paused')`, at, at, p.DeviceID, c.Principal.WorkspaceID)
-	if err != nil {
-		return contracts.CommandResult{}, nil, err
-	}
-	_, err = tx.ExecContext(ctx, `UPDATE runs SET desired_control='stop',control_version=control_version+1 WHERE authorized_device_id=? AND workspace_id=? AND status IN ('dispatching','active','uncertain')`, p.DeviceID, c.Principal.WorkspaceID)
-	if err != nil {
-		return contracts.CommandResult{}, nil, err
-	}
-	if _, err = tx.ExecContext(ctx, `UPDATE device_push_tokens SET status='disabled',disabled_at=?,updated_at=? WHERE device_id=? AND status='active'`, at, at, p.DeviceID); err != nil {
-		return contracts.CommandResult{}, nil, err
-	}
-	if _, err = tx.ExecContext(ctx, `UPDATE push_deliveries SET status='disabled',updated_at=? WHERE status='pending' AND push_token_id IN (SELECT id FROM device_push_tokens WHERE device_id=?)`, at, p.DeviceID); err != nil {
-		return contracts.CommandResult{}, nil, err
-	}
-	return contracts.CommandResult{ResourceType: "device", ResourceID: p.DeviceID, ResourceVersion: version}, []contracts.Event{event("device.revoked", "device", p.DeviceID, version, map[string]any{"device_id": p.DeviceID, "reason": p.Reason})}, nil
 }
 
 func taskVersionStatus(ctx context.Context, tx *sql.Tx, principal contracts.Principal, id string) (int64, string, error) {

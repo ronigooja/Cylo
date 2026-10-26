@@ -45,7 +45,7 @@ func TestCapabilityReleaseRequiresExplicitGrantAndAuthorizationBeforeJob(t *test
 	}
 	svc := &Service{db: store.DB(), server: server, availableCapabilityIDs: map[string]struct{}{"mail.read": {}}}
 	manifest := contracts.CapabilityManifest{SchemaVersion: 1, ArtifactRef: "oci://registry.example/cylo/mail@sha256:" + strings.Repeat("a", 64), ArtifactDigest: "sha256:" + strings.Repeat("a", 64), Entrypoint: "/app/run", Capabilities: []string{"mail.read"}, Budget: contracts.CapabilityResourceBudget{CPUMillis: 500, MemoryBytes: 1 << 20, DiskBytes: 1 << 20, TimeoutSeconds: 60, Concurrency: 1}, Network: contracts.CapabilityNetworkPolicy{Mode: "none"}, HealthCheck: &contracts.CapabilityHealthCheck{Kind: "http", Target: "/health", Port: 8080, IntervalSeconds: 10, TimeoutSeconds: 2, FailureThreshold: 2}}
-	principal := contracts.Principal{WorkspaceID: "default", SubjectID: "owner", DeviceID: "device", Scopes: []string{"client:command"}}
+	principal := contracts.Principal{WorkspaceID: "default", SubjectID: "owner", DeviceID: "instance", Generation: 1, Scopes: []string{"client:command"}}
 	command := control.CommandContext{CommandID: "cmd", Principal: principal, AcceptedAt: time.Now().UTC()}
 	payload, _ := json.Marshal(submitReleasePayload{Manifest: manifest})
 	tx := begin(t, store.DB())
@@ -852,9 +852,9 @@ func TestCapabilityTriggerRunnerAOResultChain(t *testing.T) {
 	acceptRequest := contracts.CommandRequest{Kind: "task.accept_result", ExpectedVersion: &taskVersion, Payload: marshal(map[string]string{"task_id": claim.TaskID, "run_id": claim.RunID, "decision": "accept"})}
 	acceptBytes, _ := json.Marshal(acceptRequest)
 	acceptHash := sha256.Sum256(acceptBytes)
-	acceptPrincipal := contracts.Principal{WorkspaceID: "default", SubjectID: "owner", DeviceID: "device", Scopes: []string{"client:command"}}
+	acceptPrincipal := contracts.Principal{WorkspaceID: "default", SubjectID: "owner", DeviceID: "instance", Generation: 1, Scopes: []string{"client:command"}}
 	// Direct command fixture establishes the same owner session checked by HTTP.
-	if _, err = store.DB().ExecContext(ctx, `UPDATE owner_auth SET subject_id='owner',password_hash=X'01',password_salt=X'02' WHERE id=1; UPDATE devices SET owner_generation=1 WHERE id='device'`); err != nil {
+	if _, _, err = control.InitializeInstanceAuth(ctx, store, mustCapabilityInstanceKey(t)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = server.ExecuteCommand(ctx, acceptPrincipal, "accept-trigger-result", acceptRequest, acceptHash[:]); err != nil {
@@ -913,3 +913,12 @@ func asAPI(err error, target **control.APIError) bool {
 }
 
 func marshal(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
+
+func mustCapabilityInstanceKey(t *testing.T) string {
+	t.Helper()
+	key, err := control.GenerateInstanceKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
+}

@@ -252,6 +252,24 @@ func (s *Store) RegisterMigration(m Migration) error {
 }
 
 func (s *Store) Migrate(ctx context.Context) error {
+	var legacy int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('owner_auth','bootstrap_requests','pairing_requests','owner_auth_requests')`).Scan(&legacy); err != nil {
+		return err
+	}
+	if legacy != 0 {
+		return errors.New("legacy owner/device authentication database is unsupported; deploy a fresh single-key instance")
+	}
+	var devices, instance int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='devices'`).Scan(&devices); err != nil {
+		return err
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='instance_auth'`).Scan(&instance); err != nil {
+		return err
+	}
+	if devices != 0 && instance == 0 {
+		return errors.New("legacy device database is unsupported; deploy a fresh single-key instance")
+	}
+
 	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL, namespace TEXT NOT NULL DEFAULT '')`); err != nil {
 		return fmt.Errorf("create migration table: %w", err)
 	}

@@ -35,7 +35,7 @@ func TestComposedServerRegistersDerivedWorkerCredentialAndFailsClosedWithoutVoic
 	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
 		t.Fatal(err)
 	}
-	bootstrapCode, deviceToken, workerToken := compositionSecret(t), compositionSecret(t), compositionSecret(t)
+	deviceToken, workerToken := compositionSecret(t), compositionSecret(t)
 	tokenFile := filepath.Join(t.TempDir(), "memory-worker-token")
 	if err = os.WriteFile(tokenFile, []byte(workerToken+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -48,7 +48,7 @@ func TestComposedServerRegistersDerivedWorkerCredentialAndFailsClosedWithoutVoic
 	if err != nil || !credential.Enabled || credential.Token != workerToken || !sameStringSet(credential.Scopes, memoryWorkerScopes) || len(credential.WorkspaceIDs) != 1 || credential.WorkspaceIDs[0] != "default" {
 		t.Fatalf("memory runner credential did not load with exact scopes/workspaces: %#v err=%v", credential, err)
 	}
-	server, err := composeControlServer(store, control.Config{BootstrapCode: bootstrapCode}, voice.Config{}, capabilities.Config{}, memory.DerivedConfig{})
+	server, err := composeControlServer(store, control.Config{}, voice.Config{}, capabilities.Config{}, memory.DerivedConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,9 +60,8 @@ func TestComposedServerRegistersDerivedWorkerCredentialAndFailsClosedWithoutVoic
 	}
 	seedComposedMemoryClaim(t, store.DB())
 	handler := server.Handler()
-	bootstrap := compositionRequest(t, handler, http.MethodPost, "/v1/auth/setup", "", map[string]any{"password": "owner-test-password", "request_id": "composition-bootstrap", "code": bootstrapCode, "device_name": "composition-test", "device_token": deviceToken})
-	if bootstrap.Code != http.StatusCreated {
-		t.Fatalf("bootstrap status=%d body=%s", bootstrap.Code, bootstrap.Body.String())
+	if _, _, err = control.InitializeInstanceAuth(ctx, store, deviceToken); err != nil {
+		t.Fatal(err)
 	}
 	claim := compositionRequest(t, handler, http.MethodPost, "/runner/v1/memory/jobs/claim", workerToken, map[string]any{"limit": 1})
 	if claim.Code != http.StatusOK {
