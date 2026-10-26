@@ -112,6 +112,12 @@ func WriteAOEnvAtomic(path string, c ProviderConfig) error {
 	return writeFileAtomic(path, []byte(contents), 0o600)
 }
 
+// WriteFileAtomic restores or writes a private deployment file with the same
+// fsync and rename guarantees used for provider configuration.
+func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
+	return writeFileAtomic(path, data, mode)
+}
+
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	if path == "" || !filepath.IsAbs(path) {
 		return errors.New("configuration path must be absolute")
@@ -172,6 +178,7 @@ func Probe(ctx context.Context, c ProviderConfig, client *http.Client) ProbeResu
 		return ProbeResult{Model: c.Model, ErrorCategory: "invalid_configuration"}
 	}
 	secret, err := os.ReadFile(normalized.SecretPath)
+	secret = []byte(strings.TrimSpace(string(secret)))
 	if err != nil || len(secret) == 0 {
 		return ProbeResult{Model: normalized.Model, ErrorCategory: "credential_unavailable"}
 	}

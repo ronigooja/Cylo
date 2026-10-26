@@ -83,8 +83,8 @@ func providerConfigureOperation(args []string, in io.Reader, out, errOut io.Writ
 	probeCfg := cfg
 	probeCfg.SecretPath = probePath
 	probe := ops.Probe(ctx, probeCfg, nil)
-	_ = recordProviderCheck(probe)
 	if !probe.OK() {
+		_ = recordProviderCheck(probe)
 		return fmt.Errorf("provider check failed: %s (HTTP %d)", probe.ErrorCategory, probe.HTTPStatus)
 	}
 	oldSecret, oldSecretErr := os.ReadFile(cfg.SecretPath)
@@ -101,6 +101,9 @@ func providerConfigureOperation(args []string, in io.Reader, out, errOut io.Writ
 		rollbackSecret(cfg.SecretPath, oldSecret, oldSecretErr)
 		rollbackFile(*aoEnv, oldEnv, oldEnvErr)
 		return err
+	}
+	if err = recordProviderCheck(probe); err != nil {
+		return fmt.Errorf("provider configured, but status record failed: %w", err)
 	}
 	fmt.Fprintln(out, "Provider configured and services reloaded.")
 	return nil
@@ -122,7 +125,9 @@ func providerTestOperation(args []string, in io.Reader, out, errOut io.Writer) e
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	result := ops.Probe(ctx, ops.ProviderConfig{BaseURL: *base, Model: *model, SecretPath: *secretPath}, nil)
-	_ = recordProviderCheck(result)
+	if err := recordProviderCheck(result); err != nil {
+		return fmt.Errorf("provider check status could not be recorded: %w", err)
+	}
 	fmt.Fprintf(out, "HTTP status: %d\nModel: %s\nAvailable: %t\nResult: %s\n", result.HTTPStatus, result.Model, result.ModelAvailable, result.ErrorCategory)
 	if !result.OK() {
 		return errors.New("provider check failed")
@@ -208,11 +213,10 @@ func statusOperation(args []string, _ io.Reader, out, errOut io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	lastCheck := ""
-	if data, err := os.ReadFile(providerCheckPath()); err == nil {
-		lastCheck = strings.TrimSpace(string(data))
-	}
-	status := ops.NewManager(nil).Inspect(context.Background(), ops.InspectConfig{SecretPath: *secret, ProviderBaseURL: *urlValue, ProviderModel: *model, ProviderConfigSource: "AO_CODEX_EXTERNAL_*", ProviderLastCheck: lastCheck})
+	lastCheck := readProviderCheckStatus()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	status := ops.NewManager(nil).Inspect(ctx, ops.InspectConfig{SecretPath: *secret, ProviderBaseURL: *urlValue, ProviderModel: safeLabel(*model), ProviderConfigSource: "AO_CODEX_EXTERNAL_*", ProviderLastCheck: lastCheck})
 	fmt.Fprintf(out, "Deployment: %s\n", status.Mode)
 	for _, service := range status.Services {
 		fmt.Fprintf(out, "%s: %s (%s)\n", service.Name, service.State, service.Source)
@@ -255,6 +259,31 @@ func providerCheckPath() string {
 		return path
 	}
 	return "/etc/cylo/provider-check.status"
+}
+
+func readProviderCheckStatus() string {
+	data, err := os.ReadFile(providerCheckPath())
+	if err != nil {
+		return "unavailable"
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) != 4 || !strings.Contains(fields[1], "_") && fields[1] != "ok" {
+		return "invalid"
+	}
+	return safeLabel(fields[1])
+}
+
+func safeLabel(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) > 80 {
+		value = value[:80]
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return "invalid"
+		}
+	}
+	return value
 }
 
 func recordProviderCheck(result ops.ProbeResult) error {
@@ -324,7 +353,7 @@ func rollbackSecret(path string, data []byte, err error) {
 }
 func rollbackFile(path string, data []byte, err error) {
 	if err == nil {
-		_ = os.WriteFile(path, data, 0o600)
+		_ = ops.WriteFileAtomic(path, data, 0o600)
 	} else {
 		_ = os.Remove(path)
 	}
