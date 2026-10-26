@@ -66,7 +66,7 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if active >= 4 {
+	if active >= MaxConcurrentRuns {
 		_ = tx.Rollback()
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -452,12 +452,13 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if observation.Kind == "no_effect_terminal" {
-		if status != "dispatching" {
+		reconciled := observation.NoEffectProof != nil && observation.NoEffectProof.Reconciliation != nil
+		if !reconciled && status != "dispatching" {
 			writeError(w, apiError(409, "state_conflict", "no-effect termination requires a run that has not started dispatch", nil))
 			return
 		}
 		proof := observation.NoEffectProof
-		if proof == nil || proof.JournalPhase != "claimed" || proof.AOCreateStarted || proof.AOSessionID != "" || proof.AOContainerID != "" || (proof.Outcome != "stopped" && proof.Outcome != "failed") || (observation.AOProjectID != "" && observation.AOProjectID != boundProject) || observation.AOSessionID != "" || boundSession != "" || len(observation.ExternalEffects) != 0 || observation.TerminationProof != nil {
+		if proof == nil || (!reconciled && (proof.JournalPhase != "claimed" || proof.AOCreateStarted)) || proof.AOSessionID != "" || proof.AOContainerID != "" || (proof.Outcome != "stopped" && proof.Outcome != "failed") || (observation.AOProjectID != "" && observation.AOProjectID != boundProject) || observation.AOSessionID != "" || boundSession != "" || len(observation.ExternalEffects) != 0 || observation.TerminationProof != nil {
 			writeError(w, apiError(409, "no_effect_unproven", "no-effect termination requires a claimed journal entry with no AO binding or external effects", nil))
 			return
 		}
@@ -474,14 +475,54 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
-		if priorDispatch != 0 || priorEffects != 0 {
+		if !reconciled && (priorDispatch != 0 || priorEffects != 0) {
 			writeError(w, apiError(409, "no_effect_unproven", "run history contains dispatch or external-effect evidence", nil))
 			return
 		}
+		if reconciled {
+			evidence := proof.Reconciliation
+			_, offset := evidence.VerifiedAt.Zone()
+			instance, instanceErr := GetInstanceState(r.Context(), tx)
+			if instanceErr != nil {
+				writeError(w, instanceErr)
+				return
+			}
+			if status != "uncertain" || proof.JournalPhase != "effect_unknown" || !proof.AOCreateStarted || proof.Outcome != "failed" || evidence.RunID != runID || strings.TrimSpace(evidence.Actor) == "" || len(evidence.Actor) > 200 || strings.ContainsAny(evidence.Actor, "\r\n") || !evidence.Confirmed || evidence.VerifiedAt.IsZero() || offset != 0 || evidence.VerifiedAt.After(time.Now().UTC().Add(5*time.Minute)) || evidence.AOQuery != "GET /api/v1/sessions/inventory" || !evidence.AOInventoryComplete || !evidence.AOClientRequestIDComplete || evidence.AOMatches != 0 || evidence.DockerQuery != "docker ps -aq --no-trunc; docker inspect all IDs" || !evidence.DockerInventoryComplete || evidence.DockerRuntimeCount != 0 || evidence.InstanceID != instance.InstanceID || evidence.InstanceEpoch != instance.Epoch {
+				writeError(w, apiError(409, "no_effect_unproven", "explicit reconciliation requires complete AO and Docker absence proof under the current instance fence", nil))
+				return
+			}
+			var unknown, bound, unsafeEffects int
+			if err = tx.QueryRowContext(r.Context(), `SELECT count(*) FROM runner_observations WHERE run_id=? AND attempt_id=? AND fence=? AND kind='effect_unknown'`, runID, attempt, fence).Scan(&unknown); err != nil {
+				writeError(w, err)
+				return
+			}
+			if err = tx.QueryRowContext(r.Context(), `SELECT count(*) FROM runner_observations WHERE run_id=? AND attempt_id=? AND fence=? AND kind NOT IN ('dispatch_started','effect_unknown')`, runID, attempt, fence).Scan(&bound); err != nil {
+				writeError(w, err)
+				return
+			}
+			if err = tx.QueryRowContext(r.Context(), `SELECT count(*) FROM external_effects WHERE run_id=? AND (kind!='ao_worker_create' OR status!='unknown' OR external_reference!='')`, runID).Scan(&unsafeEffects); err != nil {
+				writeError(w, err)
+				return
+			}
+			if unknown == 0 || bound != 0 || unsafeEffects != 0 {
+				writeError(w, apiError(409, "no_effect_unproven", "reconciliation history contains binding or effects beyond unknown creation", nil))
+				return
+			}
+			details, marshalErr := json.Marshal(proof)
+			if marshalErr != nil {
+				writeError(w, marshalErr)
+				return
+			}
+			if _, err = tx.ExecContext(r.Context(), `UPDATE external_effects SET status='no_effect',last_observed_at=?,details=? WHERE run_id=? AND kind='ao_worker_create' AND status='unknown' AND external_reference=''`, time.Now().UTC().Format(time.RFC3339Nano), details, runID); err != nil {
+				writeError(w, err)
+				return
+			}
+		}
 	}
+
 	if observation.Kind == "create_rejected" {
 		proof := observation.CreateRejection
-		if status != "active" || proof == nil || proof.HTTPStatus < 400 || proof.HTTPStatus >= 500 || proof.ErrorCode == "" || observation.AOProjectID != boundProject || boundSession != "" || observation.AOSessionID != "" || len(observation.ExternalEffects) != 0 || observation.NoEffectProof != nil || observation.TerminationProof != nil || observation.BudgetReservationID != "" && observation.BudgetReservationID != "ao-initial-prompt" {
+		if status != "active" || proof == nil || proof.HTTPStatus < 400 || proof.HTTPStatus >= 600 || proof.ErrorCode == "" || observation.AOProjectID != boundProject || boundSession != "" || observation.AOSessionID != "" || len(observation.ExternalEffects) != 0 || observation.NoEffectProof != nil || observation.TerminationProof != nil || observation.BudgetReservationID != "" && observation.BudgetReservationID != "ao-initial-prompt" {
 			writeError(w, apiError(409, "create_rejection_unproven", "AO create rejection requires an active unbound run and sanitized rejection proof", nil))
 			return
 		}

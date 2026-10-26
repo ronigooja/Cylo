@@ -30,6 +30,9 @@ func main() {
 
 func run(args []string) error {
 	flags := flag.NewFlagSet("cylo-runner", flag.ContinueOnError)
+	reconcileRuns := flags.String("reconcile-runs", "", "explicit comma-separated effect_unknown run IDs for read-only no-effect reconciliation")
+	actor := flags.String("actor", "", "operator identity recorded in reconciliation proof")
+	confirm := flags.Bool("confirm-no-effect", false, "confirm explicit no-effect reconciliation after complete AO and Docker absence checks")
 	once := flags.Bool("once", false, "reconcile current runs and perform one claim poll")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -87,6 +90,12 @@ func run(args []string) error {
 		}},
 		PollInterval:   durationEnv("CYLO_RUNNER_POLL_INTERVAL", 2*time.Second),
 		ObserveTimeout: durationEnv("CYLO_RUNNER_OBSERVE_TIMEOUT", 15*time.Second),
+	}
+	if *reconcileRuns != "" || *confirm || *actor != "" {
+		if *once {
+			return errors.New("--once cannot be combined with explicit reconciliation")
+		}
+		return engine.ReconcileNoEffect(ctx, strings.Split(*reconcileRuns, ","), *actor, *confirm, agent, docker)
 	}
 	deployments := &runner.DeploymentWorker{Control: control, Journal: journal, Executor: &runner.DeploymentExecutor{Docker: docker, Fences: deploymentAuthority}}
 	var triggerAdmissions *runner.TriggerAdmissionWorker

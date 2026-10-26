@@ -106,9 +106,16 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 		if !sameRecoveredClaim(persisted.Claim, claim, persisted.Session) || persisted.Spec.ClientRequestID != "" && persisted.Spec.Harness != effectiveHarness(claim.Harness) {
 			return errors.New("runner journal claim and AO request harness do not match the server claim")
 		}
+		receipt, receiptErr := e.Journal.NoEffectReceipt(ctx, claim.RunID)
+		if receiptErr != nil {
+			return receiptErr
+		}
+		if receipt != nil && receipt.NoEffectProof != nil && receipt.NoEffectProof.Reconciliation != nil {
+			return e.flush(ctx, claim.RunID)
+		}
 		spec = persisted.Spec
 		phase = ""
-		if persisted.Phase == "create_rejected" {
+		if persisted.Phase == "create_rejected" || persisted.Phase == "no_effect_terminal" {
 			// The rejection receipt is durable before delivery. Replaying a claim
 			// after a lost acknowledgement must never call AO a second time.
 			return e.flush(ctx, claim.RunID)

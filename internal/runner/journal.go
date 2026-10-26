@@ -167,6 +167,13 @@ CREATE TABLE IF NOT EXISTS journal_observations (
   created_at TEXT NOT NULL,
   acknowledged_at TEXT
 );
+CREATE TABLE IF NOT EXISTS journal_reconciliations (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  checked_at TEXT NOT NULL,
+  result_json BLOB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS journal_deployments (
   deployment_id TEXT PRIMARY KEY,
   attempt_id TEXT NOT NULL,
@@ -581,4 +588,35 @@ func protectSQLiteFiles(filename string) error {
 		}
 	}
 	return nil
+}
+
+// NoEffectReceipt includes acknowledged receipts so operator retries reuse the
+// original proof and observation identity even after an acknowledgement crash.
+func (j *Journal) NoEffectReceipt(ctx context.Context, runID string) (*contracts.RunnerObservation, error) {
+	rows, err := j.db.QueryContext(ctx, `SELECT body FROM journal_observations WHERE run_id=? AND json_extract(body,'$.kind')='no_effect_terminal' ORDER BY created_at`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, rows.Err()
+	}
+	var body []byte
+	if err := rows.Scan(&body); err != nil {
+		return nil, err
+	}
+	var obs contracts.RunnerObservation
+	if err := json.Unmarshal(body, &obs); err != nil {
+		return nil, err
+	}
+	return &obs, nil
+}
+
+func (j *Journal) SaveReconciliationAudit(ctx context.Context, id, runID, actor string, at time.Time, result any) error {
+	body, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	_, err = j.db.ExecContext(ctx, `INSERT INTO journal_reconciliations(id,run_id,actor,checked_at,result_json) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET result_json=excluded.result_json`, id, runID, actor, at.Format(time.RFC3339Nano), body)
+	return err
 }

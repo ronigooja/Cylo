@@ -306,11 +306,29 @@ type CreateRejectionProof struct {
 // creation began. The control plane also checks its own observation and effect
 // history before accepting this receipt.
 type NoEffectProof struct {
-	JournalPhase    string `json:"journal_phase"`
-	AOCreateStarted bool   `json:"ao_create_started"`
-	AOSessionID     string `json:"ao_session_id,omitempty"`
-	AOContainerID   string `json:"ao_container_id,omitempty"`
-	Outcome         string `json:"outcome"`
+	JournalPhase    string                  `json:"journal_phase"`
+	AOCreateStarted bool                    `json:"ao_create_started"`
+	AOSessionID     string                  `json:"ao_session_id,omitempty"`
+	AOContainerID   string                  `json:"ao_container_id,omitempty"`
+	Outcome         string                  `json:"outcome"`
+	Reconciliation  *NoEffectReconciliation `json:"reconciliation,omitempty"`
+}
+
+// NoEffectReconciliation records explicit operator-authorized, read-only absence checks.
+type NoEffectReconciliation struct {
+	RunID                     string    `json:"run_id"`
+	Actor                     string    `json:"actor"`
+	Confirmed                 bool      `json:"confirmed"`
+	VerifiedAt                time.Time `json:"verified_at"`
+	AOQuery                   string    `json:"ao_query"`
+	AOInventoryComplete       bool      `json:"ao_inventory_complete"`
+	AOClientRequestIDComplete bool      `json:"ao_client_request_id_complete"`
+	AOMatches                 int       `json:"ao_matches"`
+	DockerQuery               string    `json:"docker_query"`
+	DockerInventoryComplete   bool      `json:"docker_inventory_complete"`
+	DockerRuntimeCount        int       `json:"docker_runtime_count"`
+	InstanceID                string    `json:"instance_id"`
+	InstanceEpoch             int64     `json:"instance_epoch"`
 }
 
 // TerminationProof carries the independent AO process-stop evidence required
