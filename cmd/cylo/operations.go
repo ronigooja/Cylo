@@ -245,4 +245,3 @@ func readHiddenToken(in io.Reader, out io.Writer) ([]byte, error) {
 
 func rollbackSecret(path string, data []byte, err error) { if err == nil { _ = ops.WriteSecretAtomic(path, data) } else { _ = os.Remove(path) } }
 func rollbackFile(path string, data []byte, err error) { if err == nil { _ = os.WriteFile(path, data, 0o600) } else { _ = os.Remove(path) } }
-
