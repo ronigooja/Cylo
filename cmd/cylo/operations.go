@@ -263,14 +263,14 @@ func keyOperation(rotate bool, args []string, in io.Reader, out, errOut io.Write
 	}()
 	options := ops.KeyOptions{DatabasePath: *db, OutputPath: *output, ServerURL: *server}
 	var result ops.KeyResult
-	var err error
+	var keyErr error
 	if rotate {
-		result, err = ops.RotateKey(ctx, options)
+		result, keyErr = ops.RotateKey(ctx, options)
 	} else {
-		result, err = ops.InitKey(ctx, options)
+		result, keyErr = ops.InitKey(ctx, options)
 	}
-	if err != nil {
-		return err
+	if keyErr != nil {
+		return keyErr
 	}
 	if err := resume(); err != nil {
 		return fmt.Errorf("key committed to private export %s; service restart failed: %w", *output, err)
