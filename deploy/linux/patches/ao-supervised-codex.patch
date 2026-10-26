@@ -558,7 +558,7 @@ index 000000000..a69c3567a
 +	if info, err := os.Stat(home); err != nil || !info.IsDir() {
 +		return nil, errors.New("supervised Codex home is unavailable")
 +	}
-+	broker, err := startProviderBroker(values[providerUpstreamEnv], providerKey, providerModel, filepath.Dir(home))
++	broker, err := startProviderBroker(values[providerUpstreamEnv], providerKey, providerModel, filepath.Dir(workdir))
 +	if err != nil {
 +		return nil, err
 +	}
