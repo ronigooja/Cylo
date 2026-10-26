@@ -65,8 +65,8 @@ Use a runner built from the same reviewed source as the control server and the
 patched AO gateway. Stop `cylo-runner` first so the maintenance command can take
 the deployment-host and journal locks. Restart AO after stopping the runner to
 drain the original create connections. Reconciliation requires a direct AO
-daemon connection without a proxy that buffers or retries create requests; the complete inventory must report a
-server start time later than the journal's unknown-create update. Keep the runner
+daemon connection without a proxy that buffers or retries create requests. The
+complete inventory must report a server start time later than the journal's unknown-create update. Keep the runner
 stopped until reconciliation finishes. Run the command under the existing
 runner service account and deployment environment/secret-entrypoint boundary:
 

@@ -622,7 +622,7 @@ The user authorized binding the service through `debian.local`. Docker publish a
 
 After restarting the Cylo stack, `debian.local` resolved to `10.211.55.8`; Docker published port 8787 on that address and `127.0.0.1`. Both `http://debian.local:8787/healthz` and the loopback health endpoint returned `{"status":"ok"}`. Cylo, runner, and AO were active. The previously recorded control connection blocker is resolved. Source syntax and whitespace checks passed locally; this operational verification did not compile code, build images, or run an automated test suite. Existing uncertain runs remain unchanged. No owner key was available on the server for submitting a fresh client command, so a new chat reply and macOS interaction remain unverified.
 
-### Unknown-create reconciliation and queue capacity — source candidate
+### Unknown-create reconciliation and queue capacity — 2026-10-26
 
 A timed-out or otherwise ambiguous AO create remains `effect_unknown`; it is
 never replayed automatically. Explicit runner maintenance may reconcile only an
@@ -642,8 +642,47 @@ and per-task queue reasons expose the same global admission gate to the Apple
 conversation and task views; existing drafts, command keys, and event refresh
 remain authoritative. See [the operator runbook](local-deployment.md#unknown-ao-creation-reconciliation).
 
-This section describes source behavior pending hosted verification and deployment
-evidence below. It does not establish successful live worker/provider execution
-or recovery of the four existing uncertain runs. An existing created-state AO
-container was observed during read-only inspection; it must be retained and
-causes the conservative reconciliation check to refuse.
+Hosted verification passed:
+
+- [Linux run 40371027074](https://github.com/ronigooja/Cylo/actions/runs/40371027074), source `c31d8d3d3b7d6643768af946521f3be04a198b50`, passed `go test ./...`, the expanded race check across control/runner/AO/server/operator packages, and release/CLI staging checks. The initial race run found an unsynchronized counter in the existing AO timeout test; the fixture was corrected before this passing run. The final tests cover `409 worker_boot_failed` failure/capacity release and exact receipt replay; the same code with HTTP 503 remains uncertain.
+- [AO run 40370123374](https://github.com/ronigooja/Cylo/actions/runs/40370123374), implementation source `5f99878b1ef684ea56c65f0342393fc67af0f703`, passed pinned patch application/tree fixtures, Codex/provider, session-manager, session-service, and HTTP-controller tests and built the ARM64 daemon. Runtime image sources were unchanged, so this run selected the binary-only artifact; the deployed `cylo-ao-codex:63cedecaedc2` image was retained.
+- [Apple run 40370598915](https://github.com/ronigooja/Cylo/actions/runs/40370598915), the same implementation source, passed 82 Swift package tests, the unsigned macOS archive, and the unsigned iOS build. [Server run 40370133628](https://github.com/ronigooja/Cylo/actions/runs/40370133628) built the ARM64 server image and runner binary. Later source commits changed comments and tests only; deployed implementation matches this artifact source.
+
+Artifact SHA-256 checks passed before deployment. The server now runs
+`cylo-server:reconciliation-5f99878b1ef6`; systemd selects immutable runner
+`/opt/cylo/runner/releases/reconciliation-5f99878/cylo-runner` (SHA-256
+`944a9ac813f482880d503c93c3bd64e3e24375431b649362c3bd8814b531158a`)
+and AO `/opt/cylo/ao/bin/ao-reconciliation-5f99878` (SHA-256
+`127255213b445b2f1ac832d338f59e0bcecaa2fe05ce5582b29afc6f3fcc5bd6`).
+The loopback and `debian.local` control health endpoints returned `ok`; AO was
+ready and its inventory reported complete empty sessions with a fresh process
+start time. All three services were active, and the runner had zero restarts
+at the final service check. Existing external CLIProxyAPI configuration was not
+changed.
+
+With the runner stopped and AO restarted, all four explicit per-run
+reconciliation attempts on 2026-10-26 at 17:42:58 UTC correctly refused at Docker
+inventory. An existing AO-labeled container remained in `created` state, PID 0,
+with no recorded process start; the conservative check also refuses any
+uncorrelated managed runtime. Each refusal durably records the actor, run,
+attempt/fence/instance, check time, AO incarnation and complete empty inventory,
+and Docker refusal in `journal_reconciliations`. All four runs remain
+`uncertain`, all four slots remain occupied, and the runner was restarted.
+No journal, SQLite authority row, or container record was deleted. Recovery of
+the old queue is **not accepted**; the retained container needs a separately
+scoped lifecycle recovery decision before absence can be proved.
+
+The CI macOS archive was copied to
+`~/Developer/Cylo/runs/ao-reconciliation-20261026/`, signed ad hoc on the authorized
+Mac with the installed application's existing no-entitlement signing boundary,
+and installed at `/Applications/Cylo.app`. Strict signature verification and
+installed/staged executable comparison passed, and a new `CyloMac` process was
+observed. The archive and signing logs are preserved in that task directory.
+No local compilation or automated test suite ran. Native UI interaction and a
+fresh minimum chat remain unverified; the user chose to perform chat verification.
+No new AO container/app-server/provider execution is claimed, and the retained
+uncertain slots currently prevent a fresh queued task from dispatching.
+
+Controller CI logs and operational refusal outputs are retained under
+`/tmp/cylo-reconciliation-20261026/`; persistent refusal evidence is in the runner
+journal. See the runbook for repeatable commands and acceptance boundaries.
