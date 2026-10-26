@@ -493,6 +493,16 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 				writeError(w, apiError(409, "no_effect_unproven", "explicit reconciliation requires complete AO and Docker absence proof under the current instance fence", nil))
 				return
 			}
+			var runStartedAtText string
+			if err = tx.QueryRowContext(r.Context(), `SELECT started_at FROM runs WHERE id=?`, runID).Scan(&runStartedAtText); err != nil {
+				writeError(w, err)
+				return
+			}
+			runStartedAt, parseErr := time.Parse(time.RFC3339Nano, runStartedAtText)
+			if parseErr != nil || !validReconciliationContainerEvidence(evidence, runStartedAt) {
+				writeError(w, apiError(409, "no_effect_unproven", "Docker reconciliation requires two unchanged complete inventories and explicit verified preserved records", nil))
+				return
+			}
 			var unknown, bound, unsafeEffects int
 			if err = tx.QueryRowContext(r.Context(), `SELECT count(*) FROM runner_observations WHERE run_id=? AND attempt_id=? AND fence=? AND kind='effect_unknown'`, runID, attempt, fence).Scan(&unknown); err != nil {
 				writeError(w, err)
@@ -515,7 +525,7 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 				writeError(w, marshalErr)
 				return
 			}
-			if _, err = tx.ExecContext(r.Context(), `UPDATE external_effects SET status='no_effect',last_observed_at=?,details=? WHERE run_id=? AND kind='ao_worker_create' AND status='unknown' AND external_reference=''`, time.Now().UTC().Format(time.RFC3339Nano), details, runID); err != nil {
+			if _, err = tx.ExecContext(r.Context(), `UPDATE external_effects SET status=?,last_observed_at=?,details=? WHERE run_id=? AND kind='ao_worker_create' AND status='unknown' AND external_reference=''`, reconciliationEffectStatus(evidence), time.Now().UTC().Format(time.RFC3339Nano), details, runID); err != nil {
 				writeError(w, err)
 				return
 			}
@@ -835,3 +845,52 @@ func ensureAcceptanceApprovalPlaceholder(ctx context.Context, tx *sql.Tx, worksp
 }
 
 var _ = fmt.Sprintf
+
+func validReconciliationContainerEvidence(e *contracts.NoEffectReconciliation, runStartedAt time.Time) bool {
+	if e.DockerInventoryChecks != 2 || e.DockerInventoryContainerCount != len(e.RetainedNeverStartedContainers)+len(e.PreexistingCapabilityContainers)+len(e.UnrelatedCapabilityContainerIDs)+len(e.UnmanagedContainerIDs) || len(e.RetainNeverStartedContainerIDs) != len(e.RetainedNeverStartedContainers) || len(e.UnrelatedPreexistingCapabilityContainerIDs) != len(e.PreexistingCapabilityContainers) {
+		return false
+	}
+	all := map[string]bool{}
+	retained := map[string]bool{}
+	preexisting := map[string]bool{}
+	for _, id := range e.RetainNeverStartedContainerIDs {
+		if !contracts.ValidFullContainerID(id) || all[id] {
+			return false
+		}
+		all[id] = true
+		retained[id] = true
+	}
+	for _, id := range e.UnrelatedPreexistingCapabilityContainerIDs {
+		if !contracts.ValidFullContainerID(id) || all[id] {
+			return false
+		}
+		all[id] = true
+		preexisting[id] = true
+	}
+	for _, id := range append(append([]string{}, e.UnrelatedCapabilityContainerIDs...), e.UnmanagedContainerIDs...) {
+		if !contracts.ValidFullContainerID(id) || all[id] {
+			return false
+		}
+		all[id] = true
+	}
+	for _, p := range e.RetainedNeverStartedContainers {
+		if !retained[p.ID] || !p.Valid(e.AOServerStartedAt, e.VerifiedAt) {
+			return false
+		}
+		delete(retained, p.ID)
+	}
+	for _, p := range e.PreexistingCapabilityContainers {
+		if !preexisting[p.ID] || !p.Valid(runStartedAt, e.AOServerStartedAt, e.VerifiedAt) {
+			return false
+		}
+		delete(preexisting, p.ID)
+	}
+	return len(retained) == 0 && len(preexisting) == 0
+}
+
+func reconciliationEffectStatus(e *contracts.NoEffectReconciliation) string {
+	if len(e.RetainedNeverStartedContainers) > 0 {
+		return "runtime_not_started"
+	}
+	return "no_effect"
+}

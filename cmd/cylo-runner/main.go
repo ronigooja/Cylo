@@ -30,6 +30,22 @@ func main() {
 
 func run(args []string) error {
 	flags := flag.NewFlagSet("cylo-runner", flag.ContinueOnError)
+	var preexistingContainers []string
+	flags.Func("unrelated-preexisting-capability-container", "explicit full ID of a capability container predating the original run (repeatable)", func(value string) error {
+		if !contracts.ValidFullContainerID(value) {
+			return errors.New("preexisting capability requires a full lowercase Docker ID")
+		}
+		preexistingContainers = append(preexistingContainers, value)
+		return nil
+	})
+	var retainContainers []string
+	flags.Func("retain-never-started-container", "explicit full Docker ID to preserve after two complete never-started inspections (repeatable)", func(value string) error {
+		if !contracts.ValidFullContainerID(value) {
+			return errors.New("retained container requires a full lowercase Docker ID")
+		}
+		retainContainers = append(retainContainers, value)
+		return nil
+	})
 	reconcileRuns := flags.String("reconcile-runs", "", "explicit comma-separated effect_unknown run IDs for read-only no-effect reconciliation")
 	actor := flags.String("actor", "", "operator identity recorded in reconciliation proof")
 	confirm := flags.Bool("confirm-no-effect", false, "confirm explicit no-effect reconciliation after complete AO and Docker absence checks")
@@ -91,11 +107,11 @@ func run(args []string) error {
 		PollInterval:   durationEnv("CYLO_RUNNER_POLL_INTERVAL", 2*time.Second),
 		ObserveTimeout: durationEnv("CYLO_RUNNER_OBSERVE_TIMEOUT", 15*time.Second),
 	}
-	if *reconcileRuns != "" || *confirm || *actor != "" {
+	if *reconcileRuns != "" || *confirm || *actor != "" || len(retainContainers) > 0 || len(preexistingContainers) > 0 {
 		if *once {
 			return errors.New("--once cannot be combined with explicit reconciliation")
 		}
-		return engine.ReconcileNoEffect(ctx, strings.Split(*reconcileRuns, ","), *actor, *confirm, agent, docker)
+		return engine.ReconcileNoEffect(ctx, strings.Split(*reconcileRuns, ","), *actor, *confirm, agent, docker, runner.ReconciliationOptions{UnrelatedPreexistingCapabilityContainerIDs: preexistingContainers, RetainNeverStartedContainerIDs: retainContainers, DeploymentAuthority: deploymentAuthority})
 	}
 	deployments := &runner.DeploymentWorker{Control: control, Journal: journal, Executor: &runner.DeploymentExecutor{Docker: docker, Fences: deploymentAuthority}}
 	var triggerAdmissions *runner.TriggerAdmissionWorker

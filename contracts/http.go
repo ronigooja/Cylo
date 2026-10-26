@@ -1,7 +1,10 @@
 package contracts
 
 import (
+	"encoding/hex"
 	"encoding/json"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -317,21 +320,152 @@ type NoEffectProof struct {
 
 // NoEffectReconciliation records explicit operator-authorized, read-only absence checks.
 type NoEffectReconciliation struct {
-	RunID                     string    `json:"run_id"`
-	Actor                     string    `json:"actor"`
-	Confirmed                 bool      `json:"confirmed"`
-	VerifiedAt                time.Time `json:"verified_at"`
-	AOServerStartedAt         time.Time `json:"ao_server_started_at"`
-	JournalUpdatedAt          time.Time `json:"journal_updated_at"`
-	AOQuery                   string    `json:"ao_query"`
-	AOInventoryComplete       bool      `json:"ao_inventory_complete"`
-	AOClientRequestIDComplete bool      `json:"ao_client_request_id_complete"`
-	AOMatches                 int       `json:"ao_matches"`
-	DockerQuery               string    `json:"docker_query"`
-	DockerInventoryComplete   bool      `json:"docker_inventory_complete"`
-	DockerRuntimeCount        int       `json:"docker_runtime_count"`
-	InstanceID                string    `json:"instance_id"`
-	InstanceEpoch             int64     `json:"instance_epoch"`
+	RunID                                      string                           `json:"run_id"`
+	Actor                                      string                           `json:"actor"`
+	Confirmed                                  bool                             `json:"confirmed"`
+	VerifiedAt                                 time.Time                        `json:"verified_at"`
+	AOServerStartedAt                          time.Time                        `json:"ao_server_started_at"`
+	JournalUpdatedAt                           time.Time                        `json:"journal_updated_at"`
+	AOQuery                                    string                           `json:"ao_query"`
+	AOInventoryComplete                        bool                             `json:"ao_inventory_complete"`
+	AOClientRequestIDComplete                  bool                             `json:"ao_client_request_id_complete"`
+	AOMatches                                  int                              `json:"ao_matches"`
+	DockerQuery                                string                           `json:"docker_query"`
+	DockerInventoryComplete                    bool                             `json:"docker_inventory_complete"`
+	DockerRuntimeCount                         int                              `json:"docker_runtime_count"`
+	DockerInventoryContainerCount              int                              `json:"docker_inventory_container_count"`
+	UnrelatedPreexistingCapabilityContainerIDs []string                         `json:"unrelated_preexisting_capability_container_ids,omitempty"`
+	PreexistingCapabilityContainers            []PreexistingCapabilityContainer `json:"preexisting_capability_containers,omitempty"`
+	DockerInventoryChecks                      int                              `json:"docker_inventory_checks"`
+	RetainNeverStartedContainerIDs             []string                         `json:"retain_never_started_container_ids,omitempty"`
+	RetainedNeverStartedContainers             []RetainedNeverStartedContainer  `json:"retained_never_started_containers,omitempty"`
+	UnmanagedContainerIDs                      []string                         `json:"unmanaged_container_ids,omitempty"`
+	UnrelatedCapabilityContainerIDs            []string                         `json:"unrelated_capability_container_ids,omitempty"`
+
+	InstanceID    string `json:"instance_id"`
+	InstanceEpoch int64  `json:"instance_epoch"`
+}
+
+// RetainedNeverStartedContainer preserves an explicitly selected Docker artifact
+// while proving that it has never launched a process. Pointer fields make absent
+// or null inspect data invalid, rather than treating it as a zero value.
+type RetainedNeverStartedContainer struct {
+	ID             string     `json:"id"`
+	Managed        string     `json:"managed"`
+	Runtime        string     `json:"runtime"`
+	SessionID      string     `json:"session_id"`
+	Status         string     `json:"status"`
+	Running        *bool      `json:"running"`
+	Paused         *bool      `json:"paused"`
+	Restarting     *bool      `json:"restarting"`
+	Dead           *bool      `json:"dead"`
+	OOMKilled      *bool      `json:"oom_killed"`
+	ExitCode       *int       `json:"exit_code"`
+	Error          *string    `json:"error"`
+	PID            *int       `json:"pid"`
+	StartedAt      *time.Time `json:"started_at"`
+	FinishedAt     *time.Time `json:"finished_at"`
+	CreatedAt      time.Time  `json:"created_at"`
+	RestartCount   *int       `json:"restart_count"`
+	RestartPolicy  string     `json:"restart_policy"`
+	FirstCheckedAt time.Time  `json:"first_checked_at"`
+	RecheckedAt    time.Time  `json:"rechecked_at"`
+	SnapshotSHA256 string     `json:"snapshot_sha256"`
+}
+
+// ValidFullContainerID accepts only Docker's complete lowercase SHA256 IDs.
+func ValidFullContainerID(id string) bool {
+	if len(id) != 64 {
+		return false
+	}
+	decoded, err := hex.DecodeString(id)
+	return err == nil && len(decoded) == 32 && hex.EncodeToString(decoded) == id
+}
+
+func (p RetainedNeverStartedContainer) Valid(aoStartedAt, verifiedAt time.Time) bool {
+	if !ValidFullContainerID(p.ID) || p.Managed != "true" || (p.Runtime != "ao-codex-chat" && p.Runtime != "ao-opencode-acp") || p.SessionID == "" || len(p.SessionID) > 128 || p.Status != "created" || p.Running == nil || *p.Running || p.Paused == nil || *p.Paused || p.Restarting == nil || *p.Restarting || p.Dead == nil || *p.Dead || p.OOMKilled == nil || *p.OOMKilled || p.ExitCode == nil || *p.ExitCode != 0 || p.Error == nil || *p.Error != "" || p.PID == nil || *p.PID != 0 || p.StartedAt == nil || !p.StartedAt.IsZero() || p.FinishedAt == nil || !p.FinishedAt.IsZero() || p.RestartCount == nil || *p.RestartCount != 0 || p.RestartPolicy != "no" || !ValidFullContainerID(p.SnapshotSHA256) {
+		return false
+	}
+	for _, r := range p.SessionID {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return false
+		}
+	}
+	for _, at := range []time.Time{p.CreatedAt, p.FirstCheckedAt, p.RecheckedAt} {
+		_, offset := at.Zone()
+		if at.IsZero() || offset != 0 || at.After(verifiedAt) {
+			return false
+		}
+	}
+	return !p.CreatedAt.After(p.FirstCheckedAt) && !p.FirstCheckedAt.Before(aoStartedAt) && !p.RecheckedAt.Before(p.FirstCheckedAt)
+}
+
+// PreexistingCapabilityContainer is an operator-selected historical exclusion,
+// not a claim of ownership by the current deployment journal.
+type PreexistingCapabilityContainer struct {
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	Image          string            `json:"image"`
+	Labels         map[string]string `json:"labels"`
+	CreatedAt      time.Time         `json:"created_at"`
+	Status         string            `json:"status"`
+	Running        *bool             `json:"running"`
+	Paused         *bool             `json:"paused"`
+	Restarting     *bool             `json:"restarting"`
+	Dead           *bool             `json:"dead"`
+	PID            *int              `json:"pid"`
+	StartedAt      *time.Time        `json:"started_at"`
+	FirstCheckedAt time.Time         `json:"first_checked_at"`
+	RecheckedAt    time.Time         `json:"rechecked_at"`
+	SnapshotSHA256 string            `json:"snapshot_sha256"`
+}
+
+func (p PreexistingCapabilityContainer) Valid(runStartedAt, aoStartedAt, verifiedAt time.Time) bool {
+	if !ValidFullContainerID(p.ID) || p.Labels["io.cylo.managed"] != "true" || p.Name != "/cylo-cap-"+p.Labels["io.cylo.deployment"] || p.Image == "" || p.Status != "running" || p.Running == nil || !*p.Running || p.Paused == nil || *p.Paused || p.Restarting == nil || *p.Restarting || p.Dead == nil || *p.Dead || p.PID == nil || *p.PID < 1 || p.StartedAt == nil || p.StartedAt.IsZero() || p.StartedAt.After(p.FirstCheckedAt) || !ValidFullContainerID(p.SnapshotSHA256) {
+		return false
+	}
+	if _, exists := p.Labels["io.cylo.runtime"]; exists {
+		return false
+	}
+	if _, exists := p.Labels["io.cylo.ao.session"]; exists {
+		return false
+	}
+	imageParts := strings.Split(p.Image, "@sha256:")
+	if len(imageParts) != 2 || imageParts[0] == "" || !ValidFullContainerID(imageParts[1]) {
+		return false
+	}
+	for _, r := range imageParts[0] {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("./:_-", r)) {
+			return false
+		}
+	}
+	identity := strings.ToLower(p.Name + " " + p.Image)
+	for _, marker := range []string{"codex", "opencode", "ao-worker", "agent-orchestrator"} {
+		if strings.Contains(identity, marker) {
+			return false
+		}
+	}
+	for _, key := range []string{"io.cylo.workspace", "io.cylo.deployment", "io.cylo.attempt"} {
+		value := p.Labels[key]
+		decoded, err := hex.DecodeString(value)
+		if err != nil || len(decoded) != 12 || hex.EncodeToString(decoded) != value {
+			return false
+		}
+	}
+	if !ValidFullContainerID(p.Labels["io.cylo.release"]) {
+		return false
+	}
+	fence, err := strconv.ParseInt(p.Labels["io.cylo.fence"], 10, 64)
+	if err != nil || fence < 1 || strconv.FormatInt(fence, 10) != p.Labels["io.cylo.fence"] {
+		return false
+	}
+	for _, at := range []time.Time{p.CreatedAt, p.FirstCheckedAt, p.RecheckedAt, *p.StartedAt} {
+		_, offset := at.Zone()
+		if at.IsZero() || offset != 0 || at.After(verifiedAt) {
+			return false
+		}
+	}
+	return !runStartedAt.IsZero() && p.CreatedAt.Before(runStartedAt) && !p.CreatedAt.After(*p.StartedAt) && !p.FirstCheckedAt.Before(aoStartedAt) && !p.RecheckedAt.Before(p.FirstCheckedAt)
 }
 
 // TerminationProof carries the independent AO process-stop evidence required

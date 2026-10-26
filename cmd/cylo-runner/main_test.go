@@ -33,3 +33,11 @@ func TestLoadRoutesRejectsEmptyOrIncompleteRoutes(t *testing.T) {
 		}
 	}
 }
+
+func TestReconciliationContainerFlagsRequireFullDockerIDs(t *testing.T) {
+	for _, name := range []string{"--retain-never-started-container", "--unrelated-preexisting-capability-container"} {
+		if err := run([]string{name, "short-id"}); err == nil {
+			t.Fatalf("%s accepted a non-full Docker identity", name)
+		}
+	}
+}

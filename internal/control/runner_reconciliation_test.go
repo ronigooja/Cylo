@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 )
 
 func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
-	for _, scenario := range []string{"complete", "incomplete-ao", "container", "wrong-epoch", "unconfirmed", "session-bound", "unsafe-effect", "ordinary-proof", "missing-incarnation", "old-incarnation", "future-incarnation"} {
+	for _, scenario := range []string{"complete", "incomplete-ao", "container", "wrong-epoch", "unconfirmed", "session-bound", "unsafe-effect", "ordinary-proof", "missing-incarnation", "old-incarnation", "future-incarnation", "retained-complete", "preexisting-complete", "retained-running", "retained-missing-state", "retained-no-selection", "retained-restart-policy", "retained-one-inspection", "retained-count", "preexisting-too-new", "preexisting-no-selection", "preexisting-unpinned-image", "preexisting-ao-tag", "overlapping-artifacts"} {
 		t.Run(scenario, func(t *testing.T) {
 			server, closeStore := budgetTestServer(t, contracts.RunBudgetSnapshot{})
 			defer closeStore()
@@ -30,7 +31,22 @@ func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
 			if _, err = server.store.DB().Exec(`UPDATE runs SET status='uncertain' WHERE id='budget-run'`); err != nil {
 				t.Fatal(err)
 			}
-			proof := &contracts.NoEffectProof{JournalPhase: "effect_unknown", AOCreateStarted: true, Outcome: "failed", Reconciliation: &contracts.NoEffectReconciliation{AOServerStartedAt: time.Now().UTC().Add(-time.Second), JournalUpdatedAt: time.Now().UTC().Add(-2 * time.Second), RunID: "budget-run", Actor: "operator", Confirmed: true, VerifiedAt: time.Now().UTC(), AOQuery: "GET /api/v1/sessions/inventory", AOInventoryComplete: true, AOClientRequestIDComplete: true, DockerQuery: "docker ps -aq --no-trunc; docker inspect all IDs", DockerInventoryComplete: true, InstanceID: state.InstanceID, InstanceEpoch: state.Epoch}}
+			proof := &contracts.NoEffectProof{JournalPhase: "effect_unknown", AOCreateStarted: true, Outcome: "failed", Reconciliation: &contracts.NoEffectReconciliation{AOServerStartedAt: time.Now().UTC().Add(-time.Second), JournalUpdatedAt: time.Now().UTC().Add(-2 * time.Second), RunID: "budget-run", Actor: "operator", Confirmed: true, VerifiedAt: time.Now().UTC(), AOQuery: "GET /api/v1/sessions/inventory", AOInventoryComplete: true, AOClientRequestIDComplete: true, DockerQuery: "docker ps -aq --no-trunc; docker inspect all IDs", DockerInventoryComplete: true, DockerInventoryChecks: 2, InstanceID: state.InstanceID, InstanceEpoch: state.Epoch}}
+			if strings.HasPrefix(scenario, "retained-") || scenario == "overlapping-artifacts" {
+				retained := retainedProofFixture()
+				proof.Reconciliation.RetainedNeverStartedContainers = []contracts.RetainedNeverStartedContainer{retained}
+				proof.Reconciliation.RetainNeverStartedContainerIDs = []string{retained.ID}
+				proof.Reconciliation.DockerInventoryContainerCount = 1
+			}
+			if strings.HasPrefix(scenario, "preexisting-") || scenario == "overlapping-artifacts" {
+				capability := preexistingProofFixture()
+				if scenario == "overlapping-artifacts" {
+					capability.ID = proof.Reconciliation.RetainNeverStartedContainerIDs[0]
+				}
+				proof.Reconciliation.PreexistingCapabilityContainers = []contracts.PreexistingCapabilityContainer{capability}
+				proof.Reconciliation.UnrelatedPreexistingCapabilityContainerIDs = []string{capability.ID}
+				proof.Reconciliation.DockerInventoryContainerCount++
+			}
 			observe := func(obs contracts.RunnerObservation) *httptest.ResponseRecorder {
 				body, _ := json.Marshal(obs)
 				req := httptest.NewRequest("POST", "/runner/v1/runs/budget-run/observations", bytes.NewReader(body))
@@ -46,6 +62,27 @@ func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
 				t.Fatalf("unknown: %d %s", w.Code, w.Body.String())
 			}
 			switch scenario {
+			case "retained-running":
+				*proof.Reconciliation.RetainedNeverStartedContainers[0].Running = true
+			case "retained-missing-state":
+				proof.Reconciliation.RetainedNeverStartedContainers[0].Dead = nil
+			case "retained-no-selection":
+				proof.Reconciliation.RetainNeverStartedContainerIDs = nil
+			case "retained-restart-policy":
+				proof.Reconciliation.RetainedNeverStartedContainers[0].RestartPolicy = "always"
+			case "retained-one-inspection":
+				proof.Reconciliation.DockerInventoryChecks = 1
+			case "retained-count":
+				proof.Reconciliation.DockerInventoryContainerCount = 0
+			case "preexisting-too-new":
+				proof.Reconciliation.PreexistingCapabilityContainers[0].CreatedAt = time.Now().UTC()
+			case "preexisting-no-selection":
+				proof.Reconciliation.UnrelatedPreexistingCapabilityContainerIDs = nil
+			case "preexisting-unpinned-image":
+				proof.Reconciliation.PreexistingCapabilityContainers[0].Image = "python:latest"
+			case "preexisting-ao-tag":
+				proof.Reconciliation.PreexistingCapabilityContainers[0].Labels["io.cylo.runtime"] = ""
+
 			case "missing-incarnation":
 				proof.Reconciliation.AOServerStartedAt = time.Time{}
 			case "old-incarnation":
@@ -82,13 +119,17 @@ func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
 			if err = server.store.DB().QueryRow(`SELECT status FROM external_effects WHERE id='create'`).Scan(&effectStatus); err != nil {
 				t.Fatal(err)
 			}
-			if scenario != "complete" {
+			if scenario != "complete" && !strings.HasSuffix(scenario, "-complete") {
 				if w.Code != 409 || runStatus != "uncertain" || effectStatus != "unknown" {
 					t.Fatalf("unsafe proof accepted: %d %s run=%s effect=%s", w.Code, w.Body.String(), runStatus, effectStatus)
 				}
 				return
 			}
-			if w.Code != 200 || runStatus != "failed" || effectStatus != "no_effect" {
+			expectedEffectStatus := "no_effect"
+			if strings.HasPrefix(scenario, "retained-") {
+				expectedEffectStatus = "runtime_not_started"
+			}
+			if w.Code != 200 || runStatus != "failed" || effectStatus != expectedEffectStatus {
 				t.Fatalf("valid reconciliation: %d %s run=%s effect=%s", w.Code, w.Body.String(), runStatus, effectStatus)
 			}
 			if replay := observe(obs); replay.Code != 200 {
@@ -169,4 +210,21 @@ func TestWorkerBootRejectionReleasesCapacityOnlyForStable409Proof(t *testing.T) 
 			}
 		})
 	}
+}
+
+func retainedProofFixture() contracts.RetainedNeverStartedContainer {
+	falseValue := false
+	zero := 0
+	empty := ""
+	zeroTime := time.Time{}
+	now := time.Now().UTC()
+	return contracts.RetainedNeverStartedContainer{ID: strings.Repeat("a", 64), Managed: "true", Runtime: "ao-codex-chat", SessionID: "legacy-session", Status: "created", Running: &falseValue, Paused: &falseValue, Restarting: &falseValue, Dead: &falseValue, OOMKilled: &falseValue, ExitCode: &zero, Error: &empty, PID: &zero, StartedAt: &zeroTime, FinishedAt: &zeroTime, CreatedAt: now.Add(-time.Hour), RestartCount: &zero, RestartPolicy: "no", FirstCheckedAt: now.Add(-500 * time.Millisecond), RecheckedAt: now.Add(-100 * time.Millisecond), SnapshotSHA256: strings.Repeat("c", 64)}
+}
+func preexistingProofFixture() contracts.PreexistingCapabilityContainer {
+	falseValue := false
+	trueValue := true
+	pid := 42
+	now := time.Now().UTC()
+	startedAt := now.Add(-time.Hour)
+	return contracts.PreexistingCapabilityContainer{ID: strings.Repeat("b", 64), Name: "/cylo-cap-" + strings.Repeat("2", 24), Image: "python@sha256:" + strings.Repeat("5", 64), Labels: map[string]string{"io.cylo.managed": "true", "io.cylo.workspace": strings.Repeat("1", 24), "io.cylo.deployment": strings.Repeat("2", 24), "io.cylo.attempt": strings.Repeat("3", 24), "io.cylo.release": strings.Repeat("4", 64), "io.cylo.fence": "1"}, CreatedAt: now.Add(-24 * time.Hour), Status: "running", Running: &trueValue, Paused: &falseValue, Restarting: &falseValue, Dead: &falseValue, PID: &pid, StartedAt: &startedAt, FirstCheckedAt: now.Add(-500 * time.Millisecond), RecheckedAt: now.Add(-100 * time.Millisecond), SnapshotSHA256: strings.Repeat("d", 64)}
 }
