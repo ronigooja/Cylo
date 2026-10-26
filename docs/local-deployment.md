@@ -42,7 +42,7 @@ execution, memory processing, or task completion.
 
 ## Fresh-instance operator commands
 
-Stop the server before `cylo-server init-key --database PATH --output PRIVATE_JSON --server URL` or `cylo-server rotate-key --database PATH --output NEW_PRIVATE_JSON --server URL`. Output files must be new private destinations. Update or remove any stale deployment instance-key secret after rotation. Keep generated keys and installation links out of logs and chat.
+Stop the server before `cylo key init --database PATH --output PRIVATE_JSON --server URL` or `cylo key rotate --database PATH --output NEW_PRIVATE_JSON --server URL`. Output files must be new private destinations. Update or remove any stale deployment instance-key secret after rotation. Keep generated keys and installation links out of logs and chat.
 
 Export logical records with `python3 tools/cylo_export.py --server URL --key-file PRIVATE_JSON --output NEW_ZIP`. The transfer is bounded at 1 GiB and refuses redirects or overwrites; runtime volumes, secrets, and backups are omitted.
 
@@ -159,3 +159,10 @@ manager. For systemd it runs `daemon-reload` followed by
 project with `docker compose up -d --no-build`. A failed command is returned to
 the caller so setup can retain the previous configuration and report a
 rollback-safe failure.
+
+Run `cylo` without arguments for the interactive operator menu. The key
+initialization and rotation entries ask for the server URL, then display the
+key and `cylo://connect` installation link once. If `qrencode` is installed,
+the same link is rendered as a terminal QR code for direct App scanning;
+otherwise the complete link remains available for manual import. Status never
+prints keys, tokens, or installation links.

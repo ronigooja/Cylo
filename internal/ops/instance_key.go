@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -127,13 +128,35 @@ func writePrivateExport(path string, result KeyResult) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	committed := false
+	defer func() {
+		_ = file.Close()
+		if !committed {
+			_ = os.Remove(path)
+		}
+	}()
 	if err := json.NewEncoder(file).Encode(result); err != nil {
 		return err
 	}
 	if err := file.Sync(); err != nil {
 		return err
 	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	err = dir.Sync()
+	closeErr := dir.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	committed = true
 	return nil
 }
 
