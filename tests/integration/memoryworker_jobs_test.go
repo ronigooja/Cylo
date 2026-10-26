@@ -57,6 +57,9 @@ func memoryWorkerHarnessWithModelBudget(t *testing.T, scopes, workspaces []strin
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if err := server.RegisterRunnerCredential(ctx, token, "memory-worker", workspaces, scopes); err != nil {
+		t.Fatal(err)
+	}
 	return store, server.Handler(), token
 }
 

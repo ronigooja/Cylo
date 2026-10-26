@@ -39,7 +39,7 @@ func TestCapabilityRevocationFencesClaimsAndRequiresProvenCleanup(t *testing.T) 
 	if err = control.RegisterRunnerCredentialIfMissing(t.Context(), store, runnerToken, "revocation-runner", []string{"default"}, []string{"capability:deploy"}); err != nil {
 		t.Fatal(err)
 	}
-	handler := server.Handler()
+	handler := bindReviewHandler(server.Handler(), store)
 	reviewBootstrap(t, handler, bootstrap, deviceToken)
 
 	digest := "sha256:" + strings.Repeat("b", 64)

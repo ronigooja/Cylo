@@ -40,7 +40,7 @@ func TestCapabilityHTTPCompositionRequiresConfiguredCapabilityID(t *testing.T) {
 	if err = control.RegisterRunnerCredentialIfMissing(t.Context(), store, runnerToken, "capability-runner", []string{"default"}, []string{"capability:deploy"}); err != nil {
 		t.Fatal(err)
 	}
-	handler := server.Handler()
+	handler := bindReviewHandler(server.Handler(), store)
 	reviewBootstrap(t, handler, code, deviceToken)
 
 	list := reviewRequest(handler, http.MethodGet, "/v1/capabilities/releases", deviceToken, "", nil)

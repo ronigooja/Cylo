@@ -70,6 +70,9 @@ func newBackupManifestHTTPFixture(t *testing.T, manifestPath string) *backupMani
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := server.RegisterRunnerCredential(ctx, backupManifestRunnerToken, "fixture-runner", []string{"default"}, []string{derivedClaimScope, derivedCompleteScope}); err != nil {
+		t.Fatal(err)
+	}
 	handler := server.Handler()
 	response := performBackupManifestRequest(t, handler, "POST", "/runner/v1/memory/deletion-jobs/claim", map[string]any{"limit": 100}, backupManifestRunnerToken)
 	if response.Code != http.StatusOK {

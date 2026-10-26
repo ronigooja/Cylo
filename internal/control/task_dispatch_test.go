@@ -128,6 +128,9 @@ func TestProductionControlClientRechecksLiveTaskAuthorizationOverHTTP(t *testing
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := server.RegisterRunnerCredential(ctx, runnerToken, "runner", []string{"default"}, []string{"runner:claim", "runner:observe", "runner:control:read"}); err != nil {
+		t.Fatal(err)
+	}
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 	client, err := runner.NewControlClient(httpServer.URL, runnerToken, httpServer.Client())
@@ -191,6 +194,9 @@ func TestProductionHTTPRecoveryDoesNotReplayPersistedAOCreateAttempt(t *testing.
 	}
 	server, err := NewServer(store, Config{RunnerToken: runnerToken, RunnerID: "runner", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim", "runner:observe", "runner:control:read"}})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.RegisterRunnerCredential(ctx, runnerToken, "runner", []string{"default"}, []string{"runner:claim", "runner:observe", "runner:control:read"}); err != nil {
 		t.Fatal(err)
 	}
 	httpServer := httptest.NewServer(server.Handler())
