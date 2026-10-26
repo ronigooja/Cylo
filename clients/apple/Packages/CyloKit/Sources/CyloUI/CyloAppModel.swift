@@ -12,23 +12,17 @@ public enum TaskSubmissionResult: Equatable, Sendable {
 
 @MainActor
 public final class CyloAppModel: ObservableObject {
-    public static let fixedServerAddress = "http://debian.local:8787"
     @Published public internal(set) var serverAddress: String
     @Published public private(set) var isConnecting = false
-    @Published public private(set) var credentialStorageChoice: CredentialStorageChoice?
     @Published public private(set) var snapshot: Snapshot?
     @Published public private(set) var freshness: ClientFreshness = .loading
     @Published public private(set) var notice: String?
     @Published public private(set) var isBusy = false
-    @Published public private(set) var authentication: OwnerAuthenticationState = .checking
-    private var pendingLoginIdentity: DeviceIdentity?
-    private var pendingLoginIsSetup = false
-    private var pendingLoginAccepted = false
-    private var loginStagingStore: any DeviceIdentityStoring {
-        (credentialStorageChoice ?? .keychain).makeStore(serverURL: URL(string: Self.fixedServerAddress)!,
-                            bundleIdentifier: (Bundle.main.bundleIdentifier ?? "com.cylo.client") + ".pending-owner-login")
-    }
-    private let pendingSetupKey = "cylo.pendingOwnerLogin.setup"
+    @Published public private(set) var authentication: InstanceConnectionState = .checking
+    @Published public private(set) var pendingConnectionImport: InstallationConnection?
+    @Published public private(set) var connectionImportError: String?
+    private let installationID: String
+    private var connectionCleanupWarning: String?
 
     @Published public private(set) var memoryClaims: [MemoryClaim] = []
     @Published public private(set) var memoryMissing: [String] = []
@@ -63,7 +57,7 @@ public final class CyloAppModel: ObservableObject {
 
     private let defaults: UserDefaults
     private var api: APIClient?
-    private var identity: DeviceIdentityStoring?
+    private var identity: (any InstanceKeyStoring)?
     private var journal: CommandJournal?
     private var coordinator: CommandCoordinator?
     private var eventTask: Task<Void, Never>?
@@ -78,6 +72,9 @@ public final class CyloAppModel: ObservableObject {
     private var commandTitleByKey: [String: String] = [:]
     private var commandStatusByKey: [String: PendingCommandSummary.State] = [:]
 #if DEBUG
+    var connectionAPIOverrideForTesting: ((URL, InstanceKey, String) throws -> APIClient)?
+    var keyStoreOverrideForTesting: ((URL) throws -> any InstanceKeyStoring)?
+    var suppressConnectionFollowupsForTesting = false
     var capabilityRevocationSubmitOverrideForTesting: ((Int64, JSONValue) async -> Bool)?
     var capabilityRevocationRefreshOverrideForTesting: (() async -> Void)?
     var exportDownloadOverrideForTesting: ((String) async throws -> ScopedExportArtifact)?
@@ -139,7 +136,7 @@ public final class CyloAppModel: ObservableObject {
         await reloadPendingCommandSummaries()
     }
 
-    func setAuthenticationForTesting(_ state: OwnerAuthenticationState) {
+    func setAuthenticationForTesting(_ state: InstanceConnectionState) {
         authentication = state
     }
 
@@ -208,12 +205,11 @@ public final class CyloAppModel: ObservableObject {
     public init(defaults: UserDefaults = .standard) {
         Self.cleanupExpiredExportTemporaries()
         self.defaults = defaults
-        let initialServerAddress = Self.fixedServerAddress
-        serverAddress = initialServerAddress
-        let storageChoice = Self.loadCredentialStorageChoice(serverAddress: initialServerAddress, defaults: defaults) ?? .keychain
-        credentialStorageChoice = storageChoice
-        defaults.set(initialServerAddress, forKey: "cylo.serverAddress")
-        defaults.set(storageChoice.rawValue, forKey: CredentialStorageChoice.defaultsKey(serverURL: URL(string: initialServerAddress)!))
+        serverAddress = defaults.string(forKey: "cylo.instance.serverAddress") ?? ""
+        let savedInstallation = defaults.string(forKey: "cylo.installationID")
+        let identifier = savedInstallation.flatMap(UUID.init(uuidString:))?.uuidString.lowercased() ?? UUID().uuidString.lowercased()
+        installationID = identifier
+        defaults.set(identifier, forKey: "cylo.installationID")
         pushNotificationsEnabled = defaults.bool(forKey: "cylo.apns.optIn")
         snapshotCache = nil
         RemotePushBridge.shared.onToken = { [weak self] token in
@@ -251,269 +247,150 @@ public final class CyloAppModel: ObservableObject {
 
     public var selectedTaskDraft: String { selectedTaskID.map { taskDrafts[$0] ?? "" } ?? newTaskDraft }
     public var approvals: [Approval] { snapshot?.approvals ?? [] }
-    public var devices: [Device] { snapshot?.devices ?? [] }
     public var runs: [Run] { snapshot?.runs ?? [] }
     public var canEndVoiceSession: Bool { voiceSession != nil }
 
     public func start() async {
         guard !isConnecting, !isBusy else { return }
+        guard !serverAddress.isEmpty else { authentication = .disconnected; return }
         isConnecting = true
         defer { isConnecting = false }
         notice = nil
-        if authentication.deviceID == nil { authentication = .checking }
-        freshness = .loading
+        if !authentication.isConnected { authentication = .checking }
         do {
-            guard validServerURL(serverAddress) != nil else { throw CyloError.invalidServerURL }
-            let publicAPI = try APIClient(serverURL: URL(string: Self.fixedServerAddress)!)
-            let status = try await publicAPI.authStatus()
-            if let staged = try loginStagingStore.loadExisting() {
-                pendingLoginIdentity = staged
-                pendingLoginIsSetup = status.setupRequired || defaults.bool(forKey: pendingSetupKey)
-                let stagedAPI = try APIClient(serverURL: URL(string: Self.fixedServerAddress)!, credentials: staged)
-                do {
-                    _ = try await stagedAPI.authSession()
-                    pendingLoginAccepted = true
-                    try (credentialStorageChoice ?? .keychain).makeStore(serverURL: URL(string: Self.fixedServerAddress)!).replace(staged)
-                    try loginStagingStore.reset()
-                    pendingLoginIdentity = nil
-                    pendingLoginAccepted = false
-                    api = nil
-                    coordinator = nil
-                } catch {
-                    if Self.isAccessDenied(error), pendingLoginAccepted {
-                        try loginStagingStore.reset()
-                        pendingLoginIdentity = nil
-                        pendingLoginAccepted = false
-                    } else {
-                        // A staged request may never have reached the server. Keep its nonce for retry.
-                        if !Self.isAccessDenied(error) { throw error }
-                    }
-                }
-            }
-            if status.setupRequired {
-                lockWorkspace(clearDrafts: false)
-                authentication = .signedOut(setupRequired: true)
-                return
-            }
-            let configuredAPI: APIClient
-            do { configuredAPI = try configure() }
-            catch CyloError.missingCredential {
-                authentication = .signedOut(setupRequired: false)
-                return
-            }
+            let configuredAPI = try configure()
             let generation = connectionGeneration.value
-            let session = try await configuredAPI.authSession()
-            guard generation == connectionGeneration.value else { return }
-            authentication = .authenticated(deviceID: session.deviceId)
-            await reloadPendingCommandSummaries()
-            if pushNotificationsEnabled { NativeNotificationDelivery.shared.registerForRemoteNotifications() }
             try await refreshSnapshot()
             guard generation == connectionGeneration.value else { return }
+            authentication = .connected
+            #if DEBUG
+            if suppressConnectionFollowupsForTesting { return }
+            #endif
+            await reloadPendingCommandSummaries()
+            if pushNotificationsEnabled { NativeNotificationDelivery.shared.registerForRemoteNotifications() }
             if let selectedTaskID { await loadTaskEntries(taskID: selectedTaskID) }
             guard generation == connectionGeneration.value else { return }
             await refreshMemory()
             guard generation == connectionGeneration.value else { return }
             await refreshNotifications()
             guard generation == connectionGeneration.value else { return }
-            if let coordinator { await recoverPendingCommands(expectedGeneration: generation, sourceAPI: configuredAPI, coordinator: coordinator, workspaceID: snapshot?.devices.first?.workspaceId) }
+            if let coordinator { await recoverPendingCommands(expectedGeneration: generation, sourceAPI: configuredAPI, coordinator: coordinator, workspaceID: snapshot?.workspaceId) }
             guard generation == connectionGeneration.value else { return }
             startEventLoop()
         } catch {
-            if Self.isAccessDenied(error) {
+            if Self.isAccessDenied(error) || (error as? CyloError).map({ if case .missingCredential = $0 { true } else { false } }) == true {
                 lockWorkspace(clearDrafts: false)
-                authentication = .signedOut(setupRequired: false)
-            } else if authentication.deviceID == nil {
-                authentication = pendingLoginAccepted ? .signedOut(setupRequired: pendingLoginIsSetup) : .unavailable
-            }
+                authentication = .disconnected
+            } else if !authentication.isConnected { authentication = .unavailable }
             setOffline(error)
         }
     }
 
     public func reconnect() async { await start() }
 
-    /// A separate Keychain staging record preserves the nonce/token across unknown outcomes and restarts.
-    /// Neither the password nor the setup code is persisted.
+    public func receiveInstallationLink(_ url: URL) {
+        do {
+            pendingConnectionImport = try InstallationConnection(link: url)
+            connectionImportError = nil
+        } catch {
+            pendingConnectionImport = nil
+            connectionImportError = uiText("This installation link is invalid.")
+        }
+    }
+
+    public func dismissConnectionImport() { pendingConnectionImport = nil }
+    public func dismissConnectionImportError() { connectionImportError = nil }
+
+    /// Validates a candidate before replacing the active connection. Imported keys stay in memory until confirmed.
     @discardableResult
-    public func login(password: String, code: String?, deviceName: String) async -> Bool {
+    public func connect(serverAddress address: String, key: String) async -> Bool {
         guard !isBusy, !isConnecting else { return false }
         isBusy = true
-        notice = nil
+        defer { isBusy = false }
         do {
-            let recoveringAttempt = pendingLoginIdentity != nil
-            if pendingLoginIdentity == nil {
-                let candidate = try DeviceIdentityStore.newLoginIdentity()
-                pendingLoginIsSetup = code != nil
-                defaults.set(pendingLoginIsSetup, forKey: pendingSetupKey)
-                try loginStagingStore.replace(candidate)
-                pendingLoginIdentity = candidate
+            let candidate = try InstallationConnection(serverAddress: address, key: key)
+            if authentication.isConnected, candidate.serverURL != validServerURL(serverAddress) {
+                notice = uiText("Clear the saved key before connecting to a different server.")
+                return false
             }
-            guard let candidate = pendingLoginIdentity else { throw CyloError.missingCredential }
-            if recoveringAttempt {
-                let recoveryAPI = try APIClient(serverURL: URL(string: Self.fixedServerAddress)!, credentials: candidate)
-                do { _ = try await recoveryAPI.authSession(); pendingLoginAccepted = true }
-                catch { if pendingLoginAccepted || !Self.isAccessDenied(error) { throw error } }
-            }
-            if !pendingLoginAccepted {
-                let publicAPI = try APIClient(serverURL: URL(string: Self.fixedServerAddress)!)
-                _ = try await publicAPI.authenticate(password: password, code: pendingLoginIsSetup ? code : nil,
-                                                     deviceName: deviceName, identity: candidate)
-                pendingLoginAccepted = true
-            }
-            let store = (credentialStorageChoice ?? .keychain).makeStore(serverURL: URL(string: Self.fixedServerAddress)!)
-            try store.replace(candidate)
-            guard try store.loadExisting() == candidate else { throw CyloError.persistence("The saved identity could not be verified.") }
-            try loginStagingStore.reset()
-            pendingLoginIdentity = nil
-            pendingLoginAccepted = false
-            api = nil
-            identity = nil
-            coordinator = nil
-            journal = nil
+            let candidateAPI = try connectionAPI(url: candidate.serverURL, key: candidate.key)
+            _ = try await candidateAPI.snapshot()
+            await endVoiceSession()
+            // This is a replacement, never a saved-server list. Pending local work is discarded.
+            try await removeLocalConnection()
+            let store = try keyStore(url: candidate.serverURL)
+            try store.replace(candidate.key)
+            serverAddress = candidate.serverURL.absoluteString
+            defaults.set(serverAddress, forKey: "cylo.instance.serverAddress")
+            pendingConnectionImport = nil
             isBusy = false
             await start()
-            return authentication.deviceID != nil
+            if let connectionCleanupWarning { notice = connectionCleanupWarning }
+            return authentication.isConnected
         } catch {
-            if let failure = OwnerAuthFailure.classify(error), failure != .conflict {
-                try? loginStagingStore.reset()
-                pendingLoginIdentity = nil
-                pendingLoginAccepted = false
-                if failure == .setupRequired { authentication = .signedOut(setupRequired: true) }
-                if failure == .setupCompleted || failure == .revoked { authentication = .signedOut(setupRequired: false) }
-            }
-            notice = pendingLoginAccepted
-                ? uiText("Sign-in succeeded, but this device could not save its session. Retry to save it; your password is not saved.")
-                : (OwnerAuthFailure.classify(error) == .incorrectPassword && pendingLoginIsSetup
-                   ? uiText("The setup code or password is incorrect. Check your setup code or contact your server administrator.")
-                   : (OwnerAuthFailure.classify(error) == nil ? uiText("Sign-in could not be confirmed. Try again with the same password and setup code, if required.") : userMessage(error)))
-            isBusy = false
+            notice = userMessage(error)
             return false
         }
     }
 
-    public func signOut() async {
-        guard !isBusy, let api else { return }
+    public func clearCredential() async {
+        guard !isBusy, !isConnecting else { return }
         isBusy = true
         defer { isBusy = false }
-        let store = identity
+        await endVoiceSession()
         do {
-            // A failed request keeps the session visible so retry can confirm invalidation.
-            do { try await api.logout() }
-            catch { if !Self.isAccessDenied(error) { throw error } }
-            lockWorkspace(clearDrafts: true)
-            authentication = .signedOut(setupRequired: false)
-            pendingLoginIdentity = nil
-            pendingLoginAccepted = false
-            do { try store?.reset() }
-            catch { notice = uiText("Signed out on the server. The saved session could not be removed from this device; it can no longer access Cylo.") }
+            try await removeLocalConnection()
+            notice = connectionCleanupWarning ?? uiText("Saved key and local connection data cleared.")
         } catch { notice = userMessage(error) }
     }
 
-    public func updateServerAddress() async {
-        cancelExport(status: nil)
-        clearVisibleMemory()
-        pendingCommandSummaries = []
-        commandStatusByKey = [:]
-        commandTitleByKey = [:]
-        connectionGeneration.advance()
-        connectionEpoch = connectionGeneration.value
-        capabilityReleases = []
-        capabilityDeployments = []
-        await endVoiceSession()
+    private func removeLocalConnection() async throws {
+        connectionCleanupWarning = nil
+        // Unregister only this physical installation; the shared key and other devices stay valid.
+        pushPreferenceEpoch &+= 1
+        canRegisterPushToken = false
+        NativeNotificationDelivery.shared.unregisterFromRemoteNotifications()
+        if let api, let tokenID = registeredPushTokenID {
+            do { _ = try await api.revokePushToken(tokenID: tokenID) }
+            catch { connectionCleanupWarning = uiText("Local data was cleared, but the server notification registration could not be removed. Other devices are unaffected.") }
+        }
+        pendingAPNSTokenHex = nil
+        let oldJournal = journal
+        let oldCache = snapshotCache
+        lockWorkspace(clearDrafts: true)
+        authentication = .disconnected
+        // Capture before locking: lockWorkspace detaches resources to fence late callbacks.
+        try await oldJournal?.discard()
+        try oldCache?.discard()
+        if let url = try? ServerAddress.normalize(serverAddress) {
+            let store = try keyStore(url: url)
+            if let key = try store.load() {
+                let scope = try key.bearerToken()
+                if oldJournal == nil { try await CommandJournal(serverURL: url, credentialScope: scope).discard() }
+                if oldCache == nil { try SnapshotCache(serverURL: url, credentialScope: scope).discard() }
+            }
+            try store.reset()
+            for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("cylo.apns.") && key.contains(url.absoluteString) {
+                defaults.removeObject(forKey: key)
+            }
+        }
         api = nil
         identity = nil
         journal = nil
         coordinator = nil
         snapshotCache = nil
         configuredServerURL = nil
-        if let url = URL(string: serverAddress), url.host != nil { connectionGeneration.switchOrigin(to: url) }
-        else { connectionGeneration.advance() }
-        connectionEpoch = connectionGeneration.value
-        defaults.set(serverAddress.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "cylo.serverAddress")
-        credentialStorageChoice = Self.loadCredentialStorageChoice(serverAddress: serverAddress, defaults: defaults)
-        eventTask?.cancel()
-        eventTask = nil
-        snapshot = nil
-        clearTaskContext(clearDrafts: true)
-        freshness = .loading
-        await start()
-    }
-
-    public func reloadCredentialStorageChoiceForCurrentServer() {
-        credentialStorageChoice = Self.loadCredentialStorageChoice(serverAddress: serverAddress, defaults: defaults)
-    }
-
-    public func selectCredentialStorage(_ choice: CredentialStorageChoice) async {
-        guard let url = validServerURL(serverAddress) else {
-            notice = userMessage(CyloError.invalidServerURL)
-            return
-        }
-        let savedChoice = Self.loadCredentialStorageChoice(serverURL: url, defaults: defaults)
-        guard savedChoice != choice else {
-            credentialStorageChoice = choice
-            return
-        }
-        await endVoiceSession()
-        connectionGeneration.advance()
-        connectionEpoch = connectionGeneration.value
-        eventTask?.cancel()
-        eventTask = nil
-        cancelExport(status: nil)
-        clearVisibleMemory()
-        snapshot = nil
-        clearTaskContext(clearDrafts: true)
-        notifications = []
-        capabilityReleases = []
-        capabilityDeployments = []
         pendingCommandSummaries = []
         commandStatusByKey = [:]
         commandTitleByKey = [:]
-        api = nil
-        identity = nil
-        journal = nil
-        coordinator = nil
-        snapshotCache = nil
-        configuredServerURL = nil
-        credentialStorageChoice = choice
-        defaults.set(choice.rawValue, forKey: CredentialStorageChoice.defaultsKey(serverURL: url))
-        connectionGeneration.switchOrigin(to: url)
-        connectionEpoch = connectionGeneration.value
-        authentication = .signedOut(setupRequired: false)
-        pendingLoginIdentity = nil
-        pendingLoginAccepted = false
-        freshness = .offline(reason: uiText("Credential storage changed. Connect to continue."), cursor: nil)
-        if choice == .privateFile {
-            notice = uiText("Local private file is separate from Keychain. It will not inherit an existing device registration unless you explicitly copy the identity.")
-        } else {
-            notice = uiText("Keychain selected. Connect to continue.")
-        }
-    }
-
-    /// Copies the current identity to the other store only after an explicit user action.
-    /// It never deletes or overwrites the source identity.
-    public func copyCredentialIdentity(to destinationChoice: CredentialStorageChoice) async {
-        guard let url = validServerURL(serverAddress),
-              let sourceChoice = Self.loadCredentialStorageChoice(serverURL: url, defaults: defaults),
-              sourceChoice != destinationChoice else {
-            notice = uiText("Choose a server and a different destination storage before copying the identity.")
-            return
-        }
-        credentialStorageChoice = sourceChoice
-        do {
-            let source = sourceChoice.makeStore(serverURL: url)
-            let destination = destinationChoice.makeStore(serverURL: url)
-            guard let original = try source.loadExisting() else {
-                notice = uiText("No identity exists in the current storage. Nothing was copied or created.")
-                return
-            }
-            let written = try destination.storeIfAbsent(original)
-            guard written == original, try destination.loadExisting() == original else {
-                throw CyloError.credentialConflict
-            }
-            await selectCredentialStorage(destinationChoice)
-            notice = uiFormat("The same device identity was copied to %@. The original remains in %@. Connect to continue.", uiText(destinationChoice.title), uiText(sourceChoice.title))
-        } catch {
-            notice = userMessage(error)
-        }
+        registeredPushTokenID = nil
+        pushIdentityFingerprint = nil
+        lastRegisteredAPNSTokenHex = nil
+        tokenRegistrationInFlight = nil
+        canRegisterPushToken = false
+        hasLoadedNotificationInbox = false
+        serverAddress = ""
+        defaults.removeObject(forKey: "cylo.instance.serverAddress")
     }
 
     private func lockWorkspace(clearDrafts: Bool) {
@@ -1119,7 +996,7 @@ public final class CyloAppModel: ObservableObject {
               case .active = voiceStatus else { return }
         let generation = connectionGeneration.value
         let revision = voiceDraftRevision
-        let workspaceID = snapshot?.devices.first?.workspaceId
+        let workspaceID = snapshot?.workspaceId
         let text = voiceDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         var commitFields: [String: JSONValue] = [
             "session_id": .string(session.voiceSessionId),
@@ -1307,7 +1184,7 @@ public final class CyloAppModel: ObservableObject {
         guard let coordinator, let sourceAPI = api, let journal else { return .failed(uiText("Connect to a Cylo server first.")) }
         let generation = connectionGeneration.value
         let context = clearsDraftID.map { "task:\($0)" } ?? "new-task"
-        guard let workspaceID = snapshot?.devices.first?.workspaceId else { return .failed(uiText("Connect to a Cylo server first.")) }
+        guard let workspaceID = snapshot?.workspaceId else { return .failed(uiText("Connect to a Cylo server first.")) }
         isBusy = true
         defer { isBusy = false }
         var key = retryKey ?? taskIntents[context]?.key ?? UUID().uuidString.lowercased()
@@ -1462,12 +1339,6 @@ public final class CyloAppModel: ObservableObject {
         return await send(kind: "task.accept_result", expectedVersion: task.version, payload: .object(payload))
     }
 
-    public func revoke(_ device: Device, reason: String? = nil) async {
-        var payload: [String: JSONValue] = ["device_id": .string(device.id)]
-        if let reason { payload["reason"] = .string(reason) }
-        await send(kind: "device.revoke", expectedVersion: device.version, payload: .object(payload))
-    }
-
     public func task(id: String?) -> TaskRecord? {
         guard let id else { return nil }
         return tasks.first { $0.id == id }
@@ -1482,7 +1353,7 @@ public final class CyloAppModel: ObservableObject {
         guard scope == "personal" || scope == "workspace",
               expectedConnectionEpoch == connectionGeneration.value,
               api != nil || testDownload != nil else {
-            if expectedConnectionEpoch == connectionGeneration.value { exportStatus = uiText("Connect an approved device before preparing an export.") }
+            if expectedConnectionEpoch == connectionGeneration.value { exportStatus = uiText("Connect to your server before preparing an export.") }
             return
         }
         discardExportArtifact()
@@ -1592,52 +1463,33 @@ public final class CyloAppModel: ObservableObject {
         return projects.first(where: { $0.id == id })?.name ?? uiText("Project unavailable")
     }
 
-    private func validServerURL(_ address: String) -> URL? {
-        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(), ["https", "http"].contains(scheme), url.host != nil else {
-            return nil
-        }
-        return url
+    private func validServerURL(_ address: String) -> URL? { try? ServerAddress.normalize(address) }
+
+    private func keyStore(url: URL) throws -> any InstanceKeyStoring {
+        #if DEBUG
+        if let override = keyStoreOverrideForTesting { return try override(url) }
+        #endif
+        return try InstanceKeyStore(serverURL: url)
     }
 
-    private static func loadCredentialStorageChoice(serverAddress: String, defaults: UserDefaults) -> CredentialStorageChoice? {
-        guard let url = URL(string: serverAddress.trimmingCharacters(in: .whitespacesAndNewlines)), url.host != nil else { return nil }
-        return loadCredentialStorageChoice(serverURL: url, defaults: defaults)
+    private func connectionAPI(url: URL, key: InstanceKey) throws -> APIClient {
+        #if DEBUG
+        if let override = connectionAPIOverrideForTesting { return try override(url, key, installationID) }
+        #endif
+        return try APIClient(serverURL: url, credentials: key, installationID: installationID)
     }
 
-    private static func loadCredentialStorageChoice(serverURL: URL, defaults: UserDefaults) -> CredentialStorageChoice? {
-        guard let raw = defaults.string(forKey: CredentialStorageChoice.defaultsKey(serverURL: serverURL)) else { return nil }
-        return CredentialStorageChoice(rawValue: raw)
-    }
-
-    private func currentDeviceIdentity() throws -> DeviceIdentity {
-        guard let identity, let existing = try identity.loadExisting() else { throw CyloError.missingCredential }
-        return existing
-    }
-
-    private func configure(allowIdentityCreation: Bool = false) throws -> APIClient {
-        let trimmed = serverAddress.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(), ["https", "http"].contains(scheme), url.host != nil else {
-            throw CyloError.invalidServerURL
-        }
-        guard let storageChoice = Self.loadCredentialStorageChoice(serverURL: url, defaults: defaults) else {
-            credentialStorageChoice = nil
-            throw CyloError.credentialStorageNotSelected
-        }
-        credentialStorageChoice = storageChoice
-        defaults.set(trimmed, forKey: "cylo.serverAddress")
+    private func configure() throws -> APIClient {
+        let url = try ServerAddress.normalize(serverAddress)
         if let api, api.serverURL == url, coordinator != nil { return api }
+        let store = try keyStore(url: url)
+        guard let key = try store.load() else { throw CyloError.missingCredential }
         if configuredServerURL != url {
-            cancelExport(status: nil)
+            lockWorkspace(clearDrafts: true)
             connectionGeneration.switchOrigin(to: url)
+            connectionEpoch = connectionGeneration.value
             configuredServerURL = url
-            snapshot = nil
-            clearTaskContext(clearDrafts: true)
             freshness = .loading
-            clearVisibleMemory()
-            notifications = []
-            capabilityReleases = []
-            capabilityDeployments = []
             hasLoadedNotificationInbox = false
             canRegisterPushToken = false
             lastRegisteredAPNSTokenHex = nil
@@ -1647,35 +1499,16 @@ public final class CyloAppModel: ObservableObject {
             voiceDraftRevision = 0
             voiceTurnID = nil
             voiceProviderMessageID = nil
-            connectionEpoch = connectionGeneration.value
         }
-        eventTask?.cancel()
-        let identity = storageChoice.makeStore(serverURL: url)
-        let deviceIdentity = try identity.loadExisting()
-        let api = try APIClient(serverURL: url, credentials: deviceIdentity)
-        self.identity = identity
+        let api = try connectionAPI(url: url, key: key)
+        self.identity = store
         self.api = api
-        guard let deviceIdentity else {
-            journal = nil
-            coordinator = nil
-            snapshotCache = nil
-            guard allowIdentityCreation else { throw CyloError.missingCredential }
-            return api
-        }
-        let identityFingerprint = Self.pushIdentityFingerprint(deviceToken: deviceIdentity.deviceToken)
-        if let previousFingerprint = pushIdentityFingerprint, previousFingerprint != identityFingerprint {
-            clearTaskContext(clearDrafts: false)
-            pendingCommandSummaries = []
-            commandStatusByKey = [:]
-            commandTitleByKey = [:]
-        }
-        pushIdentityFingerprint = identityFingerprint
-        if configuredServerURL == url {
-            registeredPushTokenID = defaults.string(forKey: pushRegistrationKey(for: url, identityFingerprint: identityFingerprint))
-        }
-        let journal = try CommandJournal(serverURL: url, deviceToken: deviceIdentity.deviceToken)
-        let cache = try SnapshotCache(serverURL: url, deviceToken: deviceIdentity.deviceToken)
-        snapshotCache = cache
+        // Physical installation identity must never be derived from the shared instance key.
+        pushIdentityFingerprint = installationID
+        registeredPushTokenID = defaults.string(forKey: pushRegistrationKey(for: url, identityFingerprint: installationID))
+        let scope = try key.bearerToken()
+        let journal = try CommandJournal(serverURL: url, credentialScope: scope)
+        snapshotCache = try SnapshotCache(serverURL: url, credentialScope: scope)
         self.journal = journal
         coordinator = CommandCoordinator(api: api, journal: journal)
         return api
@@ -1691,7 +1524,7 @@ public final class CyloAppModel: ObservableObject {
         isBusy = true
         defer { isBusy = false }
         do {
-            let outcome = try await coordinator.submit(kind: kind, expectedVersion: expectedVersion, payload: payload, workspaceID: snapshot?.devices.first?.workspaceId, idempotencyKey: idempotencyKey)
+            let outcome = try await coordinator.submit(kind: kind, expectedVersion: expectedVersion, payload: payload, workspaceID: snapshot?.workspaceId, idempotencyKey: idempotencyKey)
             guard isCurrentConnection(generation, sourceAPI: sourceAPI) else { return false }
             commandTitleByKey[outcome.receipt.idempotencyKey] = title
             commandStatusByKey[outcome.receipt.idempotencyKey] = .acceptedAwaitingSnapshot
@@ -1726,7 +1559,7 @@ public final class CyloAppModel: ObservableObject {
         guard summary.state != .differentWorkspace,
               let coordinator,
               let api,
-              let workspaceID = snapshot?.devices.first?.workspaceId else {
+              let workspaceID = snapshot?.workspaceId else {
             notice = uiText("Refresh the server and choose the workspace that owns this saved action before checking it.")
             return
         }
@@ -1794,7 +1627,7 @@ public final class CyloAppModel: ObservableObject {
                 }
                 if Self.isAccessDenied(error) {
                     lockWorkspace(clearDrafts: false)
-                    authentication = .signedOut(setupRequired: false)
+                    authentication = .disconnected
                 }
             }
             throw error
@@ -1863,10 +1696,6 @@ public final class CyloAppModel: ObservableObject {
 
     private func pushRevocationQueueKey(for url: URL, identityFingerprint: String) -> String {
         "cylo.apns.tokenRevocationQueue.\(url.absoluteString).\(identityFingerprint)"
-    }
-
-    private static func pushIdentityFingerprint(deviceToken: String) -> String {
-        SHA256.hash(data: Data(deviceToken.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     private func pushIdempotencyKey(operation: String, origin: URL, identityFingerprint: String, binding: String, operationID: String = UUID().uuidString) -> String {
@@ -2195,7 +2024,7 @@ public final class CyloAppModel: ObservableObject {
                 if Task.isCancelled || generation != connectionGeneration.value { return }
                 if Self.isAccessDenied(error) {
                     lockWorkspace(clearDrafts: false)
-                    authentication = .signedOut(setupRequired: false)
+                    authentication = .disconnected
                     setOffline(error)
                     return
                 }
@@ -2311,7 +2140,7 @@ public final class CyloAppModel: ObservableObject {
         commands = (try? await journal.all()) ?? []
         #endif
         guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI), self.journal === journal else { return }
-        let currentWorkspaceID = snapshot?.devices.first?.workspaceId
+        let currentWorkspaceID = snapshot?.workspaceId
         var restoredTaskIntents: [String: TaskIntent] = [:]
         for command in commands where currentWorkspaceID != nil && command.workspaceID == currentWorkspaceID {
             let context: String
@@ -2425,7 +2254,7 @@ public final class CyloAppModel: ObservableObject {
     private static func isAccessDenied(_ error: Error) -> Bool {
         guard let failure = error as? CyloError,
               case let .http(status, code, _, _) = failure else { return false }
-        return status == 401 || (status == 403 && ["device_not_approved", "device_revoked"].contains(code))
+        return status == 401 || (status == 403 && code == "authentication_required")
     }
 
     private func setStale(_ reason: String) {
@@ -2433,9 +2262,9 @@ public final class CyloAppModel: ObservableObject {
     }
 
     private func setOffline(_ error: Error) {
-        if Self.isAccessDenied(error), authentication.deviceID != nil {
+        if Self.isAccessDenied(error), authentication.isConnected {
             lockWorkspace(clearDrafts: false)
-            authentication = .signedOut(setupRequired: false)
+            authentication = .disconnected
         }
         let message = userMessage(error)
         freshness = .offline(reason: message, cursor: snapshot?.eventCursor)
@@ -2443,19 +2272,8 @@ public final class CyloAppModel: ObservableObject {
     }
 
     private func userMessage(_ error: Error) -> String {
-        if let failure = OwnerAuthFailure.classify(error) {
-            switch failure {
-            case .incorrectPassword: return uiText("The password is incorrect.")
-            case .setupRequired: return uiText("Set up the owner password to continue.")
-            case .setupCode: return uiText("The setup code is invalid or expired. Contact your server administrator.")
-            case .rateLimited: return uiText("Too many attempts. Wait a moment and try again.")
-            case .revoked: return uiText("This session has ended. Sign in again with your owner password.")
-            case .setupCompleted: return uiText("The owner password is already set. Sign in to continue.")
-            case .passwordPolicy: return uiText("Use at least 12 characters. If your password is very long, shorten it and try again.")
-            case .conflict: return uiText("This sign-in attempt changed. Enter your password and try again.")
-            case .unavailable: return uiText("Cylo could not connect. Try again.")
-            }
-        }
+        if Self.isAccessDenied(error) { return uiText("The instance key was rejected. Replace it with the current key from your server.") }
+        if error is ConnectionInputError { return uiText(error.localizedDescription) }
         if let error = error as? CyloError,
            case let .http(status, code, _, details) = error,
            status == 409, code == "version_conflict" {
@@ -2470,7 +2288,7 @@ public final class CyloAppModel: ObservableObject {
         if let failure = error as? CyloError {
             switch failure {
             case .missingCredential:
-                return uiText("Sign in with your owner password to connect.")
+                return uiText("Enter your server address and instance key to connect.")
             case .http(_, _, let message, _):
                 return uiFormat("Server error: %@", message)
             case .credentialAccessDenied(let storage):

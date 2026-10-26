@@ -9,6 +9,7 @@ struct CyloMobileApp: App {
     var body: some Scene {
         WindowGroup {
             CyloRootView(model: model)
+                .onOpenURL { model.receiveInstallationLink($0) }
         }
     }
 }

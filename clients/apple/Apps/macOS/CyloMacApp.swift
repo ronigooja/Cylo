@@ -9,6 +9,7 @@ struct CyloMacApp: App {
     var body: some Scene {
         WindowGroup {
             CyloRootView(model: model)
+                .onOpenURL { model.receiveInstallationLink($0) }
                 .frame(minWidth: 840, minHeight: 620)
         }
         .defaultSize(width: 1280, height: 820)

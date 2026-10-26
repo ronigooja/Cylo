@@ -176,7 +176,7 @@ final class ClientContractTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let journal = try CommandJournal(fileURL: directory.appendingPathComponent("commands.json"))
-        var latest = Snapshot(serverVersion: "srv-1", eventCursor: "18", projects: [], tasks: [], approvals: [], devices: [], runs: [], authority: SnapshotAuthority(instanceLineageId: "lineage-1", generation: 3, deletionSequence: "4"))
+        var latest = Snapshot(serverVersion: "srv-1", eventCursor: "18", projects: [], tasks: [], approvals: [], runs: [], workspaceId: "workspace-1", authority: SnapshotAuthority(instanceLineageId: "lineage-1", generation: 3, deletionSequence: "4"))
         model.snapshotFetchOverrideForTesting = { latest }
         await model.recoverPendingCommandsForTesting(api: client, journal: journal)
 
@@ -189,7 +189,7 @@ final class ClientContractTests: XCTestCase {
         XCTAssertTrue(stillAuthorized, "the matching prepared audit event is the sole allowed cursor advance")
         XCTAssertTrue(FileManager.default.fileExists(atPath: artifact.fileURL.path))
 
-        latest = Snapshot(serverVersion: "srv-2", eventCursor: "18", projects: [], tasks: [], approvals: [], devices: [], runs: [], authority: SnapshotAuthority(instanceLineageId: "lineage-1", generation: 3, deletionSequence: "5"))
+        latest = Snapshot(serverVersion: "srv-2", eventCursor: "18", projects: [], tasks: [], approvals: [], runs: [], workspaceId: "workspace-1", authority: SnapshotAuthority(instanceLineageId: "lineage-1", generation: 3, deletionSequence: "5"))
         let revoked = await model.validateExportForSave(expectedConnectionEpoch: model.connectionEpoch)
         XCTAssertFalse(revoked, "changed deletion authority must invalidate the copy")
         XCTAssertNil(model.exportArtifact)
@@ -326,7 +326,7 @@ final class ClientContractTests: XCTestCase {
         let task = Task { await model.prepareExport(scope: "personal", expectedConnectionEpoch: epoch) }
         await gate.waitUntilStarted()
         model.serverAddress = ""
-        await model.updateServerAddress()
+        await model.clearCredential()
         await gate.resume()
         await task.value
         XCTAssertNil(model.exportArtifact)
@@ -444,10 +444,10 @@ final class ClientContractTests: XCTestCase {
         let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("cylo-export-authority.zip")
         try Data("archive".utf8).write(to: fileURL)
         let originalAuthority = SnapshotAuthority(instanceLineageId: "lineage-1", generation: 5, deletionSequence: "8")
-        model.setSnapshotForTesting(Snapshot(serverVersion: "1", eventCursor: "17", projects: [], tasks: [], approvals: [], devices: [], runs: [], authority: originalAuthority))
+        model.setSnapshotForTesting(Snapshot(serverVersion: "1", eventCursor: "17", projects: [], tasks: [], approvals: [], runs: [], workspaceId: "workspace-1", authority: originalAuthority))
         model.setExportArtifactForTesting(ScopedExportArtifact(fileURL: fileURL, filename: "cylo-export-authority.zip", scope: "personal", snapshotCursor: "17", instanceLineageID: "lineage-1", generation: 5, deletionSequence: "8"))
         model.snapshotFetchOverrideForTesting = {
-            Snapshot(serverVersion: "1", eventCursor: "18", projects: [], tasks: [], approvals: [], devices: [], runs: [], authority: SnapshotAuthority(instanceLineageId: "lineage-1", generation: 5, deletionSequence: "9"))
+            Snapshot(serverVersion: "1", eventCursor: "18", projects: [], tasks: [], approvals: [], runs: [], workspaceId: "workspace-1", authority: SnapshotAuthority(instanceLineageId: "lineage-1", generation: 5, deletionSequence: "9"))
         }
 
         try await model.refreshSnapshotForTesting()
@@ -463,7 +463,7 @@ final class ClientContractTests: XCTestCase {
         model.setMemoryClaimsForTesting([memoryClaim(id: "memory-old-origin", content: "old origin private content")])
         model.serverAddress = "invalid-url"
 
-        await model.updateServerAddress()
+        await model.clearCredential()
 
         XCTAssertTrue(model.memoryClaims.isEmpty)
         XCTAssertTrue(model.memoryMissing.isEmpty)
@@ -493,7 +493,7 @@ final class ClientContractTests: XCTestCase {
         try Data("prepared export".utf8).write(to: fileURL)
         model.setExportArtifactForTesting(ScopedExportArtifact(fileURL: fileURL, filename: "cylo-export-one.json", scope: "personal", snapshotCursor: "5", exportID: "export-one", validatedThroughCursor: "6", exportAuditEventCursor: "6", exportAuditEventID: "export-one", exportAuditEventType: "data.export.prepared"))
         model.snapshotFetchOverrideForTesting = {
-            Snapshot(serverVersion: "srv-1", eventCursor: "6", projects: [], tasks: [], approvals: [], devices: [], runs: [], authority: SnapshotAuthority(instanceLineageId: "", generation: 0, deletionSequence: "0"))
+            Snapshot(serverVersion: "srv-1", eventCursor: "6", projects: [], tasks: [], approvals: [], runs: [], workspaceId: "workspace-1", authority: SnapshotAuthority(instanceLineageId: "", generation: 0, deletionSequence: "0"))
         }
 
         await model.handleEventForTesting(EventEnvelope(schemaVersion: 1, eventId: "export-one", cursor: "6", type: "data.export.prepared", occurredAt: "2026-10-21T12:00:00Z", workspaceId: "workspace-1", subjectId: "subject-1", aggregateType: "data_export", aggregateId: "export-one", aggregateVersion: 1, payload: .object([:])))
@@ -511,7 +511,7 @@ final class ClientContractTests: XCTestCase {
         model.setExportArtifactForTesting(ScopedExportArtifact(fileURL: fileURL, filename: "cylo-export-one.json", scope: "personal", snapshotCursor: "5"))
         model.snapshotFetchOverrideForTesting = { throw CyloError.invalidResponse }
 
-        await model.handleEventForTesting(EventEnvelope(schemaVersion: 1, eventId: "event-revoked", cursor: "6", type: "device.revoked", occurredAt: "2026-10-21T12:00:00Z", workspaceId: "workspace-1", subjectId: "device-1", aggregateType: "device", aggregateId: "device-1", aggregateVersion: 2, payload: .object([:])))
+        await model.handleEventForTesting(EventEnvelope(schemaVersion: 1, eventId: "event-revoked", cursor: "6", type: "instance.key.rotated", occurredAt: "2026-10-21T12:00:00Z", workspaceId: "workspace-1", subjectId: "owner", aggregateType: "instance", aggregateId: "default", aggregateVersion: 2, payload: .object([:])))
 
         XCTAssertNil(model.exportArtifact)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
@@ -522,7 +522,7 @@ final class ClientContractTests: XCTestCase {
         let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
         let oldEpoch = model.connectionEpoch
         model.serverAddress = "invalid-url"
-        await model.updateServerAddress()
+        await model.clearCredential()
         let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try Data("new connection export".utf8).write(to: fileURL)
         model.setExportArtifactForTesting(ScopedExportArtifact(fileURL: fileURL, filename: "cylo-export-new.json", scope: "personal", snapshotCursor: "1"))
@@ -636,7 +636,7 @@ final class ClientContractTests: XCTestCase {
         let oldSearch = Task { await model.refreshMemory() }
         await gate.waitUntilStarted()
         model.serverAddress = "invalid-url"
-        await model.updateServerAddress()
+        await model.clearCredential()
         await gate.resume()
         await oldSearch.value
 
@@ -688,7 +688,7 @@ final class ClientContractTests: XCTestCase {
     }
 
     func testSnapshotDecodesAuthoritativeApprovalsAndRuns() throws {
-        let data = Data(#"{"server_version":"srv-3","event_cursor":"19","projects":[],"tasks":[{"id":"task-1","title":"Review","goal":"Review changes","source":"user","status":"awaiting_user","version":4,"created_at":"2026-10-20T12:00:00Z","updated_at":"2026-10-20T12:01:00Z","evidence":[],"can_accept_result":true}],"approvals":[{"id":"approval-1","task_id":"task-1","status":"pending","prompt":"Approve deployment?","version":2,"created_at":"2026-10-20T12:00:00Z","requested_action_digest":"sha256:example"}],"devices":[],"runs":[{"id":"run-1","task_id":"task-1","attempt_id":"attempt-1","status":"verification_pending","desired_control":"stop","control_version":1,"started_at":"2026-10-20T12:00:00Z","evidence":[],"termination_confirmed":true}]}"#.utf8)
+        let data = Data(#"{"server_version":"srv-3","event_cursor":"19","projects":[],"tasks":[{"id":"task-1","title":"Review","goal":"Review changes","source":"user","status":"awaiting_user","version":4,"created_at":"2026-10-20T12:00:00Z","updated_at":"2026-10-20T12:01:00Z","evidence":[],"can_accept_result":true}],"approvals":[{"id":"approval-1","task_id":"task-1","status":"pending","prompt":"Approve deployment?","version":2,"created_at":"2026-10-20T12:00:00Z","requested_action_digest":"sha256:example"}],"workspace_id":"default","subject_id":"owner","runs":[{"id":"run-1","task_id":"task-1","attempt_id":"attempt-1","status":"verification_pending","desired_control":"stop","control_version":1,"started_at":"2026-10-20T12:00:00Z","evidence":[],"termination_confirmed":true}]}"#.utf8)
         let snapshot = try CyloJSON.decoder.decode(Snapshot.self, from: data)
         XCTAssertEqual(snapshot.eventCursor, "19")
         XCTAssertEqual(snapshot.tasks.first?.status, .awaitingUser)
@@ -778,7 +778,7 @@ final class ClientContractTests: XCTestCase {
         let task = Task { await model.revokeCapabilityDeployment(deployment, expectedConnectionEpoch: epoch) }
         await submitGate.waitUntilStarted()
         model.serverAddress = ""
-        await model.updateServerAddress()
+        await model.clearCredential()
         await submitGate.resume()
 
         let result = await task.value
@@ -803,7 +803,7 @@ final class ClientContractTests: XCTestCase {
         let task = Task { await model.revokeCapabilityDeployment(deployment, expectedConnectionEpoch: epoch) }
         await refreshGate.waitUntilStarted()
         model.serverAddress = ""
-        await model.updateServerAddress()
+        await model.clearCredential()
         await refreshGate.resume()
 
         let result = await task.value
@@ -1094,8 +1094,8 @@ final class ClientContractTests: XCTestCase {
             }
             return (500, [:], Data())
         }
-        let oldSnapshot = Snapshot(serverVersion: "1", eventCursor: "1", projects: [], tasks: [], approvals: [], devices: [Device(id: "device-1", workspaceId: "workspace-1", name: "Test", status: "approved", version: 1, createdAt: "now", approvedAt: nil, lastSeenAt: nil)], runs: [])
-        let freshSnapshot = Snapshot(serverVersion: "2", eventCursor: "2", projects: [], tasks: [], approvals: [], devices: oldSnapshot.devices, runs: [])
+        let oldSnapshot = Snapshot(serverVersion: "1", eventCursor: "1", projects: [], tasks: [], approvals: [], runs: [], workspaceId: "workspace-1")
+        let freshSnapshot = Snapshot(serverVersion: "2", eventCursor: "2", projects: [], tasks: [], approvals: [], runs: [], workspaceId: oldSnapshot.workspaceId)
         let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
         await model.preparePendingCheckForTesting(api: api, journal: journal, snapshot: oldSnapshot)
         model.snapshotFetchOverrideForTesting = { snapshotRefreshes += 1; return freshSnapshot }
@@ -1123,7 +1123,7 @@ final class ClientContractTests: XCTestCase {
         try await oldJournal.append(oldCommand)
         let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
         let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
-        await model.preparePendingCheckForTesting(api: api, journal: oldJournal, snapshot: Snapshot(serverVersion: "1", eventCursor: "1", projects: [], tasks: [], approvals: [], devices: [], runs: []))
+        await model.preparePendingCheckForTesting(api: api, journal: oldJournal, snapshot: Snapshot(serverVersion: "1", eventCursor: "1", projects: [], tasks: [], approvals: [], runs: [], workspaceId: "workspace-1"))
         let readStarted = expectation(description: "old journal read started")
         var resumeRead: CheckedContinuation<[PendingCommand], Never>!
         model.pendingCommandReadOverrideForTesting = {
@@ -1146,10 +1146,10 @@ final class ClientContractTests: XCTestCase {
     func testAppendForTaskMissingFromLatestSnapshotDoesNotCreateAnotherTask() async throws {
         let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: StaticExportCredential(), session: exportSession())
         let task = TaskRecord(id: "task-removed", projectId: nil, title: "Existing task", goal: "Existing goal", source: "user", profileId: nil, status: .active, version: 2, createdAt: "now", updatedAt: "now", acceptedAt: nil, startedAt: nil, finishedAt: nil, result: nil, error: nil, evidence: [], canAcceptResult: false)
-        let snapshot = Snapshot(serverVersion: "1", eventCursor: "1", projects: [], tasks: [task], approvals: [], devices: [], runs: [])
+        let snapshot = Snapshot(serverVersion: "1", eventCursor: "1", projects: [], tasks: [task], approvals: [], runs: [], workspaceId: "workspace-1")
         let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
         await model.preparePendingCheckForTesting(api: api, journal: try CommandJournal(fileURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)), snapshot: snapshot)
-        model.setSnapshotForTesting(Snapshot(serverVersion: "2", eventCursor: "2", projects: [], tasks: [], approvals: [], devices: [], runs: []))
+        model.setSnapshotForTesting(Snapshot(serverVersion: "2", eventCursor: "2", projects: [], tasks: [], approvals: [], runs: [], workspaceId: "workspace-1"))
         var requestCount = 0
         ExportURLProtocol.responseHandler = { _ in requestCount += 1; return (500, [:], Data()) }
 
@@ -1235,7 +1235,7 @@ final class ClientContractTests: XCTestCase {
     func testVoiceMediaLossStopsHeartbeatAndPreservesTaskWhileHangupQuarantinesPool() async throws {
         let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
         let task = TaskRecord(id: "task-live", projectId: nil, title: "Keep this task", goal: "Task state survives voice media loss", source: "user", profileId: nil, status: .active, version: 3, createdAt: "now", updatedAt: "now", acceptedAt: nil, startedAt: nil, finishedAt: nil, result: nil, error: nil, evidence: [], canAcceptResult: false)
-        model.setSnapshotForTesting(Snapshot(serverVersion: "1", eventCursor: "5", projects: [], tasks: [task], approvals: [], devices: [], runs: []))
+        model.setSnapshotForTesting(Snapshot(serverVersion: "1", eventCursor: "5", projects: [], tasks: [task], approvals: [], runs: [], workspaceId: "workspace-1"))
         var hangupCount = 0
         var localStopCount = 0
         ExportURLProtocol.responseHandler = { request in
@@ -1360,7 +1360,7 @@ final class ClientContractTests: XCTestCase {
     }
 
     private func conversationSnapshot(_ tasks: [TaskRecord]) -> Snapshot {
-        Snapshot(serverVersion: "1", eventCursor: "1", projects: [], tasks: tasks, approvals: [], devices: [Device(id: "device-1", workspaceId: "workspace-1", name: "Test", status: "approved", version: 1, createdAt: "now", approvedAt: nil, lastSeenAt: nil)], runs: [])
+        Snapshot(serverVersion: "1", eventCursor: "1", projects: [], tasks: tasks, approvals: [], runs: [], workspaceId: "workspace-1")
     }
 
     func testTaskEntriesAPIUsesPagedWireContractAndRejectsOversizedPage() async throws {
@@ -1505,15 +1505,15 @@ final class ClientContractTests: XCTestCase {
     }
 
     @MainActor
-    func testTaskOrderingParsesFractionalSecondsAndCredentialChangeClearsDraftContext() async throws {
+    func testTaskOrderingParsesFractionalSecondsAndClearingCredentialClearsDraftContext() async throws {
         let defaults = UserDefaults(suiteName: UUID().uuidString)!
-        defaults.set("https://cylo.example", forKey: "cylo.serverAddress")
+        defaults.set("https://cylo.example", forKey: "cylo.instance.serverAddress")
         let model = CyloAppModel(defaults: defaults)
         model.setSnapshotForTesting(conversationSnapshot([conversationTask("older"), conversationTask("newer", updatedAt: "2026-10-24T05:00:00.1-07:00")]))
         XCTAssertEqual(model.tasks.map(\.id), ["newer", "older"])
         model.updateTaskDraft("private draft")
         model.updateTaskDraft("private task draft", for: "a")
-        await model.selectCredentialStorage(.privateFile)
+        await model.clearCredential()
         XCTAssertEqual(model.newTaskDraft, "")
         XCTAssertTrue(model.taskDrafts.isEmpty)
         XCTAssertTrue(model.taskEntries.isEmpty)

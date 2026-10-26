@@ -6,7 +6,7 @@ public final class SnapshotCache {
     private let fileURL: URL
     private let fileManager: FileManager
 
-    public init(serverURL: URL, deviceToken: String, fileManager: FileManager = .default) throws {
+    public init(serverURL: URL, credentialScope: String, fileManager: FileManager = .default) throws {
         self.fileManager = fileManager
         let root = try fileManager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         let directory = root.appendingPathComponent("Cylo", isDirectory: true).appendingPathComponent("Snapshots", isDirectory: true)
@@ -15,8 +15,12 @@ public final class SnapshotCache {
         components?.query = nil
         components?.fragment = nil
         let origin = components?.string ?? serverURL.absoluteString
-        let digest = SHA256.hash(data: Data("\(origin)\u{0}\(deviceToken)".utf8)).map { String(format: "%02x", $0) }.joined()
+        let digest = SHA256.hash(data: Data("\(origin)\u{0}\(credentialScope)".utf8)).map { String(format: "%02x", $0) }.joined()
         fileURL = directory.appendingPathComponent("\(digest).json")
+    }
+
+    public func discard() throws {
+        if fileManager.fileExists(atPath: fileURL.path) { try fileManager.removeItem(at: fileURL) }
     }
 
     public func load() throws -> Snapshot? {

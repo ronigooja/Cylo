@@ -5,11 +5,11 @@ import UniformTypeIdentifiers
 
 public struct CyloSettingsView: View {
     @ObservedObject var model: CyloAppModel
-    @State private var showingRevoke: Device?
+    @State private var showingConnectionEditor = false
     @State private var exportScope = "personal"
     @State private var showingExportSave = false
     @State private var validatingExportSave = false
-    @State private var showingSignOut = false
+    @State private var showingClearCredential = false
 
     public init(model: CyloAppModel) {
         self.model = model
@@ -21,15 +21,15 @@ public struct CyloSettingsView: View {
 
     public var body: some View {
         Group {
-            if model.authentication.deviceID != nil { settingsForm }
-            else { OwnerLoginView(model: model) }
+            if model.authentication.isConnected { settingsForm }
+            else { InstanceConnectionView(model: model) }
         }
     }
 
     private var settingsForm: some View {
         Form {
             Section(uiText("Connection")) {
-                LabeledContent(uiText("Server"), value: "debian.local:8787")
+                LabeledContent(uiText("Server"), value: model.serverAddress)
                 if model.isConnecting {
                     ProgressView(uiText("Connecting…"))
                 } else if case .current = model.freshness {
@@ -43,29 +43,10 @@ public struct CyloSettingsView: View {
                     .disabled(model.isConnecting || model.isBusy)
             }
             Section {
-                CredentialStorageControls(model: model)
-            }
-            Section(uiText("Devices")) {
-                if model.devices.isEmpty { Text(uiText("No device records in the server snapshot.")).foregroundStyle(.secondary) }
-                ForEach(model.devices) { device in
-                    VStack(alignment: .leading, spacing: 8) {
-                        LabeledContent(device.name + " · " + String(device.id.suffix(6)), value: uiText(device.status.capitalized))
-                        if device.id == model.authentication.deviceID {
-                            Label(uiText("This device"), systemImage: "checkmark.circle")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        LabeledContent(uiText("Last seen"), value: device.lastSeenAt.map(uiDate) ?? uiText("Never"))
-                            .font(.caption).foregroundStyle(.secondary)
-                        if device.status == "approved" {
-                            Button(uiText("Revoke device"), role: .destructive) { showingRevoke = device }
-                                .disabled(model.isBusy)
-                        }
-                    }
-                }
-            }
-            Section {
-                Button(uiText("Sign out"), role: .destructive) { showingSignOut = true }
-                    .disabled(model.isBusy)
+                Button(uiText("Replace instance key…")) { showingConnectionEditor = true }
+                    .disabled(model.isBusy || model.isConnecting)
+                Button(uiText("Clear saved key…"), role: .destructive) { showingClearCredential = true }
+                    .disabled(model.isBusy || model.isConnecting)
             }
             Section(uiText("Notifications")) {
                 if model.pushNotificationsEnabled {
@@ -123,21 +104,12 @@ public struct CyloSettingsView: View {
         .onChange(of: model.exportArtifact?.fileURL) { _, fileURL in
             if fileURL == nil { showingExportSave = false }
         }
-        .confirmationDialog(String.localizedStringWithFormat(uiText("Revoke %@?"), showingRevoke?.name ?? uiText("this device")), isPresented: Binding(get: { showingRevoke != nil }, set: { if !$0 { showingRevoke = nil } })) {
-            if let device = showingRevoke {
-                Button(uiText("Revoke device"), role: .destructive) { Task { await model.revoke(device, reason: "Revoked in Cylo Settings"); showingRevoke = nil } }
-            }
-            Button(uiText("Cancel"), role: .cancel) { showingRevoke = nil }
-        } message: {
-            Text(uiText("Revoking this device signs it out, cancels its queued tasks, and requests its active tasks and runtimes to stop. Stop confirmation may require server cleanup.") +
-                 (model.devices.filter { $0.status == "approved" }.count == 1
-                  ? "\n\n" + uiText("This is your last signed-in device. You can sign in again with your owner password; if you forget it, contact your server administrator.") : ""))
-        }
-        .confirmationDialog(uiText("Sign out?"), isPresented: $showingSignOut) {
-            Button(uiText("Sign out"), role: .destructive) { Task { await model.signOut() } }
+        .sheet(isPresented: $showingConnectionEditor) { InstanceConnectionView(model: model) }
+        .confirmationDialog(uiText("Clear saved key?"), isPresented: $showingClearCredential) {
+            Button(uiText("Clear saved key"), role: .destructive) { Task { await model.clearCredential() } }
             Button(uiText("Cancel"), role: .cancel) {}
         } message: {
-            Text(uiText("This device will be signed out, its queued tasks cancelled, and its active tasks and runtimes requested to stop. Local drafts will be cleared."))
+            Text(uiText("The saved key, queued local commands, caches, and drafts will be removed from this app. The shared server key stays valid on other devices. Running server tasks continue."))
         }
     }
 }

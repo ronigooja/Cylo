@@ -43,6 +43,7 @@ public final class APIClient: @unchecked Sendable {
     public let serverURL: URL
     private let session: URLSession
     private let credentials: BearerTokenProviding?
+    private let installationID: String?
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
@@ -50,11 +51,12 @@ public final class APIClient: @unchecked Sendable {
         BoundedDownloadDelegate.cleanupAbandonedFiles()
     }
 
-    public init(serverURL: URL, credentials: BearerTokenProviding? = nil, session: URLSession = .shared) throws {
+    public init(serverURL: URL, credentials: BearerTokenProviding? = nil, session: URLSession = .shared, installationID: String? = nil) throws {
         guard let scheme = serverURL.scheme?.lowercased(), ["http", "https"].contains(scheme), serverURL.host != nil else {
             throw CyloError.invalidServerURL
         }
-        self.serverURL = serverURL
+        self.serverURL = try ServerAddress.normalize(serverURL.absoluteString)
+        self.installationID = installationID
         self.credentials = credentials
         self.session = session
         encoder = JSONEncoder()
@@ -63,26 +65,10 @@ public final class APIClient: @unchecked Sendable {
         decoder.keyDecodingStrategy = .convertFromSnakeCase
     }
 
-    public func authStatus() async throws -> OwnerAuthStatus {
-        try await request(path: ["v1", "auth", "status"], method: "GET", authenticated: false)
-    }
-
-    public func authenticate(password: String, code: String?, deviceName: String, identity: DeviceIdentity) async throws -> DeviceRegistration {
-        let body = OwnerAuthRequest(requestId: identity.bootstrapRequestID, code: code, password: password,
-                                    deviceName: deviceName, deviceToken: identity.deviceToken)
-        return try await request(path: ["v1", "auth", code == nil ? "login" : "setup"], method: "POST", body: body, authenticated: false)
-    }
-
-    public func authSession() async throws -> OwnerSession {
-        try await request(path: ["v1", "auth", "session"], method: "GET", authenticated: true)
-    }
-
-    public func logout() async throws {
-        let _: JSONValue = try await request(path: ["v1", "auth", "logout"], method: "POST", body: EmptyObject(), authenticated: true)
-    }
-
     public func snapshot() async throws -> Snapshot {
-        try await request(path: ["v1", "snapshot"], method: "GET", authenticated: true)
+        let snapshot: Snapshot = try await request(path: ["v1", "snapshot"], method: "GET", authenticated: true)
+        guard snapshot.workspaceId == "default", snapshot.subjectId == "owner" else { throw CyloError.invalidResponse }
+        return snapshot
     }
 
     public func taskEntries(taskID: String, cursor: String? = nil, limit: Int = 100) async throws -> TaskEntriesPage {
@@ -312,10 +298,6 @@ public final class APIClient: @unchecked Sendable {
 
     private func request<Response: Decodable, Body: Encodable>(path: [String], method: String, body: Body? = Optional<NoBody>.none, authenticated: Bool) async throws -> Response {
         var request = URLRequest(url: try makeURL(path: path))
-        if path.starts(with: ["v1", "auth"]) {
-            request.cachePolicy = .reloadIgnoringLocalCacheData
-            request.setValue("no-cache, no-store", forHTTPHeaderField: "Cache-Control")
-        }
         request.httpMethod = method
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -340,6 +322,7 @@ public final class APIClient: @unchecked Sendable {
     private func authorize(_ request: inout URLRequest) throws {
         guard let credentials else { throw CyloError.missingCredential }
         request.setValue("Bearer \(try credentials.bearerToken())", forHTTPHeaderField: "Authorization")
+        if let installationID { request.setValue(installationID, forHTTPHeaderField: "X-Cylo-Installation-ID") }
     }
 
     private func makeURL(path: [String]) throws -> URL {

@@ -7,17 +7,19 @@ public struct Snapshot: Codable, Equatable, Sendable {
     public var projects: [Project]
     public var tasks: [TaskRecord]
     public var approvals: [Approval]
-    public var devices: [Device]
+    public var workspaceId: String
+    public var subjectId: String
     public var runs: [Run]
 
-    public init(serverVersion: String, eventCursor: String, projects: [Project], tasks: [TaskRecord], approvals: [Approval], devices: [Device], runs: [Run], authority: SnapshotAuthority? = nil) {
+    public init(serverVersion: String, eventCursor: String, projects: [Project], tasks: [TaskRecord], approvals: [Approval], runs: [Run], workspaceId: String = "default", subjectId: String = "owner", authority: SnapshotAuthority? = nil) {
         self.serverVersion = serverVersion
         self.eventCursor = eventCursor
         self.authority = authority
         self.projects = projects
         self.tasks = tasks
         self.approvals = approvals
-        self.devices = devices
+        self.workspaceId = workspaceId
+        self.subjectId = subjectId
         self.runs = runs
     }
 }
@@ -93,17 +95,6 @@ public struct Evidence: Codable, Equatable, Identifiable, Sendable {
     public var source: String
     public var createdAt: String
     public var verified: Bool
-}
-
-public struct Device: Codable, Equatable, Identifiable, Sendable {
-    public var id: String
-    public var workspaceId: String
-    public var name: String
-    public var status: String
-    public var version: Int64
-    public var createdAt: String
-    public var approvedAt: String?
-    public var lastSeenAt: String?
 }
 
 public struct Approval: Codable, Equatable, Identifiable, Sendable {
@@ -399,9 +390,7 @@ public struct APIFailureBody: Codable, Sendable {
 public enum CyloError: Error, LocalizedError, Sendable {
     case invalidServerURL
     case missingCredential
-    case credentialStorageNotSelected
     case credentialAccessDenied(String)
-    case credentialConflict
     case exportTooLarge
     case http(status: Int, code: String, message: String, details: [String: JSONValue]?)
     case invalidResponse
@@ -411,10 +400,8 @@ public enum CyloError: Error, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .invalidServerURL: "Enter a valid Cylo server URL."
-        case .missingCredential: "Sign in with your owner password to connect."
-        case .credentialStorageNotSelected: "Choose Keychain or local private file in Settings before connecting."
-        case let .credentialAccessDenied(storage): "Access to the selected \(storage) identity was denied. No identity was created or changed. To keep the same server registration, allow access and copy the identity explicitly; a new file identity may need approval from another approved device."
-        case .credentialConflict: "A different device identity already exists in the destination storage. It was not overwritten; switch back to the original storage or resolve the conflict before copying."
+        case .missingCredential: "Enter your server address and instance key to connect."
+        case let .credentialAccessDenied(storage): "Allow Cylo to access \(storage), then try again."
         case .exportTooLarge: "This export is larger than the 1 GiB download limit."
         case let .http(_, _, message, _): message
         case .invalidResponse: "The server returned a response the app could not read."
@@ -482,49 +469,8 @@ public enum ClientFreshness: Equatable, Sendable {
 
 
 
-/// The workspace opens only after a server-validated session, never from cached records.
-public enum OwnerAuthenticationState: Equatable, Sendable {
-    case checking
-    case unavailable
-    case signedOut(setupRequired: Bool)
-    case authenticated(deviceID: String)
-
-    public var deviceID: String? {
-        if case let .authenticated(deviceID) = self { return deviceID }
-        return nil
-    }
-}
-
-public struct OwnerAuthStatus: Decodable, Sendable { public let setupRequired: Bool }
-public struct OwnerSession: Decodable, Sendable { public let deviceId: String }
-public struct DeviceRegistration: Decodable, Sendable { public let device: Device }
-public struct OwnerAuthRequest: Encodable, Sendable {
-    public let requestId: String
-    public let code: String?
-    public let password: String
-    public let deviceName: String
-    public let deviceToken: String
-}
-public enum OwnerAuthFailure: Equatable, Sendable {
-    case revoked, incorrectPassword, setupRequired, setupCode, rateLimited, setupCompleted, passwordPolicy, conflict, unavailable
-    public static func classify(_ error: Error) -> Self? {
-        guard let error = error as? CyloError, case let .http(status, code, _, _) = error else { return nil }
-        if status == 429 { return .rateLimited }
-        switch code {
-        case "setup_required", "owner_setup_required": return .setupRequired
-        case "owner_already_setup": return .setupCompleted
-        case "invalid_password", "password_policy": return .passwordPolicy
-        case "idempotency_conflict", "device_token_conflict": return .conflict
-        case "invalid_code", "invalid_setup_code", "invalid_bootstrap_code", "setup_code_invalid", "bootstrap_invalid": return .setupCode
-        case "incorrect_password", "invalid_credentials": return .incorrectPassword
-        case "unauthorized", "device_revoked", "device_not_approved", "invalid_session", "authentication_required": return .revoked
-        default: return status == 401 ? .revoked : nil
-        }
-    }
-}
-
-public enum OwnerPasswordPolicy {
-    public static func acceptsSetup(_ password: String) -> Bool {
-        password.count >= 12 && password.utf8.count <= 1024
-    }
+/// Workspace access is granted only after a successful authenticated snapshot.
+public enum InstanceConnectionState: Equatable, Sendable {
+    case checking, disconnected, unavailable, connected
+    public var isConnected: Bool { self == .connected }
 }

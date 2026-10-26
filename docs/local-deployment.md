@@ -28,7 +28,7 @@ curl --fail http://127.0.0.1:8787/healthz
 curl --fail http://127.0.0.1:18001/readyz
 ```
 
-The control server binds port 8787 on both host loopback and the authorized
+The previously recorded installation binds port 8787 on both host loopback and the authorized
 LAN interface. The LAN endpoint is `http://debian.local:8787`.
 The deployment override `/etc/cylo/control.lan.compose.yaml` adds this binding;
 `/etc/systemd/system/cylo-compose.service.d/lan.conf` includes the override in
@@ -42,9 +42,17 @@ execution, memory processing, or task completion.
 
 ## macOS application
 
-### Installed owner-password release — 2026-10-25
+### Current connection candidate — single instance key
 
-The control server now uses `cylo-server:owner-login-f62b55f3a964`, built on a
+The current source targets a fresh deployment with one shared instance key and no owner-password, bootstrap/pairing, or device-session compatibility. It has no fixed client endpoint. Supply the selected server URL and key manually, or import an installation link/QR image. The canonical link is `cylo://connect?server=<URL-encoded>#key=<key>`; its contents grant owner access and must not be placed in repository files, logs, screenshots, or chat. Images are decoded locally on each Apple platform. Import requires an explicit Connect action before any credential is sent.
+
+Settings display the current server and provide reconnect, replacement of that server's key, and local clearing. To move to another server, first clear the saved connection. Clearing or replacing removes the Keychain credential, cached snapshot, durable local queue, and drafts; running server tasks continue. Cylo attempts to revoke only this installation's push registration before clearing, and reports if the server is unreachable. Other installations and the shared instance key remain valid. Use HTTPS for an untrusted network; plain HTTP exposes the shared key in transit.
+
+This is a source candidate. CI, rollout, native interaction, multi-device push, and iPhone/iPad acceptance have not been established by the source changes. The records below describe prior installations and are not current setup instructions.
+
+### Historical installed owner-password release — 2026-10-25
+
+At that rollout, the control server used `cylo-server:owner-login-f62b55f3a964`, built on a
 GitHub-hosted ARM64 runner in [run 40231799160](https://github.com/ronigooja/Cylo/actions/runs/40231799160).
 The macOS application at `/Applications/Cylo.app` was replaced with the verified
 Apple CI artifact from revision `2d9d779`, signed ad hoc locally and launched.

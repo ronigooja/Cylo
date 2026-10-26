@@ -6,4 +6,6 @@ The current architecture is a private Linux Go control server with SQLite in WAL
 
 The Go control plane owns authoritative task, authorization, event, and memory records. Mem0 is a controlled worker with a rebuildable Qdrant retrieval index. See [the master plan](docs/master-plan.md) for decisions, milestones, requirements traceability, acceptance evidence, and known limits. Archived source material is under [docs/archive](docs/archive/).
 
-The current local installation is described in [local deployment operations](docs/local-deployment.md).
+Fresh deployments use one shared instance key. Native clients connect with a user-entered server URL and key, an installation link, or a QR image; the key is stored only in Keychain. Password login and device approval are outside the current model. This source candidate still requires CI and separate installation acceptance.
+
+The recorded local installation is described in [local deployment operations](docs/local-deployment.md).

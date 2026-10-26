@@ -25,7 +25,7 @@ public actor CommandJournal {
         encoder.outputFormatting = [.sortedKeys]
     }
 
-    public init(serverURL: URL, deviceToken: String) throws {
+    public init(serverURL: URL, credentialScope: String) throws {
         let fileManager = FileManager.default
         let root = try fileManager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         let directory = root.appendingPathComponent("Cylo", isDirectory: true).appendingPathComponent("Commands", isDirectory: true)
@@ -33,11 +33,15 @@ public actor CommandJournal {
         var components = URLComponents(url: serverURL, resolvingAgainstBaseURL: false)
         components?.query = nil
         components?.fragment = nil
-        let scope = "\(components?.string ?? serverURL.absoluteString)\u{0}\(deviceToken)"
+        let scope = "\(components?.string ?? serverURL.absoluteString)\u{0}\(credentialScope)"
         let digest = SHA256.hash(data: Data(scope.utf8)).map { String(format: "%02x", $0) }.joined()
         self.fileURL = directory.appendingPathComponent("\(digest).json")
         encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
+    }
+
+    public func discard() throws {
+        if fileManager.fileExists(atPath: fileURL.path) { try fileManager.removeItem(at: fileURL) }
     }
 
     public func all() throws -> [PendingCommand] {
@@ -227,7 +231,6 @@ public actor CommandCoordinator {
         case "project.create": return ("project", nil)
         case "task.create": return ("task", nil)
         case "task.append", "task.stop", "task.approve", "task.accept_result": return ("task", string("task_id"))
-        case "device.approve", "device.revoke": return ("device", string("device_id"))
         case "notification.mark_read": return ("notification", string("notification_id"))
         case "memory.remember": return ("memory", nil)
         case "memory.delete": return ("memory", string("memory_id"))
