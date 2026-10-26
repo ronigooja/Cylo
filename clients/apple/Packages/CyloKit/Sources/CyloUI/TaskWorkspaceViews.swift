@@ -384,12 +384,12 @@ struct TaskDetailView: View {
                             if model.hasMoreTaskEntries { Button(uiText("Load more messages")) { Task { await model.loadMoreTaskEntries() } }.disabled(model.isLoadingTaskEntries) }
                         }
                         if let result = task.result, !result.isEmpty { VStack(alignment: .leading, spacing: 8) { Text(uiText("Result")).font(.headline); MessageBody(content: result) } }
-                        if let error = task.error, !error.isEmpty { NoticeCard(message: error) }
+                        if let error = taskFailureMessage(task) { NoticeCard(message: error) }
                         #if os(macOS)
-                        if !task.evidence.isEmpty {
+                        if !visibleTaskEvidence(task.evidence).isEmpty {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text(uiText("Evidence")).font(.subheadline.weight(.semibold))
-                                ForEach(task.evidence) { item in
+                                ForEach(visibleTaskEvidence(task.evidence)) { item in
                                     HStack(alignment: .top, spacing: 8) {
                                         Image(systemName: item.verified ? "checkmark.circle" : "doc.text")
                                             .foregroundStyle(item.verified ? Color.green : Color.secondary)
@@ -526,10 +526,11 @@ struct ApprovalRows: View {
 
 struct EvidenceRows: View {
     let evidence: [Evidence]
+    private var visible: [Evidence] { visibleTaskEvidence(evidence) }
     var body: some View {
         Section(uiText("Evidence")) {
-            if evidence.isEmpty { Text(uiText("No evidence has been recorded.")).foregroundStyle(.secondary) }
-            ForEach(evidence) { item in
+            if visible.isEmpty { Text(uiText("No evidence has been recorded.")).foregroundStyle(.secondary) }
+            ForEach(visible) { item in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(item.summary)
                     HStack {

@@ -429,3 +429,4 @@
 "Connect without encryption?" = "Connect without encryption?";
 "The instance key could not be saved in Keychain." = "The instance key could not be saved in Keychain.";
 "The previous instance key could not be restored in Keychain. Reconnect with your server key." = "The previous instance key could not be restored in Keychain. Reconnect with your server key.";
+"This request could not be completed." = "This request could not be completed.";
