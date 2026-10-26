@@ -40,7 +40,7 @@ func TestCapabilityRevocationFencesClaimsAndRequiresProvenCleanup(t *testing.T) 
 		t.Fatal(err)
 	}
 	handler := bindReviewHandler(server.Handler(), store)
-	reviewBootstrap(t, handler, bootstrap, deviceToken)
+	reviewInitializeInstance(t, handler, bootstrap, deviceToken)
 
 	digest := "sha256:" + strings.Repeat("b", 64)
 	manifest := contracts.CapabilityManifest{

@@ -41,7 +41,7 @@ func TestCapabilityHTTPCompositionRequiresConfiguredCapabilityID(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := bindReviewHandler(server.Handler(), store)
-	reviewBootstrap(t, handler, code, deviceToken)
+	reviewInitializeInstance(t, handler, code, deviceToken)
 
 	list := reviewRequest(handler, http.MethodGet, "/v1/capabilities/releases", deviceToken, "", nil)
 	if list.Code != http.StatusOK {

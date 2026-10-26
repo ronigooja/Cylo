@@ -63,7 +63,7 @@ func scopedExportServer(t *testing.T) (*storage.Store, http.Handler, string, str
 		t.Fatal(err)
 	}
 	h := bindReviewHandler(server.Handler(), store)
-	registration := reviewBootstrap(t, h, code, token)
+	registration := reviewInitializeInstance(t, h, code, token)
 	var subject string
 	if err = store.DB().QueryRow(`SELECT subject_id FROM actors WHERE id=?`, registration.Device.ID).Scan(&subject); err != nil {
 		t.Fatal(err)
@@ -416,7 +416,7 @@ func TestScopedExportRequiresSeparateExportAndMemoryReadGrants(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := bindReviewHandler(server.Handler(), store)
-	reviewBootstrap(t, h, code, token)
+	reviewInitializeInstance(t, h, code, token)
 	resp := reviewRequest(h, http.MethodGet, "/v1/export?scope=personal", token, "", nil)
 	if resp.Code != http.StatusForbidden || strings.Contains(resp.Body.String(), "sqlite") {
 		t.Fatalf("missing export grant was not safely denied: %d %s", resp.Code, resp.Body.String())
@@ -460,7 +460,7 @@ func TestScopedExportKeepsNarrowMemoryGrantNarrow(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := bindReviewHandler(server.Handler(), store)
-	registration := reviewBootstrap(t, h, code, token)
+	registration := reviewInitializeInstance(t, h, code, token)
 	var subject string
 	if err = store.DB().QueryRow(`SELECT subject_id FROM actors WHERE id=?`, registration.Device.ID).Scan(&subject); err != nil {
 		t.Fatal(err)
@@ -643,6 +643,9 @@ func TestExportTempCleanupRouteUsesCurrentDeletionLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err = store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = server.RegisterRunnerCredential(ctx, runnerToken, "cleanup-runner", []string{"default"}, []string{"memory:jobs:complete"}); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()

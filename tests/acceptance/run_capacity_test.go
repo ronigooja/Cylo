@@ -22,7 +22,7 @@ func TestGlobalFourRunCapKeepsUnknownOutcomeFenced(t *testing.T) {
 			}
 		}
 	})
-	reviewBootstrap(t, h, code, deviceToken)
+	reviewInitializeInstance(t, h, code, deviceToken)
 	for i := 0; i < 5; i++ {
 		n := strconv.Itoa(i + 1)
 		body := json.RawMessage(`{"title":"task ` + n + `","goal":"goal","source":"user"}`)

@@ -36,7 +36,7 @@ func TestTaskSourceAdmissionSharesCommandTransaction(t *testing.T) {
 	if _, err := store.DB().Exec(`CREATE TABLE source_bindings(task_id TEXT PRIMARY KEY,reference TEXT NOT NULL UNIQUE)`); err != nil {
 		t.Fatal(err)
 	}
-	device := reviewBootstrap(t, h, code, token)
+	device := reviewInitializeInstance(t, h, code, token)
 	body := func(source, reference string) contracts.CommandRequest {
 		return contracts.CommandRequest{Kind: "task.create", Payload: json.RawMessage(`{"title":"voice task","goal":"voice goal","source":"` + source + `","source_reference":` + reference + `}`)}
 	}

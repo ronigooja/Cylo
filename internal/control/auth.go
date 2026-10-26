@@ -52,8 +52,8 @@ func instanceKeyHash(key string) ([]byte, error) {
 	return sum[:], nil
 }
 
-// InitializeInstanceAuth provisions the first key or verifies the configured
-// deployment key. It returns the cleartext key only when it was generated now.
+// InitializeInstanceAuth provisions or verifies a deployment-provided key.
+// Key generation and secret export are reserved for explicit operator commands.
 func InitializeInstanceAuth(ctx context.Context, store *storage.Store, configured string) (string, bool, error) {
 	if store == nil || store.DB() == nil {
 		return "", false, errors.New("open control store is required")
@@ -80,6 +80,13 @@ func InitializeInstanceAuth(ctx context.Context, store *storage.Store, configure
 		digest, e := instanceKeyHash(key)
 		if e != nil {
 			return "", false, e
+		}
+		var workerCount int
+		if e = tx.QueryRowContext(ctx, `SELECT count(*) FROM runner_credentials WHERE token_hash=?`, digest).Scan(&workerCount); e != nil {
+			return "", false, e
+		}
+		if workerCount != 0 {
+			return "", false, errors.New("owner key must be distinct from internal worker credentials")
 		}
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		if _, e = tx.ExecContext(ctx, `INSERT INTO instance_auth(singleton,key_hash,created_at,rotated_at) VALUES(1,?,?,?)`, digest, now, now); e != nil {
@@ -225,10 +232,25 @@ func RegisterRunnerCredentialIfMissing(ctx context.Context, store interface{ DB(
 	if err != nil {
 		return err
 	}
+	tx, err := store.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var ownerCount int
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM instance_auth WHERE key_hash=?`, hash).Scan(&ownerCount); err != nil {
+		return err
+	}
+	if ownerCount != 0 {
+		return errors.New("internal worker credential must be distinct from the owner key")
+	}
 	workspaces, _ := jsonMarshal(workspaceIDs)
 	scopeBytes, _ := jsonMarshal(scopes)
-	_, err = store.DB().ExecContext(ctx, `INSERT OR IGNORE INTO runner_credentials(token_hash,runner_id,workspace_ids,scopes) VALUES(?,?,?,?)`, hash, runnerID, workspaces, scopeBytes)
-	return err
+	if _, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO runner_credentials(token_hash,runner_id,workspace_ids,scopes) VALUES(?,?,?,?)`, hash, runnerID, workspaces, scopeBytes); err != nil {
+		return err
+	}
+	return tx.Commit()
+
 }
 
 // RotateInstanceKey atomically replaces the owner key and increments its fence.
@@ -243,6 +265,13 @@ func RotateInstanceKey(ctx context.Context, store *storage.Store, key string) er
 		return err
 	}
 	defer tx.Rollback()
+	var workerCount int
+	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM runner_credentials WHERE token_hash=?`, digest).Scan(&workerCount); err != nil {
+		return err
+	}
+	if workerCount != 0 {
+		return errors.New("owner key must be distinct from internal worker credentials")
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE instance_auth SET key_hash=?,generation=generation+1,rotated_at=? WHERE singleton=1`, digest, time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return err

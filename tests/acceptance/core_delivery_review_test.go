@@ -17,7 +17,7 @@ func reviewRuntimeConfig(code, runnerToken string) control.Config {
 func TestReviewExplicitEmptyInstanceScopesRemainEmpty(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
 	_, h := reviewServer(t, control.Config{InstanceScopes: []string{}}, nil)
-	reviewBootstrap(t, h, code, token)
+	reviewInitializeInstance(t, h, code, token)
 	for _, path := range []string{"/v1/snapshot", "/v1/commands", "/v1/notifications"} {
 		w := reviewRequest(h, "GET", path, token, "", nil)
 		if w.Code != 403 {
@@ -34,7 +34,7 @@ func TestReviewClaimAuthorizationSurvivesServerReconfiguration(t *testing.T) {
 	p.CapabilityIDs = []string{"read"}
 	cfg.Profiles["review"] = p
 	store, h := reviewServer(t, cfg, nil)
-	reviewBootstrap(t, h, code, token)
+	reviewInitializeInstance(t, h, code, token)
 	w := reviewRequest(h, "POST", "/v1/commands", token, "create", contracts.CommandRequest{Kind: "task.create", Payload: json.RawMessage(`{"title":"task","goal":"goal","source":"user"}`)})
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
@@ -74,7 +74,7 @@ func TestReviewClaimAuthorizationSurvivesServerReconfiguration(t *testing.T) {
 func TestReviewAuthoritativeAccessRequiresActiveMembership(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
 	store, h := reviewServer(t, reviewRuntimeConfig(code, ""), nil)
-	reviewBootstrap(t, h, code, token)
+	reviewInitializeInstance(t, h, code, token)
 	w := reviewRequest(h, "POST", "/v1/commands", token, "project", contracts.CommandRequest{Kind: "project.create", Payload: json.RawMessage(`{"name":"private"}`)})
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())

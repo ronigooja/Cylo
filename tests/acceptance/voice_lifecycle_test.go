@@ -49,7 +49,7 @@ func newHangupHarnessWithMedia(t *testing.T, gatewayHandler http.Handler, media 
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	registration := reviewBootstrap(t, bindReviewHandler(server.Handler(), store), bootstrapCode, deviceToken)
+	registration := reviewInitializeInstance(t, bindReviewHandler(server.Handler(), store), bootstrapCode, deviceToken)
 	var ownerID string
 	if err := store.DB().QueryRowContext(ctx, `SELECT subject_id FROM actors WHERE id=?`, registration.Device.ID).Scan(&ownerID); err != nil {
 		t.Fatal(err)
@@ -143,7 +143,7 @@ func TestVoiceReconciliationCannotRaceInFlightTrustedHangup(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := bindReviewHandler(server.Handler(), store)
-	registration := reviewBootstrap(t, handler, bootstrapCode, deviceToken)
+	registration := reviewInitializeInstance(t, handler, bootstrapCode, deviceToken)
 	var ownerID string
 	if err := store.DB().QueryRowContext(ctx, `SELECT subject_id FROM actors WHERE id=?`, registration.Device.ID).Scan(&ownerID); err != nil {
 		t.Fatal(err)

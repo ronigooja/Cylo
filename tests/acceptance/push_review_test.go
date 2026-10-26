@@ -24,7 +24,7 @@ func TestReviewPushRevocationStopsAlreadySelectedUnsentDeliveries(t *testing.T) 
 			t.Fatal(err)
 		}
 	})
-	d := reviewBootstrap(t, h, code, token)
+	d := reviewInitializeInstance(t, h, code, token)
 	if _, err := s.DB().Exec(`INSERT INTO tasks(id,workspace_id,title,goal,source,profile_id,status,version,created_at,updated_at,created_by_device_id,command_id) VALUES('task-push','default','Synthetic','Synthetic','user','unused','awaiting_user',1,'2026-10-21T00:00:00Z','2026-10-21T00:00:00Z',?,'cmd-push')`, d.Device.ID); err != nil {
 		t.Fatal(err)
 	}

@@ -244,3 +244,17 @@ func TestOneKeySupportsConcurrentClientsAndIndependentPushInstallations(t *testi
 		t.Fatalf("client use created auth identities=%d %v", actors, err)
 	}
 }
+
+func TestOwnerAndInternalWorkerCredentialsCannotShareASecret(t *testing.T) {
+	store, server, key := instanceAuthFixture(t)
+	if err := server.RegisterRunnerCredential(context.Background(), key, "worker", []string{"default"}, []string{"runner:claim"}); err == nil {
+		t.Fatal("owner secret registered as internal worker")
+	}
+	worker, _ := GenerateInstanceKey()
+	if err := server.RegisterRunnerCredential(context.Background(), worker, "worker", []string{"default"}, []string{"runner:claim"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RotateInstanceKey(context.Background(), store, worker); err == nil {
+		t.Fatal("rotation promoted internal worker secret to owner")
+	}
+}

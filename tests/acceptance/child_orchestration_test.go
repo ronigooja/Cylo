@@ -24,7 +24,7 @@ func TestChildProposalAdmissionIsIdempotentAndClaimedThroughOrdinaryRunnerPath(t
 			}
 		}
 	})
-	reviewBootstrap(t, h, bootstrapCode, deviceToken)
+	reviewInitializeInstance(t, h, bootstrapCode, deviceToken)
 	created := reviewRequest(h, http.MethodPost, "/v1/commands", deviceToken, "root-create", contracts.CommandRequest{Kind: "task.create", Payload: json.RawMessage(`{"title":"root","goal":"root goal","source":"user"}`)})
 	if created.Code != http.StatusOK {
 		t.Fatalf("root create=%d %s", created.Code, created.Body.String())
@@ -148,7 +148,7 @@ func TestOutOfPolicyChildRequiresExpectedVersionApprovalAndCannotReviveParent(t 
 			t.Fatal(err)
 		}
 	})
-	reviewBootstrap(t, h, bootstrapCode, deviceToken)
+	reviewInitializeInstance(t, h, bootstrapCode, deviceToken)
 	created := reviewRequest(h, http.MethodPost, "/v1/commands", deviceToken, "root-create", contracts.CommandRequest{Kind: "task.create", Payload: json.RawMessage(`{"title":"root","goal":"root goal","source":"user"}`)})
 	var root contracts.CommandReceipt
 	if created.Code != http.StatusOK || json.Unmarshal(created.Body.Bytes(), &root) != nil {
@@ -204,7 +204,7 @@ func TestConcurrentChildProposalsCannotOverspendRootBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	reviewBootstrap(t, h, bootstrapCode, deviceToken)
+	reviewInitializeInstance(t, h, bootstrapCode, deviceToken)
 	created := reviewRequest(h, http.MethodPost, "/v1/commands", deviceToken, "root-create", contracts.CommandRequest{Kind: "task.create", Payload: json.RawMessage(`{"title":"root","goal":"root goal","source":"user"}`)})
 	var root contracts.CommandReceipt
 	if created.Code != http.StatusOK || json.Unmarshal(created.Body.Bytes(), &root) != nil {

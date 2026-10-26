@@ -57,7 +57,7 @@ func reviewFeatureServer(t *testing.T) (*storage.Store, http.Handler, string, st
 		t.Fatal(err)
 	}
 	h := bindReviewHandler(srv.Handler(), store)
-	registration := reviewBootstrap(t, h, code, token)
+	registration := reviewInitializeInstance(t, h, code, token)
 	return store, h, token, registration.Device.ID, runnerToken
 }
 func featureCommand(t *testing.T, h http.Handler, token, key, kind string, payload any) *contracts.CommandReceipt {

@@ -17,7 +17,7 @@ func TestCurrentClaimRecoveryDoesNotDeadlockOrChangeSnapshot(t *testing.T) {
 	profile := control.RuntimeProfile{ID: "worker", AOProjectID: "workers", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "native-sandbox", CapabilityIDs: []string{"task.read"}, Scopes: []string{"task:read"}}
 	profiles := map[string]control.RuntimeProfile{"worker": profile}
 	store, handler := reviewServer(t, control.Config{RunnerToken: runnerToken, RunnerID: "runner", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim", "runner:control:read"}, DefaultProfileID: "worker", Profiles: profiles}, nil)
-	reviewBootstrap(t, handler, bootstrapCode, deviceToken)
+	reviewInitializeInstance(t, handler, bootstrapCode, deviceToken)
 	created := reviewRequest(handler, http.MethodPost, "/v1/commands", deviceToken, "create", contracts.CommandRequest{Kind: "task.create", Payload: json.RawMessage(`{"title":"original title","goal":"original goal","source":"user"}`)})
 	if created.Code != http.StatusOK {
 		t.Fatalf("task creation=%d %s", created.Code, created.Body.String())
@@ -93,7 +93,7 @@ func TestQueuedHarnessSnapshotSurvivesConfigurationChange(t *testing.T) {
 	bootstrapCode, deviceToken, runnerToken := reviewToken(t), reviewToken(t), reviewToken(t)
 	profile := control.RuntimeProfile{ID: "worker", Harness: "opencode", AOProjectID: "workers", RuntimeRouteID: "opencode", ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "ao-opencode-workspace-write-v1"}
 	store, handler := reviewServer(t, control.Config{RunnerToken: runnerToken, RunnerID: "runner", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim"}, DefaultProfileID: "worker", Profiles: map[string]control.RuntimeProfile{"worker": profile}}, nil)
-	reviewBootstrap(t, handler, bootstrapCode, deviceToken)
+	reviewInitializeInstance(t, handler, bootstrapCode, deviceToken)
 	created := reviewRequest(handler, http.MethodPost, "/v1/commands", deviceToken, "create", contracts.CommandRequest{Kind: "task.create", Payload: json.RawMessage(`{"title":"original title","goal":"original goal","source":"user"}`)})
 	if created.Code != http.StatusOK {
 		t.Fatalf("task creation=%d %s", created.Code, created.Body.String())
@@ -126,7 +126,7 @@ func TestTerminationProofMethodIsBoundToRunHarness(t *testing.T) {
 			bootstrapCode, deviceToken, runnerToken := reviewToken(t), reviewToken(t), reviewToken(t)
 			profile := control.RuntimeProfile{ID: "worker", Harness: tc.harness, AOProjectID: "workers", RuntimeRouteID: tc.harness, ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: tc.policy}
 			store, handler := reviewServer(t, control.Config{RunnerToken: runnerToken, RunnerID: "runner", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim", "runner:observe"}, DefaultProfileID: "worker", Profiles: map[string]control.RuntimeProfile{"worker": profile}}, nil)
-			reviewBootstrap(t, handler, bootstrapCode, deviceToken)
+			reviewInitializeInstance(t, handler, bootstrapCode, deviceToken)
 			created := reviewRequest(handler, http.MethodPost, "/v1/commands", deviceToken, "create", contracts.CommandRequest{Kind: "task.create", Payload: json.RawMessage(`{"title":"stop test","goal":"goal","source":"user"}`)})
 			if created.Code != http.StatusOK {
 				t.Fatalf("task creation=%d %s", created.Code, created.Body.String())

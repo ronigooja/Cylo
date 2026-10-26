@@ -91,7 +91,7 @@ type reviewHandler struct {
 	store *storage.Store
 }
 
-func reviewBootstrap(t *testing.T, h http.Handler, code, token string) reviewInstanceIdentity {
+func reviewInitializeInstance(t *testing.T, h http.Handler, code, token string) reviewInstanceIdentity {
 	t.Helper()
 	fixture, ok := h.(*reviewHandler)
 	if !ok {
@@ -109,7 +109,7 @@ func TestReviewHTTPIdentityAndReceipts(t *testing.T) {
 	code := reviewToken(t)
 	token := reviewToken(t)
 	s, h := reviewServer(t, control.Config{}, nil)
-	reviewBootstrap(t, h, code, token)
+	reviewInitializeInstance(t, h, code, token)
 	req := contracts.CommandRequest{Kind: "project.create", Payload: json.RawMessage(`{"name":"review"}`)}
 	first := reviewRequest(h, "POST", "/v1/commands", token, "project", req)
 	if first.Code != 200 {
@@ -164,7 +164,7 @@ func TestReviewExtensionRollback(t *testing.T) {
 			t.Fatal(e)
 		}
 	})
-	reviewBootstrap(t, h, code, token)
+	reviewInitializeInstance(t, h, code, token)
 	w := reviewRequest(h, "POST", "/v1/commands", token, "rollback", contracts.CommandRequest{Kind: "review.fail", Payload: json.RawMessage(`{}`)})
 	if w.Code != 500 {
 		t.Fatalf("failure status=%d", w.Code)
@@ -188,7 +188,7 @@ func TestReviewCanonicalHashPreservesLargeIntegers(t *testing.T) {
 			return contracts.CommandResult{}, nil, nil
 		})
 	})
-	reviewBootstrap(t, h, code, token)
+	reviewInitializeInstance(t, h, code, token)
 	for i, payload := range []string{`{"revision":9007199254740992}`, `{"revision":9007199254740993}`} {
 		w := reviewRequest(h, "POST", "/v1/commands", token, "large", contracts.CommandRequest{Kind: "review.integer", Payload: json.RawMessage(payload)})
 		want := 200
@@ -221,7 +221,7 @@ func TestReviewConfiguredRunnerRevocation(t *testing.T) {
 func TestReviewExplicitInstanceScopesAreNotExpanded(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
 	_, h := reviewServer(t, control.Config{InstanceScopes: []string{"client:command"}}, nil)
-	reviewBootstrap(t, h, code, token)
+	reviewInitializeInstance(t, h, code, token)
 	if w := reviewRequest(h, "GET", "/v1/snapshot", token, "", nil); w.Code != http.StatusForbidden {
 		t.Errorf("restricted device gained read scope: %d", w.Code)
 	}
@@ -236,7 +236,7 @@ func TestReviewExplicitInstanceScopesAreNotExpanded(t *testing.T) {
 func TestReviewLegacyDeviceApprovalCannotCreateSession(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
 	_, h := reviewServer(t, control.Config{}, nil)
-	reviewBootstrap(t, h, code, token)
+	reviewInitializeInstance(t, h, code, token)
 	w := reviewRequest(h, "POST", "/v1/commands", token, "approve", contracts.CommandRequest{Kind: "device.approve", Payload: json.RawMessage(`{"device_id":"legacy"}`)})
 	if w.Code < 400 {
 		t.Fatal("legacy device approval remains available")
@@ -245,7 +245,7 @@ func TestReviewLegacyDeviceApprovalCannotCreateSession(t *testing.T) {
 func TestReviewSSERevocationBlocksNewEvents(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
 	s, h := reviewServer(t, control.Config{}, nil)
-	reviewBootstrap(t, h, code, token)
+	reviewInitializeInstance(t, h, code, token)
 	live := httptest.NewServer(h)
 	defer live.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
@@ -283,7 +283,7 @@ func TestReviewSSERevocationBlocksNewEvents(t *testing.T) {
 func TestReviewLateCommitFailureRollsBackReceiptWorkAndOutbox(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
 	s, h := reviewServer(t, control.Config{}, nil)
-	reviewBootstrap(t, h, code, token)
+	reviewInitializeInstance(t, h, code, token)
 	if _, e := s.DB().Exec(`CREATE TRIGGER review_abort_work BEFORE INSERT ON command_work BEGIN SELECT RAISE(ABORT,'injected final work failure'); END`); e != nil {
 		t.Fatal(e)
 	}
@@ -332,7 +332,7 @@ func TestReviewProtectedRoutesAndReceiptIsolation(t *testing.T) {
 			})
 		})
 	})
-	reviewBootstrap(t, h, code, token)
+	reviewInitializeInstance(t, h, code, token)
 	for _, test := range []struct {
 		path, token string
 		status      int
@@ -362,7 +362,7 @@ func TestReviewApprovalCannotResurrectStoppedTask(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
 	cfg := control.Config{DefaultProfileID: "review", Profiles: map[string]control.RuntimeProfile{"review": {ID: "review", AOProjectID: "review-project", RuntimeRouteID: "review", ModelRouteID: "review", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "review-policy"}}}
 	s, h := reviewServer(t, cfg, nil)
-	reviewBootstrap(t, h, code, token)
+	reviewInitializeInstance(t, h, code, token)
 	w := reviewRequest(h, "POST", "/v1/commands", token, "create-task", contracts.CommandRequest{Kind: "task.create", Payload: json.RawMessage(`{"title":"review","goal":"review","source":"user"}`)})
 	if w.Code != 200 {
 		t.Fatalf("create=%d", w.Code)
@@ -417,7 +417,7 @@ func TestReviewRevocationRecheckedInsideMutationTransactions(t *testing.T) {
 			})
 		})
 	})
-	reviewBootstrap(t, h, code, token)
+	reviewInitializeInstance(t, h, code, token)
 	if w := reviewRequest(h, "POST", "/v1/review-stale-session", token, "", nil); w.Code != 200 {
 		t.Fatalf("stale request fixture=%d", w.Code)
 	}
