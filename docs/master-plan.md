@@ -162,6 +162,8 @@ Four old server image tags/images and seven old Mac app/archive products were re
 
 ### Interface decisions and acceptance boundary
 
+AO startup failures, unresolved runtime diagnostics, execution-slot accounting, and reconciliation instructions belong to operator interfaces and audit records. Conversation and task views show the actual task status without infrastructure queue reasons or capacity banners. Preserve actionable submission errors and pending-confirmation feedback; this presentation rule does not authorize client retries or change task authority.
+
 The Apple redesign uses system typography, SF Symbols, semantic colors, system appearance, and English/Simplified Chinese localization. Spacing follows 4/8/12/16/24/32 pt steps; conversation text is limited to 760 pt. Blue emphasizes primary actions. Task outcomes and actionable exceptional states have concise text labels; routine voice state follows the compact icon treatment above. Normal connected state has no banner. Offline, stale, and failed operations remain visible with an action at the affected surface.
 
 macOS uses a resizable sidebar (240 pt default) and workspace. iPad uses the same split structure in regular width and collapses in narrow windows; iPhone has Conversation, Tasks, and Projects tabs, hidden in the task workspace. Notifications are a toolbar entrance with an unread count. Account menus expose Settings, Memory, and Capabilities. Home contains a composer and recent work, without statistics or tutorial cards. The [three-platform visual reference](design/apple-redesign.html) covers home, empty, loading, send failure, and task states with language, appearance, and text-size controls. It is a design artifact, not an application screenshot or acceptance evidence.
@@ -638,9 +640,10 @@ and release its slot. Refused attempts are retained in the runner audit journal.
 The patched AO protocol uses `worker_boot_failed` only after supervised startup
 failure, verified runtime cleanup, successful workspace rollback, and verified
 absence of the session row. Other failures remain uncertain. Snapshot capacity
-and per-task queue reasons expose the same global admission gate to the Apple
-conversation and task views; existing drafts, command keys, and event refresh
-remain authoritative. See [the operator runbook](local-deployment.md#unknown-ao-creation-reconciliation).
+and per-task queue reasons expose the global admission gate for operator diagnosis.
+Apple conversation and task views show ordinary task status without internal
+capacity or reconciliation diagnostics; existing drafts, command keys, and event
+refresh remain authoritative. See [the operator runbook](local-deployment.md#unknown-ao-creation-reconciliation).
 
 Hosted verification passed:
 
