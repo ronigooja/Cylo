@@ -506,7 +506,7 @@ new file mode 100644
 index 000000000..1360f8d4e
 --- /dev/null
 +++ b/backend/internal/adapters/chatdriver/codexappserver/container.go
-@@ -0,0 +1,406 @@
+@@ -0,0 +1,408 @@
 +package codexappserver
 +
 +import (
