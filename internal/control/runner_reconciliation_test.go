@@ -12,7 +12,7 @@ import (
 )
 
 func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
-	for _, scenario := range []string{"complete", "incomplete-ao", "container", "wrong-epoch", "unconfirmed", "session-bound", "unsafe-effect", "ordinary-proof"} {
+	for _, scenario := range []string{"complete", "incomplete-ao", "container", "wrong-epoch", "unconfirmed", "session-bound", "unsafe-effect", "ordinary-proof", "missing-incarnation", "old-incarnation", "future-incarnation"} {
 		t.Run(scenario, func(t *testing.T) {
 			server, closeStore := budgetTestServer(t, contracts.RunBudgetSnapshot{})
 			defer closeStore()
@@ -29,7 +29,7 @@ func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
 			if _, err = server.store.DB().Exec(`UPDATE runs SET status='uncertain' WHERE id='budget-run'`); err != nil {
 				t.Fatal(err)
 			}
-			proof := &contracts.NoEffectProof{JournalPhase: "effect_unknown", AOCreateStarted: true, Outcome: "failed", Reconciliation: &contracts.NoEffectReconciliation{RunID: "budget-run", Actor: "operator", Confirmed: true, VerifiedAt: time.Now().UTC(), AOQuery: "GET /api/v1/sessions/inventory", AOInventoryComplete: true, AOClientRequestIDComplete: true, DockerQuery: "docker ps -aq --no-trunc; docker inspect all IDs", DockerInventoryComplete: true, InstanceID: state.InstanceID, InstanceEpoch: state.Epoch}}
+			proof := &contracts.NoEffectProof{JournalPhase: "effect_unknown", AOCreateStarted: true, Outcome: "failed", Reconciliation: &contracts.NoEffectReconciliation{AOServerStartedAt: time.Now().UTC().Add(-time.Second), JournalUpdatedAt: time.Now().UTC().Add(-2 * time.Second), RunID: "budget-run", Actor: "operator", Confirmed: true, VerifiedAt: time.Now().UTC(), AOQuery: "GET /api/v1/sessions/inventory", AOInventoryComplete: true, AOClientRequestIDComplete: true, DockerQuery: "docker ps -aq --no-trunc; docker inspect all IDs", DockerInventoryComplete: true, InstanceID: state.InstanceID, InstanceEpoch: state.Epoch}}
 			observe := func(obs contracts.RunnerObservation) *httptest.ResponseRecorder {
 				body, _ := json.Marshal(obs)
 				req := httptest.NewRequest("POST", "/runner/v1/runs/budget-run/observations", bytes.NewReader(body))
@@ -45,6 +45,12 @@ func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
 				t.Fatalf("unknown: %d %s", w.Code, w.Body.String())
 			}
 			switch scenario {
+			case "missing-incarnation":
+				proof.Reconciliation.AOServerStartedAt = time.Time{}
+			case "old-incarnation":
+				proof.Reconciliation.AOServerStartedAt = proof.Reconciliation.JournalUpdatedAt.Add(-time.Second)
+			case "future-incarnation":
+				proof.Reconciliation.AOServerStartedAt = proof.Reconciliation.VerifiedAt.Add(time.Second)
 			case "incomplete-ao":
 				proof.Reconciliation.AOInventoryComplete = false
 			case "container":

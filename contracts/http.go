@@ -320,6 +320,8 @@ type NoEffectReconciliation struct {
 	Actor                     string    `json:"actor"`
 	Confirmed                 bool      `json:"confirmed"`
 	VerifiedAt                time.Time `json:"verified_at"`
+	AOServerStartedAt         time.Time `json:"ao_server_started_at"`
+	JournalUpdatedAt          time.Time `json:"journal_updated_at"`
 	AOQuery                   string    `json:"ao_query"`
 	AOInventoryComplete       bool      `json:"ao_inventory_complete"`
 	AOClientRequestIDComplete bool      `json:"ao_client_request_id_complete"`

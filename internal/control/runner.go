@@ -482,12 +482,14 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		if reconciled {
 			evidence := proof.Reconciliation
 			_, offset := evidence.VerifiedAt.Zone()
+			_, startOffset := evidence.AOServerStartedAt.Zone()
+			_, journalOffset := evidence.JournalUpdatedAt.Zone()
 			instance, instanceErr := GetInstanceState(r.Context(), tx)
 			if instanceErr != nil {
 				writeError(w, instanceErr)
 				return
 			}
-			if status != "uncertain" || proof.JournalPhase != "effect_unknown" || !proof.AOCreateStarted || proof.Outcome != "failed" || evidence.RunID != runID || strings.TrimSpace(evidence.Actor) == "" || len(evidence.Actor) > 200 || strings.ContainsAny(evidence.Actor, "\r\n") || !evidence.Confirmed || evidence.VerifiedAt.IsZero() || offset != 0 || evidence.VerifiedAt.After(time.Now().UTC().Add(5*time.Minute)) || evidence.AOQuery != "GET /api/v1/sessions/inventory" || !evidence.AOInventoryComplete || !evidence.AOClientRequestIDComplete || evidence.AOMatches != 0 || evidence.DockerQuery != "docker ps -aq --no-trunc; docker inspect all IDs" || !evidence.DockerInventoryComplete || evidence.DockerRuntimeCount != 0 || evidence.InstanceID != instance.InstanceID || evidence.InstanceEpoch != instance.Epoch {
+			if evidence.AOServerStartedAt.IsZero() || startOffset != 0 || evidence.JournalUpdatedAt.IsZero() || journalOffset != 0 || !evidence.AOServerStartedAt.After(evidence.JournalUpdatedAt) || evidence.AOServerStartedAt.After(evidence.VerifiedAt) || evidence.AOServerStartedAt.After(time.Now().UTC()) || status != "uncertain" || proof.JournalPhase != "effect_unknown" || !proof.AOCreateStarted || proof.Outcome != "failed" || evidence.RunID != runID || strings.TrimSpace(evidence.Actor) == "" || len(evidence.Actor) > 200 || strings.ContainsAny(evidence.Actor, "\r\n") || !evidence.Confirmed || evidence.VerifiedAt.IsZero() || offset != 0 || evidence.VerifiedAt.After(time.Now().UTC().Add(5*time.Minute)) || evidence.AOQuery != "GET /api/v1/sessions/inventory" || !evidence.AOInventoryComplete || !evidence.AOClientRequestIDComplete || evidence.AOMatches != 0 || evidence.DockerQuery != "docker ps -aq --no-trunc; docker inspect all IDs" || !evidence.DockerInventoryComplete || evidence.DockerRuntimeCount != 0 || evidence.InstanceID != instance.InstanceID || evidence.InstanceEpoch != instance.Epoch {
 				writeError(w, apiError(409, "no_effect_unproven", "explicit reconciliation requires complete AO and Docker absence proof under the current instance fence", nil))
 				return
 			}

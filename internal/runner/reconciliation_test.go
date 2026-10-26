@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ronigooja/Cylo/contracts"
 	"github.com/ronigooja/Cylo/internal/agents/ao"
@@ -72,7 +73,7 @@ func prepareReconciliation(t *testing.T) (*Engine, *fakeControl, *reconciliation
 	if err := e.Journal.SetInstance(ctx, claim.RunID, claim.AttemptID, claim.Fence, "instance", 1); err != nil {
 		t.Fatal(err)
 	}
-	return e, c, &reconciliationInventory{inventory: ao.SessionInventory{Complete: true, ClientRequestIDComplete: true}}, &reconciliationDocker{}
+	return e, c, &reconciliationInventory{inventory: ao.SessionInventory{Complete: true, ClientRequestIDComplete: true, ServerStartedAt: time.Now().UTC()}}, &reconciliationDocker{}
 }
 func TestExplicitReconciliationReplaysExactDurableReceipt(t *testing.T) {
 	e, c, inventory, docker := prepareReconciliation(t)
@@ -108,13 +109,21 @@ func TestExplicitReconciliationReplaysExactDurableReceipt(t *testing.T) {
 	}
 }
 func TestExplicitReconciliationFailsClosed(t *testing.T) {
-	for _, name := range []string{"confirmation", "actor", "incomplete", "legacy-session", "matched-session", "container", "docker-error", "epoch", "bound", "wrong-phase"} {
+	for _, name := range []string{"confirmation", "actor", "incomplete", "legacy-session", "matched-session", "container", "docker-error", "epoch", "bound", "wrong-phase", "missing-incarnation", "old-incarnation", "future-incarnation", "nonutc-incarnation"} {
 		t.Run(name, func(t *testing.T) {
 			e, c, inventory, docker := prepareReconciliation(t)
 			ctx := context.Background()
 			actor := "operator"
 			confirm := true
 			switch name {
+			case "missing-incarnation":
+				inventory.inventory.ServerStartedAt = time.Time{}
+			case "old-incarnation":
+				inventory.inventory.ServerStartedAt = time.Now().UTC().Add(-time.Hour)
+			case "future-incarnation":
+				inventory.inventory.ServerStartedAt = time.Now().UTC().Add(time.Hour)
+			case "nonutc-incarnation":
+				inventory.inventory.ServerStartedAt = time.Now().In(time.FixedZone("offset", 3600))
 			case "confirmation":
 				confirm = false
 			case "actor":
@@ -143,13 +152,20 @@ func TestExplicitReconciliationFailsClosed(t *testing.T) {
 			if err := e.ReconcileNoEffect(ctx, []string{"run-1"}, actor, confirm, inventory, docker); err == nil {
 				t.Fatal("unsafe reconciliation accepted")
 			}
-			if name == "container" {
-				var body string
-				if err := e.Journal.db.QueryRow(`SELECT result_json FROM journal_reconciliations WHERE run_id='run-1'`).Scan(&body); err != nil {
+			if name == "container" || name == "epoch" || name == "old-incarnation" {
+				var body, actor string
+				if err := e.Journal.db.QueryRow(`SELECT result_json,actor FROM journal_reconciliations WHERE run_id='run-1'`).Scan(&body, &actor); err != nil {
 					t.Fatal(err)
 				}
-				if !strings.Contains(body, "refused") || !strings.Contains(body, "container exists") || !strings.Contains(body, "operator") && !strings.Contains(body, "docker_inventory") {
-					t.Fatalf("missing durable refused inventory evidence: %s", body)
+				var audit map[string]any
+				if err := json.Unmarshal([]byte(body), &audit); err != nil {
+					t.Fatal(err)
+				}
+				if audit["outcome"] != "refused" || actor != "operator" || audit["attempt_id"] != "attempt-1" || audit["fence"] != float64(7) || audit["instance_id"] != "instance" || audit["instance_epoch"] != float64(1) || audit["journal_updated_at"] == nil {
+					t.Fatalf("missing durable refused identity evidence: %s", body)
+				}
+				if name == "container" && !strings.Contains(body, "container exists") {
+					t.Fatalf("missing refused container result: %s", body)
 				}
 			}
 			if len(c.observations) != 0 || e.AO.(*fakeAO).createN != 0 {

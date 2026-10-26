@@ -67,6 +67,11 @@ func (e *Engine) reconcileNoEffect(ctx context.Context, id, actor string, invent
 	if !ok {
 		return errors.New("run has no durable journal claim")
 	}
+	audit["attempt_id"] = entry.Claim.AttemptID
+	audit["fence"] = entry.Claim.Fence
+	audit["instance_id"] = entry.InstanceID
+	audit["instance_epoch"] = entry.Epoch
+	audit["journal_updated_at"] = entry.Updated
 	if err := e.checkInstance(ctx, entry.Claim, false); err != nil {
 		return err
 	}
@@ -110,7 +115,13 @@ func (e *Engine) reconcileNoEffect(ctx context.Context, id, actor string, invent
 	if err != nil {
 		return err
 	}
-	audit["ao_result"] = map[string]any{"complete": sessions.Complete, "client_request_id_complete": sessions.ClientRequestIDComplete, "session_count": len(sessions.Sessions), "matches": 0}
+	audit["ao_result"] = map[string]any{"complete": sessions.Complete, "client_request_id_complete": sessions.ClientRequestIDComplete, "session_count": len(sessions.Sessions), "matches": 0, "server_started_at": sessions.ServerStartedAt}
+	// A process incarnation newer than the unknown journal write rules out an
+	// original HTTP request delayed before AO's handler or inventory gate.
+	_, startOffset := sessions.ServerStartedAt.Zone()
+	if sessions.ServerStartedAt.IsZero() || startOffset != 0 || sessions.ServerStartedAt.After(time.Now().UTC()) || !sessions.ServerStartedAt.After(entry.Updated) {
+		return errors.New("AO must restart after the journaled unknown create before absence reconciliation")
+	}
 	if !sessions.Complete || !sessions.ClientRequestIDComplete {
 		return errors.New("AO inventory cannot prove complete clientRequestId absence")
 	}
@@ -132,7 +143,7 @@ func (e *Engine) reconcileNoEffect(ctx context.Context, id, actor string, invent
 	audit["docker_result"] = "complete_no_runtime"
 	audit["stage"] = "terminal_receipt"
 	proof := &contracts.NoEffectProof{JournalPhase: "effect_unknown", AOCreateStarted: true, Outcome: "failed", Reconciliation: &contracts.NoEffectReconciliation{
-		RunID: id, Actor: actor, Confirmed: true, VerifiedAt: time.Now().UTC(), AOQuery: "GET /api/v1/sessions/inventory", AOInventoryComplete: true, AOClientRequestIDComplete: true,
+		AOServerStartedAt: sessions.ServerStartedAt, JournalUpdatedAt: entry.Updated, RunID: id, Actor: actor, Confirmed: true, VerifiedAt: time.Now().UTC(), AOQuery: "GET /api/v1/sessions/inventory", AOInventoryComplete: true, AOClientRequestIDComplete: true,
 		DockerQuery: "docker ps -aq --no-trunc; docker inspect all IDs", DockerInventoryComplete: true, InstanceID: entry.InstanceID, InstanceEpoch: entry.Epoch,
 	}}
 	// Persist the complete immutable receipt before changing phase or sending it.
