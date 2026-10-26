@@ -48,9 +48,11 @@ mkdir -p "$build_dir/bin" "$release_stage/bin"
 chmod 0755 "$release_stage"
 
 export CGO_ENABLED=0 GOOS=linux GOARCH="$build_goarch"
+"$go_bin" build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_dir/bin/cylo" ./cmd/cylo
 "$go_bin" build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_dir/bin/cylo-server" ./cmd/cylo-server
 "$go_bin" build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_dir/bin/cylo-runner" ./cmd/cylo-runner
 "$go_bin" build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_dir/bin/cylo-secret-entrypoint" ./deploy/linux/secret-entrypoint.go
+install -m 0755 "$build_dir/bin/cylo" "$release_stage/bin/cylo"
 install -m 0755 "$build_dir/bin/cylo-runner" "$release_stage/bin/cylo-runner"
 install -m 0755 "$build_dir/bin/cylo-secret-entrypoint" "$release_stage/bin/cylo-secret-entrypoint"
 cp -a "$repo_root/deploy/linux" "$release_stage/deploy-linux"

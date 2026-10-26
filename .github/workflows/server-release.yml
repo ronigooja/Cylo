@@ -61,6 +61,6 @@ jobs:
         with:
           name: server-release-${{ github.sha }}
           path: ${{ runner.temp }}/cylo-release/artifacts
-          retention-days: 3
+          retention-days: 7
           if-no-files-found: error
           compression-level: 0

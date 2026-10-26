@@ -75,7 +75,7 @@ func InitializeInstanceAuth(ctx context.Context, store *storage.Store, configure
 		key := configured
 		generated := false
 		if key == "" {
-			return "", false, errors.New("instance key is not initialized; run init-key with an explicit secure output destination")
+			return "", false, errors.New("instance key is not initialized; run cylo key init with an explicit secure output destination")
 		}
 		digest, e := instanceKeyHash(key)
 		if e != nil {

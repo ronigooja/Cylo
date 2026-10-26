@@ -150,8 +150,11 @@ keys, and complete installation links are never included in status output.
 The canonical AO provider variables are `AO_CODEX_EXTERNAL_BASE_URL`,
 `AO_CODEX_EXTERNAL_API_KEY_FILE`, and `AO_CODEX_EXTERNAL_MODEL`. The default
 key file is `/etc/cylo/runner-secrets/cliproxyapi-api-key` with mode `0600`.
-The OpenCode example uses these same AO daemon variables; `AO_OPENCODE_EXTERNAL_*`
-is not a supported configuration namespace.
+These variables configure the patched AO Codex route only. The preserved
+OpenCode example may name the same endpoint and model, but the current AO patch
+does not implement external OpenCode configuration. `AO_OPENCODE_EXTERNAL_*` is
+not a supported AO namespace. An OpenCode container image must remain an
+OpenCode image setting; it must not be supplied as `AO_CODEX_CONTAINER_IMAGE`.
 
 Service reloads are performed by the CLI through the detected deployment
 manager. For systemd it runs `daemon-reload` followed by
@@ -160,10 +163,36 @@ project with `docker compose up -d --no-build`. A failed command is returned to
 the caller so setup can retain the previous configuration and report a
 rollback-safe failure.
 
-Install the host `qrencode` utility when terminal QR rendering is required.
 Run `cylo` without arguments for the interactive operator menu. The key
 initialization and rotation entries ask for the server URL, then display the
-key and `cylo://connect` installation link once. If `qrencode` is installed,
-the same link is rendered as a terminal QR code for direct App scanning;
-otherwise the complete link remains available for manual import. Status never
+key and `cylo://connect` installation link once. The built-in QR encoder
+renders the same link in the terminal for App scanning; no `qrencode` host
+dependency is required. Keep this terminal private because the QR grants access. Status never
 prints keys, tokens, or installation links.
+
+## Operator release installation
+
+Linux checks build the `cylo` operator CLI for Linux `amd64` and `arm64` on
+GitHub-hosted runners. Each `operator-linux-<arch>-<revision>` artifact contains
+a tarball with `bin/cylo`, `deploy-linux/install-cli.sh`, `SOURCE_REVISION`, and
+`SHA256SUMS`. Select the host architecture, extract into a new immutable release
+directory, and verify `sha256sum -c SHA256SUMS` from that directory. This operator
+archive does not contain the server images or a complete service deployment.
+
+For a complete source-built release, `deploy/linux/build-release.sh RELEASE_TAG`
+also installs `bin/cylo` beside the runner in `/opt/cylo/releases/RELEASE_TAG`.
+Builds must run in CI or an authorized worker, not on the controller. After
+reviewing the release, install its CLI on the standard host PATH with:
+
+```sh
+sudo bash /opt/cylo/releases/RELEASE_TAG/deploy-linux/install-cli.sh /opt/cylo/releases/RELEASE_TAG
+cylo
+```
+
+The installer atomically selects the immutable CLI through `/usr/local/bin/cylo`
+and refuses to overwrite an existing regular file. It does not start services
+or alter external CLIProxyAPI. Run `cylo status` to inspect deployment metadata
+before setup or provider changes. The release staging and PATH tests use fake
+build tools and temporary paths; Go unit/integration/race checks, actual binary
+builds, Apple builds, and physical-device scanning have separate evidence.
+No new deployment or physical-device acceptance is implied by source changes.

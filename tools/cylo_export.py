@@ -77,7 +77,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--server", required=True)
     parser.add_argument("--key-file", type=Path, required=True)
-    parser.add_argument("--key-format", choices=("json", "plain"), default="json", help="json is the init-key/rotate-key export format")
+    parser.add_argument("--key-format", choices=("json", "plain"), default="json", help="json is the cylo key init/rotate export format")
     parser.add_argument("--output", type=Path, required=True, help="new private archive file; never overwrite")
     parser.add_argument("--scope", choices=("personal", "workspace"), default="workspace")
     args = parser.parse_args()

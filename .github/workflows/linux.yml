@@ -6,6 +6,7 @@ on:
     branches: [main, 'codex/**']
     paths:
       - '**/*.go'
+      - 'deploy/linux/*.sh'
       - 'tools/cylo_export.py'
       - 'tools/cylo_destroy.py'
       - 'tools/test_instance_lifecycle_cli.py'
@@ -15,6 +16,7 @@ on:
   pull_request:
     paths:
       - '**/*.go'
+      - 'deploy/linux/*.sh'
       - 'tools/cylo_export.py'
       - 'tools/cylo_destroy.py'
       - 'tools/test_instance_lifecycle_cli.py'
@@ -55,6 +57,7 @@ jobs:
         run: |
           set +e
           set -uo pipefail
+          printf '%s\n' 'go test ./...' > "$RUNNER_TEMP/cylo-linux/logs/go-tests.command"
           go test ./... 2>&1 | tee "$RUNNER_TEMP/cylo-linux/logs/go-tests.log"
           status=$?
           echo "$status" > "$RUNNER_TEMP/cylo-linux/logs/go-tests.exit"
@@ -64,10 +67,24 @@ jobs:
         run: |
           set +e
           set -uo pipefail
-          go test -race ./internal/control ./cmd/cylo-server 2>&1 | tee "$RUNNER_TEMP/cylo-linux/logs/auth-race.log"
+          printf '%s\n' 'go test -race ./internal/control ./cmd/cylo-server ./internal/ops ./cmd/cylo' > "$RUNNER_TEMP/cylo-linux/logs/auth-race.command"
+          go test -race ./internal/control ./cmd/cylo-server ./internal/ops ./cmd/cylo 2>&1 | tee "$RUNNER_TEMP/cylo-linux/logs/auth-race.log"
           status=$?
           echo "$status" > "$RUNNER_TEMP/cylo-linux/logs/auth-race.exit"
           exit "$status"
+      - name: Verify immutable release and CLI installation
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          for script in deploy/linux/test-build-release.sh deploy/linux/test-install-cli.sh; do
+            name="$(basename "$script" .sh)"
+            printf 'bash %s\n' "$script" > "$RUNNER_TEMP/cylo-linux/logs/$name.command"
+            bash "$script" 2>&1 | tee "$RUNNER_TEMP/cylo-linux/logs/$name.log"
+            status=$?
+            echo "$status" > "$RUNNER_TEMP/cylo-linux/logs/$name.exit"
+            test "$status" -eq 0 || exit "$status"
+          done
       - name: Upload verification logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -76,3 +93,60 @@ jobs:
           path: ${{ runner.temp }}/cylo-linux/logs
           retention-days: 7
           if-no-files-found: error
+
+  operator-artifacts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build operator binary
+        shell: bash
+        env:
+          GOARCH: ${{ matrix.arch }}
+          GOOS: linux
+          CGO_ENABLED: '0'
+        run: |
+          set -uo pipefail
+          output="$RUNNER_TEMP/cylo-operator"
+          mkdir -p "$output/logs" "$output/artifacts/bin" "$output/artifacts/deploy-linux"
+          {
+            git rev-parse HEAD
+            git status --short
+            go version
+            uname -a
+            printf 'GOOS=%s GOARCH=%s CGO_ENABLED=%s\n' "$GOOS" "$GOARCH" "$CGO_ENABLED"
+          } > "$output/logs/environment.txt"
+          printf '%s\n' "CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH go build -trimpath -buildvcs=false -ldflags='-s -w' -o bin/cylo ./cmd/cylo" > "$output/logs/build.command"
+          go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$output/artifacts/bin/cylo" ./cmd/cylo 2>&1 | tee "$output/logs/build.log"
+          status=$?
+          echo "$status" > "$output/logs/build.exit"
+          test "$status" -eq 0 || exit "$status"
+          cp deploy/linux/install-cli.sh "$output/artifacts/deploy-linux/"
+          git rev-parse HEAD > "$output/artifacts/SOURCE_REVISION"
+          cd "$output/artifacts"
+          sha256sum bin/cylo deploy-linux/install-cli.sh SOURCE_REVISION > SHA256SUMS
+          tar -czf "$output/cylo-linux-$GOARCH.tar.gz" bin deploy-linux SOURCE_REVISION SHA256SUMS
+      - name: Upload operator build logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: operator-linux-${{ matrix.arch }}-logs-${{ github.sha }}
+          path: ${{ runner.temp }}/cylo-operator/logs
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload operator release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: operator-linux-${{ matrix.arch }}-${{ github.sha }}
+          path: ${{ runner.temp }}/cylo-operator/cylo-linux-${{ matrix.arch }}.tar.gz
+          retention-days: 7
+          if-no-files-found: error
+          compression-level: 0

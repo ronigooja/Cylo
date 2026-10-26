@@ -105,6 +105,8 @@ if find "$release_root" -maxdepth 1 -name '.retry-tag.staging.*' -print -quit | 
   exit 1
 fi
 run_release retry-tag "$release_root" "$build_root" "$tmp_root/docker-retry.log"
+[[ -x "$release_root/retry-tag/bin/cylo" ]]
+[[ "$(cat "$release_root/retry-tag/bin/cylo")" == "synthetic executable: cylo" ]]
 [[ -x "$release_root/retry-tag/bin/cylo-runner" ]]
 [[ -x "$release_root/retry-tag/bin/cylo-secret-entrypoint" ]]
 [[ -f "$release_root/retry-tag/deploy-linux/build-release.sh" ]]

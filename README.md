@@ -10,6 +10,9 @@ Fresh deployments use one shared instance key. Native clients connect with a use
 
 The recorded local installation is described in [local deployment operations](docs/local-deployment.md).
 
-Build the `cylo` operator binary and run it without arguments to open the
-interactive maintenance menu; it also accepts explicit `setup`, provider,
-key, and `status` commands for automation.
+Install the Linux `cylo` operator CLI from a CI artifact or immutable release
+using the [operator installation instructions](docs/local-deployment.md#operator-release-installation).
+Run `cylo` for the interactive maintenance menu; explicit `setup`, provider,
+key, and `status` commands support automation. Key creation and rotation display
+a built-in terminal QR for native App connection. The supported external AO
+provider route is Codex; an OpenCode example does not establish runtime support.
