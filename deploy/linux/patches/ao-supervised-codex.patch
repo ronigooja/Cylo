@@ -503,10 +503,10 @@ index 000000000..30318cb2a
 +}
 diff --git a/backend/internal/adapters/chatdriver/codexappserver/container.go b/backend/internal/adapters/chatdriver/codexappserver/container.go
 new file mode 100644
-index 000000000..a69c3567a
+index 000000000..bcb0d684b
 --- /dev/null
 +++ b/backend/internal/adapters/chatdriver/codexappserver/container.go
-@@ -0,0 +1,383 @@
+@@ -0,0 +1,384 @@
 +package codexappserver
 +
 +import (
@@ -658,9 +658,10 @@ index 000000000..a69c3567a
 +		<-stderrDone
 +		cleanupErr := cleanupStartingContainer(docker, cidfile, sessionID, done)
 +		cancelProcess()
-+		if cleanupErr == nil {
-+			_ = broker.Close()
-+			return nil, startupError(err, strings.ReplaceAll(stderrCapture.String(), providerKey, "[redacted]"))
++		if cleanupErr == nil && broker.Close() == nil {
++			// Return only the stable proof marker; startup stderr may contain
++			// credentials and is unnecessary to the rejection protocol.
++			return nil, ports.ErrChatStartupClean
 +		}
 +		// A failed creation has no process handle for AO to retry through. Close
 +		// the credential-bearing broker even if exact container cleanup cannot be
@@ -892,16 +893,17 @@ index 000000000..a69c3567a
 +}
 diff --git a/backend/internal/adapters/chatdriver/codexappserver/container_lifecycle_linux_test.go b/backend/internal/adapters/chatdriver/codexappserver/container_lifecycle_linux_test.go
 new file mode 100644
-index 000000000..48ae12af2
+index 000000000..05717e7b4
 --- /dev/null
 +++ b/backend/internal/adapters/chatdriver/codexappserver/container_lifecycle_linux_test.go
-@@ -0,0 +1,212 @@
+@@ -0,0 +1,213 @@
 +//go:build linux
 +
 +package codexappserver
 +
 +import (
 +	"context"
++	"errors"
 +	"fmt"
 +	"os"
 +	"path/filepath"
@@ -975,8 +977,8 @@ index 000000000..48ae12af2
 +	cancel()
 +	select {
 +	case err := <-result:
-+		if err == nil {
-+			t.Fatal("startup cancellation unexpectedly returned a live container")
++		if !errors.Is(err, ports.ErrChatStartupClean) {
++			t.Fatalf("verified startup cleanup did not return proof marker: %v", err)
 +		}
 +	case <-time.After(5 * time.Second):
 +		t.Fatal("startup cancellation did not return")
@@ -1469,6 +1471,28 @@ index 7a705a53c..b18cf9694 100644
  }
  
  // CanHibernate reads Codex's live exec registry, since a settled turn can leave
+diff --git a/backend/internal/adapters/chatdriver/codexappserver/deployment_socket_test.go b/backend/internal/adapters/chatdriver/codexappserver/deployment_socket_test.go
+new file mode 100644
+index 000000000..eea923352
+--- /dev/null
++++ b/backend/internal/adapters/chatdriver/codexappserver/deployment_socket_test.go
+@@ -0,0 +1,16 @@
++package codexappserver
++
++import (
++    "path/filepath"
++    "strings"
++    "testing"
++)
++
++func TestDeploymentSocketUsesDaemonVisibleRoot(t *testing.T) {
++    root := t.TempDir()
++    broker, err := startProviderBroker("https://example.invalid/v1", "synthetic-key", "synthetic-model", root)
++    if err != nil { t.Fatal(err) }
++    defer broker.Close()
++    relative, err := filepath.Rel(root, broker.SocketPath())
++    if err != nil || strings.HasPrefix(relative, "..") { t.Fatal("socket escaped daemon-visible root") }
++}
 diff --git a/backend/internal/adapters/chatdriver/codexappserver/driver.go b/backend/internal/adapters/chatdriver/codexappserver/driver.go
 index 84dfa7c7c..b5c6f9dba 100644
 --- a/backend/internal/adapters/chatdriver/codexappserver/driver.go
@@ -1656,7 +1680,7 @@ index 7eefe6c79..ed3bb5649 100644
  		t.Fatalf("read-only turn settings = %#v", params)
 diff --git a/backend/internal/adapters/chatdriver/codexappserver/provider_broker.go b/backend/internal/adapters/chatdriver/codexappserver/provider_broker.go
 new file mode 100644
-index 000000000..a88922439
+index 000000000..42ed5a386
 --- /dev/null
 +++ b/backend/internal/adapters/chatdriver/codexappserver/provider_broker.go
 @@ -0,0 +1,243 @@
@@ -2165,10 +2189,18 @@ index e17fd4481..0b82859d1 100644
  // provider through the session service's claim, which re-reads the PR and
  // records it on the session. Claiming a PR the session already owns only
 diff --git a/backend/internal/httpd/controllers/dto.go b/backend/internal/httpd/controllers/dto.go
-index 7f89759aa..23a2d4797 100644
+index 7f89759aa..436032058 100644
 --- a/backend/internal/httpd/controllers/dto.go
 +++ b/backend/internal/httpd/controllers/dto.go
-@@ -1151,16 +1151,26 @@ type InterfaceTransitionNoticeAckResponse struct {
+@@ -445,6 +445,7 @@ type WorkspaceTreeEntry struct {
+ // prs is a list. The embedded domain.Session.Metadata and domain.Session.PRs
+ // fields are json:"-"; these curated fields are what serialize.
+ type SessionView struct {
++	ClientRequestID string `json:"clientRequestId,omitempty"`
+ 	domain.Session
+ 	Branch string `json:"branch,omitempty"`
+ 	// TerminalGeneration is an opaque renderer fence. A restarted controller
+@@ -1151,16 +1152,26 @@ type InterfaceTransitionNoticeAckResponse struct {
  // DeleteArtifacts empties the session's artifact directory once it is
  // terminated. Only the archive dialog sets it; the CLI and the reaper never do.
  type KillSessionRequest struct {
@@ -2201,11 +2233,36 @@ index 7f89759aa..23a2d4797 100644
  }
  
  // RollbackSessionResponse is the body of POST /api/v1/sessions/{sessionId}/rollback.
+@@ -3805,3 +3816,16 @@ type SwitchSessionAgentAccountRequest struct {
+ 	// account's limit. Otherwise the move waits for the turn to finish.
+ 	StopTurn bool `json:"stopTurn,omitempty"`
+ }
++
++// SessionInventoryResponse is the unfiltered durable identity inventory.
++type SessionInventoryResponse struct {
++	ServerStartedAt         time.Time         `json:"serverStartedAt"`
++	Sessions                []SessionIdentity `json:"sessions"`
++	Complete                bool              `json:"complete"`
++	ClientRequestIDComplete bool              `json:"clientRequestIdComplete"`
++}
++type SessionIdentity struct {
++	ID              domain.SessionID `json:"id"`
++	ProjectID       domain.ProjectID `json:"projectId"`
++	ClientRequestID string           `json:"clientRequestId"`
++}
 diff --git a/backend/internal/httpd/controllers/sessions.go b/backend/internal/httpd/controllers/sessions.go
-index 96fdfcef2..a6e1ea00c 100644
+index 96fdfcef2..2000a372f 100644
 --- a/backend/internal/httpd/controllers/sessions.go
 +++ b/backend/internal/httpd/controllers/sessions.go
-@@ -2065,11 +2065,28 @@ func (c *SessionsController) kill(w http.ResponseWriter, r *http.Request) {
+@@ -207,6 +207,7 @@ type SessionsController struct {
+ // Register mounts the session routes on the supplied router.
+ func (c *SessionsController) Register(r chi.Router) {
+ 	r.Get("/sessions", c.list)
++	r.Get("/sessions/inventory", c.inventory)
+ 	r.Post("/sessions", c.spawn)
+ 	r.Post("/sessions/cleanup", c.cleanup)
+ 	r.Get("/sessions/{sessionId}", c.get)
+@@ -2065,11 +2066,28 @@ func (c *SessionsController) kill(w http.ResponseWriter, r *http.Request) {
  		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_JSON", "Invalid JSON body", nil)
  		return
  	}
@@ -2235,7 +2292,7 @@ index 96fdfcef2..a6e1ea00c 100644
  	// The session is already archived here, so a failed delete must not fail
  	// the request: the caller would roll back an archive that happened. The
  	// response reports it instead and the files stay on disk.
-@@ -2081,7 +2098,15 @@ func (c *SessionsController) kill(w http.ResponseWriter, r *http.Request) {
+@@ -2081,7 +2099,15 @@ func (c *SessionsController) kill(w http.ResponseWriter, r *http.Request) {
  			artifactsDeleted = true
  		}
  	}
@@ -2252,8 +2309,45 @@ index 96fdfcef2..a6e1ea00c 100644
  }
  
  // rollback undoes a partially-completed spawn: if the session row is still in
+@@ -2836,6 +2862,7 @@ func sessionView(r *http.Request, s domain.Session) SessionView {
+ 	terminalGeneration := s.Metadata.RuntimeLaunchID
+ 	view := SessionView{
+ 		Session:            s,
++		ClientRequestID:    s.ClientRequestID,
+ 		Branch:             s.Metadata.Branch,
+ 		TerminalGeneration: terminalGeneration,
+ 		PreviewURL:         s.Metadata.PreviewURL,
+@@ -3185,3 +3212,28 @@ func workspaceSnapshotQuery(query url.Values) (sessionsvc.WorkspaceSelectionRevi
+ func workspaceSnapshotRequested(query url.Values) bool {
+ 	return query.Get("snapshot") == "true" || query.Has("branch") || query.Has("prNumber") || query.Has("sourceUrl") || query.Has("expectedTipSha") || query.Has("expectedBaseSha") || query.Has("commitShas")
+ }
++
++// inventory intentionally bypasses the display list, which hides preparation
++// rows and enriches status. Every durable row participates in absence proof.
++func (c *SessionsController) inventory(w http.ResponseWriter, r *http.Request) {
++	svc, ok := c.Svc.(interface {
++		SessionInventory(context.Context) ([]domain.SessionRecord, time.Time, error)
++	})
++	if !ok {
++		apispec.NotImplemented(w, r, "GET", "/api/v1/sessions/inventory")
++		return
++	}
++	records, startedAt, err := svc.SessionInventory(r.Context())
++	if err != nil {
++		envelope.WriteError(w, r, err)
++		return
++	}
++	out := SessionInventoryResponse{ServerStartedAt: startedAt, Sessions: make([]SessionIdentity, 0, len(records)), Complete: true, ClientRequestIDComplete: true}
++	for _, rec := range records {
++		out.Sessions = append(out.Sessions, SessionIdentity{ID: rec.ID, ProjectID: rec.ProjectID, ClientRequestID: rec.ClientRequestID})
++		if strings.TrimSpace(rec.ClientRequestID) == "" {
++			out.ClientRequestIDComplete = false
++		}
++	}
++	envelope.WriteJSON(w, http.StatusOK, out)
++}
 diff --git a/backend/internal/httpd/controllers/sessions_test.go b/backend/internal/httpd/controllers/sessions_test.go
-index 566a2021d..a29ecd77c 100644
+index 566a2021d..8ac7ff2c8 100644
 --- a/backend/internal/httpd/controllers/sessions_test.go
 +++ b/backend/internal/httpd/controllers/sessions_test.go
 @@ -5117,6 +5117,22 @@ func TestSessionsAPI_KillKeepsArtifactsByDefault(t *testing.T) {
@@ -2279,11 +2373,66 @@ index 566a2021d..a29ecd77c 100644
  func TestSessionsAPI_KillDeletesArtifactsWhenAsked(t *testing.T) {
  	svc := newFakeSessionService()
  	srv := newSessionTestServer(t, svc)
+@@ -5235,3 +5251,43 @@ func TestSessionsAPI_SourceSelectorCannotFallBackToLiveFiles(t *testing.T) {
+ 		})
+ 	}
+ }
++
++func (f *fakeSessionService) SessionInventory(context.Context) ([]domain.SessionRecord, time.Time, error) {
++	out := make([]domain.SessionRecord, 0, len(f.sessions))
++	for _, s := range f.sessions {
++		out = append(out, s.SessionRecord)
++	}
++	return out, time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC), nil
++}
++
++func TestSessionIdentityInventoryIncludesIncompleteAndLegacyRows(t *testing.T) {
++	for _, tc := range []struct {
++		name         string
++		rows         []domain.SessionRecord
++		wantIdentity bool
++	}{
++		{"empty", nil, true},
++		{"all-identified", []domain.SessionRecord{{ID: "seed", ClientRequestID: "run", IsTaskPreparation: true}, {ID: "stopped", ClientRequestID: "old", IsTerminated: true}}, true},
++		{"legacy", []domain.SessionRecord{{ID: "legacy"}, {ID: "known", ClientRequestID: "run"}}, false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			svc := newFakeSessionService()
++			svc.sessions = make(map[domain.SessionID]domain.Session)
++			for _, row := range tc.rows {
++				row.Metadata.Prompt = "private fixture prompt"
++				row.ClientRequestHash = "private fixture hash"
++				svc.sessions[row.ID] = domain.Session{SessionRecord: row}
++			}
++			srv := newSessionTestServer(t, svc)
++			body, status, _ := doRequest(t, srv, http.MethodGet, "/api/v1/sessions/inventory?project=ignored&active=true", "")
++			var got controllers.SessionInventoryResponse
++			mustJSON(t, body, &got)
++			if status != http.StatusOK || !got.Complete || got.ServerStartedAt.IsZero() || got.ClientRequestIDComplete != tc.wantIdentity || len(got.Sessions) != len(tc.rows) || got.Sessions == nil {
++				t.Fatalf("status=%d inventory=%+v", status, got)
++			}
++			if strings.Contains(string(body), "private fixture") {
++				t.Fatalf("private inventory fields leaked: %s", body)
++			}
++		})
++	}
++}
 diff --git a/backend/internal/ports/chat.go b/backend/internal/ports/chat.go
-index 92aec7035..da1eeed80 100644
+index 92aec7035..8918efe90 100644
 --- a/backend/internal/ports/chat.go
 +++ b/backend/internal/ports/chat.go
-@@ -1222,6 +1222,30 @@ type ChatProviderTerminator interface {
+@@ -31,6 +31,10 @@ var (
+ 	// ErrChatDriverUnavailable means the driver exists but its binary or
+ 	// bridge is missing.
+ 	ErrChatDriverUnavailable = errors.New("chat driver unavailable")
++	// ErrChatStartupClean proves a failed startup left no provider process or
++	// container and closed its credential broker. It says nothing about rows
++	// or workspaces; the manager must verify those separately.
++	ErrChatStartupClean = errors.New("chat startup failed with verified runtime cleanup")
+ 	// ErrChatDriverIncompatible means the installed provider speaks a protocol
+ 	// version AO does not support.
+ 	ErrChatDriverIncompatible = errors.New("chat driver incompatible")
+@@ -1222,6 +1226,30 @@ type ChatProviderTerminator interface {
  	Terminate() error
  }
  
@@ -2643,10 +2792,21 @@ index 000000000..777f2abc1
 +	}
 +}
 diff --git a/backend/internal/service/session/service.go b/backend/internal/service/session/service.go
-index de040c1cf..c787113fe 100644
+index de040c1cf..73fe3b25a 100644
 --- a/backend/internal/service/session/service.go
 +++ b/backend/internal/service/session/service.go
-@@ -184,6 +184,11 @@ type outputTypeReconciler interface {
+@@ -25,6 +25,10 @@ import (
+ 
+ const maxDisplayNameLen = 100
+ 
++// Captured once per AO process, independently of injected test clocks or service
++// reconstruction. A newer incarnation fences delivery of an old create request.
++var sessionServerStartedAt = time.Now().UTC()
++
+ // Store is the read-only persistence surface needed to assemble controller-facing session read models.
+ type Store interface {
+ 	GetSessionCleanupFacts(ctx context.Context, id domain.SessionID) (domain.SessionCleanupRecord, bool, error)
+@@ -184,10 +188,18 @@ type outputTypeReconciler interface {
  	ReconcileSessionOutputType(ctx context.Context, id domain.SessionID) error
  }
  
@@ -2658,7 +2818,14 @@ index de040c1cf..c787113fe 100644
  // Service is the controller-facing session service. It delegates command-side
  // session operations to the internal sessionmanager.Manager and owns read-model
  // assembly, including user-facing display status derivation.
-@@ -199,6 +204,7 @@ type Service struct {
+ type Service struct {
++	// inventoryGate serializes identity snapshots after every create already
++	// admitted by this service has settled. It does not fence future requests.
++	inventoryGate       sync.RWMutex
+ 	manager             commander
+ 	store               Store
+ 	prClaimer           ports.PRClaimer
+@@ -199,6 +211,7 @@ type Service struct {
  	logger              *slog.Logger
  	backgroundContext   context.Context
  	agentReadiness      ports.AgentReadinessProvider
@@ -2666,7 +2833,16 @@ index de040c1cf..c787113fe 100644
  	runBackground       func(func())
  	orchestratorLocksMu sync.Mutex
  	orchestratorLocks   map[domain.ProjectID]*sync.Mutex
-@@ -380,7 +386,13 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
+@@ -324,6 +337,8 @@ func NewWithDeps(d Deps) *Service {
+ // Spawn creates a session and returns the API-facing read model plus
+ // ephemeral prompt size measurements.
+ func (s *Service) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Session, int, int, error) {
++	s.inventoryGate.RLock()
++	defer s.inventoryGate.RUnlock()
+ 	if rec, found, err := s.replayClientRequest(ctx, cfg.ClientRequestID, cfg.ClientRequestHash); err != nil {
+ 		return domain.Session{}, 0, 0, err
+ 	} else if found {
+@@ -380,7 +395,13 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
  			return domain.Session{}, 0, 0, apierr.Invalid("HARNESS_REQUIRED", "harness is required for a standalone session", nil)
  		}
  	}
@@ -2681,7 +2857,7 @@ index de040c1cf..c787113fe 100644
  		readiness, err := s.agentReadiness.EnsureAgentReadiness(ctx, string(cfg.Harness), domain.AgentReadinessPurposeLaunch)
  		if err != nil {
  			return domain.Session{}, 0, 0, err
-@@ -408,6 +420,13 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
+@@ -408,6 +429,13 @@ func (s *Service) spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
  	return sess, promptBytes, systemPromptBytes, nil
  }
  
@@ -2695,7 +2871,7 @@ index de040c1cf..c787113fe 100644
  // spawnWithTelemetry is the only path from the service into manager.Spawn, so
  // every created session emits ao.session.spawned or ao.session.spawn_failed
  // exactly once. Client-request replays return before reaching it.
-@@ -915,6 +934,20 @@ func (s *Service) RequestKill(ctx context.Context, id domain.SessionID) (session
+@@ -915,6 +943,20 @@ func (s *Service) RequestKill(ctx context.Context, id domain.SessionID) (session
  	return result, toAPIError(err)
  }
  
@@ -2716,7 +2892,7 @@ index de040c1cf..c787113fe 100644
  // artifactDeleter deletes a session's artifact files and version rows. The
  // production implementation is *artifactversions.Capturer.
  type artifactDeleter interface {
-@@ -1427,6 +1460,10 @@ func mapSessionError(err error) error {
+@@ -1427,6 +1469,10 @@ func mapSessionError(err error) error {
  		return apierr.Conflict("SESSION_NOT_RESTORABLE", "Session is not restorable", nil)
  	case errors.Is(err, sessionmanager.ErrTerminated):
  		return apierr.Conflict("SESSION_TERMINATED", "Session is terminated", nil)
@@ -2727,8 +2903,31 @@ index de040c1cf..c787113fe 100644
  	case errors.Is(err, sessionmanager.ErrAgentExited):
  		return apierr.Conflict("AGENT_EXITED",
  			"The agent process exited; relaunch it before sending another message", nil)
+@@ -1571,6 +1617,9 @@ func toSpawnAPIError(err error) error {
+ 	if err == nil {
+ 		return nil
+ 	}
++	if errors.Is(err, sessionmanager.ErrWorkerBootFailed) {
++		return apierr.Conflict("worker_boot_failed", "Worker startup failed; AO verified runtime cleanup and absence of a session", nil)
++	}
+ 	var already *apierr.Error
+ 	if errors.As(err, &already) {
+ 		return already
+@@ -1712,3 +1761,12 @@ func (s *Service) harnessSignals(h domain.AgentHarness) bool {
+ 	}
+ 	return s.signalCapable(h)
+ }
++
++// SessionInventory reads all durable rows without runtime probes, enrichment,
++// pagination, or preparation filtering. It cannot create or restore a runtime.
++func (s *Service) SessionInventory(ctx context.Context) ([]domain.SessionRecord, time.Time, error) {
++	s.inventoryGate.Lock()
++	defer s.inventoryGate.Unlock()
++	records, err := s.store.ListAllSessions(ctx)
++	return records, sessionServerStartedAt, err
++}
 diff --git a/backend/internal/service/session/service_test.go b/backend/internal/service/session/service_test.go
-index e532e419b..686806721 100644
+index e532e419b..604316313 100644
 --- a/backend/internal/service/session/service_test.go
 +++ b/backend/internal/service/session/service_test.go
 @@ -3173,6 +3173,79 @@ func TestSpawnStillRejectsFreshUnauthorizedCodexAccount(t *testing.T) {
@@ -2811,11 +3010,138 @@ index e532e419b..686806721 100644
  // The readiness gate reads the computer's own Codex login. A task that will run
  // on a saved account does not use that login, so its state is not a reason to
  // refuse; the launch checks the account it runs on.
+@@ -5984,3 +6057,42 @@ func TestDeleteArtifactsAcceptsTheCanonicalArtifactDir(t *testing.T) {
+ 		t.Fatalf("deleted = %v, want [mer-1]", deleter.deleted)
+ 	}
+ }
++
++func TestWorkerBootFailureMapsOnlyVerifiedManagerProof(t *testing.T) {
++	mapped := toSpawnAPIError(fmt.Errorf("spawn: %w", sessionmanager.ErrWorkerBootFailed))
++	var api *apierr.Error
++	if !errors.As(mapped, &api) || api.Kind != apierr.KindConflict || api.Code != "worker_boot_failed" {
++		t.Fatalf("mapped=%v", mapped)
++	}
++	unproven := toSpawnAPIError(fmt.Errorf("spawn: %w", ports.ErrChatStartupClean))
++	if errors.As(unproven, &api) && api.Code == "worker_boot_failed" {
++		t.Fatal("runtime-only proof accepted without row/workspace proof")
++	}
++}
++
++func TestSessionInventoryWaitsForAdmittedSpawnAndKeepsProcessIncarnation(t *testing.T) {
++	st := newFakeStore()
++	entered, release, spawnDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
++	fc := &fakeCommander{spawnErr: errors.New("fixture start failure"), spawnHook: func(context.Context) { close(entered); <-release }}
++	svc := &Service{manager: fc, store: st}
++	go func() {
++		defer close(spawnDone)
++		_, _, _, _ = svc.Spawn(context.Background(), ports.SpawnConfig{Kind: domain.KindWorker, Harness: domain.HarnessCodex})
++	}()
++	<-entered
++	inventoryDone := make(chan struct{})
++	var gotStarted time.Time
++	go func() { defer close(inventoryDone); _, gotStarted, _ = svc.SessionInventory(context.Background()) }()
++	select {
++	case <-inventoryDone:
++		t.Fatal("inventory overtook an admitted create")
++	case <-time.After(20 * time.Millisecond):
++	}
++	close(release)
++	<-spawnDone
++	<-inventoryDone
++	_, secondStarted, err := (&Service{store: st}).SessionInventory(context.Background())
++	if err != nil || gotStarted.IsZero() || !gotStarted.Equal(secondStarted) || gotStarted.Location() != time.UTC {
++		t.Fatalf("unstable process incarnation: %v %v %v", gotStarted, secondStarted, err)
++	}
++}
+diff --git a/backend/internal/session_manager/chat_spawn.go b/backend/internal/session_manager/chat_spawn.go
+index db4b35393..d7d6e6d11 100644
+--- a/backend/internal/session_manager/chat_spawn.go
++++ b/backend/internal/session_manager/chat_spawn.go
+@@ -321,9 +321,27 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
+ 			}
+ 			return domain.SessionRecord{}, wrapSpawnStage(id, ErrChatController, agentlaunch.RedactError(err, in.project.Config.Env))
+ 		}
+-		// No controller exists, so nothing provider-side needs closing. The
+-		// runtime was never touched, hence runtimeDestroyed=false.
++		// A failed driver may have created a runtime whose cleanup could not
++		// be proved. Keep the keyed row and workspace as a durable uncertainty
++		// marker so reconciliation cannot mistake missing state for rejection.
++		if in.cfg.Kind == domain.KindWorker && in.cfg.ClientRequestID != "" && !errors.Is(err, ports.ErrChatStartupClean) {
++			cleanupCtx, cancel := spawnRollbackContext(ctx)
++			m.preserveFailedSpawnWorkspace(cleanupCtx, id, in.workspace, false)
++			cancel()
++			m.markSpawnFailedTerminatedAfterFailure(ctx, id, false)
++			return domain.SessionRecord{}, wrapSpawnStage(id, ErrChatController, agentlaunch.RedactError(err, in.project.Config.Env))
++		}
++		// A clean-startup marker proves the runtime is gone; the remaining
++		// rollback must also delete the workspace and durable seed row.
+ 		m.rollbackSeedSpawnWorkspace(ctx, in.record, in.workspace, in.workspaceProject, false, in.promptQueued)
++		if in.cfg.Kind == domain.KindWorker && !in.promptQueued && errors.Is(err, ports.ErrChatStartupClean) {
++			cleanupCtx, cancel := spawnRollbackContext(ctx)
++			_, found, lookupErr := m.store.GetSession(cleanupCtx, id)
++			cancel()
++			if lookupErr == nil && !found {
++				return domain.SessionRecord{}, ErrWorkerBootFailed
++			}
++		}
+ 		return domain.SessionRecord{}, wrapSpawnStage(id, ErrChatController, agentlaunch.RedactError(err, in.project.Config.Env))
+ 	}
+ 
+diff --git a/backend/internal/session_manager/chat_spawn_test.go b/backend/internal/session_manager/chat_spawn_test.go
+index 4d641b8df..be2695e21 100644
+--- a/backend/internal/session_manager/chat_spawn_test.go
++++ b/backend/internal/session_manager/chat_spawn_test.go
+@@ -2017,3 +2017,45 @@ func TestRunPromptSuggestionTaskPassesForkSourceWithScratchPolicy(t *testing.T)
+ 		t.Fatal("scratch workspace survived suggestion")
+ 	}
+ }
++
++func TestWorkerBootRejectionRequiresRuntimeCleanupAndAbsentRow(t *testing.T) {
++	for _, tc := range []struct {
++		name                                                      string
++		startupErr                                                error
++		workspaceFails, rowDeleteFails, lookupFails, wantDefinite bool
++	}{
++		{"verified-clean", ports.ErrChatStartupClean, false, false, false, true},
++		{"runtime-unproven", errors.New("startup cleanup unverified"), false, false, false, false},
++		{"workspace-retained", ports.ErrChatStartupClean, true, false, false, false},
++		{"row-retained", ports.ErrChatStartupClean, false, true, false, false},
++		{"readback-failed", ports.ErrChatStartupClean, false, false, true, false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			launcher := &recordingLauncher{startErr: tc.startupErr}
++			mgr, store, runtime := newChatManager(launcher)
++			mgr.dataDir = t.TempDir()
++			if tc.workspaceFails {
++				mgr.workspace.(*fakeWorkspace).destroyErr = errors.New("workspace busy")
++			}
++			if tc.rowDeleteFails {
++				store.deleteErr = errors.New("delete failed")
++			}
++			if tc.lookupFails {
++				launcher.beforeStart = func(ChatStart) { store.getSessionErr = errors.New("readback unavailable") }
++			}
++			_, _, _, err := mgr.Spawn(context.Background(), ports.SpawnConfig{
++				ProjectID: chatTestProject, Kind: domain.KindWorker, Harness: domain.HarnessCodex,
++				RequestedMode: domain.SessionModeChat, ClientRequestID: "boot-proof", ClientRequestHash: "fixture-hash",
++			})
++			if errors.Is(err, ErrWorkerBootFailed) != tc.wantDefinite {
++				t.Fatalf("err=%v, definite=%t", err, tc.wantDefinite)
++			}
++			if runtime.created != 0 {
++				t.Fatal("chat startup touched terminal runtime")
++			}
++			if tc.wantDefinite && len(store.sessions) != 0 {
++				t.Fatalf("clean rejection retained rows: %v", store.sessions)
++			}
++		})
++	}
++}
 diff --git a/backend/internal/session_manager/manager.go b/backend/internal/session_manager/manager.go
-index 1ed2302db..29fbcab69 100644
+index 1ed2302db..93a835864 100644
 --- a/backend/internal/session_manager/manager.go
 +++ b/backend/internal/session_manager/manager.go
-@@ -132,26 +132,28 @@ var (
+@@ -132,26 +132,29 @@ var (
  	// "spawn <id>:" so wrapping them does not change daemon-log wording, while
  	// errors.Is can tell the service which stage failed. More specific wrapped
  	// sentinels (branch, agent binary, chat preflight) still match first.
@@ -2859,12 +3185,13 @@ index 1ed2302db..29fbcab69 100644
 +	ErrClientRequestConflict     = errors.New("client request id belongs to a different task")
 +	ErrClientRequestIncomplete   = errors.New("client request has an incomplete prior spawn")
 +	ErrChatController            = errors.New("chat controller")
++	ErrWorkerBootFailed          = errors.New("worker boot failed without remaining session or runtime")
 +	ErrTerminationUnproven       = errors.New("native process termination is unproven")
 +	ErrTerminationCleanupPending = errors.New("session cleanup is pending")
  )
  
  // wrapSpawnStage annotates a spawn failure with a stage sentinel. The original
-@@ -415,6 +417,11 @@ type Manager struct {
+@@ -415,6 +418,11 @@ type Manager struct {
  	// killTeardown bounds Kill's detached teardown. Zero means
  	// killTeardownBudget; tests shrink it to prove what survives its expiry.
  	killTeardown time.Duration
@@ -2876,7 +3203,7 @@ index 1ed2302db..29fbcab69 100644
  	// openTranscriptFile is os.Open in production. The narrow seam lets tests
  	// deterministically prove that a post-stop transcript read failure falls
  	// back without advertising the provider path.
-@@ -2503,23 +2510,80 @@ func (m *Manager) recordTermination(ctx context.Context, id domain.SessionID, dr
+@@ -2503,23 +2511,80 @@ func (m *Manager) recordTermination(ctx context.Context, id domain.SessionID, dr
  
  // KillResult distinguishes accepted cleanup from a preserved workspace.
  type KillResult struct {
@@ -2962,7 +3289,7 @@ index 1ed2302db..29fbcab69 100644
  	// Teardown deliberately stops riding the caller's context. Kill runs a
  	// sequence (stop the agent, tear the controller down, mark the row
  	// terminated, drop the worktree) where being cancelled partway leaves a session
-@@ -2587,12 +2651,44 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
+@@ -2587,12 +2652,44 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
  		return KillResult{}, fmt.Errorf("kill %s: preserve attachments: %w", id, err)
  	}
  
@@ -3008,7 +3335,7 @@ index 1ed2302db..29fbcab69 100644
  	} else if handle.ID != "" {
  		// Any Destroy error stops the kill. Every runtime's Destroy already
  		// returns nil when it confirms the session is absent, so an error means
-@@ -2604,6 +2700,9 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
+@@ -2604,6 +2701,9 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
  			return KillResult{}, fmt.Errorf("kill %s: runtime: %w", id, err)
  		}
  	}
@@ -3018,7 +3345,7 @@ index 1ed2302db..29fbcab69 100644
  	if err := m.terminateReviewer(ctx, id, "cancelled by worker session termination"); err != nil {
  		return KillResult{}, fmt.Errorf("kill %s: reviewer: %w", id, err)
  	}
-@@ -2666,7 +2765,11 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
+@@ -2666,7 +2766,11 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
  						m.logger.Error("record background workspace cleanup", "sessionID", id, "error", err)
  					}
  				})
@@ -3031,7 +3358,7 @@ index 1ed2302db..29fbcab69 100644
  			}
  		}
  		if err := m.runPreRemove(rec.ProjectID, ws.Path); err != nil {
-@@ -2703,7 +2806,7 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
+@@ -2703,7 +2807,7 @@ func (m *Manager) kill(ctx context.Context, id domain.SessionID, backgroundClean
  			return KillResult{}, err
  		}
  	}
@@ -3099,24 +3426,3 @@ index a0c8d9d77..0c9194d25 100644
  		break
  	}
  	if drained == nil {
-diff --git a/backend/internal/adapters/chatdriver/codexappserver/deployment_socket_test.go b/backend/internal/adapters/chatdriver/codexappserver/deployment_socket_test.go
-new file mode 100644
---- /dev/null
-+++ b/backend/internal/adapters/chatdriver/codexappserver/deployment_socket_test.go
-@@ -0,0 +1,16 @@
-+package codexappserver
-+
-+import (
-+    "path/filepath"
-+    "strings"
-+    "testing"
-+)
-+
-+func TestDeploymentSocketUsesDaemonVisibleRoot(t *testing.T) {
-+    root := t.TempDir()
-+    broker, err := startProviderBroker("https://example.invalid/v1", "synthetic-key", "synthetic-model", root)
-+    if err != nil { t.Fatal(err) }
-+    defer broker.Close()
-+    relative, err := filepath.Rel(root, broker.SocketPath())
-+    if err != nil || strings.HasPrefix(relative, "..") { t.Fatal("socket escaped daemon-visible root") }
-+}

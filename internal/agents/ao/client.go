@@ -36,6 +36,8 @@ func (e CreateRejectedError) Error() string {
 // or unrelated code remains an unknown outcome.
 func IsDefiniteCreateRejection(status int, code string) bool {
 	switch code {
+	case "worker_boot_failed":
+		return status == http.StatusConflict
 	case "INVALID_REQUEST":
 		return status == http.StatusBadRequest || status == http.StatusUnprocessableEntity
 	case "UNKNOWN_HARNESS", "UNSUPPORTED_MODEL":
@@ -71,6 +73,7 @@ type WorkerSpec struct {
 }
 
 type Session struct {
+	ClientRequestID string `json:"clientRequestId"`
 	ID              string `json:"id"`
 	ProjectID       string `json:"projectId"`
 	Status          string `json:"status"`
@@ -78,6 +81,42 @@ type Session struct {
 	Activity        struct {
 		State string `json:"state"`
 	} `json:"activity"`
+}
+
+// SessionInventory contains every durable AO session, including incomplete and
+// terminated sessions. Absence is evidence only when both completeness flags
+// are true; legacy rows without request identity prevent that proof.
+type SessionInventory struct {
+	ServerStartedAt         time.Time `json:"serverStartedAt"`
+	Sessions                []Session `json:"sessions"`
+	Complete                bool      `json:"complete"`
+	ClientRequestIDComplete bool      `json:"clientRequestIdComplete"`
+}
+
+// ListSessions reads durable identity only; it never creates or restores a runtime.
+func (c *Client) ListSessions(ctx context.Context) (SessionInventory, error) {
+	var inventory SessionInventory
+	_, err := c.do(ctx, http.MethodGet, "/api/v1/sessions/inventory", nil, &inventory)
+	if err != nil {
+		return SessionInventory{}, err
+	}
+	// A missing/null array is not a complete inventory, even if a malformed
+	// server claims it is. Verify the identity claim locally as well.
+	if inventory.Sessions == nil {
+		inventory.Complete = false
+		inventory.ClientRequestIDComplete = false
+	}
+	seen := make(map[string]bool)
+	for _, session := range inventory.Sessions {
+		if session.ID == "" || seen[session.ID] {
+			inventory.Complete = false
+		}
+		seen[session.ID] = true
+		if strings.TrimSpace(session.ClientRequestID) == "" {
+			inventory.ClientRequestIDComplete = false
+		}
+	}
+	return inventory, nil
 }
 
 type SpawnResponse struct {

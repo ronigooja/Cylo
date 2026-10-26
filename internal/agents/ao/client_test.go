@@ -306,3 +306,73 @@ func TestNewRejectsCredentialBearingBaseURL(t *testing.T) {
 		t.Fatal("expected credential-bearing base URL rejection")
 	}
 }
+
+func TestWorkerBootFailureRequiresStableCodeAndConflictStatus(t *testing.T) {
+	for _, tc := range []struct {
+		status   int
+		code     string
+		definite bool
+	}{
+		{409, "worker_boot_failed", true}, {500, "worker_boot_failed", false},
+		{502, "worker_boot_failed", false}, {400, "worker_boot_failed", false},
+		{409, "WORKER_BOOT_FAILED", false},
+	} {
+		t.Run(fmt.Sprintf("%d-%s", tc.status, tc.code), func(t *testing.T) {
+			requests := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				w.WriteHeader(tc.status)
+				_ = json.NewEncoder(w).Encode(map[string]string{"code": tc.code})
+			}))
+			defer srv.Close()
+			client, _ := New(Config{BaseURL: srv.URL, Token: "fixture-token"})
+			_, err := client.CreateWorker(context.Background(), WorkerSpec{ClientRequestID: "run", ProjectID: "p", Harness: "codex", DisplayName: "test", Prompt: "test"})
+			var rejected CreateRejectedError
+			if errors.As(err, &rejected) != tc.definite || requests != 1 {
+				t.Fatalf("err=%v requests=%d, definite=%t", err, requests, tc.definite)
+			}
+			if !tc.definite && !errors.Is(err, ErrOutcomeUnknown) {
+				t.Fatalf("unproven failure = %v", err)
+			}
+		})
+	}
+}
+
+func TestListSessionsRequiresCompleteInventoryAndIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name, body         string
+		complete, identity bool
+	}{
+		{"empty-proof", `{"sessions":[],"complete":true,"clientRequestIdComplete":true}`, true, true},
+		{"identified", `{"sessions":[{"id":"s","projectId":"p","clientRequestId":"run"}],"complete":true,"clientRequestIdComplete":true,"serverStartedAt":"2026-10-26T12:00:00Z"}`, true, true},
+		{"legacy-row", `{"sessions":[{"id":"s"}],"complete":true,"clientRequestIdComplete":true}`, true, false},
+		{"legacy-api", `{"sessions":[]}`, false, false},
+		{"missing-array", `{"complete":true,"clientRequestIdComplete":true}`, false, false},
+		{"truncated", `{"sessions":[],"complete":false,"clientRequestIdComplete":true}`, false, true},
+		{"bad-id", `{"sessions":[{"clientRequestId":"run"}],"complete":true,"clientRequestIdComplete":true}`, false, true},
+		{"duplicate", `{"sessions":[{"id":"s","clientRequestId":"a"},{"id":"s","clientRequestId":"b"}],"complete":true,"clientRequestIdComplete":true}`, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				if r.Method != http.MethodGet || r.URL.Path != "/api/v1/sessions/inventory" || r.URL.RawQuery != "" {
+					t.Errorf("unexpected inventory request: %s %s", r.Method, r.URL)
+				}
+				if r.Header.Get("Authorization") != "Bearer fixture-token" {
+					t.Error("missing authorization")
+				}
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer srv.Close()
+			client, _ := New(Config{BaseURL: srv.URL, Token: "fixture-token"})
+			inventory, err := client.ListSessions(context.Background())
+			if err != nil || inventory.Complete != tc.complete || inventory.ClientRequestIDComplete != tc.identity || requests != 1 {
+				t.Fatalf("inventory=%+v err=%v requests=%d", inventory, err, requests)
+			}
+			if tc.name == "identified" && (inventory.Sessions[0].ClientRequestID != "run" || inventory.ServerStartedAt.IsZero()) {
+				t.Fatal("request identity was lost")
+			}
+		})
+	}
+}
