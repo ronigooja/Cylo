@@ -2,7 +2,7 @@
 set -euo pipefail
 
 expected="7c83bd68c1e60c85b6a90e3ffa1340c859e4a3ff"
-expected_tree="46b8122a17b7ad272b6eb06164f32e339a4bd9d7"
+expected_tree="3b966147a7b94c9a6fd1e675b2cfec911940157c"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ao_source="${1:-}"
 if [[ -z "$ao_source" || ! -e "$ao_source/.git" ]]; then
