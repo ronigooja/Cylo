@@ -302,9 +302,10 @@ type CreateRejectionProof struct {
 	ErrorCode  string `json:"error_code"`
 }
 
-// NoEffectProof is the runner journal receipt for a run that ended before AO
-// creation began. The control plane also checks its own observation and effect
-// history before accepting this receipt.
+// NoEffectProof is the runner journal receipt for a run with no AO runtime.
+// It proves either creation never began or explicit read-only reconciliation
+// established absence under a newer AO process. The control plane also checks
+// its own observation and effect history before accepting this receipt.
 type NoEffectProof struct {
 	JournalPhase    string                  `json:"journal_phase"`
 	AOCreateStarted bool                    `json:"ao_create_started"`
