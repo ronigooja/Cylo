@@ -4,6 +4,7 @@ public struct Snapshot: Codable, Equatable, Sendable {
     public var serverVersion: String
     public var eventCursor: String
     public var authority: SnapshotAuthority? = nil
+    public var executionCapacity: ExecutionCapacity? = nil
     public var projects: [Project]
     public var tasks: [TaskRecord]
     public var approvals: [Approval]
@@ -11,10 +12,11 @@ public struct Snapshot: Codable, Equatable, Sendable {
     public var subjectId: String
     public var runs: [Run]
 
-    public init(serverVersion: String, eventCursor: String, projects: [Project], tasks: [TaskRecord], approvals: [Approval], runs: [Run], workspaceId: String = "default", subjectId: String = "owner", authority: SnapshotAuthority? = nil) {
+    public init(serverVersion: String, eventCursor: String, projects: [Project], tasks: [TaskRecord], approvals: [Approval], runs: [Run], workspaceId: String = "default", subjectId: String = "owner", authority: SnapshotAuthority? = nil, executionCapacity: ExecutionCapacity? = nil) {
         self.serverVersion = serverVersion
         self.eventCursor = eventCursor
         self.authority = authority
+        self.executionCapacity = executionCapacity
         self.projects = projects
         self.tasks = tasks
         self.approvals = approvals
@@ -22,6 +24,17 @@ public struct Snapshot: Codable, Equatable, Sendable {
         self.subjectId = subjectId
         self.runs = runs
     }
+}
+
+public struct ExecutionCapacity: Codable, Equatable, Sendable {
+    public var activeRuns: Int
+    public var uncertainRuns: Int
+    public var maxRuns: Int
+    public var availableSlots: Int
+    public var dispatchBlocked: Bool
+    public var reasonCode: String?
+
+    public var occupiedSlots: Int { activeRuns + uncertainRuns }
 }
 
 public struct SnapshotAuthority: Codable, Equatable, Sendable {
@@ -47,6 +60,7 @@ public struct Project: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct TaskRecord: Codable, Equatable, Identifiable, Sendable {
+    public var queueReason: String? = nil
     public var id: String
     public var projectId: String?
     public var title: String

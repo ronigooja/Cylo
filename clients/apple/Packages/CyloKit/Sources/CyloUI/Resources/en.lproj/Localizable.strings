@@ -429,3 +429,12 @@
 "Connect without encryption?" = "Connect without encryption?";
 "The instance key could not be saved in Keychain." = "The instance key could not be saved in Keychain.";
 "The previous instance key could not be restored in Keychain. Reconnect with your server key." = "The previous instance key could not be restored in Keychain. Reconnect with your server key.";
+
+// Execution capacity and queue state
+"Queued — occupied runs have unknown outcomes; awaiting operations reconciliation." = "Queued — occupied runs have unknown outcomes; awaiting operations reconciliation.";
+"Queued — waiting for an execution slot." = "Queued — waiting for an execution slot.";
+"Queued — execution is paused by the server." = "Queued — execution is paused by the server.";
+"Queued — waiting for dependencies." = "Queued — waiting for dependencies.";
+"Queued — waiting for dispatch." = "Queued — waiting for dispatch.";
+"%lld of %lld slots occupied · %lld available" = "%lld of %lld slots occupied · %lld available";
+"%lld occupied slots have unknown outcomes; awaiting operations reconciliation." = "%lld occupied slots have unknown outcomes; awaiting operations reconciliation.";

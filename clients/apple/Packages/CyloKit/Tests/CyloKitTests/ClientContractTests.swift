@@ -687,6 +687,25 @@ final class ClientContractTests: XCTestCase {
         XCTAssertFalse(generation.accepts(reauthenticatedRequest, from: serverB))
     }
 
+    func testExecutionCapacityAndQueueReasonDecodeWithoutRequiringNewFieldsOnOlderServers() throws {
+        let task: [String: Any] = ["id": "queued", "title": "Work", "goal": "Work", "source": "user", "status": "queued", "version": 1, "created_at": "now", "updated_at": "now", "evidence": [], "can_accept_result": false]
+        var body: [String: Any] = ["server_version": "1", "event_cursor": "1", "workspace_id": "default", "subject_id": "owner", "projects": [], "tasks": [task], "approvals": [], "runs": []]
+        let legacy = try CyloJSON.decoder.decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: body))
+        XCTAssertNil(legacy.executionCapacity)
+        XCTAssertNil(legacy.tasks.first?.queueReason)
+        var queued = task
+        queued["queue_reason"] = "execution_reconciliation_required"
+        body["tasks"] = [queued]
+        body["execution_capacity"] = ["active_runs": 1, "uncertain_runs": 3, "max_runs": 4, "available_slots": 0, "dispatch_blocked": true, "reason_code": "execution_reconciliation_required"]
+        let blocked = try CyloJSON.decoder.decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: body))
+        XCTAssertEqual(blocked.executionCapacity?.occupiedSlots, 4)
+        XCTAssertEqual(blocked.executionCapacity?.availableSlots, 0)
+        XCTAssertEqual(blocked.tasks.first?.status, .queued)
+        XCTAssertEqual(blocked.tasks.first?.queueReason, "execution_reconciliation_required")
+        XCTAssertEqual(queueReasonText(blocked.tasks.first?.queueReason), "Queued — occupied runs have unknown outcomes; awaiting operations reconciliation.")
+        XCTAssertEqual(queueReasonText("future_reason"), "Queued — waiting for dispatch.")
+    }
+
     func testSnapshotDecodesAuthoritativeApprovalsAndRuns() throws {
         let data = Data(#"{"server_version":"srv-3","event_cursor":"19","projects":[],"tasks":[{"id":"task-1","title":"Review","goal":"Review changes","source":"user","status":"awaiting_user","version":4,"created_at":"2026-10-20T12:00:00Z","updated_at":"2026-10-20T12:01:00Z","evidence":[],"can_accept_result":true}],"approvals":[{"id":"approval-1","task_id":"task-1","status":"pending","prompt":"Approve deployment?","version":2,"created_at":"2026-10-20T12:00:00Z","requested_action_digest":"sha256:example"}],"workspace_id":"default","subject_id":"owner","runs":[{"id":"run-1","task_id":"task-1","attempt_id":"attempt-1","status":"verification_pending","desired_control":"stop","control_version":1,"started_at":"2026-10-20T12:00:00Z","evidence":[],"termination_confirmed":true}]}"#.utf8)
         let snapshot = try CyloJSON.decoder.decode(Snapshot.self, from: data)

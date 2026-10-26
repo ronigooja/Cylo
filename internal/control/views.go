@@ -43,6 +43,11 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (c
 		return out, err
 	}
 	out.EventCursor = strconv.FormatInt(cursor, 10)
+	capacity, err := loadExecutionCapacity(ctx, tx)
+	if err != nil {
+		return out, err
+	}
+	out.ExecutionCapacity = capacity
 	if err := tx.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&out.Authority.InstanceLineageID, &out.Authority.Generation, &out.Authority.DeletionSequence); err != nil {
 		return out, err
 	}
@@ -104,6 +109,21 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (c
 		if err != nil {
 			tasks.Close()
 			return out, err
+		}
+		if t.Status == "queued" {
+			var dependencies int
+			if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM task_dependencies WHERE task_id=? AND status<>'satisfied'`, t.ID).Scan(&dependencies); err != nil {
+				tasks.Close()
+				return out, err
+			}
+			switch {
+			case dependencies > 0:
+				t.QueueReason = "dependencies_pending"
+			case capacity.DispatchBlocked:
+				t.QueueReason = capacity.ReasonCode
+			default:
+				t.QueueReason = "pending_dispatch"
+			}
 		}
 		out.Tasks = append(out.Tasks, t)
 	}

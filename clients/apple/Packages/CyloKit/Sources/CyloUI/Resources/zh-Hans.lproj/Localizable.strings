@@ -429,3 +429,12 @@
 "Connect without encryption?" = "通过未加密连接继续？";
 "The instance key could not be saved in Keychain." = "实例密钥无法保存到钥匙串。";
 "The previous instance key could not be restored in Keychain. Reconnect with your server key." = "无法在钥匙串中恢复先前的实例密钥。请使用服务器密钥重新连接。";
+
+// Execution capacity and queue state
+"Queued — occupied runs have unknown outcomes; awaiting operations reconciliation." = "排队中：占用名额的运行结果未知，等待运维核对。";
+"Queued — waiting for an execution slot." = "排队中：等待执行名额。";
+"Queued — execution is paused by the server." = "排队中：服务器已暂停执行。";
+"Queued — waiting for dependencies." = "排队中：等待前置任务。";
+"Queued — waiting for dispatch." = "排队中：等待调度。";
+"%lld of %lld slots occupied · %lld available" = "已占用 %lld/%lld 个名额 · 可用 %lld 个";
+"%lld occupied slots have unknown outcomes; awaiting operations reconciliation." = "%lld 个已占用名额的结果未知，等待运维核对。";

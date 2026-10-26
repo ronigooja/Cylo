@@ -90,6 +90,7 @@ type Project struct {
 }
 
 type Task struct {
+	QueueReason     string     `json:"queue_reason,omitempty"`
 	ID              string     `json:"id"`
 	ProjectID       string     `json:"project_id,omitempty"`
 	Title           string     `json:"title"`
@@ -140,15 +141,26 @@ type Approval struct {
 }
 
 type Snapshot struct {
-	WorkspaceID   string           `json:"workspace_id"`
-	SubjectID     string           `json:"subject_id"`
-	ServerVersion string           `json:"server_version"`
-	EventCursor   string           `json:"event_cursor"`
-	Authority     AuthorityVersion `json:"authority"`
-	Projects      []Project        `json:"projects"`
-	Tasks         []Task           `json:"tasks"`
-	Approvals     []Approval       `json:"approvals"`
-	Runs          []Run            `json:"runs"`
+	ExecutionCapacity ExecutionCapacity `json:"execution_capacity"`
+	WorkspaceID       string            `json:"workspace_id"`
+	SubjectID         string            `json:"subject_id"`
+	ServerVersion     string            `json:"server_version"`
+	EventCursor       string            `json:"event_cursor"`
+	Authority         AuthorityVersion  `json:"authority"`
+	Projects          []Project         `json:"projects"`
+	Tasks             []Task            `json:"tasks"`
+	Approvals         []Approval        `json:"approvals"`
+	Runs              []Run             `json:"runs"`
+}
+
+// ExecutionCapacity describes the global dispatch gate without exposing other tasks.
+type ExecutionCapacity struct {
+	ActiveRuns      int    `json:"active_runs"`
+	UncertainRuns   int    `json:"uncertain_runs"`
+	MaxRuns         int    `json:"max_runs"`
+	AvailableSlots  int    `json:"available_slots"`
+	DispatchBlocked bool   `json:"dispatch_blocked"`
+	ReasonCode      string `json:"reason_code,omitempty"`
 }
 
 type AuthorityVersion struct {
