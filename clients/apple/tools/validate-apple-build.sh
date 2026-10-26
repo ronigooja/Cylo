@@ -1,0 +1,264 @@
+#!/usr/bin/env bash
+set -u
+
+usage() {
+    cat <<'USAGE'
+Usage:
+  validate-apple-build.sh \
+    --approved-root PATH \
+    --output-root PATH \
+    --package-cache-seed PATH \
+    [--include-ios-xcode-app-target | --require-ios-xcode-app-target]
+
+Create a clean source snapshot and run Apple checks with all generated files
+under --output-root. Both --output-root and --package-cache-seed must be below
+--approved-root. The seed must contain SwiftPM artifacts, checkouts, and
+repositories for the pinned WebRTC dependency. The seed is read only; its
+contents are copied into the new output directory. No Keychain access is
+needed when the seed contains the pinned artifact.
+
+The default checks run Swift package tests, an unsigned macOS Xcode app build,
+an iOS SDK build of CyloKit and CyloUI, and a direct compile of the iOS app
+entry point. The entry-point compile is source evidence, not an Xcode app build.
+Pass --include-ios-xcode-app-target to separately attempt the CyloMobile Xcode
+scheme build. A missing eligible destination is reported as
+BLOCKED_NO_ELIGIBLE_DESTINATION and does not change the source compile result.
+Pass --require-ios-xcode-app-target to require that build to pass; a missing
+eligible destination then makes validation fail after recording the block.
+USAGE
+}
+
+fail() {
+    printf 'ERROR: %s\n' "$*" >&2
+    exit 2
+}
+
+APPROVED_ROOT=
+OUTPUT_ROOT=
+PACKAGE_CACHE_SEED=
+INCLUDE_IOS_XCODE_APP_TARGET=0
+REQUIRE_IOS_XCODE_APP_TARGET=0
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --approved-root)
+            [ "$#" -ge 2 ] || fail "--approved-root needs a path"
+            APPROVED_ROOT=$2
+            shift 2
+            ;;
+        --output-root)
+            [ "$#" -ge 2 ] || fail "--output-root needs a path"
+            OUTPUT_ROOT=$2
+            shift 2
+            ;;
+        --package-cache-seed)
+            [ "$#" -ge 2 ] || fail "--package-cache-seed needs a path"
+            PACKAGE_CACHE_SEED=$2
+            shift 2
+            ;;
+        --include-ios-xcode-app-target)
+            INCLUDE_IOS_XCODE_APP_TARGET=1
+            shift
+            ;;
+        --require-ios-xcode-app-target)
+            INCLUDE_IOS_XCODE_APP_TARGET=1
+            REQUIRE_IOS_XCODE_APP_TARGET=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            fail "unknown argument: $1"
+            ;;
+    esac
+done
+
+[ -n "$APPROVED_ROOT" ] || fail "--approved-root is required"
+[ -n "$OUTPUT_ROOT" ] || fail "--output-root is required"
+[ -n "$PACKAGE_CACHE_SEED" ] || fail "--package-cache-seed is required"
+[ "$(uname -s)" = Darwin ] || fail "run this tool on macOS"
+[ -d "$APPROVED_ROOT" ] || fail "approved root must already exist"
+[ -d "$PACKAGE_CACHE_SEED" ] || fail "package-cache seed must already exist"
+
+APPROVED_ROOT=$(cd "$APPROVED_ROOT" && pwd -P)
+PACKAGE_CACHE_SEED=$(cd "$PACKAGE_CACHE_SEED" && pwd -P)
+OUTPUT_PARENT=$(dirname "$OUTPUT_ROOT")
+OUTPUT_NAME=$(basename "$OUTPUT_ROOT")
+[ -d "$OUTPUT_PARENT" ] || fail "output parent must already exist"
+OUTPUT_ROOT="$(cd "$OUTPUT_PARENT" && pwd -P)/$OUTPUT_NAME"
+
+case "$OUTPUT_ROOT" in
+    "$APPROVED_ROOT"/*) ;;
+    *) fail "output root must be below the approved root" ;;
+esac
+case "$PACKAGE_CACHE_SEED" in
+    "$APPROVED_ROOT"/*) ;;
+    *) fail "package-cache seed must be below the approved root" ;;
+esac
+[ ! -e "$OUTPUT_ROOT" ] && [ ! -L "$OUTPUT_ROOT" ] || fail "output root already exists; choose a new task directory"
+
+for seed_item in artifacts checkouts repositories; do
+    [ -d "$PACKAGE_CACHE_SEED/$seed_item" ] || fail "package-cache seed is missing $seed_item"
+done
+[ -d "$PACKAGE_CACHE_SEED/artifacts/webrtc/WebRTC/WebRTC.xcframework" ] || fail "package-cache seed is missing the pinned WebRTC artifact"
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd -P)
+APPLE_ROOT=$(cd "$SCRIPT_DIR/.." && pwd -P)
+REPOSITORY_ROOT=$(git -C "$APPLE_ROOT" rev-parse --show-toplevel 2>/dev/null) || fail "Apple source is not in a Git worktree"
+[ -z "$(git -C "$REPOSITORY_ROOT" status --porcelain -- clients/apple)" ] || fail "clients/apple has uncommitted or untracked changes; commit the source before making a snapshot"
+SOURCE_REVISION=$(git -C "$REPOSITORY_ROOT" rev-parse HEAD)
+
+mkdir -p "$OUTPUT_ROOT"
+mkdir -p "$OUTPUT_ROOT/source"
+git -C "$REPOSITORY_ROOT" archive "$SOURCE_REVISION" clients/apple | tar -x -C "$OUTPUT_ROOT/source" || fail "could not create source snapshot"
+SOURCE_APPLE_ROOT="$OUTPUT_ROOT/source/clients/apple"
+PACKAGE_ROOT="$SOURCE_APPLE_ROOT/Packages/CyloKit"
+REPORT="$OUTPUT_ROOT/validation-report.txt"
+
+record() {
+    printf '%s\n' "$*" | tee -a "$REPORT"
+}
+
+run_logged() {
+    step_name=$1
+    log_path=$2
+    shift 2
+    record "RUN $step_name"
+    if "$@" >"$log_path" 2>&1; then
+        tail -n 30 "$log_path"
+        record "PASS $step_name"
+        return 0
+    else
+        step_status=$?
+        tail -n 60 "$log_path"
+        record "COMMAND_EXIT_NONZERO $step_name (exit $step_status; log: $log_path)"
+        return "$step_status"
+    fi
+}
+
+seed_swiftpm() {
+    seed_destination=$1
+    mkdir -p "$seed_destination"
+    for seed_item in artifacts checkouts repositories; do
+        ditto "$PACKAGE_CACHE_SEED/$seed_item" "$seed_destination/$seed_item"
+    done
+    if [ -f "$PACKAGE_CACHE_SEED/workspace-state.json" ]; then
+        cp "$PACKAGE_CACHE_SEED/workspace-state.json" "$seed_destination/workspace-state.json"
+    fi
+}
+
+record "SOURCE_REVISION=$SOURCE_REVISION"
+record "OUTPUT_ROOT=$OUTPUT_ROOT"
+record "XCODE=$(xcodebuild -version | tr '\n' ' ')"
+record "SWIFT=$(swift --version | head -n 1)"
+IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null) || fail "iPhoneOS SDK is unavailable"
+record "IOS_SDK=$IOS_SDK"
+record "IOS_SDK_VERSION=$(xcrun --sdk iphoneos --show-sdk-version)"
+
+SWIFT_TEST_ROOT="$OUTPUT_ROOT/swift-test"
+seed_swiftpm "$SWIFT_TEST_ROOT"
+mkdir -p "$OUTPUT_ROOT/swift-cache" "$OUTPUT_ROOT/swift-config" "$OUTPUT_ROOT/swift-security"
+cd "$PACKAGE_ROOT" || fail "could not enter package snapshot"
+
+if ! run_logged "swift package tests" "$OUTPUT_ROOT/swift-test.log" \
+    swift test --skip-update \
+    --scratch-path "$SWIFT_TEST_ROOT" \
+    --cache-path "$OUTPUT_ROOT/swift-cache" \
+    --config-path "$OUTPUT_ROOT/swift-config" \
+    --security-path "$OUTPUT_ROOT/swift-security" \
+    --manifest-cache local; then
+    record "FAIL swift package tests"
+    exit 1
+fi
+
+XCODE_PACKAGE_ROOT="$OUTPUT_ROOT/xcode-source-packages"
+seed_swiftpm "$XCODE_PACKAGE_ROOT"
+mkdir -p "$OUTPUT_ROOT/package-cache"
+if ! run_logged "unsigned universal macOS app build" "$OUTPUT_ROOT/macos-xcodebuild.log" \
+    xcodebuild -quiet \
+    -project "$SOURCE_APPLE_ROOT/Cylo.xcodeproj" \
+    -scheme CyloMac \
+    -destination "generic/platform=macOS" \
+    -derivedDataPath "$OUTPUT_ROOT/macos-derived" \
+    -clonedSourcePackagesDirPath "$XCODE_PACKAGE_ROOT" \
+    -packageCachePath "$OUTPUT_ROOT/package-cache" \
+    -resultBundlePath "$OUTPUT_ROOT/macos-app-target.xcresult" \
+    CODE_SIGNING_ALLOWED=NO build; then
+    record "FAIL unsigned universal macOS app build"
+    exit 1
+fi
+
+IOS_BUILD_ROOT="$OUTPUT_ROOT/ios-sdk-build"
+seed_swiftpm "$IOS_BUILD_ROOT"
+mkdir -p "$OUTPUT_ROOT/ios-cache" "$OUTPUT_ROOT/ios-config" "$OUTPUT_ROOT/ios-security"
+if ! run_logged "direct iOS SDK package source build" "$OUTPUT_ROOT/ios-sdk-build.log" \
+    swift build --sdk "$IOS_SDK" --triple arm64-apple-ios17.0 --skip-update \
+    --scratch-path "$IOS_BUILD_ROOT" \
+    --cache-path "$OUTPUT_ROOT/ios-cache" \
+    --config-path "$OUTPUT_ROOT/ios-config" \
+    --security-path "$OUTPUT_ROOT/ios-security" \
+    --manifest-cache local; then
+    record "FAIL direct iOS SDK package source build"
+    exit 1
+fi
+record "PASS iOS shared-package source compile (manual SDK build; not an Xcode app-target build)"
+
+IOS_MODULE_PATH=$(find "$IOS_BUILD_ROOT" -name CyloUI.swiftmodule -print -quit)
+[ -n "$IOS_MODULE_PATH" ] || fail "iOS SDK build did not produce CyloUI.swiftmodule"
+IOS_MODULES=$(dirname "$IOS_MODULE_PATH")
+IOS_WEBRTC_FRAMEWORK="$IOS_BUILD_ROOT/artifacts/webrtc/WebRTC/WebRTC.xcframework/ios-arm64"
+mkdir -p "$OUTPUT_ROOT/ios-app-module-cache"
+if ! run_logged "direct iOS app entry-point source compile" "$OUTPUT_ROOT/ios-app-entry-compile.log" \
+    xcrun swiftc \
+    -target arm64-apple-ios17.0 \
+    -sdk "$IOS_SDK" \
+    -parse-as-library \
+    -module-cache-path "$OUTPUT_ROOT/ios-app-module-cache" \
+    -I "$IOS_MODULES" \
+    -F "$IOS_WEBRTC_FRAMEWORK" \
+    -emit-object "$SOURCE_APPLE_ROOT/Apps/iOS/CyloMobileApp.swift" \
+    -o "$OUTPUT_ROOT/CyloMobileApp.o"; then
+    record "FAIL direct iOS app entry-point source compile"
+    exit 1
+fi
+record "PASS iOS app entry-point source compile (manual swiftc object compile; not an Xcode app-target build)"
+
+IOS_APP_TARGET_STATUS=NOT_ATTEMPTED
+if [ "$INCLUDE_IOS_XCODE_APP_TARGET" -eq 1 ]; then
+    IOS_RESULT_BUNDLE="$OUTPUT_ROOT/ios-app-target.xcresult"
+    IOS_TARGET_LOG="$OUTPUT_ROOT/ios-app-target-xcodebuild.log"
+    if run_logged "Xcode CyloMobile app-target build" "$IOS_TARGET_LOG" \
+        xcodebuild -quiet \
+        -project "$SOURCE_APPLE_ROOT/Cylo.xcodeproj" \
+        -scheme CyloMobile \
+        -sdk iphoneos \
+        -destination "generic/platform=iOS" \
+        -derivedDataPath "$OUTPUT_ROOT/ios-app-target-derived" \
+        -clonedSourcePackagesDirPath "$XCODE_PACKAGE_ROOT" \
+        -packageCachePath "$OUTPUT_ROOT/package-cache" \
+        -resultBundlePath "$IOS_RESULT_BUNDLE" \
+        CODE_SIGNING_ALLOWED=NO build; then
+        IOS_APP_TARGET_STATUS=PASS
+        record "PASS iOS Xcode app-target build"
+    elif grep -Eiq 'no destinations|eligible destinations|not installed|unable to find a destination' "$IOS_TARGET_LOG"; then
+        IOS_APP_TARGET_STATUS=BLOCKED_NO_ELIGIBLE_DESTINATION
+        record "BLOCKED_NO_ELIGIBLE_DESTINATION Xcode did not compile the CyloMobile app target"
+    else
+        IOS_APP_TARGET_STATUS=FAIL
+        record "FAIL iOS Xcode app-target build (see $IOS_TARGET_LOG)"
+        exit 1
+    fi
+else
+    record "SKIP iOS Xcode app-target build (use --include-ios-xcode-app-target to attempt it)"
+fi
+
+if [ "$REQUIRE_IOS_XCODE_APP_TARGET" -eq 1 ] && [ "$IOS_APP_TARGET_STATUS" != PASS ]; then
+    record "FAIL required iOS Xcode app-target build (status: $IOS_APP_TARGET_STATUS)"
+    exit 1
+fi
+
+record "COMPLETE shared tests, macOS app build, and direct iOS SDK source checks passed"
+record "IOS_APP_TARGET_BUILD=$IOS_APP_TARGET_STATUS"
+record "REPORT=$REPORT"

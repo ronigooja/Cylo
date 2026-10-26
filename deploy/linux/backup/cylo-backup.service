@@ -1,0 +1,21 @@
+[Unit]
+Description=Create an encrypted, consistent Cylo authority backup
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=cylo
+Group=cylo
+UMask=0077
+Environment=PYTHONPATH=/opt/cylo/tools
+ExecStart=/usr/bin/python3 /opt/cylo/tools/cylo_backup.py --database /var/lib/cylo/data/cylo.sqlite --destination /var/lib/cylo/backups --key-file /etc/cylo/backup.key --inventory /etc/cylo/backup-inventory.json
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/cylo/backup.key /etc/cylo/backup-inventory.json /var/lib/cylo/data
+ReadWritePaths=/var/lib/cylo/backups
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native

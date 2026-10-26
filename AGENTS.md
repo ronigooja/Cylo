@@ -1,0 +1,33 @@
+# Repository guidance
+
+## Documentation
+
+- Treat archived documents as historical evidence. Do not describe them as the current plan.
+- Keep implementation status honest. A design, static check, fixture, or proof of concept is not production implementation or end-to-end acceptance.
+- Keep decisions and acceptance boundaries in `docs/master-plan.md`; keep the README concise.
+
+## UI design
+
+- Follow the UI rule in `docs/master-plan.md`, section 4: communicate function through clear naming, layout, and interaction; omit redundant purpose descriptions and operating tutorials by default. Provide necessary help on demand and state material consequences, risks, and limits at the point of action.
+- Use the approved native assistant direction in that section: compact, readable layouts centered on conversation, task progress, results, and decisions. Present programming work through goals, progress, outcome summaries, and required decisions. Do not add source-code browsers, editors, diff viewers, terminals, or test consoles, including optional or hidden variants.
+- Give voice a prominent, compact microphone control in the composer. Express routine voice state through icons, color, and subtle motion with accessible labels; omit persistent voice explanations, status banners, large waveforms, and separate control strips.
+
+## Current product and architecture baseline
+
+- The product is private and self-hosted: a Linux Go control server, independent runner, SQLite WAL with `synchronous=FULL`, and native SwiftUI macOS/iPhone/iPad clients.
+- AO (OrchestratorInc/agent-orchestrator) owns creation and lifecycle of every runtime. Cylo calls AO only through its authorized gateway.
+- Reuse the existing remote CLIProxyAPI deployment without changing its configuration or lifecycle.
+- Space3044 `chatgpt-web-voice` is the selected ChatGPT web real-time gateway and voice account pool.
+- The Go control plane is authoritative for tasks, permissions, events, and memory versions. Mem0 is a controlled worker; Qdrant is a rebuildable index.
+- There is no PWA, CAO implementation, macOS server, or Codex-specific recovery feature in the current scope. The remote CLIProxyAPI remains an existing external dependency, not a Cylo deployment target.
+
+## Work coordination and safety
+
+- The main agent coordinates planning, assignments, dependencies, review, and integration. Use GPT-6 Luna at medium reasoning effort for simple tasks. Use GPT-6.1 Sol at medium reasoning effort for complex tasks, independent review, and UI design and implementation. Use at most four concurrent implementation subagents and reserve one independent review slot.
+- Run concurrent work in separate branches and worktrees under `$HOME/subagents`, with explicit file ownership for each assignment. Do not edit outside assigned ownership or take over another agent's archive scope.
+- Store Mac task inputs, signing/install staging, artifacts, and logs under `~/Developer/Cylo/runs/<task-id>/` on the Mac. The installed application remains at `/Applications/Cylo.app`.
+- Before ending a delegated task or handing work to a fresh context, leave a concise handoff with the branch/worktree, ownership, commit, completed work, remaining work, verification, and known limitations.
+- Coordinate cross-module API and data changes with the main agent and affected owners before editing. Review delegated commits before integration; report relevant tests, commands, outcomes, and limitations without claiming checks that were not run.
+- Never put credentials, tokens, private account data, or secret values in source, documentation, logs, or test fixtures. Refer to secret names or deployment-provided references only.
+- Do not change external services or the existing CLIProxyAPI deployment as part of repository work unless explicitly authorized.
+- Prefer evidence that can be repeated. Report commands and outcomes accurately; do not claim checks that were not run.

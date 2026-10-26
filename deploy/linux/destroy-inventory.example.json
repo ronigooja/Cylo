@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "topology": "linux-systemd-compose",
+  "instance_id": "REPLACE_WITH_AUTHORITATIVE_INSTANCE_ID",
+  "deployment_root": "/var/lib/cylo/owned-instance",
+  "database": "/var/lib/cylo/owned-instance/data/cylo.sqlite",
+  "roots": [
+    {"category": "data", "path": "/var/lib/cylo/owned-instance/data"},
+    {"category": "artifacts", "path": "/var/lib/cylo/owned-instance/artifacts"},
+    {"category": "backups", "path": "/var/lib/cylo/owned-instance/backups"},
+    {"category": "config", "path": "/var/lib/cylo/owned-instance/config"}
+  ],
+  "service_units": ["cylo-compose.service", "cylo-runner.service", "cylo-backup.service", "cylo-backup.timer"],
+  "external_resources": [
+    {"kind": "ao_runtime", "id": "REPLACE_WITH_OWNED_AO_RUNTIME_ID"},
+    {"kind": "capability_container", "id": "REPLACE_WITH_OWNED_SERVICE_ID"},
+    {"kind": "managed_volume", "id": "REPLACE_WITH_OWNED_VOLUME_ID"},
+    {"kind": "qdrant_index", "id": "REPLACE_WITH_OWNED_INDEX_ID"},
+    {"kind": "mem0_store", "id": "REPLACE_WITH_OWNED_MEMORY_STORE_ID"}
+  ],
+  "cleanup_adapter": "/usr/local/libexec/cylo-instance-cleanup",
+  "maintenance_binary": "/usr/local/bin/cylo-maintenance"
+}

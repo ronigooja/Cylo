@@ -1,0 +1,250 @@
+// cylo-server starts the private control plane. Instance keys are provisioned
+// using init-key with explicit secure output, or a deployment-provided secret.
+package main
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/ronigooja/Cylo/internal/capabilities"
+	"github.com/ronigooja/Cylo/internal/control"
+	"github.com/ronigooja/Cylo/internal/memory"
+	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Cylo/internal/voice"
+)
+
+func main() {
+	if len(os.Args) > 1 {
+		if err := manageInstanceKey(os.Args[1], os.Args[2:]); err != nil {
+			log.Printf("instance key rotation failed: %v", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if err := run(); err != nil {
+		log.Printf("cylo-server stopped: %v", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	addr := env("CYLO_LISTEN_ADDR", "127.0.0.1:8787")
+	dbPath := strings.TrimSpace(os.Getenv("CYLO_DATABASE_PATH"))
+	if dbPath == "" {
+		return errors.New("CYLO_DATABASE_PATH is required")
+	}
+	profiles, err := loadProfiles(os.Getenv("CYLO_RUNTIME_PROFILES"))
+	if err != nil {
+		return err
+	}
+	memoryRunner, err := loadMemoryRunnerCredentialFromEnv()
+	if err != nil {
+		return err
+	}
+	instanceKey := strings.TrimSpace(os.Getenv("CYLO_INSTANCE_KEY"))
+	runnerToken := os.Getenv("CYLO_RUNNER_TOKEN")
+	if runnerToken != "" && !validBearer(runnerToken) {
+		return errors.New("CYLO_RUNNER_TOKEN must be a 32-byte base64url bearer")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	store, err := storage.Open(ctx, storage.Config{Path: dbPath})
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if err = storage.RegisterCoreMigrations(store); err != nil {
+		return err
+	}
+	if err = control.RegisterInstanceMaintenanceMigration(store); err != nil {
+		return err
+	}
+	pushSender, err := configuredPushSender()
+	if err != nil {
+		return err
+	}
+	cfg := control.Config{
+		RunnerToken:        runnerToken,
+		RunnerID:           env("CYLO_RUNNER_ID", "configured-runner"),
+		RunnerWorkspaceIDs: splitEnv("CYLO_RUNNER_WORKSPACES", "default"),
+		RunnerScopes:       splitEnv("CYLO_RUNNER_SCOPES", "runner:claim,runner:observe,runner:control:read"),
+		InstanceScopes:     optionalSplitEnv("CYLO_INSTANCE_SCOPES"),
+		DefaultProfileID:   strings.TrimSpace(os.Getenv("CYLO_DEFAULT_PROFILE_ID")),
+		Profiles:           profiles,
+		PushSender:         pushSender,
+	}
+	server, err := composeControlServer(store, cfg, voice.Config{GatewayURL: os.Getenv("CYLO_VOICE_GATEWAY_URL"), GatewayAPIKey: os.Getenv("CYLO_VOICE_GATEWAY_API_KEY")}, capabilities.Config{
+		AvailableCapabilityIDs: splitEnv("CYLO_AVAILABLE_CAPABILITY_IDS", ""),
+		RuntimeBackend:         strings.TrimSpace(os.Getenv("CYLO_CAPABILITY_RUNTIME_BACKEND")),
+	}, memory.DerivedConfig{BackupDeleteManifestPath: strings.TrimSpace(os.Getenv("CYLO_BACKUP_DELETE_MANIFEST_PATH"))})
+	if err != nil {
+		return err
+	}
+	if err = store.Migrate(ctx); err != nil {
+		return err
+	}
+	if _, _, err = control.InitializeInstanceAuth(ctx, store, instanceKey); err != nil {
+		return err
+	}
+	if runnerToken != "" {
+		if err = control.RegisterRunnerCredentialIfMissing(ctx, store, runnerToken, env("CYLO_RUNNER_ID", "configured-runner"), splitEnv("CYLO_RUNNER_WORKSPACES", "default"), splitEnv("CYLO_RUNNER_SCOPES", "runner:claim,runner:observe,runner:control:read")); err != nil {
+			return err
+		}
+	}
+	if memoryRunner.Enabled {
+		if err = registerMemoryRunnerCredential(ctx, store, memoryRunner); err != nil {
+			return err
+		}
+	}
+	httpServer := &http.Server{
+		Addr:              addr,
+		Handler:           server.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      0, // SSE streams are bounded by request context and shutdown.
+		IdleTimeout:       90 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	log.Printf("cylo-server listening on %s", listener.Addr())
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- httpServer.Serve(listener)
+	}()
+	pushStop := make(chan struct{})
+	if pushSender != nil {
+		go runPushWorker(pushStop, server)
+	}
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	select {
+	case err = <-serveErr:
+		close(pushStop)
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-signals:
+		close(pushStop)
+	}
+	shutdown, stop := context.WithTimeout(context.Background(), 20*time.Second)
+	defer stop()
+	if err = httpServer.Shutdown(shutdown); err != nil {
+		_ = httpServer.Close()
+		return err
+	}
+	if err = <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
+
+func configuredPushSender() (control.PushSender, error) {
+	envName := strings.TrimSpace(os.Getenv("CYLO_APNS_ENVIRONMENT"))
+	teamID := strings.TrimSpace(os.Getenv("CYLO_APNS_TEAM_ID"))
+	keyID := strings.TrimSpace(os.Getenv("CYLO_APNS_KEY_ID"))
+	topic := strings.TrimSpace(os.Getenv("CYLO_APNS_TOPIC"))
+	keyPath := strings.TrimSpace(os.Getenv("CYLO_APNS_PRIVATE_KEY_PATH"))
+	configured := 0
+	for _, value := range []string{envName, teamID, keyID, topic, keyPath} {
+		if value != "" {
+			configured++
+		}
+	}
+	if configured == 0 {
+		return nil, nil
+	}
+	if configured != 5 {
+		return nil, errors.New("APNs configuration requires environment, team ID, key ID, topic, and private key path")
+	}
+	key, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, errors.New("could not read deployment-provided APNs private key")
+	}
+	sender, err := control.NewAPNSSender(control.APNSConfig{Environment: envName, TeamID: teamID, KeyID: keyID, Topic: topic, PrivateKey: key})
+	if err != nil {
+		return nil, err
+	}
+	return sender, nil
+}
+
+func runPushWorker(stop <-chan struct{}, controlServer *control.Server) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			workCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			if err := controlServer.DispatchPushDeliveries(workCtx, 50); err != nil {
+				log.Printf("push delivery worker failed: %v", err)
+			}
+			cancel()
+		}
+	}
+}
+
+func loadProfiles(raw string) (map[string]control.RuntimeProfile, error) {
+	profiles := map[string]control.RuntimeProfile{}
+	if strings.TrimSpace(raw) == "" {
+		return profiles, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &profiles); err != nil {
+		return nil, errors.New("CYLO_RUNTIME_PROFILES must be a JSON object keyed by profile ID")
+	}
+	return profiles, nil
+}
+
+func env(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func splitEnv(name, fallback string) []string {
+	value := env(name, fallback)
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func optionalSplitEnv(name string) []string {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func validBearer(value string) bool {
+	bytes, err := base64.RawURLEncoding.DecodeString(value)
+	return err == nil && len(bytes) == 32 && base64.RawURLEncoding.EncodeToString(bytes) == value
+}

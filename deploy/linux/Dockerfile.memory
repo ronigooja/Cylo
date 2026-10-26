@@ -1,0 +1,21 @@
+ARG GO_BUILDER_IMAGE=golang:1.26.4-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b
+ARG PYTHON_IMAGE=python:3.11-slim-bookworm@sha256:f06d01d4ba3f8ad5af45a3ec87df19c1d317d8e8961edc0fabda61811af6f7cf
+
+FROM ${GO_BUILDER_IMAGE} AS secret-entrypoint
+WORKDIR /src
+COPY deploy/linux/secret-entrypoint.go ./secret-entrypoint.go
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false -ldflags='-s -w' -o /out/cylo-secret-entrypoint ./secret-entrypoint.go
+
+FROM ${PYTHON_IMAGE}
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    FASTEMBED_CACHE_PATH=/var/lib/cylo/memory/models \
+    MEM0_TELEMETRY=false
+WORKDIR /app
+COPY services/memory/pyproject.toml /app/services/memory/pyproject.toml
+RUN pip install --no-cache-dir fastembed==0.9.0 mem0ai==2.2.1 qdrant-client==1.19.1
+COPY services /app/services
+COPY --from=secret-entrypoint --chown=65532:65532 /out/cylo-secret-entrypoint /usr/local/bin/cylo-secret-entrypoint
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/cylo-secret-entrypoint"]
+CMD ["python", "-m", "services.memory.worker"]

@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "roots": {
+    "cylo": "/var/lib/cylo"
+  },
+  "service_config_paths": [],
+  "artifact_paths": [],
+  "persistent_volume_paths": [],
+  "secret_refs": []
+}

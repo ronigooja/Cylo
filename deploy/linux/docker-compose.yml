@@ -1,0 +1,118 @@
+name: cylo
+
+services:
+  cylo-server:
+    image: ${CYLO_SERVER_IMAGE:?set CYLO_SERVER_IMAGE to an immutable release tag}
+    user: "65532:65532"
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: 2.0
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    ports:
+      - "127.0.0.1:${CYLO_SERVER_PORT:-8787}:8787"
+    environment:
+      CYLO_LISTEN_ADDR: 0.0.0.0:8787
+      CYLO_DATABASE_PATH: /var/lib/cylo/server/data/cylo.sqlite
+      CYLO_RUNTIME_PROFILES: ${CYLO_RUNTIME_PROFILES:?set server-selected runtime profiles}
+      CYLO_DEFAULT_PROFILE_ID: ${CYLO_DEFAULT_PROFILE_ID:?set default runtime profile}
+      CYLO_RUNNER_ID: ${CYLO_RUNNER_ID:-configured-runner}
+      CYLO_RUNNER_WORKSPACES: ${CYLO_RUNNER_WORKSPACES:-default}
+      CYLO_RUNNER_SCOPES: ${CYLO_RUNNER_SCOPES:-runner:claim,runner:observe,runner:control:read}
+      CYLO_CAPABILITY_RUNTIME_BACKEND: ${CYLO_CAPABILITY_RUNTIME_BACKEND:-}
+      CYLO_AVAILABLE_CAPABILITY_IDS: ${CYLO_AVAILABLE_CAPABILITY_IDS:-}
+      CYLO_MEMORY_RUNNER_TOKEN_FILE: /run/secrets/memory_runner_token
+      CYLO_MEMORY_RUNNER_ID: ${CYLO_MEMORY_RUNNER_ID:-memory-worker}
+      CYLO_MEMORY_RUNNER_WORKSPACES: ${CYLO_MEMORY_RUNNER_WORKSPACES:-default}
+      CYLO_MEMORY_RUNNER_SCOPES: memory:jobs:claim,memory:jobs:complete,memory:propose
+      CYLO_VOICE_GATEWAY_URL: ${CYLO_VOICE_GATEWAY_URL:-}
+      CYLO_SECRET_FILE_MAP: CYLO_INSTANCE_KEY=/run/secrets/instance_key,CYLO_RUNNER_TOKEN=/run/secrets/runner_token
+    entrypoint: ["/usr/local/bin/cylo-secret-entrypoint"]
+    command: ["/usr/local/bin/cylo-server"]
+    volumes:
+      - type: bind
+        source: ${CYLO_SERVER_DATA_ROOT:?set a private server authority root}
+        target: /var/lib/cylo/server
+    secrets:
+      - source: instance_key
+        target: instance_key
+      - source: runner_token
+        target: runner_token
+      - source: memory_runner_token
+        target: memory_runner_token
+    networks:
+      - default
+
+  qdrant:
+    image: qdrant/qdrant:v1.19.1@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10
+    restart: unless-stopped
+    read_only: true
+    user: "1000:1000"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 2g
+    cpus: 2.0
+    tmpfs:
+      - /qdrant/storage:rw,noexec,nosuid,nodev,size=2g,mode=0700,uid=1000,gid=1000
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    environment:
+      QDRANT__STORAGE__SNAPSHOTS_PATH: /qdrant/storage/snapshots
+
+  cylo-memory-worker:
+    image: ${CYLO_MEMORY_WORKER_IMAGE:?set an immutable memory worker image tag}
+    user: "65532:65532"
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 3g
+    cpus: 2.0
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
+    environment:
+      HOME: /var/lib/cylo/memory
+      CYLO_SECRET_FILE_MAP: CYLO_RUNNER_TOKEN=/run/secrets/memory_runner_token,CYLO_MEM0_LLM_API_KEY=/run/secrets/mem0_llm_api_key
+      CYLO_CONTROL_URL: http://cylo-server:8787
+      CYLO_QDRANT_URL: http://qdrant:6333
+      CYLO_QDRANT_COLLECTION: cylo_memory_v1_paraphrase_multilingual_minilm_l12_384_faf4aa42
+      CYLO_MEM0_COLLECTION: cylo_mem0_v1
+      CYLO_MEM0_LLM_PROVIDER: ${CYLO_MEM0_LLM_PROVIDER:-openai}
+      CYLO_MEM0_LLM_MODEL: ${CYLO_MEM0_LLM_MODEL:?set a deployment-selected memory model}
+      CYLO_MEM0_LLM_BASE_URL: ${CYLO_MEM0_LLM_BASE_URL:?set the existing external model gateway URL}
+      CYLO_MEMORY_MODEL_CACHE: /var/lib/cylo/memory/models
+      CYLO_MEM0_HISTORY_DB: /var/lib/cylo/memory/mem0-history.sqlite
+    volumes:
+      - type: bind
+        source: ${CYLO_MEMORY_DATA_ROOT:?set a private memory data root}
+        target: /var/lib/cylo/memory
+    secrets:
+      - source: memory_runner_token
+        target: memory_runner_token
+      - source: mem0_llm_api_key
+        target: mem0_llm_api_key
+    depends_on:
+      - qdrant
+      - cylo-server
+
+networks:
+  default:
+    name: cylo
+    external: true
+
+secrets:
+  instance_key:
+    file: ${CYLO_INSTANCE_KEY_FILE:?set a private instance key file path}
+  runner_token:
+    file: ${CYLO_RUNNER_TOKEN_FILE:?set a private runner token file path}
+  memory_runner_token:
+    file: ${CYLO_MEMORY_RUNNER_TOKEN_FILE:?set a distinct memory runner token file path}
+  mem0_llm_api_key:
+    file: ${CYLO_MEM0_LLM_API_KEY_FILE:?set a deployment-provided provider secret file path}

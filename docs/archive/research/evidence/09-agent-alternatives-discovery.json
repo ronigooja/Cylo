@@ -1,0 +1,161 @@
+{
+  "retrieved_at": "2026-10-21T15:51:20.539672+00:00",
+  "results": [
+    {
+      "full_name": "OrchestratorInc/agent-orchestrator",
+      "html_url": "https://github.com/OrchestratorInc/agent-orchestrator",
+      "description": "Open-source (Apache-2.0) orchestrator for Claude Code, Codex & 30+ coding agents. Plan, run and supervise agent teams from task to merged PR. Desktop (macOS, Windows, Linux) + iPhone & Android apps.",
+      "pushed_at": "2026-10-21T15:50:23Z",
+      "updated_at": "2026-10-21T15:42:24Z",
+      "archived": false,
+      "default_branch": "main",
+      "license": {
+        "key": "apache-2.0",
+        "name": "Apache License 2.0",
+        "spdx_id": "Apache-2.0",
+        "url": "https://api.github.com/licenses/apache-2.0",
+        "node_id": "MDc6TGljZW5zZTI="
+      }
+    },
+    {
+      "full_name": "BloopAI/vibe-kanban",
+      "html_url": "https://github.com/BloopAI/vibe-kanban",
+      "description": "Get 10X more out of Claude Code, Codex or any coding agent",
+      "pushed_at": "2026-09-19T06:52:48Z",
+      "updated_at": "2026-10-21T14:18:54Z",
+      "archived": false,
+      "default_branch": "main",
+      "license": {
+        "key": "apache-2.0",
+        "name": "Apache License 2.0",
+        "spdx_id": "Apache-2.0",
+        "url": "https://api.github.com/licenses/apache-2.0",
+        "node_id": "MDc6TGljZW5zZTI="
+      }
+    },
+    {
+      "full_name": "slopus/happy",
+      "html_url": "https://github.com/slopus/happy",
+      "description": "Orchestrate Claude, Codex and Grok in one app. Open-source (MIT), reuses the subscriptions you already pay for.",
+      "pushed_at": "2026-10-21T13:24:55Z",
+      "updated_at": "2026-10-21T15:09:49Z",
+      "archived": false,
+      "default_branch": "main",
+      "license": {
+        "key": "mit",
+        "name": "MIT License",
+        "spdx_id": "MIT",
+        "url": "https://api.github.com/licenses/mit",
+        "node_id": "MDc6TGljZW5zZTEz"
+      }
+    },
+    {
+      "full_name": "tiann/hapi",
+      "html_url": "https://github.com/tiann/hapi",
+      "description": "App for Codex / Claude Code / Pi / OpenCode / Kimi Code / Grok Build, vibe coding anytime, anywhere",
+      "pushed_at": "2026-10-19T23:21:22Z",
+      "updated_at": "2026-10-21T14:25:48Z",
+      "archived": false,
+      "default_branch": "main",
+      "license": {
+        "key": "agpl-3.0",
+        "name": "GNU Affero General Public License v3.0",
+        "spdx_id": "AGPL-3.0",
+        "url": "https://api.github.com/licenses/agpl-3.0",
+        "node_id": "MDc6TGljZW5zZTE="
+      }
+    },
+    {
+      "full_name": "OpenHands/OpenHands",
+      "html_url": "https://github.com/OpenHands/OpenHands",
+      "description": "🙌 OpenHands: AI-Driven Development",
+      "pushed_at": "2026-10-21T15:43:23Z",
+      "updated_at": "2026-10-21T15:30:27Z",
+      "archived": false,
+      "default_branch": "main",
+      "license": {
+        "key": "mit",
+        "name": "MIT License",
+        "spdx_id": "MIT",
+        "url": "https://api.github.com/licenses/mit",
+        "node_id": "MDc6TGljZW5zZTEz"
+      }
+    },
+    {
+      "full_name": "openclaw/openclaw",
+      "html_url": "https://github.com/openclaw/openclaw",
+      "description": "The AI that really does things. Any OS. Any Platform. The lobster way. 🦞 ",
+      "pushed_at": "2026-10-21T15:50:57Z",
+      "updated_at": "2026-10-21T15:49:41Z",
+      "archived": false,
+      "default_branch": "main",
+      "license": {
+        "key": "mit",
+        "name": "MIT License",
+        "spdx_id": "MIT",
+        "url": "https://api.github.com/licenses/mit",
+        "node_id": "MDc6TGljZW5zZTEz"
+      }
+    },
+    {
+      "full_name": "awslabs/cli-agent-orchestrator",
+      "html_url": "https://github.com/awslabs/cli-agent-orchestrator",
+      "description": "Multi-agent orchestration for AI coding CLIs — Claude Code, Kiro, Codex, and more, coordinated in isolated tmux sessions",
+      "pushed_at": "2026-10-21T12:26:19Z",
+      "updated_at": "2026-10-21T14:11:14Z",
+      "archived": false,
+      "default_branch": "main",
+      "license": {
+        "key": "apache-2.0",
+        "name": "Apache License 2.0",
+        "spdx_id": "Apache-2.0",
+        "url": "https://api.github.com/licenses/apache-2.0",
+        "node_id": "MDc6TGljZW5zZTI="
+      }
+    },
+    {
+      "search": "codex orchestrator worktree",
+      "error": "HTTP Error 403: rate limit exceeded"
+    },
+    {
+      "search": "codex supervisor worker cli",
+      "error": "HTTP Error 403: rate limit exceeded"
+    },
+    {
+      "search": "codex handoff remote cli",
+      "error": "HTTP Error 403: rate limit exceeded"
+    }
+  ],
+  "clones": [
+    {
+      "repo": "OrchestratorInc/agent-orchestrator",
+      "path": "/tmp/cylo-alt-ao",
+      "head": "7c83bd68c1e60c85b6a90e3ffa1340c859e4a3ff",
+      "commit": "2026-10-21T21:11:36+05:30 feat: switch agents mid-session in chat and terminal (#6588)"
+    },
+    {
+      "repo": "BloopAI/vibe-kanban",
+      "path": "/tmp/cylo-alt-vk",
+      "head": "d5cbb5380fa0b32e98ef9b8d987f63decce4be3a",
+      "commit": "2026-09-19T08:51:27+02:00 fix: Tanstack router api fix (#3464)"
+    },
+    {
+      "repo": "slopus/happy",
+      "path": "/tmp/cylo-alt-happy",
+      "head": "40bad529101f7064c9e9d47013b2f77ff1d6a309",
+      "commit": "2026-10-21T13:22:45+00:00 docs(ios): record Clip rollout and preserve ordinary launch routing"
+    },
+    {
+      "repo": "tiann/hapi",
+      "path": "/tmp/cylo-alt-hapi",
+      "head": "5d8deb201189dc1f183c4f5bf38c87ec4d34dd70",
+      "commit": "2026-10-20T07:22:14+08:00 fix(web): allow pasting non-image files into the composer (#2026)"
+    },
+    {
+      "repo": "openclaw/openclaw",
+      "path": "/tmp/cylo-alt-openclaw",
+      "head": "60bc1ec1cd5cf790b9d984e5d1f30404f3008c8f",
+      "commit": "2026-10-21T08:48:59-07:00 fix(codex): count rejected tool attempts (#168830)"
+    }
+  ]
+}

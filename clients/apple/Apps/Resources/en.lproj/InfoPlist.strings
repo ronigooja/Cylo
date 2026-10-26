@@ -1,0 +1,3 @@
+"NSMicrophoneUsageDescription" = "Cylo uses the microphone for live voice conversations.";
+"NSLocalNetworkUsageDescription" = "Cylo connects to your private server on the local network.";
+"NSCameraUsageDescription" = "Cylo uses the camera to scan your server connection QR code.";

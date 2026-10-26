@@ -1,0 +1,45 @@
+import XCTest
+import Foundation
+@testable import CyloKit
+@testable import CyloUI
+
+private struct IndependentVoiceCredential: BearerTokenProviding {
+    func bearerToken() throws -> String { "synthetic-independent-voice-token" }
+}
+
+final class VoiceLifecycleIndependentTests: XCTestCase {
+    @MainActor
+    func testHeartbeatFailureRequiresCurrentEpochAPIAndUncancelledTask() async throws {
+        let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        let api = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: IndependentVoiceCredential())
+        let otherAPI = try APIClient(serverURL: URL(string: "https://cylo.example")!, credentials: IndependentVoiceCredential())
+        let session = VoiceSessionResponse(voiceSessionId: "same-session", generation: 4, state: "active", answerSdp: "")
+        let oldEpoch = model.installVoiceSessionForTesting(session, api: api)
+        let epoch = model.installVoiceSessionForTesting(session, api: api)
+        var localStops = 0
+        var hangups = 0
+        model.voiceLocalMediaStopObserverForTesting = { localStops += 1 }
+        model.voiceHangupOverrideForTesting = { _ in
+            hangups += 1
+            return VoiceOperationResponse(ok: true, state: "ended", upstreamTermination: "verified", poolBlocked: false)
+        }
+        await model.handleVoiceHeartbeatFailureForTesting(sessionID: session.voiceSessionId, api: api, mediaEpoch: oldEpoch, generation: model.connectionEpoch, message: "old epoch")
+        await model.handleVoiceHeartbeatFailureForTesting(sessionID: session.voiceSessionId, api: otherAPI, mediaEpoch: epoch, generation: model.connectionEpoch, message: "old API")
+        let cancelled = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            await model.handleVoiceHeartbeatFailureForTesting(sessionID: session.voiceSessionId, api: api, mediaEpoch: epoch, generation: model.connectionEpoch, message: "cancelled")
+        }
+        await cancelled.value
+        XCTAssertEqual(localStops, 0)
+        XCTAssertEqual(hangups, 0)
+        XCTAssertTrue(model.canContinueVoiceAttemptForTesting(epoch))
+        guard case .active = model.voiceStatus else { return XCTFail("stale/cancelled failure must leave media active") }
+
+        await model.handleVoiceHeartbeatFailureForTesting(sessionID: session.voiceSessionId, api: api, mediaEpoch: epoch, generation: model.connectionEpoch, message: "current failure")
+        XCTAssertEqual(localStops, 1, "positive control must execute the same guarded handler")
+        XCTAssertEqual(hangups, 1)
+        XCTAssertFalse(model.canContinueVoiceAttemptForTesting(epoch))
+        XCTAssertFalse(model.canEndVoiceSession)
+        guard case .interrupted = model.voiceStatus else { return XCTFail("current failure must stop local media") }
+    }
+}
