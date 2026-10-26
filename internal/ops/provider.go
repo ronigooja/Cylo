@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
 
 const DefaultProviderSecretPath = "/etc/cylo/runner-secrets/cliproxyapi-api-key"
@@ -55,8 +57,8 @@ func ValidateProviderBaseURL(raw string) error {
 	if err != nil || u.Scheme == "" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return errors.New("provider URL must be an absolute HTTP(S) URL without credentials, query, or fragment")
 	}
-	if u.Scheme != "https" && u.Scheme != "http" {
-		return errors.New("provider URL must use HTTP or HTTPS")
+	if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1")) {
+		return errors.New("provider URL must use HTTPS or local HTTP")
 	}
 	return nil
 }
@@ -71,32 +73,7 @@ func WriteSecretAtomic(path string, secret []byte) error {
 	if len(secret) == 0 {
 		return errors.New("provider token is empty")
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".provider-secret-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if err = tmp.Chmod(0o600); err == nil {
-		_, err = tmp.Write(secret)
-	}
-	if err == nil {
-		err = tmp.Sync()
-	}
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	if err = os.Rename(tmpName, path); err != nil {
-		return err
-	}
-	return syncDir(dir)
+	return writeFileAtomic(path, secret, 0o600)
 }
 
 // WriteAOEnvAtomic renders only the AO external-provider variables. The token
@@ -106,10 +83,28 @@ func WriteAOEnvAtomic(path string, c ProviderConfig) error {
 	if err != nil {
 		return err
 	}
-	contents := "AO_CODEX_EXTERNAL_BASE_URL=" + strconv.Quote(c.BaseURL) + "\n" +
-		"AO_CODEX_EXTERNAL_API_KEY_FILE=" + strconv.Quote(c.SecretPath) + "\n" +
-		"AO_CODEX_EXTERNAL_MODEL=" + strconv.Quote(c.Model) + "\n"
-	return writeFileAtomic(path, []byte(contents), 0o600)
+	old, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	updates := map[string]string{"AO_CODEX_EXTERNAL_BASE_URL": c.BaseURL, "AO_CODEX_EXTERNAL_API_KEY_FILE": c.SecretPath, "AO_CODEX_EXTERNAL_MODEL": c.Model}
+	lines := strings.Split(string(old), "\n")
+	kept := make([]string, 0, len(lines)+3)
+	for _, line := range lines {
+		key, _, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if ok {
+			if _, replace := updates[key]; replace {
+				continue
+			}
+		}
+		if line != "" {
+			kept = append(kept, line)
+		}
+	}
+	for _, key := range []string{"AO_CODEX_EXTERNAL_BASE_URL", "AO_CODEX_EXTERNAL_API_KEY_FILE", "AO_CODEX_EXTERNAL_MODEL"} {
+		kept = append(kept, key+"="+strconv.Quote(updates[key]))
+	}
+	return writeFileAtomic(path, []byte(strings.Join(kept, "\n")+"\n"), 0o600)
 }
 
 // WriteFileAtomic restores or writes a private deployment file with the same
@@ -119,6 +114,9 @@ func WriteFileAtomic(path string, data []byte, mode os.FileMode) error {
 }
 
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	return writeFileAtomicOwned(path, data, mode, -1, -1)
+}
+func writeFileAtomicOwned(path string, data []byte, mode os.FileMode, uid, gid int) error {
 	if path == "" || !filepath.IsAbs(path) {
 		return errors.New("configuration path must be absolute")
 	}
@@ -132,6 +130,20 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
+	if info, statErr := os.Stat(path); statErr == nil {
+		if st, ok := info.Sys().(*syscall.Stat_t); ok {
+			if err = tmp.Chown(int(st.Uid), int(st.Gid)); err != nil {
+				tmp.Close()
+				return err
+			}
+		}
+	}
+	if uid >= 0 {
+		if err = tmp.Chown(uid, gid); err != nil {
+			tmp.Close()
+			return err
+		}
+	}
 	if err = tmp.Chmod(mode); err == nil {
 		_, err = tmp.Write(data)
 	}
@@ -177,14 +189,23 @@ func Probe(ctx context.Context, c ProviderConfig, client *http.Client) ProbeResu
 	if err != nil {
 		return ProbeResult{Model: c.Model, ErrorCategory: "invalid_configuration"}
 	}
-	secret, err := os.ReadFile(normalized.SecretPath)
+	secret := []byte(normalized.Secret)
+	if len(secret) == 0 {
+		secret, err = os.ReadFile(normalized.SecretPath)
+	}
 	secret = []byte(strings.TrimSpace(string(secret)))
-	if err != nil || len(secret) == 0 {
+	if err != nil || !validToken(string(secret)) {
 		return ProbeResult{Model: normalized.Model, ErrorCategory: "credential_unavailable"}
 	}
-	if client == nil {
-		client = http.DefaultClient
+	bounded := http.Client{Timeout: 8 * time.Second}
+	if client != nil {
+		bounded = *client
+		if bounded.Timeout <= 0 || bounded.Timeout > 8*time.Second {
+			bounded.Timeout = 8 * time.Second
+		}
 	}
+	bounded.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	client = &bounded
 	endpoint := normalized.BaseURL + "/models"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -244,8 +265,20 @@ func ReadSecret(prompt io.Writer, read func() ([]byte, error)) ([]byte, error) {
 		return nil, err
 	}
 	secret = []byte(strings.TrimSpace(string(secret)))
-	if len(secret) == 0 {
-		return nil, fmt.Errorf("provider token is empty")
+	if !validToken(string(secret)) {
+		return nil, fmt.Errorf("provider token is empty or contains whitespace/control characters")
 	}
 	return secret, nil
+}
+
+func validToken(token string) bool {
+	if token == "" {
+		return false
+	}
+	for _, r := range token {
+		if r <= 32 || r == 127 {
+			return false
+		}
+	}
+	return true
 }

@@ -4,12 +4,15 @@ package ops
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 type Mode string
@@ -57,6 +60,8 @@ type InspectConfig struct {
 	Services             []string
 	ComposeProject       string
 	ComposeFile          string
+	ComposeEnv           string
+	ComposeOverride      string
 	SecretPath           string
 	ProviderBaseURL      string
 	ProviderModel        string
@@ -74,7 +79,7 @@ func DetectMode() Mode {
 	if _, err := os.Stat("/run/systemd/system"); err == nil {
 		return ModeSystemd
 	}
-	return ModeCompose
+	return ModeUnknown
 }
 
 func (m Manager) Inspect(ctx context.Context, cfg InspectConfig) Status {
@@ -86,7 +91,7 @@ func (m Manager) Inspect(ctx context.Context, cfg InspectConfig) Status {
 	if len(services) == 0 {
 		services = []string{"cylo-compose.service", "cylo-ao.service", "cylo-runner.service"}
 	}
-	result := Status{Mode: mode, Provider: ProviderStatus{BaseURL: redactURL(cfg.ProviderBaseURL), Model: cfg.ProviderModel, ConfigSource: cfg.ProviderConfigSource, LastCheck: cfg.ProviderLastCheck}}
+	result := Status{Mode: mode, Provider: ProviderStatus{BaseURL: redactURL(cfg.ProviderBaseURL), Model: safeModel(cfg.ProviderModel), ConfigSource: cfg.ProviderConfigSource, LastCheck: cfg.ProviderLastCheck}}
 	for _, name := range services {
 		result.Services = append(result.Services, m.service(ctx, mode, name, cfg))
 	}
@@ -99,24 +104,50 @@ func (m Manager) service(ctx context.Context, mode Mode, name string, cfg Inspec
 	var out []byte
 	var err error
 	if mode == ModeCompose {
-		args := []string{"compose"}
-		if cfg.ComposeProject != "" {
-			args = append(args, "--project-name", cfg.ComposeProject)
+		args := composeArgs(cfg.ComposeProject, cfg.ComposeFile)
+		if cfg.ComposeEnv != "" {
+			if _, e := os.Stat(cfg.ComposeEnv); e == nil {
+				args = append(args, "--env-file", cfg.ComposeEnv)
+			}
 		}
-		if cfg.ComposeFile != "" {
-			args = append(args, "--file", cfg.ComposeFile)
+		if cfg.ComposeOverride != "" {
+			if _, e := os.Stat(cfg.ComposeOverride); e == nil {
+				args = append(args, "--file", cfg.ComposeOverride)
+			}
 		}
-		args = append(args, "ps", "--status", "running")
+		args = append(args, "ps", "--all", "--format", "json", name)
 		out, err = m.Run(ctx, "docker", args...)
+		if err != nil {
+			return s
+		}
+		var rows []struct {
+			Service string
+			State   string
+		}
+		if json.Unmarshal(out, &rows) != nil {
+			var row struct {
+				Service string
+				State   string
+			}
+			if json.Unmarshal(out, &row) == nil {
+				rows = append(rows, row)
+			}
+		}
+		for _, row := range rows {
+			if row.Service == name {
+				s.State = safeState(row.State)
+				return s
+			}
+		}
+		s.State = "missing"
+		return s
 	} else {
 		out, err = m.Run(ctx, "systemctl", "is-active", name)
 	}
-	if err == nil && strings.TrimSpace(string(out)) != "" {
-		s.State = strings.TrimSpace(strings.Split(string(out), "\n")[0])
+	if strings.TrimSpace(string(out)) != "" {
+		s.State = safeState(strings.TrimSpace(string(out)))
 	}
-	if err != nil && strings.TrimSpace(string(out)) != "" {
-		s.State = strings.TrimSpace(strings.Split(string(out), "\n")[0])
-	}
+	_ = err
 	return s
 }
 
@@ -131,7 +162,9 @@ func inspectSecret(path string) SecretStatus {
 	}
 	s.Exists = info.Mode().IsRegular()
 	s.Mode = fmt.Sprintf("%04o", info.Mode().Perm())
-	s.Owner = "current-user" // owner identity is intentionally not resolved into status output
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		s.Owner = fmt.Sprintf("%d:%d", st.Uid, st.Gid)
+	}
 	return s
 }
 
@@ -141,6 +174,11 @@ func (m Manager) Reload(ctx context.Context, mode Mode, services []string, compo
 	}
 	if len(services) == 0 {
 		services = []string{"cylo-ao.service", "cylo-runner.service"}
+	}
+	for _, service := range services {
+		if !validService(service) {
+			return errors.New("invalid service name")
+		}
 	}
 	switch mode {
 	case ModeSystemd:
@@ -153,14 +191,8 @@ func (m Manager) Reload(ctx context.Context, mode Mode, services []string, compo
 		}
 		return nil
 	case ModeCompose:
-		args := []string{"compose"}
-		if composeProject != "" {
-			args = append(args, "--project-name", composeProject)
-		}
-		if composeFile != "" {
-			args = append(args, "--file", composeFile)
-		}
-		args = append(args, "up", "-d", "--no-build")
+		args := append(composeArgs(composeProject, composeFile), "up", "-d", "--no-build", "--no-deps", "--force-recreate")
+		args = append(args, services...)
 		if _, err := m.Run(ctx, "docker", args...); err != nil {
 			return commandError("docker compose up", err)
 		}
@@ -173,16 +205,26 @@ func (m Manager) Reload(ctx context.Context, mode Mode, services []string, compo
 func commandError(action string, err error) error { return fmt.Errorf("%s failed: %w", action, err) }
 
 func redactURL(raw string) string {
-	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
 	}
-	// Keep the operator-visible endpoint while removing credentials/query/fragment.
-	if i := strings.IndexAny(raw, "?#"); i >= 0 {
-		raw = raw[:i]
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return "invalid"
 	}
-	if i := strings.Index(raw, "@"); i >= 0 {
-		raw = raw[i+1:]
+	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
+}
+func safeModel(raw string) string {
+	if len(raw) > 128 {
+		return "invalid"
+	}
+	for _, r := range raw {
+		if r < 32 || r == 127 {
+			return "invalid"
+		}
 	}
 	return raw
 }
@@ -192,4 +234,22 @@ func DefaultSecretPath(root string) string {
 		return "/etc/cylo/runner-secrets/cliproxyapi-api-key"
 	}
 	return filepath.Join(root, "runner-secrets", "cliproxyapi-api-key")
+}
+
+func composeArgs(project, file string) []string {
+	args := []string{"compose"}
+	if project != "" {
+		args = append(args, "--project-name", project)
+	}
+	if file != "" {
+		args = append(args, "--file", file)
+	}
+	return args
+}
+func safeState(raw string) string {
+	switch raw {
+	case "active", "inactive", "failed", "activating", "deactivating", "reloading", "running", "exited", "paused", "restarting", "dead", "created", "removing", "missing":
+		return raw
+	}
+	return "unknown"
 }
