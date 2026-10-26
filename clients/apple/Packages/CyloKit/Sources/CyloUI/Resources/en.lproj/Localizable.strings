@@ -426,3 +426,6 @@
 "Scan QR code" = "Scan QR code";
 "Camera access is disabled. Allow access in Settings or import a QR image." = "Camera access is disabled. Allow access in Settings or import a QR image.";
 "The camera is unavailable. Import a QR image instead." = "The camera is unavailable. Import a QR image instead.";
+"Connect without encryption?" = "Connect without encryption?";
+"The instance key could not be saved in Keychain." = "The instance key could not be saved in Keychain.";
+"The previous instance key could not be restored in Keychain. Reconnect with your server key." = "The previous instance key could not be restored in Keychain. Reconnect with your server key.";

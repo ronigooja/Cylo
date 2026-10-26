@@ -13,9 +13,12 @@ struct InstanceConnectionView: View {
     @State private var showingImageImport = false
     #if os(iOS)
     @State private var showingCamera = false
+    @State private var scannedConnection: InstallationConnection?
     #endif
     @State private var isDecoding = false
     @State private var confirmingClear = false
+    @State private var confirmingHTTP = false
+    @State private var insecureImport: InstallationConnection?
     @State private var importNotice: String?
 
     private var canConnect: Bool {
@@ -86,19 +89,33 @@ struct InstanceConnectionView: View {
         .frame(maxWidth: 460)
         .onAppear { loadDraft() }
         .onChange(of: model.pendingConnectionImport) { _, _ in loadDraft() }
-        .onDisappear { key = "" }
+        .onDisappear { key = ""; insecureImport = nil }
         .confirmationDialog(uiText("Clear saved key?"), isPresented: $confirmingClear) {
             Button(uiText("Clear saved key"), role: .destructive) { Task { await model.clearCredential(); address = model.serverAddress; key = "" } }
             Button(uiText("Cancel"), role: .cancel) {}
         } message: {
             Text(uiText("The saved key, queued local commands, caches, and drafts will be removed from this app. The shared server key stays valid on other devices. Running server tasks continue."))
         }
+        .alert(uiText("Connect without encryption?"), isPresented: $confirmingHTTP, presenting: insecureImport) { imported in
+            Button(uiText("Connect")) {
+                insecureImport = nil
+                Task { await connectImported(imported, allowHTTP: true) }
+            }
+            Button(uiText("Cancel"), role: .cancel) { insecureImport = nil }
+        } message: { imported in
+            Text(imported.serverURL.absoluteString + "\n\n" + uiText("HTTP sends your instance key without encryption. Use only a trusted private connection."))
+        }
         #if os(iOS)
-        .sheet(isPresented: $showingCamera) {
+        .sheet(isPresented: $showingCamera, onDismiss: {
+            if let imported = scannedConnection {
+                scannedConnection = nil
+                Task { await connectImported(imported) }
+            }
+        }) {
             InstallationCameraScanner { result in
                 showingCamera = false
                 switch result {
-                case .success(let imported): Task { await connectImported(imported) }
+                case .success(let imported): scannedConnection = imported
                 case .failure(let error): importNotice = uiText(error.localizedDescription)
                 }
             }
@@ -121,7 +138,12 @@ struct InstanceConnectionView: View {
     }
 
     @MainActor
-    private func connectImported(_ imported: InstallationConnection) async {
+    private func connectImported(_ imported: InstallationConnection, allowHTTP: Bool = false) async {
+        if imported.serverURL.scheme == "http", !allowHTTP {
+            insecureImport = imported
+            confirmingHTTP = true
+            return
+        }
         // Keep the locked address visible if the imported code targets another server.
         if !replacing || imported.serverURL.absoluteString == model.serverAddress {
             address = imported.serverURL.absoluteString

@@ -321,11 +321,26 @@ public final class CyloAppModel: ObservableObject {
             }
             let candidateAPI = try connectionAPI(url: candidate.serverURL, key: candidate.key)
             _ = try await candidateAPI.snapshot()
-            await endVoiceSession()
-            // This is a replacement, never a saved-server list. Pending local work is discarded.
-            try await removeLocalConnection()
             let store = try keyStore(url: candidate.serverURL)
+            let previousKey = try store.load()
+            // Keychain replacement is atomic. A denied write leaves the old workspace intact.
             try store.replace(candidate.key)
+            do {
+                guard try store.load() == candidate.key else {
+                    throw CyloError.persistence("The instance key could not be saved in Keychain.")
+                }
+                await endVoiceSession()
+                // Cleanup must use the old credential scope without deleting the newly saved key.
+                try await removeLocalConnection(preservingCredential: true, previousKey: previousKey)
+            } catch {
+                do {
+                    if let previousKey { try store.replace(previousKey) }
+                    else { try store.reset() }
+                } catch {
+                    throw CyloError.persistence("The previous instance key could not be restored in Keychain. Reconnect with your server key.")
+                }
+                throw error
+            }
             serverAddress = candidate.serverURL.absoluteString
             defaults.set(serverAddress, forKey: "cylo.instance.serverAddress")
             pendingConnectionImport = nil
@@ -350,7 +365,7 @@ public final class CyloAppModel: ObservableObject {
         } catch { notice = userMessage(error) }
     }
 
-    private func removeLocalConnection() async throws {
+    private func removeLocalConnection(preservingCredential: Bool = false, previousKey: InstanceKey? = nil) async throws {
         connectionCleanupWarning = nil
         // Unregister only this physical installation; the shared key and other devices stay valid.
         pushPreferenceEpoch &+= 1
@@ -370,12 +385,15 @@ public final class CyloAppModel: ObservableObject {
         try oldCache?.discard()
         if let url = try? ServerAddress.normalize(serverAddress) {
             let store = try keyStore(url: url)
-            if let key = try store.load() {
+            let cleanupKey: InstanceKey?
+            if preservingCredential { cleanupKey = previousKey }
+            else { cleanupKey = try store.load() }
+            if let key = cleanupKey {
                 let scope = try key.bearerToken()
                 if oldJournal == nil { try await CommandJournal(serverURL: url, credentialScope: scope).discard() }
                 if oldCache == nil { try SnapshotCache(serverURL: url, credentialScope: scope).discard() }
             }
-            try store.reset()
+            if !preservingCredential { try store.reset() }
             for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("cylo.apns.") && key.contains(url.absoluteString) {
                 defaults.removeObject(forKey: key)
             }

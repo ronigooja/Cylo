@@ -25,10 +25,19 @@ private final class InstanceURLProtocol: URLProtocol {
 private final class MemoryInstanceKeyStore: InstanceKeyStoring, @unchecked Sendable {
     var key: InstanceKey?
     var failWrites = false
-    func load() throws -> InstanceKey? { key }
+    var failNextWriteReadback = false
+    private var hideNextRead = false
+    func load() throws -> InstanceKey? {
+        if hideNextRead { hideNextRead = false; return nil }
+        return key
+    }
     func replace(_ key: InstanceKey) throws {
         if failWrites { throw CyloError.persistence("Simulated Keychain denial") }
         self.key = key
+        if failNextWriteReadback {
+            failNextWriteReadback = false
+            hideNextRead = true
+        }
     }
     func reset() throws { key = nil }
     func bearerToken() throws -> String {
@@ -241,6 +250,51 @@ final class InstanceConnectionTests: XCTestCase {
         XCTAssertEqual(try store.load(), oldKey)
         XCTAssertFalse(model.isBusy)
         XCTAssertFalse(model.notice?.contains(key(2)) ?? true)
+    }
+
+    @MainActor
+    func testKeychainReplacementFailurePreservesKeyDraftSnapshotAndQueuedCommands() async throws {
+        for failReadback in [false, true] {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let journal = try CommandJournal(fileURL: directory.appendingPathComponent("commands.json"))
+            let queued = PendingCommand(idempotencyKey: UUID().uuidString, kind: "task.create", expectedVersion: nil,
+                                        payload: .object(["title": .string("Queued work")]), createdAt: "now",
+                                        workspaceID: "default", expectedResourceType: "task", expectedResourceID: nil)
+            try await journal.append(queued)
+            let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+            let store = MemoryInstanceKeyStore()
+            let oldKey = try InstanceKey(key())
+            try store.replace(oldKey)
+            model.keyStoreOverrideForTesting = { _ in store }
+            model.connectionAPIOverrideForTesting = { url, credential, installation in
+                try APIClient(serverURL: url, credentials: credential, session: self.session(), installationID: installation)
+            }
+            let url = URL(string: "https://cylo.example")!
+            let api = try APIClient(serverURL: url, credentials: oldKey, session: session())
+            let snapshot = try JSONDecoder().decode(Snapshot.self, from: snapshotData)
+            await model.preparePendingCheckForTesting(api: api, journal: journal, snapshot: snapshot)
+            model.serverAddress = url.absoluteString
+            model.setAuthenticationForTesting(.connected)
+            model.updateTaskDraft("Keep this draft")
+            let epoch = model.connectionEpoch
+            store.failWrites = !failReadback
+            store.failNextWriteReadback = failReadback
+            let body = snapshotData
+            InstanceURLProtocol.handle = { _ in (200, body) }
+            let imported = try InstallationConnection(serverAddress: url.absoluteString, key: key(2))
+            let accepted = await model.connectImportedConnection(imported)
+            XCTAssertFalse(accepted)
+            XCTAssertEqual(try store.load(), oldKey)
+            XCTAssertEqual(model.serverAddress, url.absoluteString)
+            XCTAssertEqual(model.authentication, .connected)
+            XCTAssertEqual(model.newTaskDraft, "Keep this draft")
+            XCTAssertNotNil(model.snapshot)
+            XCTAssertEqual(model.connectionEpoch, epoch)
+            let remaining = try await journal.all()
+            XCTAssertEqual(remaining, [queued])
+            XCTAssertFalse(model.isBusy)
+        }
     }
 
     @MainActor

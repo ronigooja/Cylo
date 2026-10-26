@@ -426,3 +426,6 @@
 "Scan QR code" = "扫描二维码";
 "Camera access is disabled. Allow access in Settings or import a QR image." = "相机访问已关闭。请在设置中允许访问，或导入二维码图片。";
 "The camera is unavailable. Import a QR image instead." = "相机不可用。请导入二维码图片。";
+"Connect without encryption?" = "通过未加密连接继续？";
+"The instance key could not be saved in Keychain." = "实例密钥无法保存到钥匙串。";
+"The previous instance key could not be restored in Keychain. Reconnect with your server key." = "无法在钥匙串中恢复先前的实例密钥。请使用服务器密钥重新连接。";

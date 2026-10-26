@@ -82,6 +82,7 @@ public struct InstallationConnection: Equatable, Sendable {
 /// One Keychain item per normalized server address; no file-backed credential alternative.
 public protocol InstanceKeyStoring: BearerTokenProviding {
     func load() throws -> InstanceKey?
+    /// Atomically replace the credential; a thrown write must preserve the previous value.
     func replace(_ key: InstanceKey) throws
     func reset() throws
 }
