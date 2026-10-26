@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -110,7 +111,23 @@ func keyOperation(rotate bool, args []string, in io.Reader, out, errOut io.Write
 	options := ops.KeyOptions{DatabasePath: *db, OutputPath: *output, ServerURL: *server}
 	if rotate { result, err = ops.RotateKey(ctx, options) } else { result, err = ops.InitKey(ctx, options) }
 	if err != nil { return err }
-	return result.Display(out)
+	if err := result.Display(out); err != nil { return err }
+	if result.InstallationURL != "" { renderQR(ctx, result.InstallationURL, out) }
+	return nil
+}
+
+// renderQR keeps the one-time key presentation useful on a terminal while
+// retaining a complete installation link fallback for systems without
+// qrencode. It is called only by explicit key init/rotate actions.
+func renderQR(ctx context.Context, link string, out io.Writer) {
+	cmd := exec.CommandContext(ctx, "qrencode", "-t", "ANSIUTF8", "-o", "-", link)
+	data, err := cmd.Output()
+	if err == nil && len(data) > 0 {
+		_, _ = out.Write(data)
+		return
+	}
+	fmt.Fprintln(out, "二维码工具不可用；请手动导入完整安装链接：")
+	fmt.Fprintln(out, link)
 }
 
 func statusOperation(args []string, _ io.Reader, out, errOut io.Writer) error {
