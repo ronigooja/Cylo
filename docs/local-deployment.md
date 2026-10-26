@@ -56,7 +56,7 @@ The current source targets a fresh deployment with one shared instance key and n
 
 Settings display the current server and provide reconnect, replacement of that server's key, and local clearing. To move to another server, first clear the saved connection. Clearing or replacing removes the Keychain credential, cached snapshot, durable local queue, and drafts; running server tasks continue. Cylo attempts to revoke only this installation's push registration before clearing, and reports if the server is unreachable. Other installations and the shared instance key remain valid. Use HTTPS for an untrusted network; plain HTTP exposes the shared key in transit.
 
-This is a source candidate. CI, rollout, native interaction, multi-device push, and iPhone/iPad acceptance have not been established by the source changes. The records below describe prior installations and are not current setup instructions.
+This is a source candidate. GitHub-hosted Apple CI passed 76 Swift tests, the unsigned macOS archive, and the unsigned iOS build at `ede06a7`; Linux CI passed `go test ./...` and authorization race checks at `5679168`. See the master plan for exact source, commands, logs, and limits. Rollout, native interaction, multi-device push, and iPhone/iPad installation acceptance have not been established by these checks. The records below describe prior installations and are not current setup instructions.
 
 ### Historical installed owner-password release — 2026-10-25
 
