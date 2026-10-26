@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -126,9 +127,9 @@ func TestCreateWorkerDoesNotTrustAllowlistedCodeOnServerFailure(t *testing.T) {
 }
 
 func TestCreateWorkerTimeoutRemainsUnknownWithoutReplay(t *testing.T) {
-	requests := 0
+	var requests atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
+		requests.Add(1)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("read request body: %v", err)
@@ -150,8 +151,8 @@ func TestCreateWorkerTimeoutRemainsUnknownWithoutReplay(t *testing.T) {
 		ClientRequestID: "run-timeout", ProjectID: "safe-fixture", Harness: "opencode",
 		DisplayName: "bounded fixture", Prompt: "local fixture only",
 	})
-	if !errors.Is(err, ErrOutcomeUnknown) || requests != 1 {
-		t.Fatalf("error=%v requests=%d, want one unknown create request", err, requests)
+	if !errors.Is(err, ErrOutcomeUnknown) || requests.Load() != 1 {
+		t.Fatalf("error=%v requests=%d, want one unknown create request", err, requests.Load())
 	}
 	if strings.Contains(err.Error(), "do not expose this") || strings.Contains(err.Error(), "fixture-token") {
 		t.Fatalf("unsafe error detail escaped: %v", err)
