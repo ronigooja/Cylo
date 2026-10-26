@@ -18,7 +18,7 @@ type operation func(args []string, in io.Reader, out, errOut io.Writer) error
 // dispatch layer independent lets setup, provider and key flows share one
 // menu while remaining usable from scripts.
 var operations = map[string]operation{
-	"setup":           unavailable("setup"),
+	"setup":              unavailable("setup"),
 	"provider configure": unavailable("provider configure"),
 	"provider test":      unavailable("provider test"),
 	"key init":           unavailable("key init"),

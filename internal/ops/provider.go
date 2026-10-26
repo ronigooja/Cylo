@@ -159,10 +159,10 @@ func syncDir(path string) error {
 
 // ProbeResult deliberately contains no response body or credential.
 type ProbeResult struct {
-	HTTPStatus    int
-	Model         string
+	HTTPStatus     int
+	Model          string
 	ModelAvailable bool
-	ErrorCategory string
+	ErrorCategory  string
 }
 
 // Probe checks the provider's models endpoint and reports coarse outcomes.
@@ -202,7 +202,11 @@ func Probe(ctx context.Context, c ProviderConfig, client *http.Client) ProbeResu
 		result.ErrorCategory = "provider_http_error"
 		return result
 	}
-	var catalog struct{ Data []struct{ ID string `json:"id"` } `json:"data"` }
+	var catalog struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
 	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&catalog); err != nil {
 		result.ErrorCategory = "invalid_response"
 		return result
@@ -217,7 +221,9 @@ func Probe(ctx context.Context, c ProviderConfig, client *http.Client) ProbeResu
 	return result
 }
 
-func (r ProbeResult) OK() bool { return r.HTTPStatus >= 200 && r.HTTPStatus < 300 && r.ModelAvailable && r.ErrorCategory == "" }
+func (r ProbeResult) OK() bool {
+	return r.HTTPStatus >= 200 && r.HTTPStatus < 300 && r.ModelAvailable && r.ErrorCategory == ""
+}
 
 // ReadSecret prompts through the supplied reader. Callers should provide a
 // terminal implementation that disables echo; this helper never prints the

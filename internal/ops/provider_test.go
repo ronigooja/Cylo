@@ -51,10 +51,10 @@ func TestWriteAOEnvAtomicDoesNotIncludeSecret(t *testing.T) {
 
 func TestProbeCategoriesAndModel(t *testing.T) {
 	tests := []struct {
-		name string
-		status int
-		body string
-		want string
+		name      string
+		status    int
+		body      string
+		want      string
 		available bool
 	}{
 		{"auth", http.StatusUnauthorized, `{}`, "authentication_failed", false},
@@ -72,7 +72,9 @@ func TestProbeCategoriesAndModel(t *testing.T) {
 			}))
 			defer server.Close()
 			secret := filepath.Join(t.TempDir(), "token")
-			if err := WriteSecretAtomic(secret, []byte("secret")); err != nil { t.Fatal(err) }
+			if err := WriteSecretAtomic(secret, []byte("secret")); err != nil {
+				t.Fatal(err)
+			}
 			result := Probe(context.Background(), ProviderConfig{BaseURL: server.URL, Model: "gpt-test", SecretPath: secret}, server.Client())
 			if result.ErrorCategory != tt.want || result.ModelAvailable != tt.available {
 				t.Fatalf("result=%+v", result)
