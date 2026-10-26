@@ -510,6 +510,7 @@ index 000000000..a69c3567a
 +package codexappserver
 +
 +import (
++	"bytes"
 +	"context"
 +	"crypto/sha256"
 +	"errors"
@@ -638,7 +639,12 @@ index 000000000..a69c3567a
 +		_ = broker.Close()
 +		return nil, fmt.Errorf("start supervised Codex container: %w", err)
 +	}
-+	go func() { _, _ = io.Copy(io.Discard, stderr) }()
++	stderrCapture := &boundedBuffer{limit: 16 << 10}
++	stderrDone := make(chan struct{})
++	go func() {
++		_, _ = io.Copy(stderrCapture, stderr)
++		close(stderrDone)
++	}()
 +	done := make(chan error, 1)
 +	go func() {
 +		done <- cmd.Wait()
@@ -649,17 +655,18 @@ index 000000000..a69c3567a
 +		_ = stdin.Close()
 +		_ = cmd.Process.Kill()
 +		<-done
++		<-stderrDone
 +		cleanupErr := cleanupStartingContainer(docker, cidfile, sessionID, done)
 +		cancelProcess()
 +		if cleanupErr == nil {
 +			_ = broker.Close()
-+			return nil, err
++			return nil, startupError(err, stderrCapture.String())
 +		}
 +		// A failed creation has no process handle for AO to retry through. Close
 +		// the credential-bearing broker even if exact container cleanup cannot be
 +		// verified; the session labels remain available to supervisor recovery.
 +		_ = broker.Close()
-+		return nil, fmt.Errorf("%w; supervised Codex startup cleanup could not be verified: %v", err, cleanupErr)
++		return nil, fmt.Errorf("%w; supervised Codex startup cleanup could not be verified: %v", startupError(err, stderrCapture.String()), cleanupErr)
 +	}
 +	var stopMu sync.Mutex
 +	stopped := false
@@ -738,6 +745,30 @@ index 000000000..a69c3567a
 +
 +func validContainerID(id string) bool {
 +	return len(id) >= 12 && len(id) <= 128 && isHex(id)
++}
++
++type boundedBuffer struct {
++	bytes.Buffer
++	limit int
++}
++
++func (b *boundedBuffer) Write(p []byte) (int, error) {
++	if b.limit > b.Len() {
++		n := len(p)
++		if remaining := b.limit - b.Len(); n > remaining {
++			n = remaining
++		}
++		_, _ = b.Buffer.Write(p[:n])
++	}
++	return len(p), nil
++}
++
++func startupError(err error, stderr string) error {
++	stderr = strings.TrimSpace(stderr)
++	if stderr == "" {
++		return err
++	}
++	return fmt.Errorf("%w: %s", err, stderr)
 +}
 +
 +func supervisedExternalRoute(env map[string]string, image string) (bool, error) {

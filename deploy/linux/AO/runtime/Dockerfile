@@ -8,5 +8,6 @@ RUN apt-get update \
     && npm cache clean --force
 
 COPY proxy_bridge.py /usr/local/bin/cylo-codex-proxy-bridge
-RUN chmod 0555 /usr/local/bin/cylo-codex-proxy-bridge
+RUN chmod 0555 /usr/local/bin/cylo-codex-proxy-bridge \
+    && mkdir -p /run/cylo
 ENTRYPOINT ["/usr/local/bin/cylo-codex-proxy-bridge"]
