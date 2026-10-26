@@ -138,3 +138,24 @@ The user must manually import a ChatGPT Web account in the gateway management
 UI. Deploying the gateway does not establish voice functionality in Cylo:
 trusted HTTPS and account/media lifecycle integration remain required. Keep
 Cylo account-media disabled until those acceptance requirements are met.
+
+## Operator CLI deployment metadata
+
+The `cylo` operator CLI reads deployment metadata without opening secret files.
+Its status view reports the detected systemd or Compose mode, service states,
+provider endpoint and model, the source of provider configuration, the last
+provider check category, and the secret file mode. Token contents, instance
+keys, and complete installation links are never included in status output.
+
+The canonical AO provider variables are `AO_CODEX_EXTERNAL_BASE_URL`,
+`AO_CODEX_EXTERNAL_API_KEY_FILE`, and `AO_CODEX_EXTERNAL_MODEL`. The default
+key file is `/etc/cylo/runner-secrets/cliproxyapi-api-key` with mode `0600`.
+The OpenCode example uses these same AO daemon variables; `AO_OPENCODE_EXTERNAL_*`
+is not a supported configuration namespace.
+
+Service reloads are performed by the CLI through the detected deployment
+manager. For systemd it runs `daemon-reload` followed by
+`reload-or-restart` for the affected units. For Compose it runs the configured
+project with `docker compose up -d --no-build`. A failed command is returned to
+the caller so setup can retain the previous configuration and report a
+rollback-safe failure.
