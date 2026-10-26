@@ -2,7 +2,7 @@
 set -euo pipefail
 
 expected="7c83bd68c1e60c85b6a90e3ffa1340c859e4a3ff"
-expected_tree="50780a407ec620e3737f18e800906508de4daa35"
+expected_tree="eb2da2d0133907ee7669da53e7e7964b37c05ab8"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ao_source="${1:-}"
 if [[ -z "$ao_source" || ! -e "$ao_source/.git" ]]; then
@@ -29,9 +29,6 @@ if [[ -n "$(git -C "$ao_source" ls-files --others --exclude-standard)" ]]; then
 fi
 git -C "$ao_source" apply --check "$patch"
 git -C "$ao_source" apply "$patch"
-extra_patch="$repo_root/deploy/linux/patches/ao-session-inventory.patch"
-git -C "$ao_source" apply --check "$extra_patch"
-git -C "$ao_source" apply "$extra_patch"
 index_root="$(mktemp -d "${TMPDIR:-/tmp}/cylo-ao-patch-index.XXXXXX")"
 cleanup_index() {
   rm -rf -- "$index_root"
