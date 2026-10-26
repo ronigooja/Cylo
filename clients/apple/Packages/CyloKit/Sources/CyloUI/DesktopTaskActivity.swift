@@ -47,7 +47,7 @@ struct DesktopTaskActivity: View {
                             Text(task.title).font(.callout.weight(.medium)).foregroundStyle(.primary)
                                 .lineLimit(2).multilineTextAlignment(.leading)
                             Text(model.projectName(task.projectId)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                            Text(uiText(task.status == .queued ? queueReasonText(task.queueReason) : task.status.label)).font(.caption).foregroundStyle(taskStatusColor(task.status))
+                            Text(uiText(task.status.label)).font(.caption).foregroundStyle(taskStatusColor(task.status))
                         }
                         Spacer(minLength: 0)
                     }

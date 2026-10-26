@@ -10,7 +10,6 @@ struct ConversationView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 FreshnessBanner(model: model)
-                ExecutionCapacityView(capacity: model.snapshot?.executionCapacity)
                 if !model.tasks.isEmpty {
                     Text(uiText("Recent tasks")).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
                     ForEach(model.tasks.prefix(8)) { task in
@@ -41,7 +40,6 @@ struct ConversationView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 FreshnessBanner(model: model)
-                ExecutionCapacityView(capacity: model.snapshot?.executionCapacity)
                 Text(uiText("What would you like to work on?")).font(.largeTitle.bold())
                 TaskComposer(model: model, taskID: nil, projectID: nil, accepted: openTask)
                 if !model.tasks.isEmpty {
@@ -314,9 +312,6 @@ struct TaskSummary: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(task.title).font(.body.weight(.medium)).foregroundStyle(.primary).lineLimit(2)
                 HStack { Text(uiText(task.status.label)); if task.projectId != nil { Text(uiText("·")); Text(model.projectName(task.projectId)) } }.font(.caption).foregroundStyle(.secondary)
-                if task.status == .queued {
-                    Text(uiText(queueReasonText(task.queueReason))).font(.caption).foregroundStyle(.secondary)
-                }
             }
             Spacer()
             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
@@ -372,10 +367,6 @@ struct TaskDetailView: View {
                         NoticeCard(message: stopError)
                         if stopRequested { Label(uiText("Stop requested; awaiting runtime confirmation."), systemImage: "clock").font(.caption).foregroundStyle(.secondary) }
                         HStack { Text(uiText(task.status.label)).font(.subheadline.weight(.medium)); Spacer(); Text(model.projectName(task.projectId)).font(.caption).foregroundStyle(.secondary) }
-                        if task.status == .queued {
-                            Text(uiText(queueReasonText(task.queueReason))).font(.callout).foregroundStyle(.secondary)
-                            ExecutionCapacityView(capacity: model.snapshot?.executionCapacity)
-                        }
                         if model.selectedTaskID == taskID {
                             if model.isLoadingTaskEntries { ProgressView(uiText("Loading conversation…")) }
                             NoticeCard(message: model.taskEntriesError)

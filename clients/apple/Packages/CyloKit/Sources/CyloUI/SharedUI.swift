@@ -100,33 +100,3 @@ struct AssistantRowStyle: ButtonStyle {
     }
 }
 #endif
-
-func queueReasonText(_ reason: String?) -> String {
-    switch reason {
-    case "execution_reconciliation_required": "Queued — occupied runs have unknown outcomes; awaiting operations reconciliation."
-    case "execution_capacity_full": "Queued — waiting for an execution slot."
-    case "instance_dispatch_fenced": "Queued — execution is paused by the server."
-    case "dependencies_pending": "Queued — waiting for dependencies."
-    default: "Queued — waiting for dispatch."
-    }
-}
-
-struct ExecutionCapacityView: View {
-    let capacity: ExecutionCapacity?
-
-    var body: some View {
-        if let capacity {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(uiFormat("%lld of %lld slots occupied · %lld available", Int64(capacity.occupiedSlots), Int64(capacity.maxRuns), Int64(capacity.availableSlots)))
-                if capacity.uncertainRuns > 0 && capacity.reasonCode != "execution_reconciliation_required" {
-                    Text(uiFormat("%lld occupied slots have unknown outcomes; awaiting operations reconciliation.", Int64(capacity.uncertainRuns)))
-                }
-                if capacity.dispatchBlocked {
-                    Text(uiText(queueReasonText(capacity.reasonCode)))
-                }
-            }
-            .font(.caption).foregroundStyle(.secondary)
-            .accessibilityElement(children: .combine)
-        }
-    }
-}

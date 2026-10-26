@@ -702,8 +702,6 @@ final class ClientContractTests: XCTestCase {
         XCTAssertEqual(blocked.executionCapacity?.availableSlots, 0)
         XCTAssertEqual(blocked.tasks.first?.status, .queued)
         XCTAssertEqual(blocked.tasks.first?.queueReason, "execution_reconciliation_required")
-        XCTAssertEqual(queueReasonText(blocked.tasks.first?.queueReason), "Queued — occupied runs have unknown outcomes; awaiting operations reconciliation.")
-        XCTAssertEqual(queueReasonText("future_reason"), "Queued — waiting for dispatch.")
     }
 
     func testSnapshotDecodesAuthoritativeApprovalsAndRuns() throws {
