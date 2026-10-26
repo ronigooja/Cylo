@@ -132,16 +132,33 @@ func writeFileAtomicOwned(path string, data []byte, mode os.FileMode, uid, gid i
 	defer os.Remove(tmpName)
 	if info, statErr := os.Stat(path); statErr == nil {
 		if st, ok := info.Sys().(*syscall.Stat_t); ok {
-			if err = tmp.Chown(int(st.Uid), int(st.Gid)); err != nil {
+			current, statErr := tmp.Stat()
+			currentOwner, currentOK := current.Sys().(*syscall.Stat_t)
+			if statErr != nil {
 				tmp.Close()
-				return err
+				return statErr
+			}
+			if !currentOK || currentOwner.Uid != st.Uid || currentOwner.Gid != st.Gid {
+				if err = tmp.Chown(int(st.Uid), int(st.Gid)); err != nil {
+					tmp.Close()
+					return err
+				}
 			}
 		}
 	}
 	if uid >= 0 {
-		if err = tmp.Chown(uid, gid); err != nil {
+		current, statErr := tmp.Stat()
+		if statErr != nil {
 			tmp.Close()
-			return err
+			return statErr
+		}
+		currentOwner, currentOK := current.Sys().(*syscall.Stat_t)
+		needsChown := !currentOK || int(currentOwner.Uid) != uid || int(currentOwner.Gid) != gid
+		if needsChown && os.Geteuid() == 0 {
+			if err = tmp.Chown(uid, gid); err != nil {
+				tmp.Close()
+				return err
+			}
 		}
 	}
 	if err = tmp.Chmod(mode); err == nil {

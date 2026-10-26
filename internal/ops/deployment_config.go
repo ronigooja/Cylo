@@ -328,30 +328,33 @@ func (m Manager) ConfigureProvider(ctx context.Context, d Deployment, c Provider
 		return errors.Join(errs...)
 	}
 	if d.Mode == ModeSystemd {
-		u, e := user.Lookup("cylo-runner")
-		if e != nil {
-			return result, errors.New("cylo-runner account unavailable")
+		canonicalSecretDir := filepath.Clean(c.SecretPath) == filepath.Join("/etc/cylo", "runner-secrets", filepath.Base(c.SecretPath)) && filepath.Dir(filepath.Clean(c.SecretPath)) == "/etc/cylo/runner-secrets"
+		if d.Root == "/etc/cylo" && !canonicalSecretDir {
+			return result, errors.New("systemd credential must be inside /etc/cylo/runner-secrets")
 		}
-		uid, e := strconv.Atoi(u.Uid)
-		if e != nil {
-			return result, e
-		}
-		gid, e := strconv.Atoi(u.Gid)
-		if e != nil {
-			return result, e
-		}
-		// Never change an arbitrary parent directory supplied by the operator.
-		if filepath.Dir(c.SecretPath) != filepath.Join(d.Root, "runner-secrets") {
-			return result, errors.New("systemd credential must be inside deployment runner-secrets directory")
-		}
-		if err = os.MkdirAll(filepath.Dir(c.SecretPath), 0710); err != nil {
-			return result, err
-		}
-		if err = os.Chown(filepath.Dir(c.SecretPath), 0, gid); err != nil {
-			return result, rollback(err)
-		}
-		if err = os.Chmod(filepath.Dir(c.SecretPath), 0710); err != nil {
-			return result, rollback(err)
+		uid, gid := -1, -1
+		if canonicalSecretDir {
+			u, e := user.Lookup("cylo-runner")
+			if e != nil {
+				return result, errors.New("cylo-runner account unavailable")
+			}
+			uid, e = strconv.Atoi(u.Uid)
+			if e != nil {
+				return result, e
+			}
+			gid, e = strconv.Atoi(u.Gid)
+			if e != nil {
+				return result, e
+			}
+			if err = os.MkdirAll(filepath.Dir(c.SecretPath), 0710); err != nil {
+				return result, err
+			}
+			if err = os.Chown(filepath.Dir(c.SecretPath), 0, gid); err != nil {
+				return result, rollback(err)
+			}
+			if err = os.Chmod(filepath.Dir(c.SecretPath), 0710); err != nil {
+				return result, rollback(err)
+			}
 		}
 		if err = writeFileAtomicOwned(c.SecretPath, []byte(c.Secret), 0600, uid, gid); err != nil {
 			return result, rollback(err)
