@@ -11,15 +11,21 @@ import AppKit
 /// authoritative; remote pushes only wake the app to fetch current server state.
 public final class NativeNotificationDelivery: @unchecked Sendable {
     public static let shared = NativeNotificationDelivery()
-    private let center = UNUserNotificationCenter.current()
+    // UserNotifications raises an Objective-C exception for command-line hosts,
+    // including Swift package test executables. Only application bundles can
+    // request notifications or register with APNs.
+    private let center: UNUserNotificationCenter? = Bundle.main.bundleURL.pathExtension == "app"
+        ? UNUserNotificationCenter.current() : nil
 
     private init() {}
 
     public func requestPermission() async throws -> Bool {
-        try await center.requestAuthorization(options: [.alert, .badge, .sound])
+        guard let center else { return false }
+        return try await center.requestAuthorization(options: [.alert, .badge, .sound])
     }
 
     public func registerForRemoteNotifications() {
+        guard center != nil else { return }
         #if os(iOS)
         UIApplication.shared.registerForRemoteNotifications()
         #elseif os(macOS)
@@ -28,6 +34,7 @@ public final class NativeNotificationDelivery: @unchecked Sendable {
     }
 
     public func unregisterFromRemoteNotifications() {
+        guard center != nil else { return }
         #if os(iOS)
         UIApplication.shared.unregisterForRemoteNotifications()
         #elseif os(macOS)
@@ -36,6 +43,7 @@ public final class NativeNotificationDelivery: @unchecked Sendable {
     }
 
     public func deliver(_ item: NotificationRecord) async {
+        guard let center else { return }
         let settings = await center.notificationSettings()
         guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return }
         let content = UNMutableNotificationContent()

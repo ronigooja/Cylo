@@ -40,6 +40,14 @@ AO binds host loopback port
 enforce bearer authentication. Health/readiness responses do not prove model
 execution, memory processing, or task completion.
 
+## Fresh-instance operator commands
+
+Stop the server before `cylo-server init-key --database PATH --output PRIVATE_JSON --server URL` or `cylo-server rotate-key --database PATH --output NEW_PRIVATE_JSON --server URL`. Output files must be new private destinations. Update or remove any stale deployment instance-key secret after rotation. Keep generated keys and installation links out of logs and chat.
+
+Export logical records with `python3 tools/cylo_export.py --server URL --key-file PRIVATE_JSON --output NEW_ZIP`. The transfer is bounded at 1 GiB and refuses redirects or overwrites; runtime volumes, secrets, and backups are omitted.
+
+For destruction planning, use `python3 tools/cylo_destroy.py --manifest PRIVATE_MANIFEST --receipt NEW_RECEIPT`. The [example inventory](../deploy/linux/destroy-inventory.example.json) requires a dedicated owned directory and deployment-specific executable cleanup adapter; it does not automatically describe the historical installation above. No real external cleanup adapter is shipped. Execution requires `--execute --confirm-instance INSTANCE_ID`, stops/fences the instance, and retains owned files unless exact external cleanup proof passes. A failed operation can leave services stopped; inspect its private receipt and service state. See the [master plan](master-plan.md) for scope, proof contract, and acceptance limits. These commands have not destroyed or migrated the recorded installation.
+
 ## macOS application
 
 ### Current connection candidate — single instance key

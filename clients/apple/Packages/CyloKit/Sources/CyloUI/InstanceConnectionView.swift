@@ -18,7 +18,7 @@ struct InstanceConnectionView: View {
     private var canConnect: Bool {
         !model.isBusy && !model.isConnecting && !isDecoding && (try? InstallationConnection(serverAddress: address, key: key)) != nil
     }
-    private var replacing: Bool { model.authentication.isConnected }
+    private var replacing: Bool { !model.serverAddress.isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -38,7 +38,7 @@ struct InstanceConnectionView: View {
                 #endif
             Button(uiText("Import QR image…"), systemImage: "qrcode") { showingImageImport = true }
                 .disabled(isDecoding || model.isBusy || model.isConnecting)
-            if !model.serverAddress.isEmpty && !replacing && model.pendingConnectionImport == nil {
+            if replacing && !model.authentication.isConnected {
                 HStack {
                     Button(uiText("Reconnect")) { Task { await model.reconnect() } }
                     Button(uiText("Clear saved key…"), role: .destructive) { confirmingClear = true }
@@ -94,6 +94,9 @@ struct InstanceConnectionView: View {
                 Task {
                     do {
                         let imported = try await Task.detached(priority: .userInitiated) { try InstallationQRImage.decode(url) }.value
+                        if replacing && imported.serverURL.absoluteString != model.serverAddress {
+                            throw CyloError.invalidServerURL
+                        }
                         address = imported.serverURL.absoluteString
                         key = try imported.key.bearerToken()
                         importNotice = nil
@@ -106,8 +109,11 @@ struct InstanceConnectionView: View {
 
     private func loadDraft() {
         if let imported = model.pendingConnectionImport {
-            address = imported.serverURL.absoluteString
-            key = (try? imported.key.bearerToken()) ?? ""
+            address = replacing ? model.serverAddress : imported.serverURL.absoluteString
+            key = imported.serverURL.absoluteString == address ? ((try? imported.key.bearerToken()) ?? "") : ""
+            if imported.serverURL.absoluteString != address {
+                importNotice = uiText("Clear the saved key before connecting to a different server.")
+            }
         } else { address = model.serverAddress }
     }
 }

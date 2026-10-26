@@ -221,6 +221,30 @@ final class InstanceConnectionTests: XCTestCase {
         XCTAssertNil(try store.load())
     }
 
+    @MainActor
+    func testSavedServerRemainsLockedAfterKeyRejectionOrUnavailableConnection() async throws {
+        for state in [InstanceConnectionState.disconnected, .unavailable] {
+            let model = CyloAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+            model.serverAddress = "https://cylo.example"
+            model.setAuthenticationForTesting(state)
+            let store = MemoryInstanceKeyStore()
+            try store.replace(InstanceKey(key()))
+            model.keyStoreOverrideForTesting = { _ in store }
+            model.connectionAPIOverrideForTesting = { _, _, _ in
+                XCTFail("A different server must be refused before any request")
+                throw CyloError.invalidServerURL
+            }
+            let accepted = await model.connect(serverAddress: "https://another.example", key: key(2))
+            XCTAssertFalse(accepted)
+            XCTAssertEqual(model.serverAddress, "https://cylo.example")
+            XCTAssertEqual(model.authentication, state)
+            XCTAssertEqual(try store.load(), try InstanceKey(key()))
+            await model.clearCredential()
+            XCTAssertEqual(model.serverAddress, "")
+            XCTAssertNil(try store.load())
+        }
+    }
+
     func testQRImageDecodesActualInstallationLink() throws {
         let filter = try XCTUnwrap(CIFilter(name: "CIQRCodeGenerator"))
         let expected = link(key: key())

@@ -309,7 +309,7 @@ public final class CyloAppModel: ObservableObject {
         defer { isBusy = false }
         do {
             let candidate = try InstallationConnection(serverAddress: address, key: key)
-            if authentication.isConnected, candidate.serverURL != validServerURL(serverAddress) {
+            if !serverAddress.isEmpty, candidate.serverURL != validServerURL(serverAddress) {
                 notice = uiText("Clear the saved key before connecting to a different server.")
                 return false
             }
