@@ -1705,7 +1705,7 @@ index 000000000..a88922439
 +	if len(socketRoots) > 0 {
 +		socketRoot = socketRoots[0]
 +	}
-+	root, err := os.MkdirTemp(socketRoot, "cylo-codex-proxy-")
++	root, err := os.MkdirTemp(socketRoot, "p-")
 +	if err != nil {
 +		return nil, err
 +	}
@@ -1713,7 +1713,7 @@ index 000000000..a88922439
 +		_ = os.RemoveAll(root)
 +		return nil, err
 +	}
-+	socket := filepath.Join(root, "provider.sock")
++	socket := filepath.Join(root, "s")
 +	listener, err := net.Listen("unix", socket)
 +	if err != nil {
 +		_ = os.RemoveAll(root)
@@ -1887,7 +1887,7 @@ index 000000000..a88922439
 +	if b == nil {
 +		return ""
 +	}
-+	return filepath.Join(b.root, "provider.sock")
++	return filepath.Join(b.root, "s")
 +}
 +
 +func (b *providerBroker) Close() error {
