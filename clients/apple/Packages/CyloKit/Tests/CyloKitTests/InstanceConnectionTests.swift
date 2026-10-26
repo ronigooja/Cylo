@@ -272,7 +272,9 @@ final class InstanceConnectionTests: XCTestCase {
             }
             let url = URL(string: "https://cylo.example")!
             let api = try APIClient(serverURL: url, credentials: oldKey, session: session())
-            let snapshot = try JSONDecoder().decode(Snapshot.self, from: snapshotData)
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            let snapshot = try decoder.decode(Snapshot.self, from: snapshotData)
             await model.preparePendingCheckForTesting(api: api, journal: journal, snapshot: snapshot)
             model.serverAddress = url.absoluteString
             model.setAuthenticationForTesting(.connected)
