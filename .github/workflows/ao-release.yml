@@ -16,6 +16,7 @@ jobs:
         run: |
           git clone --filter=blob:none https://github.com/OrchestratorInc/agent-orchestrator.git "$RUNNER_TEMP/ao"
           git -C "$RUNNER_TEMP/ao" checkout 7c83bd68c1e60c85b6a90e3ffa1340c859e4a3ff
+          bash deploy/linux/test-apply-ao-patch.sh "$RUNNER_TEMP/ao"
           bash deploy/linux/apply-ao-patch.sh "$RUNNER_TEMP/ao"
       - name: Test AO container and provider adapters
         working-directory: ${{ runner.temp }}/ao/backend

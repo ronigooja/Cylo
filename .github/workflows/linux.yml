@@ -67,8 +67,8 @@ jobs:
         run: |
           set +e
           set -uo pipefail
-          printf '%s\n' 'go test -race ./internal/control ./cmd/cylo-server ./internal/ops ./cmd/cylo' > "$RUNNER_TEMP/cylo-linux/logs/auth-race.command"
-          go test -race ./internal/control ./cmd/cylo-server ./internal/ops ./cmd/cylo 2>&1 | tee "$RUNNER_TEMP/cylo-linux/logs/auth-race.log"
+          printf '%s\n' 'go test -race ./internal/control ./internal/runner ./internal/agents/ao ./cmd/cylo-server ./internal/ops ./cmd/cylo' > "$RUNNER_TEMP/cylo-linux/logs/auth-race.command"
+          go test -race ./internal/control ./internal/runner ./internal/agents/ao ./cmd/cylo-server ./internal/ops ./cmd/cylo 2>&1 | tee "$RUNNER_TEMP/cylo-linux/logs/auth-race.log"
           status=$?
           echo "$status" > "$RUNNER_TEMP/cylo-linux/logs/auth-race.exit"
           exit "$status"

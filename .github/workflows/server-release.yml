@@ -37,18 +37,24 @@ jobs:
           status=$?
           echo "$status" > "$RUNNER_TEMP/cylo-release/logs/binary-build.exit"
           test "$status" -eq 0 || exit "$status"
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -buildvcs=false -ldflags='-s -w' \
+            -o "$RUNNER_TEMP/cylo-release/artifacts/cylo-runner" ./cmd/cylo-runner \
+            2>&1 | tee "$RUNNER_TEMP/cylo-release/logs/runner-build.log"
+          status=$?
+          echo "$status" > "$RUNNER_TEMP/cylo-release/logs/runner-build.exit"
+          test "$status" -eq 0 || exit "$status"
           docker build --platform linux/arm64 -f deploy/linux/Dockerfile.server \
-            -t "cylo-server:owner-login-${GITHUB_SHA:0:12}" . \
+            -t "cylo-server:reconciliation-${GITHUB_SHA:0:12}" . \
             2>&1 | tee "$RUNNER_TEMP/cylo-release/logs/image-build.log"
           status=$?
           echo "$status" > "$RUNNER_TEMP/cylo-release/logs/image-build.exit"
           test "$status" -eq 0 || exit "$status"
           set -e
-          docker image inspect "cylo-server:owner-login-${GITHUB_SHA:0:12}" \
+          docker image inspect "cylo-server:reconciliation-${GITHUB_SHA:0:12}" \
             --format '{{.Id}} {{.Architecture}}' > "$RUNNER_TEMP/cylo-release/artifacts/image.txt"
-          docker save "cylo-server:owner-login-${GITHUB_SHA:0:12}" | gzip > "$RUNNER_TEMP/cylo-release/artifacts/server-image.tar.gz"
+          docker save "cylo-server:reconciliation-${GITHUB_SHA:0:12}" | gzip > "$RUNNER_TEMP/cylo-release/artifacts/server-image.tar.gz"
           cd "$RUNNER_TEMP/cylo-release/artifacts"
-          sha256sum cylo-server server-image.tar.gz > SHA256SUMS
+          sha256sum cylo-server cylo-runner server-image.tar.gz > SHA256SUMS
       - name: Upload release logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
