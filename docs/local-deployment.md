@@ -160,6 +160,7 @@ project with `docker compose up -d --no-build`. A failed command is returned to
 the caller so setup can retain the previous configuration and report a
 rollback-safe failure.
 
+Install the host `qrencode` utility when terminal QR rendering is required.
 Run `cylo` without arguments for the interactive operator menu. The key
 initialization and rotation entries ask for the server URL, then display the
 key and `cylo://connect` installation link once. If `qrencode` is installed,
