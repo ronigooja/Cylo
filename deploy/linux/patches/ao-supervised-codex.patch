@@ -668,7 +668,9 @@ index 000000000..1360f8d4e
 +		done <- cmd.Wait()
 +		close(done)
 +	}()
-+	containerID, err := waitContainerID(ctx, done, cidfile)
++	startupCtx, cancelStartup := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancelStartup()
++	containerID, err := waitContainerID(startupCtx, done, cidfile)
 +	if err != nil {
 +		_ = stdin.Close()
 +		_ = cmd.Process.Kill()
