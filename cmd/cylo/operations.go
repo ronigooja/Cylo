@@ -263,7 +263,6 @@ func keyOperation(rotate bool, args []string, in io.Reader, out, errOut io.Write
 	}()
 	options := ops.KeyOptions{DatabasePath: *db, OutputPath: *output, ServerURL: *server}
 	var result ops.KeyResult
-	var err error
 	if rotate {
 		result, err = ops.RotateKey(ctx, options)
 	} else {
