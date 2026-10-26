@@ -46,6 +46,7 @@ jobs:
       - name: Run Swift package tests
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           swift test --package-path clients/apple/Packages/CyloKit \
             --scratch-path "$CI_OUTPUT/swift-build" \
@@ -53,13 +54,14 @@ jobs:
             --config-path "$CI_OUTPUT/swift-config" \
             --security-path "$CI_OUTPUT/swift-security" \
             2>&1 | tee "$CI_OUTPUT/logs/swift-tests.log"
-          status=$?
+          status=${PIPESTATUS[0]}
           echo "$status" > "$CI_OUTPUT/logs/swift-tests.exit"
           exit "$status"
 
       - name: Archive unsigned macOS app
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           xcodebuild -project clients/apple/Cylo.xcodeproj \
             -scheme CyloMac -configuration Release \
@@ -70,13 +72,14 @@ jobs:
             -archivePath "$CI_OUTPUT/CyloMac.xcarchive" \
             CODE_SIGNING_ALLOWED=NO archive \
             2>&1 | tee "$CI_OUTPUT/logs/macos-archive.log"
-          status=$?
+          status=${PIPESTATUS[0]}
           echo "$status" > "$CI_OUTPUT/logs/macos-archive.exit"
           exit "$status"
 
       - name: Build unsigned iOS app
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           xcodebuild -project clients/apple/Cylo.xcodeproj \
             -scheme CyloMobile -configuration Release \
@@ -86,7 +89,7 @@ jobs:
             -packageCachePath "$CI_OUTPUT/package-cache" \
             CODE_SIGNING_ALLOWED=NO build \
             2>&1 | tee "$CI_OUTPUT/logs/ios-build.log"
-          status=$?
+          status=${PIPESTATUS[0]}
           echo "$status" > "$CI_OUTPUT/logs/ios-build.exit"
           exit "$status"
 
