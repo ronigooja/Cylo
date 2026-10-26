@@ -78,10 +78,27 @@ Supply exact run IDs and a non-secret operator identity. Run each ID separately
 if every refusal must be inspected: a multi-ID invocation stops at the first
 failure. The command checks the original journal claim, current server claim,
 instance fence, complete AO inventory and `clientRequestId` absence, and a
-complete Docker inventory. Missing identities, unavailable evidence, or any AO
-or potentially uncorrelated managed runtime container cause refusal. A stopped
-or never-started container record also causes refusal and is retained. Do not
-remove a container or edit a database to force this check to pass.
+complete Docker inventory. Missing identities, unavailable evidence, running or
+previously started AO containers, and ambiguous managed containers cause refusal.
+Do not remove a container or edit a database to force a check to pass.
+
+An operator may explicitly select an existing AO record for preservation with
+repeatable `--retain-never-started-container FULL_CONTAINER_ID`. Every selected
+record must have complete AO ownership, `created` state, PID zero, no process
+start/finish, no restart policy or restart history, and no exit/OOM/error facts.
+Two complete Docker inspections must have identical identities and contents.
+The record is retained as a created artifact, and its effect is recorded as
+`runtime_not_started`, rather than claiming that no artifact was created.
+
+Known capability containers with matching journal/host authority are excluded
+from AO inventory. Historical capability containers lacking those records need
+explicit repeatable `--unrelated-preexisting-capability-container FULL_CONTAINER_ID`.
+Their full capability ownership/name, pinned image, and immutable creation time
+must prove they predate the original dispatch; the control plane independently
+compares them against the run's authoritative start time. Both inspections must
+remain identical. This exception does not change those services or attest to
+their current deployment authority. Ordinary complete, untagged non-AO service
+records are inventoried without being mistaken for an AO worker.
 
 The journal's `journal_reconciliations` table audits both successful and refused
 checks. Successful checks persist an immutable `no_effect_terminal` receipt with
@@ -94,10 +111,11 @@ slot occupied; it requires further lifecycle evidence or a separately authorized
 AO recovery operation.
 
 The snapshot's `execution_capacity` reports the global four-slot gate, active and
-uncertain counts, available slots, and a stable blocking reason. Queued tasks
-report `execution_reconciliation_required` when uncertain runs contribute to
-saturation. Clients display that reason and refresh through existing events;
-clients must not resubmit unknown runs.
+uncertain counts, available slots, and a stable blocking reason for operator
+diagnosis. Queued tasks report `execution_reconciliation_required` when uncertain
+runs contribute to saturation. Apple clients show ordinary task status and
+refresh through existing events; internal capacity/reconciliation diagnostics
+are not rendered in the product UI. Clients must not resubmit unknown runs.
 
 ## macOS application
 

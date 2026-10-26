@@ -689,3 +689,32 @@ uncertain slots currently prevent a fresh queued task from dispatching.
 Controller CI logs and operational refusal outputs are retained under
 `/tmp/cylo-reconciliation-20261026/`; persistent refusal evidence is in the runner
 journal. See the runbook for repeatable commands and acceptance boundaries.
+
+### Chat recovery correction — 2026-10-26
+
+The earlier implementation incorrectly treated every managed service container
+and every container record as an unresolved AO runtime. Operator reconciliation
+now supports exact, explicitly selected records with two stable full Docker
+inspections: strictly never-started AO records are preserved as created artifacts;
+explicit historical capability records must predate the original dispatch and
+the authoritative run start, with complete capability identity and pinned image.
+Previously started, running, unknown, changed, or incomplete AO state still fails
+closed. No database shortcut or blind create retry is introduced.
+
+AO background tasks previously replaced their session config ID but inherited
+the parent's `CYLO_CODEX_SESSION_ID`. Supervised container names were derived
+only from that identity, causing background and main-session launch collisions.
+The observed retained container's working directory belonged to background title
+generation. Background task environments now own their own identity and runtime
+role, including prepared environments. Every Docker launch also has a random
+launch label/name; cleanup without a cidfile can select only that exact launch.
+An unacknowledged create with no verified container identity stays ambiguous.
+Runner supervision preserves complete never-started historical records while
+finding/stopping the actual current runtime; ambiguous live duplicates still
+fail closed.
+
+Internal runtime faults, slot counts, and reconciliation instructions have been
+removed from the Apple conversation/task surfaces. The actual task status,
+submission errors, drafts, and original command receipt behavior are retained.
+Operator diagnostics and audit evidence remain available. Source review is
+complete; remote verification and live recovery evidence follow below.
