@@ -22,4 +22,4 @@ Mem0 and Qdrant can evolve without replacing Cylo's task/memory authority. Rebui
 
 ## Sources
 
-[Product chapters 10–11 and 16](../../product.md); [memory architecture](../../architecture.md#memory-retrieval-and-context); [memory worker](../../../services/memory/README.md); historical evidence: [memory requirements](../../archive/research/reports/17-memory-requirements-and-design.md).
+[Product chapters 10–11 and 16](../../product.md); [memory architecture](../../architecture.md#memory-retrieval-and-context); [memory worker](../../../services/memory/README.md); historical evidence: [memory requirements](https://github.com/ronigooja/Cylo/blob/95ee55a5bbd8dccfb7f14af9f9703bb83727da6c/docs/archive/research/reports/17-memory-requirements-and-design.md).

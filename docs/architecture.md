@@ -37,13 +37,13 @@ Initial command kinds include `project.create`, `task.create`, `task.append`, `t
 
 An authenticated snapshot gives the current workspace/subject, version, and durable event cursor. Clients resume events using `Last-Event-ID`; an invalid or expired cursor requires snapshot repair. Paged task history reads authoritative messages and deduplicates by message ID. Snapshot caches and push payloads do not create alternative state authorities.
 
-Unknown external effects are reconciled if queryable and escalated otherwise. They are never blindly retried. Receipt, admission, running work, model output, actual operation success, goal completion, and confirmed stop remain distinct. See [ADR 0003](architecture/decisions/0003-durable-authority-and-effects.md).
+Unknown external effects are reconciled if queryable and escalated otherwise. They are never blindly retried. Receipt, admission, running work, model output, actual operation success, goal completion, and confirmed stop remain distinct. See [ADR 0001](architecture/decisions/0001-linux-and-native-apple-clients.md).
 
 ## Runtime admission and model routing
 
 Every request, including a child Worker request from Super, uses the same controlled admission path. No automatic dispatcher may bypass it. AO owns creation and lifecycle of every runtime; Cylo owns task authority and accepted effects. Prefer AO configuration/adapters and extend AO only for a measured gap.
 
-The global ceiling is **four active runs**, counting Super, Workers, and curator work. A waiting or uncertain runtime does not free a slot merely because no output is visible. Ownership/fence checks and termination evidence govern release. Unknown AO creation is not automatic replay authority; explicit reconciliation requires complete, auditable evidence. The [operator runbook](local-deployment.md#unknown-ao-creation-reconciliation) owns the operational procedure.
+The global ceiling is **four active runs**, counting Super, Workers, and curator work. A waiting or uncertain runtime does not free a slot merely because no output is visible. Ownership/fence checks and termination evidence govern release. Unknown AO creation is not automatic replay authority; explicit reconciliation requires complete, auditable evidence. The [deployment runbook](operations/deployment.md) owns the operational procedure.
 
 Deterministic scheduling, health, state transitions, and routine event routing make no model calls. A semantic event may call a Worker; complex coordination may call Super. Every actual model call must be attributable to an authorized task/run, route, and budget. Usage reservations and settlements must be idempotent; unknown usage remains reserved. Provider calls, tool loops, artifact bytes, and termination limits require enforcement at the actual effect boundary, not merely budget fields in a contract. Full per-provider-call enforcement and cost evidence remain acceptance work; see the master plan.
 
@@ -53,7 +53,7 @@ For routes supplied by CLIProxyAPI, account selection and quota handling remain 
 
 A fresh deployment uses one canonical shared instance key for `owner` in workspace `default`. Runner and memory-worker credentials are separate. There is no password, pairing/bootstrap, approved-device session, saved-server list, or fixed client endpoint in this design. [ADR 0004](architecture/decisions/0004-instance-key-authentication.md) records the decision and its consequences.
 
-Apple clients ask for server URL and key, allow installation-link/QR import for review, and require Connect before use. Keychain is the only credential store. An authenticated snapshot validates the connection; rejected credentials close workspace access, while ordinary transport failure preserves validated state with stale feedback. Replacing/clearing a connection discards its local queue, snapshot, exports, and drafts. Local clearing does not revoke the shared key or stop durable tasks. Key rotation blocks future use of the old key and requires redistribution.
+Apple clients ask for server URL and key, allow external installation links to populate a review form requiring Connect, and connect after explicit QR image import or camera scanning validates the address/key. HTTP targets require confirmation before transmitting the key. iPhone/iPad camera access is requested only when Scan QR code is chosen; image imports need no camera access. Frames are decoded locally without saving or uploading them. Keychain is the only credential store. An authenticated snapshot validates the connection; rejected credentials close workspace access, while ordinary transport failure preserves validated state with stale feedback. Replacing/clearing a connection discards its local queue, snapshot, exports, and drafts. Local clearing does not revoke the shared key or stop durable tasks. Key rotation blocks future use of the old key and requires redistribution.
 
 A stable random installation UUID identifies a push registration independently of the shared owner key. One installation cannot overwrite or revoke another installation's token. APNs is only a wake-up hint to reload durable inbox state. Payloads contain no task content or notice body. Delivery retry and invalid-token handling remain server responsibilities; real APNs delivery requires separate acceptance evidence.
 
@@ -87,7 +87,7 @@ When deploying generated capabilities, source, tests, and a release manifest fir
 
 Temporary workspaces/caches, immutable releases, deployment configuration, and long-lived service volumes use separate roots. Each persistent volume has an owner, purpose, mount, backup/restore policy, retention rule, and deletion action. AO workspace cleanup cannot remove deployed data or its only release artifact.
 
-The trusted runner is independently supervised on a dedicated Linux execution host and necessarily has Docker-daemon or equivalent host authority. That host authority is trusted infrastructure, not a workload isolation boundary. Keep its socket out of server, memory, AO workload containers, and capability manifests. systemd supervises the control/memory stack and independent runner. [Linux deployment configuration](../deploy/linux/) and [the operator runbook](local-deployment.md) own exact commands and layout.
+The trusted runner is independently supervised on a dedicated Linux execution host and necessarily has Docker-daemon or equivalent host authority. That host authority is trusted infrastructure, not a workload isolation boundary. Keep its socket out of server, memory, AO workload containers, and capability manifests. systemd supervises the control/memory stack and independent runner. [Linux deployment configuration](../deploy/linux/) and [the deployment runbook](operations/deployment.md) own exact commands and layout.
 
 ## Backup, deletion, and recovery
 
@@ -95,15 +95,15 @@ At most one active control server may operate on a database. Migration/restore p
 
 Restore must preserve the operator-maintained current deletion generation/head/hash as its independent trust root. A backup's embedded journal head cannot prove freshness or later deletion coverage. Restore-only gating blocks activation and business reads/writes until reconciliation succeeds. Missing real adapters/checkpoints keep the gate closed; operators cannot replace evidence with a manually asserted success.
 
-Backup inventory and retention include applicable service data and deletion manifests. Physical deletion, retention, host isolation, migration, and measured production restore remain acceptance boundaries. Daily backup scheduling, RPO 24 hours, and RTO two hours are unverified targets, not measured guarantees. Vector-index rebuild duration is reported separately from core recovery time. Operational evidence and procedures belong in the master plan and runbook.
+Backup inventory and retention include applicable service data and deletion manifests. Physical deletion, retention, host isolation, migration, and measured production restore remain acceptance boundaries. Daily backup scheduling, RPO 24 hours, and RTO two hours are unverified targets, not measured guarantees. Vector-index rebuild duration is reported separately from core recovery time. Operational procedures belong in [data lifecycle operations](operations/data-lifecycle.md); evidence and unresolved acceptance remain in [acceptance evidence](acceptance/evidence.md) and [the master plan](master-plan.md).
 
 ## Decision records
 
 These records capture selected decisions, not new scope or acceptance claims:
 
-- [0001 — Linux server and native Apple clients](architecture/decisions/0001-linux-and-native-apple-clients.md)
-- [0002 — AO owns runtime lifecycle](architecture/decisions/0002-ao-runtime-ownership.md)
-- [0003 — Durable authority and uncertain effects](architecture/decisions/0003-durable-authority-and-effects.md)
+- [0001 — Linux/native Apple platform and durable persistence](architecture/decisions/0001-linux-and-native-apple-clients.md)
+- [0002 — AO runtime ownership and external-service boundaries](architecture/decisions/0002-ao-runtime-ownership.md)
+- [0003 — Native assistant UI direction](architecture/decisions/0003-native-assistant-ui-direction.md)
 - [0004 — Shared instance-key authentication](architecture/decisions/0004-instance-key-authentication.md)
 - [0005 — Voice turns, tasks, and lease termination](architecture/decisions/0005-voice-task-and-lease-boundaries.md)
 - [0006 — Memory authority and derived stores](architecture/decisions/0006-memory-authority-and-derived-stores.md)
