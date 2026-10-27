@@ -49,7 +49,7 @@ func TestMenuSharesInputAcrossPromptsAndActions(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		token, err := readHiddenToken(in, out)
+		token, err := readToken(in, out)
 		if err != nil {
 			return err
 		}
@@ -66,6 +66,9 @@ func TestMenuSharesInputAcrossPromptsAndActions(t *testing.T) {
 		t.Fatalf("calls=%d diagnostics=%s", calls, &errOut)
 	}
 	if strings.Contains(out.String(), "private") || strings.Contains(out.String(), "hidden") {
-		t.Fatal("non-terminal prompt claims hidden input or reveals token")
+		t.Fatal("prompt reveals token or claims hidden input")
+	}
+	if !strings.Contains(out.String(), "API token: ") {
+		t.Fatalf("token prompt missing: %q", out.String())
 	}
 }

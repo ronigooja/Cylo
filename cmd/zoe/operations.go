@@ -13,7 +13,6 @@ import (
 
 	"github.com/ronigooja/Zoe/internal/ops"
 	"github.com/skip2/go-qrcode"
-	"golang.org/x/sys/unix"
 )
 
 func init() {
@@ -129,7 +128,7 @@ func providerConfigureOperation(args []string, in io.Reader, out, errOut io.Writ
 		if *nonInteractive {
 			return errors.New("--token-file or --token is required for non-interactive configure")
 		}
-		secret, err = readHiddenToken(in, out)
+		secret, err = readToken(in, out)
 		if err != nil {
 			return err
 		}
@@ -448,29 +447,10 @@ func safeLabel(value string) string {
 	return value
 }
 
-func readHiddenToken(in io.Reader, out io.Writer) ([]byte, error) {
+func readToken(in io.Reader, out io.Writer) ([]byte, error) {
 	in = sharedInput(in)
-	hidden := false
-	if file := terminalFile(in); file != nil {
-		if term, err := unix.IoctlGetTermios(int(file.Fd()), unix.TCGETS); err == nil {
-			old := *term
-			term.Lflag &^= unix.ECHO
-			if err := unix.IoctlSetTermios(int(file.Fd()), unix.TCSETS, term); err != nil {
-				return nil, errors.New("cannot disable terminal echo")
-			}
-			defer unix.IoctlSetTermios(int(file.Fd()), unix.TCSETS, &old)
-			hidden = true
-		}
-	}
-	if hidden {
-		fmt.Fprint(out, "API token (hidden): ")
-	} else {
-		fmt.Fprint(out, "API token (non-terminal input): ")
-	}
+	fmt.Fprint(out, "API token: ")
 	value, err := inputLine(in)
-	if hidden {
-		fmt.Fprintln(out)
-	}
 	if err != nil {
 		return nil, err
 	}
