@@ -231,6 +231,9 @@ def requirement_check(root: Path) -> list[str]:
         anchor, section = match.groups()
         if not re.match(r'\s*\*\*Disposition: (Required|Optional|Excluded)\.\*\*', section):
             errors.append(f"requirement definition lacks disposition: {anchor}")
+        section_labels = re.findall(r'^\*\*(CY-\d{2}-(?:\d{2}|[A-E]))\.\*\*', section, re.M)
+        if section_labels != [anchor.upper()]:
+            errors.append(f"requirement anchor {anchor} must identify exactly its matching definition")
     labels = Counter(re.findall(r'^\*\*(CY-\d{2}-(?:\d{2}|[A-E]))\.\*\*', product, re.M))
     for value in sorted(expected):
         if labels[value] != 1:
@@ -238,7 +241,11 @@ def requirement_check(root: Path) -> list[str]:
     declared = set(CY_ID_RE.findall(product))
     if declared != expected:
         errors.append("product stable IDs differ from fixed baseline: " + ", ".join(sorted(declared ^ expected)))
-    mappings = Counter(re.findall(r'^\| \[(CY-\d{2}-(?:\d{2}|[A-E]))\]\(', matrix, re.M))
+    mapping_links = re.findall(r'^\| \[(CY-\d{2}-(?:\d{2}|[A-E]))\]\(([^)]+)\)', matrix, re.M)
+    mappings = Counter(value for value, _ in mapping_links)
+    for value, destination in mapping_links:
+        if destination != f"../product.md#{value.lower()}":
+            errors.append(f"acceptance mapping {value} must link to its matching product definition")
     for value in sorted(expected):
         if mappings[value] != 1:
             errors.append(f"acceptance mapping {value} occurs {mappings[value]} times; expected once")

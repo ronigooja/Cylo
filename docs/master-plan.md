@@ -8,7 +8,7 @@ Milestones sequence delivery without reducing product scope. The [acceptance mat
 
 | Milestone | Scope | Exit gate | Status |
 |---|---|---|---|
-| 0. Documentation baseline | Current requirements, architecture, decisions, procedures, and traceability | Complete unique requirements and working source links; honest evidence boundaries | Restructured; documentation checks and review required |
+| 0. Documentation baseline | Current requirements, architecture, decisions, procedures, and traceability | Complete unique requirements and working source links; honest evidence boundaries | Current requirements and provenance migrated; independent review complete; hosted documentation checks gate changes |
 | 1. Contracts and trusted task foundation | Control plane, runner, command/task/event authority, shared instance-key authentication, native shells | Atomic durable receipt/work/outbox under faults; dedupe and stale-version rejection; key rotation/denial; authenticated runner flow; three native clients; single-instance fencing | Source and hosted checks exist; product acceptance open |
 | 2. Runtime, voice, and memory integration | AO gateway, turn/receipt bridge, controlled memory and derived index | AO dispatch/report authorization; four-run cap; safe voice lease release; authority-first memory and tombstone/rebuild behavior | Source/component checks exist; real integration gaps remain |
 | 3. Complete task loop with two runtimes | Request, coordination, evidence, decisions, stop, recovery, result | Two real runtime types; scenarios A and D; provider/tool/artifact evidence and confirmed termination; no duplicated irreversible effects | Open; Codex route alone is insufficient |

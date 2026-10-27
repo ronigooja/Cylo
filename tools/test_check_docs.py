@@ -55,6 +55,20 @@ class DocumentationChecks(unittest.TestCase):
             stream.write(row + '\n')
         self.assertTrue(any('acceptance mapping CY-01-01 occurs 2' in error for error in check_docs.requirement_check(self.root)))
 
+    def test_mapping_to_wrong_existing_anchor_fails(self):
+        path = self.root / 'docs/acceptance/requirements.md'
+        path.write_text(path.read_text().replace('[CY-01-01](../product.md#cy-01-01)',
+                                                '[CY-01-01](../product.md#cy-01-02)', 1))
+        self.assertTrue(any('CY-01-01 must link to its matching' in error
+                            for error in check_docs.requirement_check(self.root)))
+
+    def test_swapped_definition_anchors_fail(self):
+        self.change_product('id="cy-01-01"', 'id="placeholder"')
+        self.change_product('id="cy-01-02"', 'id="cy-01-01"')
+        self.change_product('id="placeholder"', 'id="cy-01-02"')
+        self.assertTrue(any('must identify exactly its matching definition' in error
+                            for error in check_docs.requirement_check(self.root)))
+
     def test_coverage_gaps_fail(self):
         for before, after, message in (
             ('## 22. ', '## Missing. ', 'chapters'),
