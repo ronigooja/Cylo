@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Zoe/contracts"
 )
 
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -48,7 +48,7 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (c
 		return out, err
 	}
 	out.ExecutionCapacity = capacity
-	if err := tx.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&out.Authority.InstanceLineageID, &out.Authority.Generation, &out.Authority.DeletionSequence); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM zoe_instance_state WHERE singleton=1`).Scan(&out.Authority.InstanceLineageID, &out.Authority.Generation, &out.Authority.DeletionSequence); err != nil {
 		return out, err
 	}
 	projects, err := tx.QueryContext(ctx, `SELECT id,name,description,status,version,created_at,updated_at FROM projects p WHERE workspace_id=? AND (owner_subject_id=?) ORDER BY created_at,id`, workspace, subject)
@@ -337,7 +337,7 @@ func (s *Server) writeSnapshotRequired(w http.ResponseWriter, ctx context.Contex
 	w.WriteHeader(200)
 	var lineage, deletionSequence string
 	var generation int64
-	_ = s.store.DB().QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&lineage, &generation, &deletionSequence)
+	_ = s.store.DB().QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM zoe_instance_state WHERE singleton=1`).Scan(&lineage, &generation, &deletionSequence)
 	authority := map[string]any{"instance_lineage_id": lineage, "generation": generation, "deletion_sequence": deletionSequence}
 	data, _ := json.Marshal(map[string]any{"reason": reason, "authority": authority})
 	_, _ = fmt.Fprintf(w, "event: snapshot_required\ndata: %s\n\n", data)

@@ -24,14 +24,14 @@ class QdrantIndex:
         info = self.client.get_collection(collection)
         vectors = info.config.params.vectors
         if isinstance(vectors, dict):
-            raise ValueError("named vectors are not supported by the Cylo authority index")
+            raise ValueError("named vectors are not supported by the Zoe authority index")
         if vectors.size != dimensions:
             raise ValueError(f"Qdrant collection dimension mismatch: expected {dimensions}, got {vectors.size}")
 
     def upsert_claim(self, job: dict[str, Any], embedder: Any) -> None:
         claim = job.get("claim") or {}
         text = str(claim.get("content", ""))
-        point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"cylo:{job['workspace_id']}:{job['entity_id']}"))
+        point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"zoe:{job['workspace_id']}:{job['entity_id']}"))
         payload = {
             "workspace_id": job["workspace_id"],
             "claim_id": job["entity_id"],
@@ -68,4 +68,4 @@ class QdrantIndex:
 
 def mem0_user_id(workspace: str, claim_id: str) -> str:
     digest = hashlib.sha256(f"{workspace}\x00{claim_id}".encode("utf-8")).hexdigest()[:32]
-    return f"cylo-{digest}"
+    return f"zoe-{digest}"

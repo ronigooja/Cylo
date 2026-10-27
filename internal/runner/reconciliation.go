@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/agents/ao"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/agents/ao"
 )
 
 type SessionInventoryReader interface {
@@ -319,7 +319,7 @@ func (e *Engine) reconciliationDockerSnapshot(ctx context.Context, docker Docker
 			}
 			// Persist only the public ownership labels, never arbitrary Docker labels.
 			proof.Labels = map[string]string{}
-			for _, key := range []string{"io.cylo.managed", "io.cylo.workspace", "io.cylo.deployment", "io.cylo.release", "io.cylo.fence", "io.cylo.attempt"} {
+			for _, key := range []string{"io.zoe.managed", "io.zoe.workspace", "io.zoe.deployment", "io.zoe.release", "io.zoe.fence", "io.zoe.attempt"} {
 				proof.Labels[key] = labels[key]
 			}
 			preexistingIDs[id] = true

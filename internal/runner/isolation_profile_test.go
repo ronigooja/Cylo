@@ -22,8 +22,8 @@ func (d *inspectImageDocker) Run(_ context.Context, args ...string) ([]byte, err
 func TestSupervisedRuntimeIsolationRequiresExactHarnessPolicyProfile(t *testing.T) {
 	docker := &inspectImageDocker{}
 	isolation := SupervisedRuntimeIsolation{Docker: docker, Profiles: map[string]SupervisedRuntimeProfile{
-		"codex":    {Harness: "codex", IsolationPolicy: CodexWorkspaceWritePolicy, Image: "cylo-codex:pinned"},
-		"opencode": {Harness: "opencode", IsolationPolicy: OpenCodeWorkspaceWritePolicy, Image: "cylo-opencode:pinned"},
+		"codex":    {Harness: "codex", IsolationPolicy: CodexWorkspaceWritePolicy, Image: "zoe-codex:pinned"},
+		"opencode": {Harness: "opencode", IsolationPolicy: OpenCodeWorkspaceWritePolicy, Image: "zoe-opencode:pinned"},
 	}}
 	claim := validClaim()
 	claim.Harness = "opencode"
@@ -32,7 +32,7 @@ func TestSupervisedRuntimeIsolationRequiresExactHarnessPolicyProfile(t *testing.
 	if err := isolation.CheckRoute(context.Background(), claim, route); err != nil {
 		t.Fatalf("CheckRoute(OpenCode) failed: %v", err)
 	}
-	if docker.image != "cylo-opencode:pinned" {
+	if docker.image != "zoe-opencode:pinned" {
 		t.Fatalf("inspected image = %q, want the OpenCode profile image", docker.image)
 	}
 	for _, tc := range []struct {
@@ -54,7 +54,7 @@ func TestSupervisedRuntimeIsolationRequiresExactHarnessPolicyProfile(t *testing.
 func TestSupervisedRuntimeIsolationRequiresWorkspaceReadAndWrite(t *testing.T) {
 	docker := &inspectImageDocker{}
 	isolation := SupervisedRuntimeIsolation{Docker: docker, Profiles: map[string]SupervisedRuntimeProfile{
-		"opencode": {Harness: "opencode", IsolationPolicy: OpenCodeWorkspaceWritePolicy, Image: "cylo-opencode:pinned"},
+		"opencode": {Harness: "opencode", IsolationPolicy: OpenCodeWorkspaceWritePolicy, Image: "zoe-opencode:pinned"},
 	}}
 	claim := validClaim()
 	claim.IsolationPolicy = OpenCodeWorkspaceWritePolicy
@@ -70,8 +70,8 @@ func TestSupervisedRuntimeIsolationRequiresWorkspaceReadAndWrite(t *testing.T) {
 
 func TestSupervisedRuntimeIsolationRejectsAmbiguousPolicy(t *testing.T) {
 	isolation := SupervisedRuntimeIsolation{Docker: &inspectImageDocker{}, Profiles: map[string]SupervisedRuntimeProfile{
-		"codex":    {Harness: "codex", IsolationPolicy: CodexWorkspaceWritePolicy, Image: "cylo-codex:pinned"},
-		"opencode": {Harness: "opencode", IsolationPolicy: CodexWorkspaceWritePolicy, Image: "cylo-opencode:pinned"},
+		"codex":    {Harness: "codex", IsolationPolicy: CodexWorkspaceWritePolicy, Image: "zoe-codex:pinned"},
+		"opencode": {Harness: "opencode", IsolationPolicy: CodexWorkspaceWritePolicy, Image: "zoe-opencode:pinned"},
 	}}
 	claim := validClaim()
 	claim.IsolationPolicy = CodexWorkspaceWritePolicy

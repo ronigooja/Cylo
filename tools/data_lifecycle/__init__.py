@@ -1,1 +1,1 @@
-"""Encrypted, offline Cylo data lifecycle commands."""
+"""Encrypted, offline Zoe data lifecycle commands."""

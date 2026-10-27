@@ -11,23 +11,23 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/internal/agents/ao"
-	"github.com/ronigooja/Cylo/internal/runner"
+	"github.com/ronigooja/Zoe/internal/agents/ao"
+	"github.com/ronigooja/Zoe/internal/runner"
 )
 
 // TestAOLiveSupervisedCodexRuntime is an opt-in acceptance probe for a local AO
 // daemon configured with the selected private provider reference. It exercises
 // a real Responses request, one workspace write, the read-only container
 // boundary, and the exact container/PID-namespace stop proof. It is skipped by
-// ordinary test runs unless all CYLO_LIVE_AO_* values are supplied.
+// ordinary test runs unless all ZOE_LIVE_AO_* values are supplied.
 func TestAOLiveSupervisedCodexRuntime(t *testing.T) {
-	baseURL := strings.TrimSpace(os.Getenv("CYLO_LIVE_AO_URL"))
-	projectID := strings.TrimSpace(os.Getenv("CYLO_LIVE_AO_PROJECT_ID"))
-	workspaceRoot := strings.TrimSpace(os.Getenv("CYLO_LIVE_AO_WORKSPACE_ROOT"))
-	aoDataDir := strings.TrimSpace(os.Getenv("CYLO_LIVE_AO_DATA_DIR"))
-	evidenceRoot := strings.TrimSpace(os.Getenv("CYLO_LIVE_AO_EVIDENCE_ROOT"))
+	baseURL := strings.TrimSpace(os.Getenv("ZOE_LIVE_AO_URL"))
+	projectID := strings.TrimSpace(os.Getenv("ZOE_LIVE_AO_PROJECT_ID"))
+	workspaceRoot := strings.TrimSpace(os.Getenv("ZOE_LIVE_AO_WORKSPACE_ROOT"))
+	aoDataDir := strings.TrimSpace(os.Getenv("ZOE_LIVE_AO_DATA_DIR"))
+	evidenceRoot := strings.TrimSpace(os.Getenv("ZOE_LIVE_AO_EVIDENCE_ROOT"))
 	if baseURL == "" || projectID == "" || workspaceRoot == "" || aoDataDir == "" || evidenceRoot == "" {
-		t.Skip("set CYLO_LIVE_AO_URL, CYLO_LIVE_AO_PROJECT_ID, CYLO_LIVE_AO_WORKSPACE_ROOT, CYLO_LIVE_AO_DATA_DIR, and CYLO_LIVE_AO_EVIDENCE_ROOT for local AO acceptance")
+		t.Skip("set ZOE_LIVE_AO_URL, ZOE_LIVE_AO_PROJECT_ID, ZOE_LIVE_AO_WORKSPACE_ROOT, ZOE_LIVE_AO_DATA_DIR, and ZOE_LIVE_AO_EVIDENCE_ROOT for local AO acceptance")
 	}
 	client, err := ao.New(ao.Config{BaseURL: baseURL, Token: "isolated-local-probe"})
 	if err != nil {
@@ -36,15 +36,15 @@ func TestAOLiveSupervisedCodexRuntime(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	requestID := fmt.Sprintf("cylo-live-%d", time.Now().UTC().UnixNano())
+	requestID := fmt.Sprintf("zoe-live-%d", time.Now().UTC().UnixNano())
 	spec := ao.WorkerSpec{
 		ClientRequestID: requestID,
 		ProjectID:       projectID,
 		Harness:         "codex",
 		Model:           "gpt-6-luna",
 		ApprovalMode:    "auto",
-		DisplayName:     "Cylo supervised runtime acceptance",
-		Prompt:          "Use your shell tool to create exactly one file named CYLO_RUNTIME_TOOL_PROBE.txt in the current workspace, containing exactly `CYLO_AO_TOOL_OK` followed by a newline. Read it back. Then make one attempt to create `/etc/CYLO_RUNTIME_OUTSIDE_PROBE.txt`; the isolated container filesystem should deny that write. Do not retry through another path. Reply exactly `workspace_write=ok outside_write=denied` if both outcomes match; otherwise report which failed.",
+		DisplayName:     "Zoe supervised runtime acceptance",
+		Prompt:          "Use your shell tool to create exactly one file named ZOE_RUNTIME_TOOL_PROBE.txt in the current workspace, containing exactly `ZOE_AO_TOOL_OK` followed by a newline. Read it back. Then make one attempt to create `/etc/ZOE_RUNTIME_OUTSIDE_PROBE.txt`; the isolated container filesystem should deny that write. Do not retry through another path. Reply exactly `workspace_write=ok outside_write=denied` if both outcomes match; otherwise report which failed.",
 	}
 
 	docker := runner.ExecDockerCommand{Binary: "docker"}
@@ -157,7 +157,7 @@ finished:
 	if err := verifyWorkspaceArtifact(containerWorkspace); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat("/etc/CYLO_RUNTIME_OUTSIDE_PROBE.txt"); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat("/etc/ZOE_RUNTIME_OUTSIDE_PROBE.txt"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("outside-workspace probe unexpectedly exists on host (stat error type=%T)", err)
 	}
 
@@ -217,7 +217,7 @@ func assertLiveContainerBoundary(t *testing.T, ctx context.Context, docker runne
 	if err := json.Unmarshal(body, &inspection); err != nil {
 		t.Fatalf("decode live AO container inspect failed (%T)", err)
 	}
-	if inspection.ID != id || inspection.Config.Labels["io.cylo.managed"] != "true" || inspection.Config.Labels["io.cylo.runtime"] != "ao-codex-chat" || inspection.Config.Labels["io.cylo.ao.session"] != sessionID || inspection.HostConfig.NetworkMode != "none" || !inspection.HostConfig.ReadonlyRootfs || inspection.HostConfig.PidsLimit != 256 {
+	if inspection.ID != id || inspection.Config.Labels["io.zoe.managed"] != "true" || inspection.Config.Labels["io.zoe.runtime"] != "ao-codex-chat" || inspection.Config.Labels["io.zoe.ao.session"] != sessionID || inspection.HostConfig.NetworkMode != "none" || !inspection.HostConfig.ReadonlyRootfs || inspection.HostConfig.PidsLimit != 256 {
 		t.Fatalf("AO container isolation settings are incomplete")
 	}
 	if !containsLiveString(inspection.HostConfig.CapDrop, "ALL") || !containsLiveString(inspection.HostConfig.SecurityOpt, "no-new-privileges") {
@@ -225,7 +225,7 @@ func assertLiveContainerBoundary(t *testing.T, ctx context.Context, docker runne
 	}
 	for _, value := range inspection.Config.Env {
 		name, _, _ := strings.Cut(value, "=")
-		if strings.HasPrefix(name, "CYLO_CODEX_") || name == "OPENAI_API_KEY" {
+		if strings.HasPrefix(name, "ZOE_CODEX_") || name == "OPENAI_API_KEY" {
 			t.Fatalf("provider credential or host route reached container environment as %q", name)
 		}
 	}
@@ -258,12 +258,12 @@ func assertLiveContainerBoundary(t *testing.T, ctx context.Context, docker runne
 }
 
 func verifyWorkspaceArtifact(workspaceRoot string) error {
-	path := filepath.Join(workspaceRoot, "CYLO_RUNTIME_TOOL_PROBE.txt")
+	path := filepath.Join(workspaceRoot, "ZOE_RUNTIME_TOOL_PROBE.txt")
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("AO workspace artifact is missing at the registered project path (error_type=%T)", err)
 	}
-	if string(body) != "CYLO_AO_TOOL_OK\n" {
+	if string(body) != "ZOE_AO_TOOL_OK\n" {
 		return fmt.Errorf("AO workspace artifact content mismatch")
 	}
 	return nil

@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 func reviewToken(t *testing.T) string {
@@ -69,7 +69,7 @@ func reviewRequest(h http.Handler, method, path, token, key string, body any) *h
 		b, _ = json.Marshal(body)
 	}
 	r := httptest.NewRequest(method, path, bytes.NewReader(b))
-	r.Header.Set("X-Cylo-Installation-ID", "11111111-1111-4111-8111-111111111111")
+	r.Header.Set("X-Zoe-Installation-ID", "11111111-1111-4111-8111-111111111111")
 	if token != "" {
 		r.Header.Set("Authorization", "Bearer "+token)
 	}

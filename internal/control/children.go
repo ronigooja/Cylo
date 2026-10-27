@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Zoe/contracts"
 )
 
 func (s *Server) handleChildProposal(w http.ResponseWriter, r *http.Request) {

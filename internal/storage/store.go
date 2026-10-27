@@ -31,12 +31,12 @@ func CheckRestoreDeletionReconciliationTx(ctx context.Context, tx *sql.Tx) error
 		return errors.New("restore gate requires a transaction")
 	}
 	var stageTableCount int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cylo_restore_stage_guard'`).Scan(&stageTableCount); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='zoe_restore_stage_guard'`).Scan(&stageTableCount); err != nil {
 		return err
 	}
 	if stageTableCount != 0 {
 		var pending int
-		err := tx.QueryRowContext(ctx, `SELECT pending FROM cylo_restore_stage_guard WHERE singleton=1`).Scan(&pending)
+		err := tx.QueryRowContext(ctx, `SELECT pending FROM zoe_restore_stage_guard WHERE singleton=1`).Scan(&pending)
 		if errors.Is(err, sql.ErrNoRows) {
 			return errors.New("restore stage guard is missing its singleton")
 		}
@@ -51,14 +51,14 @@ func CheckRestoreDeletionReconciliationTx(ctx context.Context, tx *sql.Tx) error
 		}
 	}
 	var tableCount int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cylo_instance_state'`).Scan(&tableCount); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='zoe_instance_state'`).Scan(&tableCount); err != nil {
 		return err
 	}
 	if tableCount == 0 {
 		return nil
 	}
 	var required int
-	err := tx.QueryRowContext(ctx, `SELECT restore_deletion_reconciliation_required FROM cylo_instance_state WHERE singleton=1`).Scan(&required)
+	err := tx.QueryRowContext(ctx, `SELECT restore_deletion_reconciliation_required FROM zoe_instance_state WHERE singleton=1`).Scan(&required)
 	if errors.Is(err, sql.ErrNoRows) {
 		return errors.New("instance state is missing while checking restore gate")
 	}
@@ -173,11 +173,11 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	// Persist restore staging inside the database as well as in its filename,
 	// so renaming a staged file cannot open it to ordinary server traffic.
 	if stagedRestorePath || strings.HasSuffix(path, ".restore-pending") {
-		if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS cylo_restore_stage_guard (singleton INTEGER PRIMARY KEY CHECK(singleton=1), pending INTEGER NOT NULL CHECK(pending IN (0,1)))`); err != nil {
+		if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS zoe_restore_stage_guard (singleton INTEGER PRIMARY KEY CHECK(singleton=1), pending INTEGER NOT NULL CHECK(pending IN (0,1)))`); err != nil {
 			_ = store.Close()
 			return nil, fmt.Errorf("record staged restore guard: %w", err)
 		}
-		if _, err := db.ExecContext(ctx, `INSERT INTO cylo_restore_stage_guard(singleton,pending) VALUES(1,1) ON CONFLICT(singleton) DO UPDATE SET pending=1`); err != nil {
+		if _, err := db.ExecContext(ctx, `INSERT INTO zoe_restore_stage_guard(singleton,pending) VALUES(1,1) ON CONFLICT(singleton) DO UPDATE SET pending=1`); err != nil {
 			_ = store.Close()
 			return nil, fmt.Errorf("record staged restore guard: %w", err)
 		}
@@ -192,7 +192,7 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 }
 
 // restoreMarkerInAncestors recognizes the staging directory emitted by
-// cylo-restore.py. Marker contents never authorize opening; their presence
+// zoe-restore.py. Marker contents never authorize opening; their presence
 // permanently closes the database until a future reconciliation flow exists.
 func restoreMarkerInAncestors(databasePath string) (bool, error) {
 	absolute, err := filepath.Abs(databasePath)
@@ -419,7 +419,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 
 func sqliteDSN(path string) string {
 	if path == ":memory:" {
-		path = "file:cylo-memory?mode=memory&cache=shared"
+		path = "file:zoe-memory?mode=memory&cache=shared"
 	}
 	u, err := url.Parse(path)
 	if err != nil || u.Scheme == "" {

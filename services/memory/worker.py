@@ -15,7 +15,7 @@ from .embedding import LocalEmbedder
 from .mem0_backend import ControlledMem0
 from .stores import QdrantIndex, mem0_user_id
 
-LOG = logging.getLogger("cylo.memory.worker")
+LOG = logging.getLogger("zoe.memory.worker")
 
 
 class Mem0ContentLogFilter(logging.Filter):
@@ -181,7 +181,7 @@ class DeletionOnlyAdapters:
         self.client = QdrantClient(url=config.qdrant_url, api_key=config.qdrant_api_key, timeout=15.0)
         self.qdrant_collection = config.qdrant_collection
         self.mem0_collection = config.mem0_collection
-        self.history_path = Path(os.environ.get("CYLO_MEM0_HISTORY_DB", "/var/lib/cylo/memory/mem0-history.sqlite"))
+        self.history_path = Path(os.environ.get("ZOE_MEM0_HISTORY_DB", "/var/lib/zoe/memory/mem0-history.sqlite"))
 
     def delete(self, job: dict[str, Any]) -> None:
         workspace = str(job["workspace_id"])
@@ -220,13 +220,13 @@ class DeletionOnlyAdapters:
         connection = sqlite3.connect(self.history_path, timeout=5.0)
         try:
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            if not {"cylo_memory_ownership", "history", "messages"} <= tables:
+            if not {"zoe_memory_ownership", "history", "messages"} <= tables:
                 raise PermanentJobError("adapter_missing")
             connection.execute("BEGIN IMMEDIATE")
             memory_ids = [
                 row[0]
                 for row in connection.execute(
-                    "SELECT memory_id FROM cylo_memory_ownership WHERE user_id=? AND workspace_id=? AND claim_id=?",
+                    "SELECT memory_id FROM zoe_memory_ownership WHERE user_id=? AND workspace_id=? AND claim_id=?",
                     (user_id, workspace, claim_id),
                 )
             ]
@@ -234,7 +234,7 @@ class DeletionOnlyAdapters:
                 connection.executemany("DELETE FROM history WHERE memory_id=?", ((item,) for item in memory_ids))
             connection.execute("DELETE FROM messages WHERE session_scope=?", (f"user_id={user_id}",))
             connection.execute(
-                "DELETE FROM cylo_memory_ownership WHERE user_id=? AND workspace_id=? AND claim_id=?",
+                "DELETE FROM zoe_memory_ownership WHERE user_id=? AND workspace_id=? AND claim_id=?",
                 (user_id, workspace, claim_id),
             )
             connection.commit()

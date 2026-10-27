@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Zoe encrypted backup daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+Unit=zoe-backup.service
+
+[Install]
+WantedBy=timers.target

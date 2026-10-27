@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 func budgetTestServer(t *testing.T, limits contracts.RunBudgetSnapshot) (*Server, func()) {

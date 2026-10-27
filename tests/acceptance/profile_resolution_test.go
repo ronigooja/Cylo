@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 func TestProfileForRoleUsesExplicitMappingAndUnambiguousFallback(t *testing.T) {

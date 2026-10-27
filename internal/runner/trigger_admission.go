@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Zoe/contracts"
 )
 
 // CapabilityTriggerAdmissionStatus is the control plane's explicit report of

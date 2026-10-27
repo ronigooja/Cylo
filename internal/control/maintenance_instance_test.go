@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 func TestPersistentInstanceFenceAndVerifiedRestore(t *testing.T) {
@@ -77,10 +77,10 @@ func TestRestoreGateMigrationBackfillsPreviouslyPreparedTargets(t *testing.T) {
 	defer store.Close()
 	legacySchema := `CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at TEXT NOT NULL,namespace TEXT NOT NULL DEFAULT '');
 INSERT INTO schema_migrations(version,name,applied_at,namespace) VALUES(1000,'persistent_instance_dispatch_fence','now','instance');
-CREATE TABLE cylo_instance_state(singleton INTEGER PRIMARY KEY,instance_id TEXT NOT NULL,epoch INTEGER NOT NULL,dispatch_enabled INTEGER NOT NULL,derived_retrieval_enabled INTEGER NOT NULL,fence_reason TEXT NOT NULL DEFAULT '',fenced_at TEXT,updated_at TEXT NOT NULL);
-CREATE TABLE cylo_instance_migration_source(singleton INTEGER PRIMARY KEY,old_instance_id TEXT NOT NULL,old_epoch INTEGER NOT NULL);
-INSERT INTO cylo_instance_state(singleton,instance_id,epoch,dispatch_enabled,derived_retrieval_enabled,fence_reason,updated_at) VALUES(1,'old-target',3,0,0,'restored target awaiting isolation','now');
-INSERT INTO cylo_instance_migration_source(singleton,old_instance_id,old_epoch) VALUES(1,'prior-source',2);`
+CREATE TABLE zoe_instance_state(singleton INTEGER PRIMARY KEY,instance_id TEXT NOT NULL,epoch INTEGER NOT NULL,dispatch_enabled INTEGER NOT NULL,derived_retrieval_enabled INTEGER NOT NULL,fence_reason TEXT NOT NULL DEFAULT '',fenced_at TEXT,updated_at TEXT NOT NULL);
+CREATE TABLE zoe_instance_migration_source(singleton INTEGER PRIMARY KEY,old_instance_id TEXT NOT NULL,old_epoch INTEGER NOT NULL);
+INSERT INTO zoe_instance_state(singleton,instance_id,epoch,dispatch_enabled,derived_retrieval_enabled,fence_reason,updated_at) VALUES(1,'old-target',3,0,0,'restored target awaiting isolation','now');
+INSERT INTO zoe_instance_migration_source(singleton,old_instance_id,old_epoch) VALUES(1,'prior-source',2);`
 	if _, err = store.DB().ExecContext(ctx, legacySchema); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestRestoreGateFailsClosedWhenInstanceSingletonIsMissing(t *testing.T) {
 	if err = store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = store.DB().ExecContext(ctx, `DELETE FROM cylo_instance_state WHERE singleton=1`); err != nil {
+	if _, err = store.DB().ExecContext(ctx, `DELETE FROM zoe_instance_state WHERE singleton=1`); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := store.DB().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
@@ -138,7 +138,7 @@ func TestIsolationProofRejectsUnverifiedAndActiveSource(t *testing.T) {
 
 	payload := map[string]any{
 		"schema_version": 1, "old_instance_id": "source", "old_epoch": 4,
-		"source_host": "source.example", "units": []map[string]string{{"name": "cylo.service", "active_state": "active", "unit_file_state": "masked"}},
+		"source_host": "source.example", "units": []map[string]string{{"name": "zoe.service", "active_state": "active", "unit_file_state": "masked"}},
 		"active_runs": 0, "unknown_effects": 0, "verified_at": time.Now().UTC(),
 	}
 	raw, _ := json.Marshal(payload)
@@ -152,7 +152,7 @@ func TestIsolationProofRejectsUnverifiedAndActiveSource(t *testing.T) {
 
 	readiness := map[string]any{
 		"schema_version": 1, "old_instance_id": "source", "old_epoch": 4,
-		"source_host": "source.example", "units": []map[string]string{{"name": "cylo.service", "active_state": "inactive", "unit_file_state": "masked"}},
+		"source_host": "source.example", "units": []map[string]string{{"name": "zoe.service", "active_state": "inactive", "unit_file_state": "masked"}},
 		"active_runs": 0, "unknown_effects": 0, "active_deployment_jobs": 1,
 		"live_deployments": 0, "open_voice_sessions": 0, "verified_at": time.Now().UTC(),
 	}
@@ -180,7 +180,7 @@ func signedProof(t *testing.T, key []byte, oldID string, oldEpoch int64) []byte 
 	t.Helper()
 	payload := map[string]any{
 		"schema_version": 1, "old_instance_id": oldID, "old_epoch": oldEpoch,
-		"source_host": "source.example", "units": []map[string]string{{"name": "cylo.service", "active_state": "inactive", "unit_file_state": "masked"}},
+		"source_host": "source.example", "units": []map[string]string{{"name": "zoe.service", "active_state": "inactive", "unit_file_state": "masked"}},
 		"active_runs": 0, "unknown_effects": 0, "verified_at": time.Now().UTC(),
 	}
 	raw, err := json.Marshal(payload)

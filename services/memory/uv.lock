@@ -122,7 +122,7 @@ wheels = [
 ]
 
 [[package]]
-name = "cylo-memory-worker"
+name = "zoe-memory-worker"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

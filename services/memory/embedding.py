@@ -53,7 +53,7 @@ class LocalEmbedder:
 
         if model_id != "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2" or revision != MODEL_REVISION:
             raise ValueError("the configured embedding model does not match the pinned codec")
-        cache = Path(os.environ.setdefault("FASTEMBED_CACHE_PATH", "/tmp/cylo-memory-models"))
+        cache = Path(os.environ.setdefault("FASTEMBED_CACHE_PATH", "/tmp/zoe-memory-models"))
         snapshot = pinned_snapshot(cache)
         self.model = TextEmbedding(
             model_name=model_id,

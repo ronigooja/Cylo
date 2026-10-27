@@ -1,1 +1,1 @@
-"""Controlled Cylo Mem0 and Qdrant derived-memory worker."""
+"""Controlled Zoe Mem0 and Qdrant derived-memory worker."""

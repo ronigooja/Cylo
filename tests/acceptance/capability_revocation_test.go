@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/capabilities"
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/capabilities"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 func TestCapabilityRevocationFencesClaimsAndRequiresProvenCleanup(t *testing.T) {
@@ -212,7 +212,7 @@ func TestCapabilityRevocationFencesClaimsAndRequiresProvenCleanup(t *testing.T) 
 		t.Fatalf("new request after uncertain cleanup=%d, want conflict", blocked.Code)
 	}
 
-	stopped := contracts.DeploymentObservation{DeploymentID: deploymentID, AttemptID: cleanupClaim.AttemptID, Fence: cleanupClaim.Fence, ObservationID: "cleanup-stopped", Operation: "stop", State: "stopped", ExternalEffectRef: []string{"docker:cylo-cap-revocable"}, TerminationProof: &contracts.CapabilityTerminationProof{EffectRef: "docker:cylo-cap-revocable", TerminatedAt: time.Now().UTC(), CleanupComplete: true}, ObservedAt: time.Now().UTC()}
+	stopped := contracts.DeploymentObservation{DeploymentID: deploymentID, AttemptID: cleanupClaim.AttemptID, Fence: cleanupClaim.Fence, ObservationID: "cleanup-stopped", Operation: "stop", State: "stopped", ExternalEffectRef: []string{"docker:zoe-cap-revocable"}, TerminationProof: &contracts.CapabilityTerminationProof{EffectRef: "docker:zoe-cap-revocable", TerminatedAt: time.Now().UTC(), CleanupComplete: true}, ObservedAt: time.Now().UTC()}
 	stoppedResponse := reviewRequest(handler, http.MethodPost, "/runner/v1/deployments/"+deploymentID+"/observations", runnerToken, "", stopped)
 	if stoppedResponse.Code != http.StatusAccepted {
 		t.Fatalf("confirmed cleanup report=%d %s", stoppedResponse.Code, stoppedResponse.Body.String())

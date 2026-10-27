@@ -1,0 +1,21 @@
+[Unit]
+Description=Create an encrypted, consistent Zoe authority backup
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=zoe
+Group=zoe
+UMask=0077
+Environment=PYTHONPATH=/opt/zoe/tools
+ExecStart=/usr/bin/python3 /opt/zoe/tools/zoe_backup.py --database /var/lib/zoe/data/zoe.sqlite --destination /var/lib/zoe/backups --key-file /etc/zoe/backup.key --inventory /etc/zoe/backup-inventory.json
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/zoe/backup.key /etc/zoe/backup-inventory.json /var/lib/zoe/data
+ReadWritePaths=/var/lib/zoe/backups
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native

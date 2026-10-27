@@ -10,7 +10,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 const backupDeleteManifestVersion = 1

@@ -65,9 +65,9 @@ index 000000000..d4a712e2c
 +	"time"
 +)
 +
-+const codexExternalAPIKeyEnv = "CYLO_CODEX_API_KEY"
-+const codexExternalProfileErrorEnv = "CYLO_CODEX_PROFILE_ERROR"
-+const codexExternalModelEnv = "CYLO_CODEX_PROXY_MODEL"
++const codexExternalAPIKeyEnv = "ZOE_CODEX_API_KEY"
++const codexExternalProfileErrorEnv = "ZOE_CODEX_PROFILE_ERROR"
++const codexExternalModelEnv = "ZOE_CODEX_PROXY_MODEL"
 +
 +// CodexExternalProfile is a deployment-selected OpenAI-compatible Responses
 +// API route. Its CODEX_HOME is AO-owned and separate from the operator's home.
@@ -165,8 +165,8 @@ index 000000000..d4a712e2c
 +	home := p.sessionHome(sessionID)
 +	env := map[string]string{
 +		"CODEX_HOME":                 home,
-+		"CYLO_CODEX_SESSION_ID":      sessionID,
-+		"CYLO_CODEX_PROXY_UPSTREAM":  p.BaseURL,
++		"ZOE_CODEX_SESSION_ID":      sessionID,
++		"ZOE_CODEX_PROXY_UPSTREAM":  p.BaseURL,
 +		codexExternalModelEnv:        p.Model,
 +		codexExternalProfileErrorEnv: "",
 +	}
@@ -268,7 +268,7 @@ index 000000000..d4a712e2c
 +	if existing, err := os.Lstat(configPath); err == nil && (existing.Mode()&os.ModeSymlink != 0 || !existing.Mode().IsRegular()) {
 +		return errors.New("external Codex config must be a regular file")
 +	}
-+	contents := fmt.Sprintf("model_provider = %q\n\n[model_providers.cylo_external]\nname = %q\nbase_url = %q\nwire_api = %q\nrequires_openai_auth = false\n", "cylo_external", "Cylo external API", baseURL, "responses")
++	contents := fmt.Sprintf("model_provider = %q\n\n[model_providers.zoe_external]\nname = %q\nbase_url = %q\nwire_api = %q\nrequires_openai_auth = false\n", "zoe_external", "Zoe external API", baseURL, "responses")
 +	if includeEnvKey {
 +		contents += fmt.Sprintf("env_key = %q\n", codexExternalAPIKeyEnv)
 +	}
@@ -319,11 +319,11 @@ index 000000000..0e063b9d1
 +
 +func TestCodexExternalProfileReadsPrivateMemfdWithoutPersistingKey(t *testing.T) {
 +	const marker = "synthetic-memfd-provider-test-key"
-+	fd, err := unix.MemfdCreate("cylo-provider-test", unix.MFD_CLOEXEC)
++	fd, err := unix.MemfdCreate("zoe-provider-test", unix.MFD_CLOEXEC)
 +	if err != nil {
 +		t.Fatal(err)
 +	}
-+	file := os.NewFile(uintptr(fd), "cylo-provider-test")
++	file := os.NewFile(uintptr(fd), "zoe-provider-test")
 +	defer file.Close()
 +	if _, err := file.WriteString(marker); err != nil {
 +		t.Fatal(err)
@@ -374,7 +374,7 @@ index 000000000..30318cb2a
 +	if err != nil {
 +		t.Fatal(err)
 +	}
-+	profile.ContainerImage = "cylo-ao-codex:test"
++	profile.ContainerImage = "zoe-ao-codex:test"
 +	if profile.Home == oldHome || !strings.HasPrefix(profile.Home, state) {
 +		t.Fatalf("profile home=%q old home=%q", profile.Home, oldHome)
 +	}
@@ -388,7 +388,7 @@ index 000000000..30318cb2a
 +		t.Fatal(err)
 +	}
 +	text := string(config)
-+	for _, want := range []string{"model_provider = \"cylo_external\"", "wire_api = \"responses\"", "env_key = \"CYLO_CODEX_API_KEY\"", "https://gateway.example/v1"} {
++	for _, want := range []string{"model_provider = \"zoe_external\"", "wire_api = \"responses\"", "env_key = \"ZOE_CODEX_API_KEY\"", "https://gateway.example/v1"} {
 +		if !strings.Contains(text, want) {
 +			t.Fatalf("config missing %q: %s", want, text)
 +		}
@@ -492,9 +492,9 @@ index 000000000..30318cb2a
 +	if err != nil {
 +		t.Fatal(err)
 +	}
-+	profile.ContainerImage = "cylo-ao-codex:test"
++	profile.ContainerImage = "zoe-ao-codex:test"
 +	env := profile.RuntimeEnvForSession("session-e2e")
-+	if env["CYLO_CODEX_PROXY_UPSTREAM"] != profile.BaseURL || env["AO_CODEX_CONTAINER_IMAGE"] != profile.ContainerImage || env[codexExternalProfileErrorEnv] != "provider_credential_unavailable" {
++	if env["ZOE_CODEX_PROXY_UPSTREAM"] != profile.BaseURL || env["AO_CODEX_CONTAINER_IMAGE"] != profile.ContainerImage || env[codexExternalProfileErrorEnv] != "provider_credential_unavailable" {
 +		t.Fatalf("failed profile did not preserve fail-closed markers: keys=%v", externalKeys(env))
 +	}
 +	if _, ok := env[codexExternalAPIKeyEnv]; ok {
@@ -530,12 +530,12 @@ index 000000000..1360f8d4e
 +)
 +
 +const (
-+	containerModeEnv    = "CYLO_CODEX_CONTAINER"
++	containerModeEnv    = "ZOE_CODEX_CONTAINER"
 +	containerImageEnv   = "AO_CODEX_CONTAINER_IMAGE"
-+	providerUpstreamEnv = "CYLO_CODEX_PROXY_UPSTREAM"
-+	providerKeyEnv      = "CYLO_CODEX_PROXY_KEY"
-+	providerModelEnv    = "CYLO_CODEX_PROXY_MODEL"
-+	sessionIDEnv        = "CYLO_CODEX_SESSION_ID"
++	providerUpstreamEnv = "ZOE_CODEX_PROXY_UPSTREAM"
++	providerKeyEnv      = "ZOE_CODEX_PROXY_KEY"
++	providerModelEnv    = "ZOE_CODEX_PROXY_MODEL"
++	sessionIDEnv        = "ZOE_CODEX_SESSION_ID"
 +)
 +
 +func spawnContainerAppServer(ctx context.Context, workdir string, env []string) (*process, error) {
@@ -546,7 +546,7 @@ index 000000000..1360f8d4e
 +	providerKey := strings.TrimSpace(values[providerKeyEnv])
 +	providerModel := strings.TrimSpace(values[providerModelEnv])
 +	if providerKey == "" {
-+		providerKey = strings.TrimSpace(values["CYLO_CODEX_API_KEY"])
++		providerKey = strings.TrimSpace(values["ZOE_CODEX_API_KEY"])
 +	}
 +	if sessionID == "" || image == "" || home == "" || providerModel == "" || !filepath.IsAbs(workdir) || !filepath.IsAbs(home) {
 +		return nil, errors.New("supervised Codex container requires session identity, image, absolute workspace, and private CODEX_HOME")
@@ -570,7 +570,7 @@ index 000000000..1360f8d4e
 +		return nil, errors.New("supervised Codex launch identity unavailable")
 +	}
 +	launchID := hex.EncodeToString(nonce[:])
-+	role := values["CYLO_CODEX_RUNTIME_ROLE"]
++	role := values["ZOE_CODEX_RUNTIME_ROLE"]
 +	if role == "" {
 +		role = "worker"
 +	}
@@ -589,16 +589,16 @@ index 000000000..1360f8d4e
 +	// after sending the session response, so tying the attach process directly to
 +	// that request would orphan the container and close the controller pipes.
 +	processCtx, cancelProcess := context.WithCancel(context.Background())
-+	name := "cylo-ao-" + shortSessionHash(sessionID) + "-" + launchID
++	name := "zoe-ao-" + shortSessionHash(sessionID) + "-" + launchID
 +	uidgid := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 +	args := []string{
 +		"run", "--rm", "--init", "-i", "--cidfile", cidfile,
 +		"--name", name,
-+		"--label", "io.cylo.managed=true",
-+		"--label", "io.cylo.runtime=ao-codex-chat",
-+		"--label", "io.cylo.ao.session=" + sessionID,
-+		"--label", "io.cylo.ao.launch=" + launchID,
-+		"--label", "io.cylo.ao.role=" + role,
++		"--label", "io.zoe.managed=true",
++		"--label", "io.zoe.runtime=ao-codex-chat",
++		"--label", "io.zoe.ao.session=" + sessionID,
++		"--label", "io.zoe.ao.launch=" + launchID,
++		"--label", "io.zoe.ao.role=" + role,
 +		"--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
 +		"--read-only", "--pids-limit", "256", "--memory", "2g", "--cpus", "2",
 +		"--user", uidgid,
@@ -607,21 +607,21 @@ index 000000000..1360f8d4e
 +		// not accept the bare `rw` option supported by --volume.
 +		"--mount", "type=bind,src=" + workdir + ",dst=" + workdir,
 +		"--mount", "type=bind,src=" + home + ",dst=/codex-home",
-+		"--mount", "type=bind,src=" + broker.SocketPath() + ",dst=/run/cylo/provider.sock,readonly",
++		"--mount", "type=bind,src=" + broker.SocketPath() + ",dst=/run/zoe/provider.sock,readonly",
 +		"--workdir", workdir,
 +		"--env", "CODEX_HOME=/codex-home",
 +		"--env", "HOME=/tmp",
-+		"--env", "CYLO_PROVIDER_SOCKET=/run/cylo/provider.sock",
++		"--env", "ZOE_PROVIDER_SOCKET=/run/zoe/provider.sock",
 +		// Codex expects the configured env_key to exist even though auth is
 +		// disabled. The host broker always replaces Authorization upstream.
-+		"--env", "CYLO_CONTAINER_PROXY_NO_AUTH=cylo-provider-broker-no-auth",
++		"--env", "ZOE_CONTAINER_PROXY_NO_AUTH=zoe-provider-broker-no-auth",
 +		"--env", "PATH=/usr/local/bin:/usr/bin:/bin",
 +		image,
 +		"--", "/usr/local/bin/codex",
-+		"-c", `model_provider="cylo_external"`,
-+		"-c", `model_providers.cylo_external.base_url="http://127.0.0.1:47631/v1"`,
-+		"-c", `model_providers.cylo_external.env_key="CYLO_CONTAINER_PROXY_NO_AUTH"`,
-+		"-c", `model_providers.cylo_external.requires_openai_auth=false`,
++		"-c", `model_provider="zoe_external"`,
++		"-c", `model_providers.zoe_external.base_url="http://127.0.0.1:47631/v1"`,
++		"-c", `model_providers.zoe_external.env_key="ZOE_CONTAINER_PROXY_NO_AUTH"`,
++		"-c", `model_providers.zoe_external.requires_openai_auth=false`,
 +		"-c", `sandbox_mode="danger-full-access"`,
 +		"app-server",
 +	}
@@ -744,10 +744,10 @@ index 000000000..1360f8d4e
 +		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 +		defer cancel()
 +		args := []string{"ps", "-aq", "--no-trunc",
-+			"--filter", "label=io.cylo.managed=true",
-+			"--filter", "label=io.cylo.runtime=ao-codex-chat",
-+			"--filter", "label=io.cylo.ao.session=" + sessionID,
-+			"--filter", "label=io.cylo.ao.launch=" + launchID,
++			"--filter", "label=io.zoe.managed=true",
++			"--filter", "label=io.zoe.runtime=ao-codex-chat",
++			"--filter", "label=io.zoe.ao.session=" + sessionID,
++			"--filter", "label=io.zoe.ao.launch=" + launchID,
 +			"--filter", "name=^/" + name + "$",
 +		}
 +		output, err := exec.CommandContext(ctx, docker, args...).CombinedOutput()
@@ -797,7 +797,7 @@ index 000000000..1360f8d4e
 +}
 +
 +func supervisedExternalRoute(env map[string]string, image string) (bool, error) {
-+	if strings.TrimSpace(env["CYLO_CODEX_PROFILE_ERROR"]) != "" {
++	if strings.TrimSpace(env["ZOE_CODEX_PROFILE_ERROR"]) != "" {
 +		return false, errors.New("external Codex worker profile is incomplete")
 +	}
 +	if strings.TrimSpace(env[providerUpstreamEnv]) == "" {
@@ -892,7 +892,7 @@ index 000000000..1360f8d4e
 +func sanitizedDockerEnvironment(env []string) []string {
 +	values := environmentMap(env)
 +	for key := range values {
-+		if strings.HasPrefix(key, "CYLO_CODEX_") || key == "CYLO_PROVIDER_SOCKET" {
++		if strings.HasPrefix(key, "ZOE_CODEX_") || key == "ZOE_PROVIDER_SOCKET" {
 +			delete(values, key)
 +		}
 +	}
@@ -1063,12 +1063,12 @@ index 000000000..e3fa059f8
 +
 +func containerTestEnv(docker string) []string {
 +	return []string{
-+		"CYLO_CODEX_SESSION_ID=container-lifecycle-test",
-+		"AO_CODEX_CONTAINER_IMAGE=cylo-ao-codex:test",
++		"ZOE_CODEX_SESSION_ID=container-lifecycle-test",
++		"AO_CODEX_CONTAINER_IMAGE=zoe-ao-codex:test",
 +		"AO_CODEX_DOCKER_BINARY=" + docker,
-+		"CYLO_CODEX_PROXY_UPSTREAM=https://provider.invalid/v1",
-+		"CYLO_CODEX_PROXY_KEY=fixture-only-provider-key",
-+		"CYLO_CODEX_PROXY_MODEL=gpt-6-luna",
++		"ZOE_CODEX_PROXY_UPSTREAM=https://provider.invalid/v1",
++		"ZOE_CODEX_PROXY_KEY=fixture-only-provider-key",
++		"ZOE_CODEX_PROXY_MODEL=gpt-6-luna",
 +		"CODEX_HOME=/tmp",
 +	}
 +}
@@ -1165,8 +1165,8 @@ index 000000000..e3fa059f8
 +		if line == "--name" && n+1 < len(lines) {
 +			names = append(names, lines[n+1])
 +		}
-+		if strings.HasPrefix(line, "io.cylo.ao.launch=") {
-+			launches = append(launches, strings.TrimPrefix(line, "io.cylo.ao.launch="))
++		if strings.HasPrefix(line, "io.zoe.ao.launch=") {
++			launches = append(launches, strings.TrimPrefix(line, "io.zoe.ao.launch="))
 +		}
 +	}
 +	if len(names) != 2 || names[0] == names[1] || len(launches) != 2 || launches[0] == launches[1] || !strings.HasSuffix(names[0], launches[0]) || !strings.HasSuffix(names[1], launches[1]) {
@@ -1182,7 +1182,7 @@ index 000000000..e3fa059f8
 +printf '%%s\n' "$@" >> %s
 +if [ "$1" = ps ]; then
 +  case " $* " in
-+    *" label=io.cylo.ao.launch=newlaunch "*)
++    *" label=io.zoe.ao.launch=newlaunch "*)
 +      case " $* " in *" name=^/newname$ "*) exit 0;; esac
 +      ;;
 +  esac
@@ -1236,8 +1236,8 @@ index 000000000..8be8c7992
 +	}{
 +		{name: "native route remains native", env: map[string]string{}, want: false},
 +		{name: "external route without image fails closed", env: map[string]string{providerUpstreamEnv: "https://proxy.example/v1"}, bad: true},
-+		{name: "external profile setup failure fails closed", env: map[string]string{providerUpstreamEnv: "https://proxy.example/v1", "CYLO_CODEX_PROFILE_ERROR": "provider_credential_unavailable"}, image: "cylo-ao-codex:test", bad: true},
-+		{name: "external route with image is supervised", env: map[string]string{providerUpstreamEnv: "https://proxy.example/v1"}, image: "cylo-ao-codex:test", want: true},
++		{name: "external profile setup failure fails closed", env: map[string]string{providerUpstreamEnv: "https://proxy.example/v1", "ZOE_CODEX_PROFILE_ERROR": "provider_credential_unavailable"}, image: "zoe-ao-codex:test", bad: true},
++		{name: "external route with image is supervised", env: map[string]string{providerUpstreamEnv: "https://proxy.example/v1"}, image: "zoe-ao-codex:test", want: true},
 +	}
 +	for _, tt := range tests {
 +		t.Run(tt.name, func(t *testing.T) {
@@ -1250,10 +1250,10 @@ index 000000000..8be8c7992
 +}
 +
 +func TestSupervisedContainerLaunchDoesNotResolveHostCodex(t *testing.T) {
-+	t.Setenv(containerImageEnv, "cylo-ao-codex:test")
++	t.Setenv(containerImageEnv, "zoe-ao-codex:test")
 +	env := map[string]string{
 +		providerUpstreamEnv: "https://gateway.example/v1",
-+		containerImageEnv:   "cylo-ao-codex:test",
++		containerImageEnv:   "zoe-ao-codex:test",
 +		"CODEX_HOME":        "/tmp/private-codex-home",
 +	}
 +	driver := New(fakePlugin{binErr: errors.New("host Codex is not installed")}, slog.New(slog.DiscardHandler))
@@ -1275,7 +1275,7 @@ index 000000000..8be8c7992
 +}
 +
 +func TestSupervisedContainerProbeDoesNotResolveHostCodex(t *testing.T) {
-+	t.Setenv(containerImageEnv, "cylo-ao-codex:test")
++	t.Setenv(containerImageEnv, "zoe-ao-codex:test")
 +	t.Setenv("AO_CODEX_EXTERNAL_BASE_URL", "https://gateway.example/v1")
 +	driver := New(fakePlugin{binErr: errors.New("host Codex is not installed")}, slog.New(slog.DiscardHandler))
 +	probed, err := driver.Probe(context.Background())
@@ -1288,7 +1288,7 @@ index 000000000..8be8c7992
 +}
 +
 +func TestContainerImageAloneDoesNotBypassNativeProbe(t *testing.T) {
-+	t.Setenv(containerImageEnv, "cylo-ao-codex:test")
++	t.Setenv(containerImageEnv, "zoe-ao-codex:test")
 +	t.Setenv("AO_CODEX_EXTERNAL_BASE_URL", "")
 +	driver := New(fakePlugin{binErr: errors.New("host Codex is not installed")}, slog.New(slog.DiscardHandler))
 +	if _, err := driver.Probe(context.Background()); err == nil {
@@ -1312,13 +1312,13 @@ index 000000000..8be8c7992
 +}
 +
 +func TestSupervisedThreadStartsFullAccessAndTurnInheritsIt(t *testing.T) {
-+	t.Setenv(containerImageEnv, "cylo-ao-codex:test")
++	t.Setenv(containerImageEnv, "zoe-ao-codex:test")
 +	d, srv := newTestDriver(t)
 +	conv, err := d.Start(context.Background(), ports.ChatStartConfig{
 +		WorkspacePath: "/tmp/ws",
 +		Env: map[string]string{
 +			providerUpstreamEnv: "https://gateway.example/v1",
-+			containerImageEnv:   "cylo-ao-codex:test",
++			containerImageEnv:   "zoe-ao-codex:test",
 +		},
 +		Permissions: ports.PermissionModeAuto,
 +	})
@@ -1695,7 +1695,7 @@ index 84dfa7c7c..b5c6f9dba 100644
 +		env = preparedEnv
 +		prepared = true
 +	}
-+	// The external Codex route is a Cylo worker profile. When its supervised
++	// The external Codex route is a Zoe worker profile. When its supervised
 +	// image is configured, do not attach to AO's persistent host: that host
 +	// survives the controller and would escape the container PID namespace.
 +	containerized, routeErr := supervisedExternalRoute(env, os.Getenv(containerImageEnv))
@@ -2610,8 +2610,8 @@ index 99eb5f380..57397ac99 100644
 +		if isolated == nil {
 +			isolated = make(map[string]string)
 +		}
-+		isolated["CYLO_CODEX_SESSION_ID"] = string(cfg.SessionID)
-+		isolated["CYLO_CODEX_RUNTIME_ROLE"] = "background"
++		isolated["ZOE_CODEX_SESSION_ID"] = string(cfg.SessionID)
++		isolated["ZOE_CODEX_RUNTIME_ROLE"] = "background"
 +		return isolated
 +	}
 +	cfg.Env = isolateEnv(cfg.Env)
@@ -2635,7 +2635,7 @@ index 4613b1acd..ab95c4f69 100644
  		},
  	})
  
-+	parentEnv := map[string]string{"CODEX_HOME": "/account", "CYLO_CODEX_SESSION_ID": "primary-worker"}
++	parentEnv := map[string]string{"CODEX_HOME": "/account", "ZOE_CODEX_SESSION_ID": "primary-worker"}
  	title, err := service.RunBackgroundTask(context.Background(), domain.HarnessCodex, ports.ChatStartConfig{
  		DataDir: "/data", WorkspacePath: "/workspace",
 -		Env: map[string]string{"CODEX_HOME": "/account"}, Model: "small", Effort: "low",
@@ -2648,7 +2648,7 @@ index 4613b1acd..ab95c4f69 100644
  		t.Fatalf("start config = %#v", started)
  	}
 +	preparedEnv, prepareErr := started.PrepareEnv(context.Background())
-+	if prepareErr != nil || preparedEnv["CYLO_CODEX_SESSION_ID"] != string(started.SessionID) || started.Env["CYLO_CODEX_SESSION_ID"] != string(started.SessionID) || preparedEnv["CYLO_CODEX_RUNTIME_ROLE"] != "background" || parentEnv["CYLO_CODEX_SESSION_ID"] != "primary-worker" {
++	if prepareErr != nil || preparedEnv["ZOE_CODEX_SESSION_ID"] != string(started.SessionID) || started.Env["ZOE_CODEX_SESSION_ID"] != string(started.SessionID) || preparedEnv["ZOE_CODEX_RUNTIME_ROLE"] != "background" || parentEnv["ZOE_CODEX_SESSION_ID"] != "primary-worker" {
 +		t.Fatal("background inherited or mutated primary runtime identity")
 +	}
  	messages := conversation.sentMessages()

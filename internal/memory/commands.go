@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 type rememberPayload struct {
@@ -124,7 +124,7 @@ func (s *Service) commandDelete(ctx context.Context, tx *sql.Tx, cmd control.Com
 	}
 	var lineage string
 	var generation, deletionSequence int64
-	if err := tx.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&lineage, &generation, &deletionSequence); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM zoe_instance_state WHERE singleton=1`).Scan(&lineage, &generation, &deletionSequence); err != nil {
 		if !strings.Contains(err.Error(), "no such table") {
 			return contracts.CommandResult{}, nil, err
 		}

@@ -37,10 +37,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          root="$HOME/environment/cylo-linux"
+          root="$HOME/environment/zoe-linux"
           mkdir -p "$root/logs" "$root/tmp" "$root/go-cache" "$root/go" "$root/toolcache"
           {
-            echo "CYLO_OUTPUT=$root"
+            echo "ZOE_OUTPUT=$root"
             echo "TMPDIR=$root/tmp"
             echo "GOCACHE=$root/go-cache"
             echo "GOPATH=$root/go"
@@ -59,18 +59,18 @@ jobs:
             git status --short
             go version
             uname -a
-          } > "$CYLO_OUTPUT/logs/environment.txt"
+          } > "$ZOE_OUTPUT/logs/environment.txt"
       - name: Run Go tests
         shell: bash
         run: |
           set +e
           set -uo pipefail
-          printf '%s\n' 'go test ./...' > "$CYLO_OUTPUT/logs/go-tests.command"
-          go test ./... > "$CYLO_OUTPUT/logs/go-tests.log" 2>&1
+          printf '%s\n' 'go test ./...' > "$ZOE_OUTPUT/logs/go-tests.command"
+          go test ./... > "$ZOE_OUTPUT/logs/go-tests.log" 2>&1
           status=$?
-          echo "$status" > "$CYLO_OUTPUT/logs/go-tests.exit"
+          echo "$status" > "$ZOE_OUTPUT/logs/go-tests.exit"
           if [[ "$status" -ne 0 ]]; then
-            tail -n 80 "$CYLO_OUTPUT/logs/go-tests.log"
+            tail -n 80 "$ZOE_OUTPUT/logs/go-tests.log"
           fi
           exit "$status"
       - name: Upload verification logs
@@ -78,7 +78,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-go-logs-${{ github.sha }}
-          path: ${{ env.CYLO_OUTPUT }}/logs
+          path: ${{ env.ZOE_OUTPUT }}/logs
           retention-days: 7
           if-no-files-found: error
 
@@ -92,10 +92,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          root="$HOME/environment/cylo-linux"
+          root="$HOME/environment/zoe-linux"
           mkdir -p "$root/logs" "$root/tmp" "$root/go-cache" "$root/go" "$root/toolcache"
           {
-            echo "CYLO_OUTPUT=$root"
+            echo "ZOE_OUTPUT=$root"
             echo "TMPDIR=$root/tmp"
             echo "GOCACHE=$root/go-cache"
             echo "GOPATH=$root/go"
@@ -114,18 +114,18 @@ jobs:
             git status --short
             go version
             uname -a
-          } > "$CYLO_OUTPUT/logs/environment.txt"
+          } > "$ZOE_OUTPUT/logs/environment.txt"
       - name: Race-check authorization
         shell: bash
         run: |
           set +e
           set -uo pipefail
-          printf '%s\n' 'go test -race ./internal/control ./internal/runner ./internal/agents/ao ./cmd/cylo-server ./internal/ops ./cmd/cylo' > "$CYLO_OUTPUT/logs/auth-race.command"
-          go test -race ./internal/control ./internal/runner ./internal/agents/ao ./cmd/cylo-server ./internal/ops ./cmd/cylo > "$CYLO_OUTPUT/logs/auth-race.log" 2>&1
+          printf '%s\n' 'go test -race ./internal/control ./internal/runner ./internal/agents/ao ./cmd/zoe-server ./internal/ops ./cmd/zoe' > "$ZOE_OUTPUT/logs/auth-race.command"
+          go test -race ./internal/control ./internal/runner ./internal/agents/ao ./cmd/zoe-server ./internal/ops ./cmd/zoe > "$ZOE_OUTPUT/logs/auth-race.log" 2>&1
           status=$?
-          echo "$status" > "$CYLO_OUTPUT/logs/auth-race.exit"
+          echo "$status" > "$ZOE_OUTPUT/logs/auth-race.exit"
           if [[ "$status" -ne 0 ]]; then
-            tail -n 80 "$CYLO_OUTPUT/logs/auth-race.log"
+            tail -n 80 "$ZOE_OUTPUT/logs/auth-race.log"
           fi
           exit "$status"
       - name: Upload verification logs
@@ -133,7 +133,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-race-logs-${{ github.sha }}
-          path: ${{ env.CYLO_OUTPUT }}/logs
+          path: ${{ env.ZOE_OUTPUT }}/logs
           retention-days: 7
           if-no-files-found: error
 
@@ -147,10 +147,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          root="$HOME/environment/cylo-linux"
+          root="$HOME/environment/zoe-linux"
           mkdir -p "$root/logs" "$root/tmp" "$root/go-cache" "$root/go" "$root/toolcache"
           {
-            echo "CYLO_OUTPUT=$root"
+            echo "ZOE_OUTPUT=$root"
             echo "TMPDIR=$root/tmp"
             echo "GOCACHE=$root/go-cache"
             echo "GOPATH=$root/go"
@@ -169,18 +169,18 @@ jobs:
             git status --short
             go version
             uname -a
-          } > "$CYLO_OUTPUT/logs/environment.txt"
+          } > "$ZOE_OUTPUT/logs/environment.txt"
       - name: Verify immutable release
         shell: bash
         run: |
           set +e
           set -uo pipefail
-          printf '%s\n' 'bash deploy/linux/test-build-release.sh' > "$CYLO_OUTPUT/logs/test-build-release.command"
-          bash deploy/linux/test-build-release.sh > "$CYLO_OUTPUT/logs/test-build-release.log" 2>&1
+          printf '%s\n' 'bash deploy/linux/test-build-release.sh' > "$ZOE_OUTPUT/logs/test-build-release.command"
+          bash deploy/linux/test-build-release.sh > "$ZOE_OUTPUT/logs/test-build-release.log" 2>&1
           status=$?
-          echo "$status" > "$CYLO_OUTPUT/logs/test-build-release.exit"
+          echo "$status" > "$ZOE_OUTPUT/logs/test-build-release.exit"
           if [[ "$status" -ne 0 ]]; then
-            tail -n 80 "$CYLO_OUTPUT/logs/test-build-release.log"
+            tail -n 80 "$ZOE_OUTPUT/logs/test-build-release.log"
           fi
           exit "$status"
       - name: Verify CLI installation
@@ -188,12 +188,12 @@ jobs:
         run: |
           set +e
           set -uo pipefail
-          printf '%s\n' 'bash deploy/linux/test-install-cli.sh' > "$CYLO_OUTPUT/logs/test-install-cli.command"
-          bash deploy/linux/test-install-cli.sh > "$CYLO_OUTPUT/logs/test-install-cli.log" 2>&1
+          printf '%s\n' 'bash deploy/linux/test-install-cli.sh' > "$ZOE_OUTPUT/logs/test-install-cli.command"
+          bash deploy/linux/test-install-cli.sh > "$ZOE_OUTPUT/logs/test-install-cli.log" 2>&1
           status=$?
-          echo "$status" > "$CYLO_OUTPUT/logs/test-install-cli.exit"
+          echo "$status" > "$ZOE_OUTPUT/logs/test-install-cli.exit"
           if [[ "$status" -ne 0 ]]; then
-            tail -n 80 "$CYLO_OUTPUT/logs/test-install-cli.log"
+            tail -n 80 "$ZOE_OUTPUT/logs/test-install-cli.log"
           fi
           exit "$status"
       - name: Upload verification logs
@@ -201,7 +201,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-scripts-logs-${{ github.sha }}
-          path: ${{ env.CYLO_OUTPUT }}/logs
+          path: ${{ env.ZOE_OUTPUT }}/logs
           retention-days: 7
           if-no-files-found: error
 
@@ -248,10 +248,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          root="$HOME/environment/cylo-linux"
+          root="$HOME/environment/zoe-linux"
           mkdir -p "$root/logs" "$root/tmp" "$root/go-cache" "$root/go" "$root/toolcache"
           {
-            echo "CYLO_OUTPUT=$root"
+            echo "ZOE_OUTPUT=$root"
             echo "TMPDIR=$root/tmp"
             echo "GOCACHE=$root/go-cache"
             echo "GOPATH=$root/go"
@@ -270,7 +270,7 @@ jobs:
         run: |
           set +e
           set -uo pipefail
-          output="$CYLO_OUTPUT"
+          output="$ZOE_OUTPUT"
           mkdir -p "$output/artifacts/bin" "$output/artifacts/deploy-linux"
           {
             git rev-parse HEAD
@@ -279,8 +279,8 @@ jobs:
             uname -a
             printf 'GOOS=%s GOARCH=%s CGO_ENABLED=%s\n' "$GOOS" "$GOARCH" "$CGO_ENABLED"
           } > "$output/logs/environment.txt"
-          printf '%s\n' "CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH go build -trimpath -buildvcs=false -ldflags='-s -w' -o bin/cylo ./cmd/cylo" > "$output/logs/build.command"
-          go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$output/artifacts/bin/cylo" ./cmd/cylo > "$output/logs/build.log" 2>&1
+          printf '%s\n' "CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH go build -trimpath -buildvcs=false -ldflags='-s -w' -o bin/zoe ./cmd/zoe" > "$output/logs/build.command"
+          go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$output/artifacts/bin/zoe" ./cmd/zoe > "$output/logs/build.log" 2>&1
           status=$?
           echo "$status" > "$output/logs/build.exit"
           if [[ "$status" -ne 0 ]]; then
@@ -291,21 +291,21 @@ jobs:
           cp deploy/linux/install-cli.sh "$output/artifacts/deploy-linux/"
           git rev-parse HEAD > "$output/artifacts/SOURCE_REVISION"
           cd "$output/artifacts"
-          sha256sum bin/cylo deploy-linux/install-cli.sh SOURCE_REVISION > SHA256SUMS
-          tar -czf "$output/cylo-linux-$GOARCH.tar.gz" bin deploy-linux SOURCE_REVISION SHA256SUMS
+          sha256sum bin/zoe deploy-linux/install-cli.sh SOURCE_REVISION > SHA256SUMS
+          tar -czf "$output/zoe-linux-$GOARCH.tar.gz" bin deploy-linux SOURCE_REVISION SHA256SUMS
       - name: Upload operator build logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: operator-linux-${{ matrix.arch }}-logs-${{ github.sha }}
-          path: ${{ env.CYLO_OUTPUT }}/logs
+          path: ${{ env.ZOE_OUTPUT }}/logs
           retention-days: 7
           if-no-files-found: error
       - name: Upload operator release
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: operator-linux-${{ matrix.arch }}-${{ github.sha }}
-          path: ${{ env.CYLO_OUTPUT }}/cylo-linux-${{ matrix.arch }}.tar.gz
+          path: ${{ env.ZOE_OUTPUT }}/zoe-linux-${{ matrix.arch }}.tar.gz
           retention-days: 7
           if-no-files-found: error
           compression-level: 0

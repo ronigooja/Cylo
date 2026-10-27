@@ -1,5 +1,5 @@
 // Package ops provides local deployment inspection and service lifecycle helpers
-// for the cylo operator CLI. It never reads or prints secret contents.
+// for the zoe operator CLI. It never reads or prints secret contents.
 package ops
 
 import (
@@ -70,7 +70,7 @@ type InspectConfig struct {
 }
 
 func DetectMode() Mode {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("CYLO_DEPLOYMENT_MODE"))) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ZOE_DEPLOYMENT_MODE"))) {
 	case "systemd":
 		return ModeSystemd
 	case "compose":
@@ -89,7 +89,7 @@ func (m Manager) Inspect(ctx context.Context, cfg InspectConfig) Status {
 	}
 	services := cfg.Services
 	if len(services) == 0 {
-		services = []string{"cylo-compose.service", "cylo-ao.service", "cylo-runner.service"}
+		services = []string{"zoe-compose.service", "zoe-ao.service", "zoe-runner.service"}
 	}
 	result := Status{Mode: mode, Provider: ProviderStatus{BaseURL: redactURL(cfg.ProviderBaseURL), Model: safeModel(cfg.ProviderModel), ConfigSource: cfg.ProviderConfigSource, LastCheck: cfg.ProviderLastCheck}}
 	for _, name := range services {
@@ -173,7 +173,7 @@ func (m Manager) Reload(ctx context.Context, mode Mode, services []string, compo
 		mode = DetectMode()
 	}
 	if len(services) == 0 {
-		services = []string{"cylo-ao.service", "cylo-runner.service"}
+		services = []string{"zoe-ao.service", "zoe-runner.service"}
 	}
 	for _, service := range services {
 		if !validService(service) {
@@ -231,7 +231,7 @@ func safeModel(raw string) string {
 
 func DefaultSecretPath(root string) string {
 	if strings.TrimSpace(root) == "" {
-		return "/etc/cylo/runner-secrets/cliproxyapi-api-key"
+		return "/etc/zoe/runner-secrets/cliproxyapi-api-key"
 	}
 	return filepath.Join(root, "runner-secrets", "cliproxyapi-api-key")
 }

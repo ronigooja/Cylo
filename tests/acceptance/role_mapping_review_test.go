@@ -3,7 +3,7 @@ package acceptance
 import (
 	"testing"
 
-	"github.com/ronigooja/Cylo/internal/control"
+	"github.com/ronigooja/Zoe/internal/control"
 )
 
 func TestReviewRoleMappingRejectsConflictingNormalizedRoles(t *testing.T) {

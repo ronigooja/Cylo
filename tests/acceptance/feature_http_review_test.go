@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/memory"
-	"github.com/ronigooja/Cylo/internal/storage"
-	"github.com/ronigooja/Cylo/internal/voice"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/memory"
+	"github.com/ronigooja/Zoe/internal/storage"
+	"github.com/ronigooja/Zoe/internal/voice"
 )
 
 func reviewFeatureServer(t *testing.T) (*storage.Store, http.Handler, string, string, string) {
@@ -88,7 +88,7 @@ func TestRestoreDeletionGateClosesBusinessRoutesButAllowsDiagnostics(t *testing.
 			t.Errorf("missing instance key on %s=%d", path, response.Code)
 		}
 	}
-	if _, err := store.DB().Exec(`UPDATE cylo_instance_state SET restore_deletion_reconciliation_required=1,dispatch_enabled=0,derived_retrieval_enabled=0 WHERE singleton=1`); err != nil {
+	if _, err := store.DB().Exec(`UPDATE zoe_instance_state SET restore_deletion_reconciliation_required=1,dispatch_enabled=0,derived_retrieval_enabled=0 WHERE singleton=1`); err != nil {
 		t.Fatal(err)
 	}
 

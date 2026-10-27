@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/agents/ao"
-	"github.com/ronigooja/Cylo/internal/runner"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/agents/ao"
+	"github.com/ronigooja/Zoe/internal/runner"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 type dispatchRecoveryAO struct{ creates int }

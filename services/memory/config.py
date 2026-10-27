@@ -39,31 +39,31 @@ class WorkerConfig:
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
-        deletion_only = os.environ.get("CYLO_MEMORY_DELETION_ONLY", "").strip().lower() in ("1", "true", "yes")
+        deletion_only = os.environ.get("ZOE_MEMORY_DELETION_ONLY", "").strip().lower() in ("1", "true", "yes")
         if not deletion_only:
             os.environ.setdefault(
                 "FASTEMBED_CACHE_PATH",
-                os.environ.get("CYLO_MEMORY_MODEL_CACHE", "/var/lib/cylo/memory/models"),
+                os.environ.get("ZOE_MEMORY_MODEL_CACHE", "/var/lib/zoe/memory/models"),
             )
-        provider = os.environ.get("CYLO_MEM0_LLM_PROVIDER", "openai").strip().lower()
+        provider = os.environ.get("ZOE_MEM0_LLM_PROVIDER", "openai").strip().lower()
         if not deletion_only and provider != "openai":
-            raise ValueError("CYLO_MEM0_LLM_PROVIDER must be openai; other providers are not yet accounted")
+            raise ValueError("ZOE_MEM0_LLM_PROVIDER must be openai; other providers are not yet accounted")
         return cls(
-            control_url=_required("CYLO_CONTROL_URL").rstrip("/"),
-            runner_token=_required("CYLO_RUNNER_TOKEN"),
-            qdrant_url=os.environ.get("CYLO_QDRANT_URL", "http://127.0.0.1:6333").rstrip("/"),
-            qdrant_api_key=os.environ.get("CYLO_QDRANT_API_KEY") or None,
-            qdrant_collection=os.environ.get("CYLO_QDRANT_COLLECTION", f"cylo_memory_v1_{MODEL_CODEC}"),
-            mem0_collection=os.environ.get("CYLO_MEM0_COLLECTION", "cylo_mem0_v1"),
+            control_url=_required("ZOE_CONTROL_URL").rstrip("/"),
+            runner_token=_required("ZOE_RUNNER_TOKEN"),
+            qdrant_url=os.environ.get("ZOE_QDRANT_URL", "http://127.0.0.1:6333").rstrip("/"),
+            qdrant_api_key=os.environ.get("ZOE_QDRANT_API_KEY") or None,
+            qdrant_collection=os.environ.get("ZOE_QDRANT_COLLECTION", f"zoe_memory_v1_{MODEL_CODEC}"),
+            mem0_collection=os.environ.get("ZOE_MEM0_COLLECTION", "zoe_mem0_v1"),
             embedder_model=MODEL_ID,
             embedder_revision=MODEL_REVISION,
             llm_provider=provider,
-            llm_model="" if deletion_only else _required("CYLO_MEM0_LLM_MODEL"),
-            llm_base_url=os.environ.get("CYLO_MEM0_LLM_BASE_URL") or None,
-            llm_api_key=os.environ.get("CYLO_MEM0_LLM_API_KEY") or None,
-            poll_seconds=max(0.1, min(float(os.environ.get("CYLO_MEMORY_POLL_SECONDS", "2")), 60.0)),
-            batch_size=max(1, min(int(os.environ.get("CYLO_MEMORY_BATCH_SIZE", "10")), 100)),
-            extractor_version=os.environ.get("CYLO_MEMORY_EXTRACTOR_VERSION", "mem0-controlled-v1"),
+            llm_model="" if deletion_only else _required("ZOE_MEM0_LLM_MODEL"),
+            llm_base_url=os.environ.get("ZOE_MEM0_LLM_BASE_URL") or None,
+            llm_api_key=os.environ.get("ZOE_MEM0_LLM_API_KEY") or None,
+            poll_seconds=max(0.1, min(float(os.environ.get("ZOE_MEMORY_POLL_SECONDS", "2")), 60.0)),
+            batch_size=max(1, min(int(os.environ.get("ZOE_MEMORY_BATCH_SIZE", "10")), 100)),
+            extractor_version=os.environ.get("ZOE_MEMORY_EXTRACTOR_VERSION", "mem0-controlled-v1"),
             deletion_only=deletion_only,
         )
 

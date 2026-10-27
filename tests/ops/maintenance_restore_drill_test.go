@@ -21,25 +21,25 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/internal/capabilities"
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/memory"
-	"github.com/ronigooja/Cylo/internal/storage"
-	"github.com/ronigooja/Cylo/internal/voice"
+	"github.com/ronigooja/Zoe/internal/capabilities"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/memory"
+	"github.com/ronigooja/Zoe/internal/storage"
+	"github.com/ronigooja/Zoe/internal/voice"
 )
 
 // TestMaintenanceRESTEncryptedRestoreDrill is an explicit disposable local
-// acceptance drill. Set CYLO_OPS_PYTHON to the isolated Python interpreter
+// acceptance drill. Set ZOE_OPS_PYTHON to the isolated Python interpreter
 // with tools/data_lifecycle/requirements.txt installed.
 func TestMaintenanceRESTEncryptedRestoreDrill(t *testing.T) {
-	python := os.Getenv("CYLO_OPS_PYTHON")
+	python := os.Getenv("ZOE_OPS_PYTHON")
 	if python == "" {
-		t.Skip("set CYLO_OPS_PYTHON to run the encrypted restore drill")
+		t.Skip("set ZOE_OPS_PYTHON to run the encrypted restore drill")
 	}
 	repo := repositoryRoot(t)
 	ctx := context.Background()
 	tmp := t.TempDir()
-	db := filepath.Join(tmp, "source", "data", "cylo.sqlite")
+	db := filepath.Join(tmp, "source", "data", "zoe.sqlite")
 	if err := os.MkdirAll(filepath.Dir(db), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestMaintenanceRESTEncryptedRestoreDrill(t *testing.T) {
 	keyFile := filepath.Join(tmp, "backup.key")
 	writePrivate(t, keyFile, key)
 	backupDir := filepath.Join(tmp, "backups")
-	if runPythonExpectFailure(t, python, repo, "tools/cylo_backup.py", "--database", db, "--destination", backupDir, "--key-file", keyFile) == nil {
+	if runPythonExpectFailure(t, python, repo, "tools/zoe_backup.py", "--database", db, "--destination", backupDir, "--key-file", keyFile) == nil {
 		t.Fatal("backup was allowed while the source SQLite writer lock was held")
 	}
 	httpServer.Close()
@@ -128,17 +128,17 @@ func TestMaintenanceRESTEncryptedRestoreDrill(t *testing.T) {
 	if err = os.WriteFile(volumeInventory, volumeJSON, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if runPythonExpectFailure(t, python, repo, "tools/cylo_backup.py", "--database", db, "--destination", filepath.Join(tmp, "volume-backups"), "--key-file", keyFile, "--inventory", volumeInventory) == nil {
+	if runPythonExpectFailure(t, python, repo, "tools/zoe_backup.py", "--database", db, "--destination", filepath.Join(tmp, "volume-backups"), "--key-file", keyFile, "--inventory", volumeInventory) == nil {
 		t.Fatal("backup was allowed to claim online persistent-volume consistency without a quiesce adapter")
 	}
-	runPython(t, python, repo, "tools/cylo_backup.py", "--database", db, "--destination", backupDir, "--key-file", keyFile, "--inventory", inventory)
+	runPython(t, python, repo, "tools/zoe_backup.py", "--database", db, "--destination", backupDir, "--key-file", keyFile, "--inventory", inventory)
 	entries, err := os.ReadDir(backupDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var artifact string
 	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".cylo-backup") {
+		if strings.HasSuffix(entry.Name(), ".zoe-backup") {
 			if artifact != "" {
 				t.Fatal("backup command created more than one encrypted artifact")
 			}
@@ -148,8 +148,8 @@ func TestMaintenanceRESTEncryptedRestoreDrill(t *testing.T) {
 	if artifact == "" {
 		t.Fatal("backup command did not create an encrypted artifact")
 	}
-	maintenance := filepath.Join(tmp, "cylo-maintenance")
-	build := exec.Command("go", "build", "-o", maintenance, "./cmd/cylo-maintenance")
+	maintenance := filepath.Join(tmp, "zoe-maintenance")
+	build := exec.Command("go", "build", "-o", maintenance, "./cmd/zoe-maintenance")
 	build.Dir = repo
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build maintenance CLI: %v\n%s", err, output)
@@ -167,7 +167,7 @@ func TestMaintenanceRESTEncryptedRestoreDrill(t *testing.T) {
 	if output, err := deletionHead.CombinedOutput(); err != nil {
 		t.Fatalf("write current deletion head: %v\n%s", err, output)
 	}
-	corrupt := filepath.Join(tmp, "corrupt.cylo-backup")
+	corrupt := filepath.Join(tmp, "corrupt.zoe-backup")
 	artifactBytes, err := os.ReadFile(artifact)
 	if err != nil {
 		t.Fatal(err)
@@ -177,15 +177,15 @@ func TestMaintenanceRESTEncryptedRestoreDrill(t *testing.T) {
 		t.Fatal(err)
 	}
 	badRestore := filepath.Join(tmp, "bad-restore")
-	if runPythonExpectFailure(t, python, repo, "tools/cylo_restore.py", "--artifact", corrupt, "--key-file", keyFile, "--latest-deletion-ledger", latestLedger, "--latest-deletion-head-file", latestHead, "--restore-directory", badRestore) == nil {
+	if runPythonExpectFailure(t, python, repo, "tools/zoe_restore.py", "--artifact", corrupt, "--key-file", keyFile, "--latest-deletion-ledger", latestLedger, "--latest-deletion-head-file", latestHead, "--restore-directory", badRestore) == nil {
 		t.Fatal("tampered encrypted archive was accepted")
 	}
 	if _, err = os.Lstat(badRestore); !os.IsNotExist(err) {
 		t.Fatalf("tampered archive created a staged restore path: %v", err)
 	}
 	restore := filepath.Join(tmp, "restore")
-	runPython(t, python, repo, "tools/cylo_restore.py", "--artifact", artifact, "--key-file", keyFile, "--latest-deletion-ledger", latestLedger, "--latest-deletion-head-file", latestHead, "--restore-directory", restore)
-	pendingDB := filepath.Join(restore, "data", "cylo.sqlite.restore-pending")
+	runPython(t, python, repo, "tools/zoe_restore.py", "--artifact", artifact, "--key-file", keyFile, "--latest-deletion-ledger", latestLedger, "--latest-deletion-head-file", latestHead, "--restore-directory", restore)
+	pendingDB := filepath.Join(restore, "data", "zoe.sqlite.restore-pending")
 	proofKey := make([]byte, 32)
 	if _, err = rand.Read(proofKey); err != nil {
 		t.Fatal(err)
@@ -207,8 +207,8 @@ func TestMaintenanceRESTEncryptedRestoreDrill(t *testing.T) {
 	}
 	defer func() { _ = os.Setenv("PATH", oldPath) }()
 	proofFile := filepath.Join(tmp, "isolation-proof.json")
-	runPython(t, python, repo, "tools/cylo_migrate.py", "--maintenance", maintenance, "--database", db, "--proof-key-file", proofKeyFile, "--proof-output", proofFile, "--unit", "cylo-ops-drill.service", "--stop-mask-and-fence")
-	activeDB := filepath.Join(restore, "data", "cylo.sqlite")
+	runPython(t, python, repo, "tools/zoe_migrate.py", "--maintenance", maintenance, "--database", db, "--proof-key-file", proofKeyFile, "--proof-output", proofFile, "--unit", "zoe-ops-drill.service", "--stop-mask-and-fence")
+	activeDB := filepath.Join(restore, "data", "zoe.sqlite")
 	prepare := exec.Command(maintenance, "prepare-restore", "--database", pendingDB, "--activate-as", activeDB, "--new-instance-id", "ops-drill-target", "--expected-epoch", "2")
 	if output, err := prepare.CombinedOutput(); err != nil {
 		t.Fatalf("prepare restore: %v\n%s", err, output)
@@ -230,13 +230,13 @@ func TestMaintenanceRESTEncryptedRestoreDrill(t *testing.T) {
 // journal includes external targets whose live providers are absent, so the
 // verified restore remains closed for reconciliation.
 func TestEncryptedBackupPersistsNonemptyDeletionManifest(t *testing.T) {
-	python := os.Getenv("CYLO_OPS_PYTHON")
+	python := os.Getenv("ZOE_OPS_PYTHON")
 	if python == "" {
-		t.Skip("set CYLO_OPS_PYTHON to run the encrypted backup manifest drill")
+		t.Skip("set ZOE_OPS_PYTHON to run the encrypted backup manifest drill")
 	}
 	repoRoot := repositoryRoot(t)
 	tmp := t.TempDir()
-	dbPath := filepath.Join(tmp, "source", "data", "cylo.sqlite")
+	dbPath := filepath.Join(tmp, "source", "data", "zoe.sqlite")
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -305,14 +305,14 @@ func TestEncryptedBackupPersistsNonemptyDeletionManifest(t *testing.T) {
 	keyFile := filepath.Join(tmp, "backup.key")
 	writePrivate(t, keyFile, key)
 	backupDir := filepath.Join(tmp, "backups")
-	runPython(t, python, repoRoot, "tools/cylo_backup.py", "--database", dbPath, "--destination", backupDir, "--key-file", keyFile, "--backup-delete-manifest", backupDeleteManifest)
+	runPython(t, python, repoRoot, "tools/zoe_backup.py", "--database", dbPath, "--destination", backupDir, "--key-file", keyFile, "--backup-delete-manifest", backupDeleteManifest)
 	entries, err := os.ReadDir(backupDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var artifact string
 	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".cylo-backup") {
+		if strings.HasSuffix(entry.Name(), ".zoe-backup") {
 			if artifact != "" {
 				t.Fatal("backup command created more than one encrypted artifact")
 			}
@@ -372,8 +372,8 @@ func TestEncryptedBackupPersistsNonemptyDeletionManifest(t *testing.T) {
 	if err = os.WriteFile(latestLedger, latestBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	maintenance := filepath.Join(tmp, "cylo-maintenance")
-	build := exec.Command("go", "build", "-o", maintenance, "./cmd/cylo-maintenance")
+	maintenance := filepath.Join(tmp, "zoe-maintenance")
+	build := exec.Command("go", "build", "-o", maintenance, "./cmd/zoe-maintenance")
 	build.Dir = repoRoot
 	if output, buildErr := build.CombinedOutput(); buildErr != nil {
 		t.Fatalf("build maintenance CLI: %v\n%s", buildErr, output)
@@ -384,7 +384,7 @@ func TestEncryptedBackupPersistsNonemptyDeletionManifest(t *testing.T) {
 		t.Fatalf("read latest deletion head: %v\n%s", headErr, output)
 	}
 	restore := filepath.Join(tmp, "restore")
-	runPython(t, python, repoRoot, "tools/cylo_restore.py", "--artifact", artifact, "--key-file", keyFile, "--latest-deletion-ledger", latestLedger, "--latest-deletion-head-file", headFile, "--restore-directory", restore)
+	runPython(t, python, repoRoot, "tools/zoe_restore.py", "--artifact", artifact, "--key-file", keyFile, "--latest-deletion-ledger", latestLedger, "--latest-deletion-head-file", headFile, "--restore-directory", restore)
 	var restoreState struct {
 		RestoreState struct {
 			DeletionRecordsVerified map[string]any `json:"deletion_records_verified"`
@@ -404,8 +404,8 @@ func TestEncryptedBackupPersistsNonemptyDeletionManifest(t *testing.T) {
 	if len(restoreState.RestoreState.DeletionRecordsVerified) == 0 || restoreState.RestoreState.TrustedHead.SnapshotSequence != 1 || restoreState.RestoreState.TrustedHead.JournalSequence != 1 {
 		t.Fatalf("restored external deletion head is not verified: %#v", restoreState)
 	}
-	pendingDB := filepath.Join(restore, "data", "cylo.sqlite.restore-pending")
-	activeDB := filepath.Join(restore, "data", "cylo.sqlite")
+	pendingDB := filepath.Join(restore, "data", "zoe.sqlite.restore-pending")
+	activeDB := filepath.Join(restore, "data", "zoe.sqlite")
 	prepare := exec.Command(maintenance, "prepare-restore", "--database", pendingDB, "--activate-as", activeDB, "--new-instance-id", "nonempty-delete-target", "--expected-epoch", "2")
 	if output, prepareErr := prepare.CombinedOutput(); prepareErr != nil {
 		t.Fatalf("prepare nonempty deletion restore: %v\n%s", prepareErr, output)
@@ -507,7 +507,7 @@ func assertRestoredAuthority(t *testing.T, path string, expectedDispatch, expect
 	}
 	defer db.Close()
 	var dispatch, derived, reconciliationRequired, tombstones int
-	if err = db.QueryRow(`SELECT dispatch_enabled,derived_retrieval_enabled,restore_deletion_reconciliation_required FROM cylo_instance_state WHERE singleton=1`).Scan(&dispatch, &derived, &reconciliationRequired); err != nil {
+	if err = db.QueryRow(`SELECT dispatch_enabled,derived_retrieval_enabled,restore_deletion_reconciliation_required FROM zoe_instance_state WHERE singleton=1`).Scan(&dispatch, &derived, &reconciliationRequired); err != nil {
 		t.Fatal(err)
 	}
 	if err = db.QueryRow(`SELECT count(*) FROM memory_tombstones`).Scan(&tombstones); err != nil {
@@ -520,7 +520,7 @@ func assertRestoredAuthority(t *testing.T, path string, expectedDispatch, expect
 
 func signedProof(t *testing.T, key []byte, oldID string, epoch int64, unknown int) []byte {
 	t.Helper()
-	payload := map[string]any{"schema_version": 1, "old_instance_id": oldID, "old_epoch": epoch, "source_host": "local-ops-drill", "units": []map[string]string{{"name": "cylo-ops-drill.service", "active_state": "inactive", "unit_file_state": "masked"}}, "active_runs": 0, "unknown_effects": unknown, "active_deployment_jobs": 0, "live_deployments": 0, "open_voice_sessions": 0, "verified_at": time.Now().UTC()}
+	payload := map[string]any{"schema_version": 1, "old_instance_id": oldID, "old_epoch": epoch, "source_host": "local-ops-drill", "units": []map[string]string{{"name": "zoe-ops-drill.service", "active_state": "inactive", "unit_file_state": "masked"}}, "active_runs": 0, "unknown_effects": unknown, "active_deployment_jobs": 0, "live_deployments": 0, "open_voice_sessions": 0, "verified_at": time.Now().UTC()}
 	raw, _ := json.Marshal(payload)
 	mac := hmac.New(sha256.New, key)
 	_, _ = mac.Write(raw)

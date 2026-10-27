@@ -18,7 +18,7 @@ class WorkerLoggingPrivacyTests(unittest.TestCase):
         try:
             configure_logging()
             logging.getLogger("mem0.memory.main").info("Updating memory with data=%r", "synthetic-private-marker")
-            logging.getLogger("cylo.memory.worker").info("job status kind=%s", "extract")
+            logging.getLogger("zoe.memory.worker").info("job status kind=%s", "extract")
         finally:
             root.removeHandler(handler)
             root.setLevel(previous_level)

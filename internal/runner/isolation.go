@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Zoe/contracts"
 )
 
 const CodexWorkspaceWritePolicy = "ao-codex-workspace-write-v1"

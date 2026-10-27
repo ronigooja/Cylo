@@ -3,14 +3,14 @@ set -euo pipefail
 umask 077
 
 readonly upstream_revision=6338ac478070aaa34bfe7a3c0469caf9e9174c02
-readonly upstream_dir=/opt/cylo/voice/upstream
-readonly config_dir=/etc/cylo
-readonly data_dir=/var/lib/cylo/voice
-readonly compose_file=/etc/cylo/voice.compose.yaml
-readonly env_file=/etc/cylo/voice.env
-readonly admin_file=/etc/cylo/voice-admin.txt
-readonly lan_env_file=/etc/cylo/voice.lan.env
-readonly lan_compose_file=/etc/cylo/voice.lan.compose.yaml
+readonly upstream_dir=/opt/zoe/voice/upstream
+readonly config_dir=/etc/zoe
+readonly data_dir=/var/lib/zoe/voice
+readonly compose_file=/etc/zoe/voice.compose.yaml
+readonly env_file=/etc/zoe/voice.env
+readonly admin_file=/etc/zoe/voice-admin.txt
+readonly lan_env_file=/etc/zoe/voice.lan.env
+readonly lan_compose_file=/etc/zoe/voice.lan.compose.yaml
 readonly script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ "$(id -u)" -ne 0 ]]; then
@@ -18,7 +18,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
-install -d -m 0755 /opt/cylo/voice "$config_dir"
+install -d -m 0755 /opt/zoe/voice "$config_dir"
 install -d -o 1000 -g 1000 -m 0700 "$data_dir"
 
 if [[ ! -d "$upstream_dir/.git" ]]; then
@@ -38,7 +38,7 @@ if [[ ! -e "$env_file" ]]; then
   admin_password="$(openssl rand -base64 36 | tr -d '\n')"
   encryption_key="$(openssl rand -hex 32)"
   cat >"$env_file" <<EOF
-VOICE_AUTH_USERNAME=cylo-admin
+VOICE_AUTH_USERNAME=zoe-admin
 VOICE_AUTH_PASSWORD=$admin_password
 VOICE_TOKEN_ENCRYPTION_KEY=$encryption_key
 VOICE_ENV=production
@@ -56,7 +56,7 @@ EOF
   chmod 0600 "$env_file"
   {
     printf '%s\n' 'Voice gateway management login (keep this file private):'
-    printf 'Username: %s\n' 'cylo-admin'
+    printf 'Username: %s\n' 'zoe-admin'
     printf 'Password: %s\n' "$admin_password"
   } >"$admin_file"
   chmod 0600 "$admin_file"
@@ -67,8 +67,8 @@ elif [[ ! -e "$admin_file" ]]; then
 fi
 
 install -m 0644 "$script_dir/compose.yaml" "$compose_file"
-if ! docker network inspect cylo >/dev/null 2>&1; then
-  docker network create cylo >/dev/null
+if ! docker network inspect zoe >/dev/null 2>&1; then
+  docker network create zoe >/dev/null
 fi
 
 lan_bind=""
@@ -81,7 +81,7 @@ if [[ -v VOICE_LAN_BIND && -z "$lan_bind" ]]; then
   : >"$lan_env_file"
   chmod 0600 "$lan_env_file"
 fi
-compose_args=(--project-name cylo-voice --file "$compose_file")
+compose_args=(--project-name zoe-voice --file "$compose_file")
 if [[ -n "$lan_bind" ]]; then
   python3 -c 'import ipaddress,sys; ip=ipaddress.IPv4Address(sys.argv[1]); sys.exit(0 if ip.is_private and not ip.is_loopback and not ip.is_link_local else 1)' "$lan_bind" || {
     echo "VOICE_LAN_BIND must be a private IPv4 address assigned to this host." >&2

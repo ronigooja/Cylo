@@ -26,7 +26,7 @@ type AccountTerminationObservation struct {
 }
 
 // AccountLeaseReference is an opaque, non-credential identity supplied by a
-// trusted Space adapter. Cylo persists only a hash of AccountID; the adapter
+// trusted Space adapter. Zoe persists only a hash of AccountID; the adapter
 // uses LeaseID and Generation to scope and deduplicate upstream release.
 type AccountLeaseReference struct {
 	LeaseID           string
@@ -35,7 +35,7 @@ type AccountLeaseReference struct {
 	SessionGeneration int64
 }
 
-// AccountMediaLifecycle is the contract required before Cylo can safely
+// AccountMediaLifecycle is the contract required before Zoe can safely
 // release or rotate a specific hidden Space account lease.
 type AccountMediaLifecycle interface {
 	Capabilities() AccountMediaCapabilities

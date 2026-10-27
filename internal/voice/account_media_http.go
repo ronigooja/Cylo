@@ -39,7 +39,7 @@ func (a *SpaceAccountMediaAdapter) Capabilities() AccountMediaCapabilities {
 }
 
 // ReleaseAccountLease is idempotent when the gateway honors the stable
-// Idempotency-Key. Cylo accepts a release only when the returned evidence
+// Idempotency-Key. Zoe accepts a release only when the returned evidence
 // exactly matches the requested session and lease generation.
 func (a *SpaceAccountMediaAdapter) ReleaseAccountLease(ctx context.Context, lease AccountLeaseReference, idempotencyKey string) (AccountTerminationObservation, error) {
 	if strings.TrimSpace(lease.LeaseID) == "" || lease.Generation < 1 || strings.TrimSpace(lease.SessionID) == "" || strings.TrimSpace(idempotencyKey) == "" {

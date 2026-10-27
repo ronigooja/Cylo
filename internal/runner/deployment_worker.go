@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Zoe/contracts"
 )
 
 var ErrNoDeployment = errors.New("no capability deployment claim available")

@@ -2,15 +2,15 @@
   "schema_version": 1,
   "topology": "linux-systemd-compose",
   "instance_id": "REPLACE_WITH_AUTHORITATIVE_INSTANCE_ID",
-  "deployment_root": "/var/lib/cylo/owned-instance",
-  "database": "/var/lib/cylo/owned-instance/data/cylo.sqlite",
+  "deployment_root": "/var/lib/zoe/owned-instance",
+  "database": "/var/lib/zoe/owned-instance/data/zoe.sqlite",
   "roots": [
-    {"category": "data", "path": "/var/lib/cylo/owned-instance/data"},
-    {"category": "artifacts", "path": "/var/lib/cylo/owned-instance/artifacts"},
-    {"category": "backups", "path": "/var/lib/cylo/owned-instance/backups"},
-    {"category": "config", "path": "/var/lib/cylo/owned-instance/config"}
+    {"category": "data", "path": "/var/lib/zoe/owned-instance/data"},
+    {"category": "artifacts", "path": "/var/lib/zoe/owned-instance/artifacts"},
+    {"category": "backups", "path": "/var/lib/zoe/owned-instance/backups"},
+    {"category": "config", "path": "/var/lib/zoe/owned-instance/config"}
   ],
-  "service_units": ["cylo-compose.service", "cylo-runner.service", "cylo-backup.service", "cylo-backup.timer"],
+  "service_units": ["zoe-compose.service", "zoe-runner.service", "zoe-backup.service", "zoe-backup.timer"],
   "external_resources": [
     {"kind": "ao_runtime", "id": "REPLACE_WITH_OWNED_AO_RUNTIME_ID"},
     {"kind": "capability_container", "id": "REPLACE_WITH_OWNED_SERVICE_ID"},
@@ -18,6 +18,6 @@
     {"kind": "qdrant_index", "id": "REPLACE_WITH_OWNED_INDEX_ID"},
     {"kind": "mem0_store", "id": "REPLACE_WITH_OWNED_MEMORY_STORE_ID"}
   ],
-  "cleanup_adapter": "/usr/local/libexec/cylo-instance-cleanup",
-  "maintenance_binary": "/usr/local/bin/cylo-maintenance"
+  "cleanup_adapter": "/usr/local/libexec/zoe-instance-cleanup",
+  "maintenance_binary": "/usr/local/bin/zoe-maintenance"
 }

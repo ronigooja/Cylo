@@ -38,10 +38,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CI_OUTPUT="$RUNNER_TEMP/cylo-apple/tests"
+          CI_OUTPUT="$RUNNER_TEMP/zoe-apple/tests"
           echo "CI_OUTPUT=$CI_OUTPUT" >> "$GITHUB_ENV"
-          mkdir -p "$CI_OUTPUT/logs" "$HOME/environment/cylo-apple"
-          echo "CYLO_BUILD_ROOT=$CI_OUTPUT/test-data" >> "$GITHUB_ENV"
+          mkdir -p "$CI_OUTPUT/logs" "$HOME/environment/zoe-apple"
+          echo "ZOE_BUILD_ROOT=$CI_OUTPUT/test-data" >> "$GITHUB_ENV"
           {
             git rev-parse HEAD
             sw_vers
@@ -55,11 +55,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          swift test --package-path clients/apple/Packages/CyloKit \
+          swift test --package-path clients/apple/Packages/ZoeKit \
             --scratch-path "$CI_OUTPUT/swift-build" \
-            --cache-path "$HOME/environment/cylo-apple/package-cache" \
-            --config-path "$HOME/environment/cylo-apple/swift-config" \
-            --security-path "$HOME/environment/cylo-apple/swift-security" \
+            --cache-path "$HOME/environment/zoe-apple/package-cache" \
+            --config-path "$HOME/environment/zoe-apple/swift-config" \
+            --security-path "$HOME/environment/zoe-apple/swift-security" \
             > "$CI_OUTPUT/logs/swift-tests.log" 2>&1 || {
               status=$?
               tail -n 80 "$CI_OUTPUT/logs/swift-tests.log"
@@ -86,10 +86,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CI_OUTPUT="$RUNNER_TEMP/cylo-apple/macos"
+          CI_OUTPUT="$RUNNER_TEMP/zoe-apple/macos"
           echo "CI_OUTPUT=$CI_OUTPUT" >> "$GITHUB_ENV"
-          mkdir -p "$CI_OUTPUT/logs" "$HOME/environment/cylo-apple"
-          echo "CYLO_BUILD_ROOT=$CI_OUTPUT/test-data" >> "$GITHUB_ENV"
+          mkdir -p "$CI_OUTPUT/logs" "$HOME/environment/zoe-apple"
+          echo "ZOE_BUILD_ROOT=$CI_OUTPUT/test-data" >> "$GITHUB_ENV"
           {
             git rev-parse HEAD
             sw_vers
@@ -103,12 +103,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          xcodebuild -project clients/apple/Cylo.xcodeproj \
-            -scheme CyloMac -configuration Release \
+          xcodebuild -project clients/apple/Zoe.xcodeproj \
+            -scheme ZoeMac -configuration Release \
             -destination 'generic/platform=macOS' \
             -derivedDataPath "$CI_OUTPUT/mac-derived" \
-            -clonedSourcePackagesDirPath "$HOME/environment/cylo-apple/xcode-packages" \
-            -packageCachePath "$HOME/environment/cylo-apple/package-cache" \
+            -clonedSourcePackagesDirPath "$HOME/environment/zoe-apple/xcode-packages" \
+            -packageCachePath "$HOME/environment/zoe-apple/package-cache" \
             CODE_SIGNING_ALLOWED=NO build \
             > "$CI_OUTPUT/logs/macos-build.log" 2>&1 || {
               status=$?
@@ -136,10 +136,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CI_OUTPUT="$RUNNER_TEMP/cylo-apple/ios"
+          CI_OUTPUT="$RUNNER_TEMP/zoe-apple/ios"
           echo "CI_OUTPUT=$CI_OUTPUT" >> "$GITHUB_ENV"
-          mkdir -p "$CI_OUTPUT/logs" "$HOME/environment/cylo-apple"
-          echo "CYLO_BUILD_ROOT=$CI_OUTPUT/test-data" >> "$GITHUB_ENV"
+          mkdir -p "$CI_OUTPUT/logs" "$HOME/environment/zoe-apple"
+          echo "ZOE_BUILD_ROOT=$CI_OUTPUT/test-data" >> "$GITHUB_ENV"
           {
             git rev-parse HEAD
             sw_vers
@@ -153,12 +153,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          xcodebuild -project clients/apple/Cylo.xcodeproj \
-            -scheme CyloMobile -configuration Release \
+          xcodebuild -project clients/apple/Zoe.xcodeproj \
+            -scheme ZoeMobile -configuration Release \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$CI_OUTPUT/ios-derived" \
-            -clonedSourcePackagesDirPath "$HOME/environment/cylo-apple/xcode-packages" \
-            -packageCachePath "$HOME/environment/cylo-apple/package-cache" \
+            -clonedSourcePackagesDirPath "$HOME/environment/zoe-apple/xcode-packages" \
+            -packageCachePath "$HOME/environment/zoe-apple/package-cache" \
             CODE_SIGNING_ALLOWED=NO build \
             > "$CI_OUTPUT/logs/ios-build.log" 2>&1 || {
               status=$?
@@ -173,7 +173,7 @@ jobs:
         run: |
           set -euo pipefail
           tar -cf "$CI_OUTPUT/ios-build.tar" \
-            -C "$CI_OUTPUT/ios-derived/Build/Products/Release-iphoneos" CyloMobile.app \
+            -C "$CI_OUTPUT/ios-derived/Build/Products/Release-iphoneos" ZoeMobile.app \
             > "$CI_OUTPUT/logs/ios-stage.log" 2>&1 || {
               status=$?
               tail -n 80 "$CI_OUTPUT/logs/ios-stage.log"
@@ -240,10 +240,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CI_OUTPUT="$RUNNER_TEMP/cylo-apple/release"
+          CI_OUTPUT="$RUNNER_TEMP/zoe-apple/release"
           echo "CI_OUTPUT=$CI_OUTPUT" >> "$GITHUB_ENV"
-          mkdir -p "$CI_OUTPUT/logs" "$HOME/environment/cylo-apple"
-          echo "CYLO_BUILD_ROOT=$CI_OUTPUT/test-data" >> "$GITHUB_ENV"
+          mkdir -p "$CI_OUTPUT/logs" "$HOME/environment/zoe-apple"
+          echo "ZOE_BUILD_ROOT=$CI_OUTPUT/test-data" >> "$GITHUB_ENV"
           {
             git rev-parse HEAD
             sw_vers
@@ -263,13 +263,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          xcodebuild -project clients/apple/Cylo.xcodeproj \
-            -scheme CyloMac -configuration Release \
+          xcodebuild -project clients/apple/Zoe.xcodeproj \
+            -scheme ZoeMac -configuration Release \
             -destination 'generic/platform=macOS' \
             -derivedDataPath "$CI_OUTPUT/mac-derived" \
-            -clonedSourcePackagesDirPath "$HOME/environment/cylo-apple/xcode-packages" \
-            -packageCachePath "$HOME/environment/cylo-apple/package-cache" \
-            -archivePath "$CI_OUTPUT/CyloMac.xcarchive" \
+            -clonedSourcePackagesDirPath "$HOME/environment/zoe-apple/xcode-packages" \
+            -packageCachePath "$HOME/environment/zoe-apple/package-cache" \
+            -archivePath "$CI_OUTPUT/ZoeMac.xcarchive" \
             CODE_SIGNING_ALLOWED=NO archive \
             > "$CI_OUTPUT/logs/macos-archive.log" 2>&1 || {
               status=$?
@@ -286,9 +286,9 @@ jobs:
             mkdir -p "$CI_OUTPUT/artifacts"
             tar -xf "$CI_OUTPUT/ios-build/ios-build.tar" -C "$CI_OUTPUT/ios-build"
             ditto -c -k --sequesterRsrc --keepParent \
-              "$CI_OUTPUT/CyloMac.xcarchive" "$CI_OUTPUT/artifacts/CyloMac.xcarchive.zip"
+              "$CI_OUTPUT/ZoeMac.xcarchive" "$CI_OUTPUT/artifacts/ZoeMac.xcarchive.zip"
             ditto -c -k --sequesterRsrc --keepParent \
-              "$CI_OUTPUT/ios-build/CyloMobile.app" "$CI_OUTPUT/artifacts/CyloMobile-unsigned.app.zip"
+              "$CI_OUTPUT/ios-build/ZoeMobile.app" "$CI_OUTPUT/artifacts/ZoeMobile-unsigned.app.zip"
             cd "$CI_OUTPUT/artifacts"
             shasum -a 256 *.zip > SHA256SUMS
           ) > "$CI_OUTPUT/logs/package.log" 2>&1

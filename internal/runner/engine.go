@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/agents/ao"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/agents/ao"
 )
 
 var ErrNoClaim = errors.New("no runner claim available")
@@ -971,7 +971,7 @@ func conversationEvidence(conversation ao.Conversation, sessionID string) []cont
 
 func buildPrompt(claim contracts.JobClaim) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Cylo role: %s.\n", claim.Role)
+	fmt.Fprintf(&b, "Zoe role: %s.\n", claim.Role)
 	b.WriteString("Work only on the assigned goal in the AO project workspace. Do not create child runtimes or delegate through AO. Do not send messages, publish changes, deploy services, delete data, or make external irreversible changes. Report what you actually did and cite concrete workspace paths or tool results. Distinguish observed evidence from assumptions.\n\nGoal:\n")
 	b.WriteString(claim.Goal)
 	if len(claim.Authorization.Scopes) > 0 {
@@ -986,7 +986,7 @@ func buildPrompt(claim contracts.JobClaim) string {
 func validAOApprovalMode(mode string) bool { return mode == "accept-edits" || mode == "auto" }
 
 func workerName(claim contracts.JobClaim) string {
-	return "Cylo " + claim.Role + " " + claim.RunID
+	return "Zoe " + claim.Role + " " + claim.RunID
 }
 
 func observationID(runID, attemptID string, fence uint64, kind, discriminator string) string {

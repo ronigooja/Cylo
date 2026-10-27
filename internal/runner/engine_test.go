@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/agents/ao"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/agents/ao"
 )
 
 type fakeControl struct {
@@ -390,7 +390,7 @@ func TestJournaledAOHarnessMustMatchCurrentClaim(t *testing.T) {
 	claim := validClaim()
 	agent := &fakeAO{}
 	engine, _ := makeEngine(t, claim, contracts.RunControl{DesiredControl: "run"}, agent, permitIsolation{}, nil)
-	spec := ao.WorkerSpec{ClientRequestID: claim.RunID, ProjectID: claim.AOProjectID, Harness: "opencode", Model: "cylo/gpt-6-luna", ApprovalMode: "auto", DisplayName: "worker", Prompt: "fixture"}
+	spec := ao.WorkerSpec{ClientRequestID: claim.RunID, ProjectID: claim.AOProjectID, Harness: "opencode", Model: "zoe/gpt-6-luna", ApprovalMode: "auto", DisplayName: "worker", Prompt: "fixture"}
 	if _, err := engine.Journal.SaveClaim(ctx, claim, spec, "claimed"); err != nil {
 		t.Fatal(err)
 	}

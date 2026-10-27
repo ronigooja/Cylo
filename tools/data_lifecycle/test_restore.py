@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cylo_restore import restore_managed_paths
+from zoe_restore import restore_managed_paths
 
 
 class RestoreManagedPathTests(unittest.TestCase):

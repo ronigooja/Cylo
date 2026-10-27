@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/internal/capabilities"
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/memory"
-	"github.com/ronigooja/Cylo/internal/storage"
-	"github.com/ronigooja/Cylo/internal/voice"
+	"github.com/ronigooja/Zoe/internal/capabilities"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/memory"
+	"github.com/ronigooja/Zoe/internal/storage"
+	"github.com/ronigooja/Zoe/internal/voice"
 )
 
 func TestIndependentStagedRestoreCannotServeAuthorityBeforePrepare(t *testing.T) {
@@ -23,7 +23,7 @@ func TestIndependentStagedRestoreCannotServeAuthorityBeforePrepare(t *testing.T)
 	}
 	seedExportMemory(t, source.DB(), "snapshot-claim", "personal", "", subject, "old", "snapshot-only private content", "", false, time.Now().UTC().Format(time.RFC3339Nano))
 	root := t.TempDir()
-	path := filepath.Join(root, "cylo.sqlite.restore-pending")
+	path := filepath.Join(root, "zoe.sqlite.restore-pending")
 	if _, err := source.DB().Exec(`VACUUM INTO ?`, path); err != nil {
 		t.Fatal(err)
 	}

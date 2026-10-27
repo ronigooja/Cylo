@@ -10,7 +10,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 type DeletionHead struct {
@@ -23,7 +23,7 @@ type DeletionHead struct {
 }
 
 // TrustedDeletionHead is copied from the authenticated backup manifest into
-// the private restore-state record by cylo-restore.py. The snapshot fields bind
+// the private restore-state record by zoe-restore.py. The snapshot fields bind
 // replay to the exact restored authority image; head fields bind it to the
 // complete retained external journal.
 type TrustedDeletionHead struct {
@@ -114,7 +114,7 @@ func replayPendingDeletionJournalTx(ctx context.Context, tx *sql.Tx, journal *st
 		if err := replayMemoryDeletionTx(ctx, tx, record); err != nil {
 			return fmt.Errorf("replay pending deletion sequence %d: %w", record.Sequence, err)
 		}
-		result, err := tx.ExecContext(ctx, `UPDATE cylo_instance_state SET deletion_sequence=? WHERE singleton=1 AND deletion_sequence=?`, record.Sequence, *sequence)
+		result, err := tx.ExecContext(ctx, `UPDATE zoe_instance_state SET deletion_sequence=? WHERE singleton=1 AND deletion_sequence=?`, record.Sequence, *sequence)
 		if err != nil {
 			return err
 		}
@@ -146,7 +146,7 @@ func reconcileDeletionJournal(ctx context.Context, store *storage.Store, trusted
 	var currentLineage string
 	var currentGeneration, currentSequence int64
 	var gate int
-	if err = tx.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence,restore_deletion_reconciliation_required FROM cylo_instance_state WHERE singleton=1`).Scan(&currentLineage, &currentGeneration, &currentSequence, &gate); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence,restore_deletion_reconciliation_required FROM zoe_instance_state WHERE singleton=1`).Scan(&currentLineage, &currentGeneration, &currentSequence, &gate); err != nil {
 		return out, err
 	}
 	if currentLineage != trusted.SnapshotLineageID || int64(len(records)) != trusted.JournalSequence {
@@ -154,7 +154,7 @@ func reconcileDeletionJournal(ctx context.Context, store *storage.Store, trusted
 	}
 	var appliedSequence, activatedGeneration int64
 	var stored TrustedDeletionHead
-	progressErr := tx.QueryRowContext(ctx, `SELECT snapshot_lineage_id,snapshot_generation,snapshot_sequence,snapshot_event_count,snapshot_event_cursor_sum,journal_lineage_id,journal_generation,journal_record_generation,journal_sequence,journal_head_sha256,journal_file_sha256,applied_sequence,activated_generation FROM cylo_restore_deletion_progress WHERE singleton=1`).Scan(
+	progressErr := tx.QueryRowContext(ctx, `SELECT snapshot_lineage_id,snapshot_generation,snapshot_sequence,snapshot_event_count,snapshot_event_cursor_sum,journal_lineage_id,journal_generation,journal_record_generation,journal_sequence,journal_head_sha256,journal_file_sha256,applied_sequence,activated_generation FROM zoe_restore_deletion_progress WHERE singleton=1`).Scan(
 		&stored.SnapshotLineageID, &stored.SnapshotGeneration, &stored.SnapshotSequence, &stored.SnapshotEventCount, &stored.SnapshotEventSum,
 		&stored.JournalLineageID, &stored.JournalGeneration, &stored.JournalRecordGeneration, &stored.JournalSequence, &stored.JournalHeadSHA256, &stored.JournalFileSHA256, &appliedSequence, &activatedGeneration)
 	if errors.Is(progressErr, sql.ErrNoRows) {
@@ -170,7 +170,7 @@ func reconcileDeletionJournal(ctx context.Context, store *storage.Store, trusted
 		}
 		stored = trusted
 		appliedSequence = currentSequence
-		if _, err = tx.ExecContext(ctx, `INSERT INTO cylo_restore_deletion_progress(singleton,snapshot_lineage_id,snapshot_generation,snapshot_sequence,snapshot_event_count,snapshot_event_cursor_sum,journal_lineage_id,journal_generation,journal_record_generation,journal_sequence,journal_head_sha256,journal_file_sha256,applied_sequence,activated_generation) VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?,0)`,
+		if _, err = tx.ExecContext(ctx, `INSERT INTO zoe_restore_deletion_progress(singleton,snapshot_lineage_id,snapshot_generation,snapshot_sequence,snapshot_event_count,snapshot_event_cursor_sum,journal_lineage_id,journal_generation,journal_record_generation,journal_sequence,journal_head_sha256,journal_file_sha256,applied_sequence,activated_generation) VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?,0)`,
 			trusted.SnapshotLineageID, trusted.SnapshotGeneration, trusted.SnapshotSequence, trusted.SnapshotEventCount, trusted.SnapshotEventSum,
 			trusted.JournalLineageID, trusted.JournalGeneration, trusted.JournalRecordGeneration, trusted.JournalSequence, trusted.JournalHeadSHA256, trusted.JournalFileSHA256, appliedSequence); err != nil {
 			return out, err
@@ -206,7 +206,7 @@ func reconcileDeletionJournal(ctx context.Context, store *storage.Store, trusted
 		if err = replayMemoryDeletionTx(ctx, tx, record); err != nil {
 			return out, err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE cylo_instance_state SET deletion_sequence=? WHERE singleton=1 AND deletion_sequence=?`, record.Sequence, currentSequence); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE zoe_instance_state SET deletion_sequence=? WHERE singleton=1 AND deletion_sequence=?`, record.Sequence, currentSequence); err != nil {
 			return out, err
 		}
 		currentSequence = record.Sequence
@@ -215,18 +215,18 @@ func reconcileDeletionJournal(ctx context.Context, store *storage.Store, trusted
 	if currentSequence != trusted.JournalSequence {
 		return out, errors.New("replay did not reach trusted deletion head")
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE cylo_restore_deletion_progress SET applied_sequence=? WHERE singleton=1`, currentSequence); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE zoe_restore_deletion_progress SET applied_sequence=? WHERE singleton=1`, currentSequence); err != nil {
 		return out, err
 	}
 	if trusted.JournalSequence == 0 {
-		if _, err = tx.ExecContext(ctx, `UPDATE cylo_deletion_reconciliation_checkpoints SET completed_sequence=0,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),last_error=''`); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE zoe_deletion_reconciliation_checkpoints SET completed_sequence=0,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),last_error=''`); err != nil {
 			return out, err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE cylo_deletion_reconciliation_checkpoints SET completed_sequence=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),last_error='' WHERE target='source_ledger'`, currentSequence); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE zoe_deletion_reconciliation_checkpoints SET completed_sequence=?,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),last_error='' WHERE target='source_ledger'`, currentSequence); err != nil {
 		return out, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT target,completed_sequence,last_error FROM cylo_deletion_reconciliation_checkpoints ORDER BY target`)
+	rows, err := tx.QueryContext(ctx, `SELECT target,completed_sequence,last_error FROM zoe_deletion_reconciliation_checkpoints ORDER BY target`)
 	if err != nil {
 		return out, err
 	}
@@ -255,18 +255,18 @@ func reconcileDeletionJournal(ctx context.Context, store *storage.Store, trusted
 	}
 	if gate == 1 && allComplete {
 		newGeneration := allowedGeneration + 1
-		if _, err = tx.ExecContext(ctx, `UPDATE cylo_instance_state SET generation=?,restore_deletion_reconciliation_required=0,derived_retrieval_enabled=1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE singleton=1`, newGeneration); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE zoe_instance_state SET generation=?,restore_deletion_reconciliation_required=0,derived_retrieval_enabled=1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE singleton=1`, newGeneration); err != nil {
 			return out, err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE cylo_restore_deletion_progress SET activated_generation=? WHERE singleton=1`, newGeneration); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE zoe_restore_deletion_progress SET activated_generation=? WHERE singleton=1`, newGeneration); err != nil {
 			return out, err
 		}
 		var stageGuard int
-		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cylo_restore_stage_guard'`).Scan(&stageGuard); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='zoe_restore_stage_guard'`).Scan(&stageGuard); err != nil {
 			return out, err
 		}
 		if stageGuard > 0 {
-			if _, err = tx.ExecContext(ctx, `UPDATE cylo_restore_stage_guard SET pending=0 WHERE singleton=1`); err != nil {
+			if _, err = tx.ExecContext(ctx, `UPDATE zoe_restore_stage_guard SET pending=0 WHERE singleton=1`); err != nil {
 				return out, err
 			}
 		}

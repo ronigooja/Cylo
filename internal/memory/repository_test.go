@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 func newMemoryTestRepo(t *testing.T) (*storage.Store, *Repository) {
@@ -142,7 +142,7 @@ func TestClaimDeletionInvalidatesWorkspaceContextCacheTransactionally(t *testing
 		t.Fatal(err)
 	}
 	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err = store.DB().ExecContext(ctx, `INSERT INTO cylo_export_temp_registry(export_id,workspace_id,owner_id,export_scope,created_deletion_sequence,status,invalidation_sequence,created_at,updated_at) VALUES('active-export','default',?,'personal',0,'active',0,?,?)`, scope.PrincipalID, createdAt, createdAt); err != nil {
+	if _, err = store.DB().ExecContext(ctx, `INSERT INTO zoe_export_temp_registry(export_id,workspace_id,owner_id,export_scope,created_deletion_sequence,status,invalidation_sequence,created_at,updated_at) VALUES('active-export','default',?,'personal',0,'active',0,?,?)`, scope.PrincipalID, createdAt, createdAt); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = runDelete(ctx, store.DB(), repo, DeleteInput{WorkspaceID: "default", ActorID: scope.PrincipalID, ClaimID: claim.ID, Expected: claim.Revision, ReasonCode: "user_requested"}); err != nil {
@@ -153,16 +153,16 @@ func TestClaimDeletionInvalidatesWorkspaceContextCacheTransactionally(t *testing
 	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM memory_context_manifests WHERE workspace_id='default'`).Scan(&manifests); err != nil {
 		t.Fatal(err)
 	}
-	if err = store.DB().QueryRowContext(ctx, `SELECT completed_sequence FROM cylo_deletion_reconciliation_checkpoints WHERE target='cache'`).Scan(&completed); err != nil {
+	if err = store.DB().QueryRowContext(ctx, `SELECT completed_sequence FROM zoe_deletion_reconciliation_checkpoints WHERE target='cache'`).Scan(&completed); err != nil {
 		t.Fatal(err)
 	}
 	if manifests != 0 || completed != 1 {
 		t.Fatalf("workspace cache manifests=%d, cache checkpoint=%d; want 0 and 1", manifests, completed)
 	}
-	if err = store.DB().QueryRowContext(ctx, `SELECT status FROM cylo_export_temp_registry WHERE export_id='active-export'`).Scan(&exportStatus); err != nil || exportStatus != "invalidated" {
+	if err = store.DB().QueryRowContext(ctx, `SELECT status FROM zoe_export_temp_registry WHERE export_id='active-export'`).Scan(&exportStatus); err != nil || exportStatus != "invalidated" {
 		t.Fatalf("active export status=%q err=%v; deletion must invalidate it transactionally", exportStatus, err)
 	}
-	if err = store.DB().QueryRowContext(ctx, `SELECT completed_sequence FROM cylo_deletion_reconciliation_checkpoints WHERE target='export_temp'`).Scan(&completed); err != nil || completed != 0 {
+	if err = store.DB().QueryRowContext(ctx, `SELECT completed_sequence FROM zoe_deletion_reconciliation_checkpoints WHERE target='export_temp'`).Scan(&completed); err != nil || completed != 0 {
 		t.Fatalf("export-temp checkpoint advanced before physical cleanup: sequence=%d err=%v", completed, err)
 	}
 }
@@ -204,7 +204,7 @@ func TestContextAssemblyCannotRestoreManifestAfterDeletionBarrier(t *testing.T) 
 	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM memory_context_manifests WHERE workspace_id='default'`).Scan(&manifests); err != nil {
 		t.Fatal(err)
 	}
-	if err = store.DB().QueryRowContext(ctx, `SELECT completed_sequence FROM cylo_deletion_reconciliation_checkpoints WHERE target='cache'`).Scan(&checkpoint); err != nil {
+	if err = store.DB().QueryRowContext(ctx, `SELECT completed_sequence FROM zoe_deletion_reconciliation_checkpoints WHERE target='cache'`).Scan(&checkpoint); err != nil {
 		t.Fatal(err)
 	}
 	if manifests != 0 || checkpoint != 1 {

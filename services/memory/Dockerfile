@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    FASTEMBED_CACHE_PATH=/var/lib/cylo/memory/models \
+    FASTEMBED_CACHE_PATH=/var/lib/zoe/memory/models \
     MEM0_TELEMETRY=false
 
 WORKDIR /app

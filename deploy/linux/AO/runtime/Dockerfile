@@ -7,7 +7,7 @@ RUN apt-get update \
     && npm install --global "@openai/codex@${CODEX_VERSION}" \
     && npm cache clean --force
 
-COPY proxy_bridge.py /usr/local/bin/cylo-codex-proxy-bridge
-RUN chmod 0555 /usr/local/bin/cylo-codex-proxy-bridge \
-    && mkdir -p /run/cylo
-ENTRYPOINT ["/usr/local/bin/cylo-codex-proxy-bridge"]
+COPY proxy_bridge.py /usr/local/bin/zoe-codex-proxy-bridge
+RUN chmod 0555 /usr/local/bin/zoe-codex-proxy-bridge \
+    && mkdir -p /run/zoe
+ENTRYPOINT ["/usr/local/bin/zoe-codex-proxy-bridge"]

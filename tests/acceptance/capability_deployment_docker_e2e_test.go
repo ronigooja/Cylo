@@ -18,19 +18,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/capabilities"
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/runner"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/capabilities"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/runner"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 // This opt-in local-live acceptance test uses Docker and a public pinned base
 // image. Capability containers have no network, no host mounts, and no Docker
 // socket; Docker is used only by the trusted test/runner host.
 func TestDockerBackedCapabilityDeploymentHTTPRecoveryLifecycle(t *testing.T) {
-	if os.Getenv("CYLO_TEST_DOCKER_CAPABILITIES") != "1" {
-		t.Skip("set CYLO_TEST_DOCKER_CAPABILITIES=1 to run the local Docker acceptance")
+	if os.Getenv("ZOE_TEST_DOCKER_CAPABILITIES") != "1" {
+		t.Skip("set ZOE_TEST_DOCKER_CAPABILITIES=1 to run the local Docker acceptance")
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("Docker CLI is unavailable")
@@ -61,7 +61,7 @@ func TestDockerBackedCapabilityDeploymentHTTPRecoveryLifecycle(t *testing.T) {
 	manifestV1 := capabilityServiceManifest(image, "--directory", "/tmp")
 	releaseV1 := submitCapabilityRelease(t, httpServer.Client(), httpServer.URL, deviceToken, manifestV1, "release-v1")
 	deploymentID, version := requestCapabilityDeployment(t, httpServer.Client(), httpServer.URL, deviceToken, "local-service", releaseV1, "install", nil, "install-request")
-	containerName := "cylo-cap-" + capabilityShortHash(deploymentID)
+	containerName := "zoe-cap-" + capabilityShortHash(deploymentID)
 	assertDockerObjectAbsent(t, ctx, "inspect", containerName)
 	var containerID string
 	t.Cleanup(func() {
@@ -75,7 +75,7 @@ func TestDockerBackedCapabilityDeploymentHTTPRecoveryLifecycle(t *testing.T) {
 				Labels map[string]string `json:"Labels"`
 			} `json:"Config"`
 		}
-		if json.Unmarshal(raw, &inspected) == nil && inspected.ID != "" && (containerID == "" || inspected.ID == containerID) && inspected.Config.Labels["io.cylo.managed"] == "true" && inspected.Config.Labels["io.cylo.deployment"] == capabilityShortHash(deploymentID) && inspected.Config.Labels["io.cylo.workspace"] == capabilityShortHash("default") {
+		if json.Unmarshal(raw, &inspected) == nil && inspected.ID != "" && (containerID == "" || inspected.ID == containerID) && inspected.Config.Labels["io.zoe.managed"] == "true" && inspected.Config.Labels["io.zoe.deployment"] == capabilityShortHash(deploymentID) && inspected.Config.Labels["io.zoe.workspace"] == capabilityShortHash("default") {
 			_ = exec.Command("docker", "rm", "--force", inspected.ID).Run()
 		}
 	})
@@ -301,9 +301,9 @@ func buildCapabilityRunner(t *testing.T, root string) string {
 		t.Fatal(err)
 	}
 	moduleRoot := filepath.Clean(filepath.Join(workingDirectory, "../.."))
-	binary := filepath.Join(root, "cylo-runner")
+	binary := filepath.Join(root, "zoe-runner")
 	goBinary := filepath.Join(goruntime.GOROOT(), "bin", "go")
-	build := exec.Command(goBinary, "build", "-o", binary, "./cmd/cylo-runner")
+	build := exec.Command(goBinary, "build", "-o", binary, "./cmd/zoe-runner")
 	build.Dir = moduleRoot
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build independent runner executable failed: %v (%s)", err, strings.TrimSpace(string(output)))
@@ -319,13 +319,13 @@ func runCapabilityRunnerOnce(t *testing.T, binary, controlURL, runnerToken, jour
 	}
 	command := exec.CommandContext(t.Context(), binary, "--once")
 	command.Env = append(os.Environ(),
-		"CYLO_CONTROL_URL="+controlURL,
-		"CYLO_RUNNER_TOKEN="+runnerToken,
-		"CYLO_AO_URL=http://127.0.0.1:1",
-		"CYLO_AO_TOKEN="+reviewToken(t),
-		"CYLO_RUNNER_JOURNAL_PATH="+journalPath,
-		"CYLO_RUNNER_ROUTES="+string(routeConfig),
-		"CYLO_RUNNER_IDLE_POLL_INTERVAL=10ms",
+		"ZOE_CONTROL_URL="+controlURL,
+		"ZOE_RUNNER_TOKEN="+runnerToken,
+		"ZOE_AO_URL=http://127.0.0.1:1",
+		"ZOE_AO_TOKEN="+reviewToken(t),
+		"ZOE_RUNNER_JOURNAL_PATH="+journalPath,
+		"ZOE_RUNNER_ROUTES="+string(routeConfig),
+		"ZOE_RUNNER_IDLE_POLL_INTERVAL=10ms",
 	)
 	if output, err := command.CombinedOutput(); err != nil {
 		return fmt.Errorf("runner process failed (%s): %w", strings.TrimSpace(string(output)), err)

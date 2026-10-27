@@ -12,6 +12,6 @@ RUN npm ci --prefix /opt/opencode --omit=dev --ignore-scripts \
     && opencode --version \
     && npm cache clean --force
 
-COPY proxy_bridge.py /usr/local/bin/cylo-opencode-proxy-bridge
-RUN chmod 0555 /usr/local/bin/cylo-opencode-proxy-bridge
-ENTRYPOINT ["/usr/local/bin/cylo-opencode-proxy-bridge"]
+COPY proxy_bridge.py /usr/local/bin/zoe-opencode-proxy-bridge
+RUN chmod 0555 /usr/local/bin/zoe-opencode-proxy-bridge
+ENTRYPOINT ["/usr/local/bin/zoe-opencode-proxy-bridge"]

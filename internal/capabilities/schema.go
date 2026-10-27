@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 func RegisterMigrations(store *storage.Store) error {

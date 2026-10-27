@@ -1,5 +1,5 @@
 {
-  "name": "cylo-ao-opencode-runtime",
+  "name": "zoe-ao-opencode-runtime",
   "private": true,
   "version": "1.18.33",
   "description": "Pinned OpenCode runtime for the AO supervised container profile",

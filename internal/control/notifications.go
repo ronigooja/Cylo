@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Zoe/contracts"
 )
 
 func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {

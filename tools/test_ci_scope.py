@@ -16,11 +16,11 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(self.selected(["README.md", "docs/design/reference.png"]), {"docs"})
 
     def test_platform_specific_changes(self):
-        self.assertEqual(self.selected(["clients/apple/Apps/macOS/CyloMacApp.swift"]), {"macos"})
-        self.assertEqual(self.selected(["clients/apple/Apps/iOS/CyloMobileApp.swift"]), {"ios"})
+        self.assertEqual(self.selected(["clients/apple/Apps/macOS/ZoeMacApp.swift"]), {"macos"})
+        self.assertEqual(self.selected(["clients/apple/Apps/iOS/ZoeMobileApp.swift"]), {"ios"})
 
     def test_shared_apple_changes(self):
-        for path in ("clients/apple/Packages/CyloKit/Package.swift", "clients/apple/Cylo.xcodeproj/project.pbxproj", "clients/apple/Apps/Resources/en.lproj/InfoPlist.strings"):
+        for path in ("clients/apple/Packages/ZoeKit/Package.swift", "clients/apple/Zoe.xcodeproj/project.pbxproj", "clients/apple/Apps/Resources/en.lproj/InfoPlist.strings"):
             with self.subTest(path=path):
                 self.assertEqual(self.selected([path]), {"tests", "macos", "ios"})
 

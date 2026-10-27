@@ -93,7 +93,7 @@ func TestIndependentRestoreGuardHandlesAliasesMarkersAndFreshStores(t *testing.T
 	}
 }
 func TestIndependentMalformedRestoreGuardCannotAuthorizeRead(t *testing.T) {
-	for _, setup := range []string{`CREATE TABLE cylo_restore_stage_guard(singleton INTEGER,pending INTEGER)`, `CREATE TABLE cylo_restore_stage_guard(singleton INTEGER,pending INTEGER); INSERT INTO cylo_restore_stage_guard VALUES(1,7)`, `CREATE TABLE cylo_restore_stage_guard(singleton INTEGER,pending TEXT); INSERT INTO cylo_restore_stage_guard VALUES(1,'bad')`, `CREATE TABLE cylo_restore_stage_guard(singleton INTEGER,pending INTEGER); INSERT INTO cylo_restore_stage_guard VALUES(1,NULL)`} {
+	for _, setup := range []string{`CREATE TABLE zoe_restore_stage_guard(singleton INTEGER,pending INTEGER)`, `CREATE TABLE zoe_restore_stage_guard(singleton INTEGER,pending INTEGER); INSERT INTO zoe_restore_stage_guard VALUES(1,7)`, `CREATE TABLE zoe_restore_stage_guard(singleton INTEGER,pending TEXT); INSERT INTO zoe_restore_stage_guard VALUES(1,'bad')`, `CREATE TABLE zoe_restore_stage_guard(singleton INTEGER,pending INTEGER); INSERT INTO zoe_restore_stage_guard VALUES(1,NULL)`} {
 		store, err := Open(context.Background(), Config{Path: filepath.Join(t.TempDir(), "authority.db")})
 		if err != nil {
 			t.Fatal(err)
@@ -114,7 +114,7 @@ func TestIndependentStagingMarkerMustOverridePriorFalseGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = database.Exec(`CREATE TABLE cylo_restore_stage_guard(singleton INTEGER PRIMARY KEY,pending INTEGER NOT NULL);INSERT INTO cylo_restore_stage_guard VALUES(1,0)`); err != nil {
+	if _, err = database.Exec(`CREATE TABLE zoe_restore_stage_guard(singleton INTEGER PRIMARY KEY,pending INTEGER NOT NULL);INSERT INTO zoe_restore_stage_guard VALUES(1,0)`); err != nil {
 		t.Fatal(err)
 	}
 	database.Close()

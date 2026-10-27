@@ -18,8 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 // PushSender sends a silent wake-up to one registered device. Implementations
@@ -137,7 +137,7 @@ func (s *APNSSender) Send(ctx context.Context, p PushRequest) PushResponse {
 	if err != nil {
 		return PushResponse{Reason: "jwt_signing_failed"}
 	}
-	payload, _ := json.Marshal(map[string]any{"aps": map[string]int{"content-available": 1}, "cylo": map[string]string{"inbox_cursor": p.Cursor}})
+	payload, _ := json.Marshal(map[string]any{"aps": map[string]int{"content-available": 1}, "zoe": map[string]string{"inbox_cursor": p.Cursor}})
 	url := s.host + "/3/device/" + p.Token
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(payload)))
 	if err != nil {
@@ -390,7 +390,7 @@ func enqueuePushDeliveries(ctx context.Context, tx *sql.Tx, notificationID, work
 		if err != nil {
 			return err
 		}
-		collapseID := "cylo-" + notificationID
+		collapseID := "zoe-" + notificationID
 		if len(collapseID) > 64 {
 			collapseID = collapseID[:64]
 		}

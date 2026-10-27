@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 func TestAppendBackupDeleteManifestIsDurableAndIdempotent(t *testing.T) {

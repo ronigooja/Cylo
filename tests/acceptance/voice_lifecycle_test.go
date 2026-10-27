@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/storage"
-	"github.com/ronigooja/Cylo/internal/voice"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/storage"
+	"github.com/ronigooja/Zoe/internal/voice"
 )
 
 func newHangupHarness(t *testing.T, gatewayHandler http.Handler) (*storage.Store, http.Handler, string) {

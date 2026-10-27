@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from cylo_restore import verify_latest_deletion_head
+from zoe_restore import verify_latest_deletion_head
 
 
 def record_line(sequence: int, generation: int, previous_hash: str) -> tuple[bytes, str]:

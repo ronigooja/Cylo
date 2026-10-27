@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Zoe/contracts"
 )
 
 func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
@@ -81,7 +81,7 @@ func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
 			case "preexisting-unpinned-image":
 				proof.Reconciliation.PreexistingCapabilityContainers[0].Image = "python:latest"
 			case "preexisting-ao-tag":
-				proof.Reconciliation.PreexistingCapabilityContainers[0].Labels["io.cylo.runtime"] = ""
+				proof.Reconciliation.PreexistingCapabilityContainers[0].Labels["io.zoe.runtime"] = ""
 
 			case "missing-incarnation":
 				proof.Reconciliation.AOServerStartedAt = time.Time{}
@@ -226,5 +226,5 @@ func preexistingProofFixture() contracts.PreexistingCapabilityContainer {
 	pid := 42
 	now := time.Now().UTC()
 	startedAt := now.Add(-time.Hour)
-	return contracts.PreexistingCapabilityContainer{ID: strings.Repeat("b", 64), Name: "/cylo-cap-" + strings.Repeat("2", 24), Image: "python@sha256:" + strings.Repeat("5", 64), Labels: map[string]string{"io.cylo.managed": "true", "io.cylo.workspace": strings.Repeat("1", 24), "io.cylo.deployment": strings.Repeat("2", 24), "io.cylo.attempt": strings.Repeat("3", 24), "io.cylo.release": strings.Repeat("4", 64), "io.cylo.fence": "1"}, CreatedAt: now.Add(-24 * time.Hour), Status: "running", Running: &trueValue, Paused: &falseValue, Restarting: &falseValue, Dead: &falseValue, PID: &pid, StartedAt: &startedAt, FirstCheckedAt: now.Add(-500 * time.Millisecond), RecheckedAt: now.Add(-100 * time.Millisecond), SnapshotSHA256: strings.Repeat("d", 64)}
+	return contracts.PreexistingCapabilityContainer{ID: strings.Repeat("b", 64), Name: "/zoe-cap-" + strings.Repeat("2", 24), Image: "python@sha256:" + strings.Repeat("5", 64), Labels: map[string]string{"io.zoe.managed": "true", "io.zoe.workspace": strings.Repeat("1", 24), "io.zoe.deployment": strings.Repeat("2", 24), "io.zoe.attempt": strings.Repeat("3", 24), "io.zoe.release": strings.Repeat("4", 64), "io.zoe.fence": "1"}, CreatedAt: now.Add(-24 * time.Hour), Status: "running", Running: &trueValue, Paused: &falseValue, Restarting: &falseValue, Dead: &falseValue, PID: &pid, StartedAt: &startedAt, FirstCheckedAt: now.Add(-500 * time.Millisecond), RecheckedAt: now.Add(-100 * time.Millisecond), SnapshotSHA256: strings.Repeat("d", 64)}
 }

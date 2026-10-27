@@ -2,7 +2,7 @@
 
 ## One-session run
 
-Set `XCODE_SSH_HOST` and `XCODE_PROJECT_PATH` using operator-provided values. The project path is an absolute Mac path, not a path on the Linux host. Inspect `XcodeListSchemes` and `XcodeListRunDestinations` before choosing a scheme and destination. For Cylo, `CyloMobile` is the iPhone/iPad scheme; `CyloMac` is the macOS scheme.
+Set `XCODE_SSH_HOST` and `XCODE_PROJECT_PATH` using operator-provided values. The project path is an absolute Mac path, not a path on the Linux host. Inspect `XcodeListSchemes` and `XcodeListRunDestinations` before choosing a scheme and destination. For Zoe, `ZoeMobile` is the iPhone/iPad scheme; `ZoeMac` is the macOS scheme.
 
 The helper replaces the exact argument value `$workspace` with the identifier returned by an earlier successful `XcodeOpenWorkspace` in the same batch. It does not expand shell commands or arbitrary variables. For example, after setting `XCODE_SCHEME` and `XCODE_DESTINATION` from discovery:
 
@@ -44,7 +44,7 @@ This writes local Codex configuration. The temporary Python helper does not. Reg
 | Observation | Next evidence or action |
 |---|---|
 | MCP initializes, but workspace calls say the agent is not approved | Open the intended project with MCP and have the user handle Xcode's agent/project access dialog. Never bypass it. |
-| “Choose an app to run” appears | Inspect the active scheme's `LaunchAction` and runnable. `askForAppToLaunch="Yes"` caused this in the observed Cylo checkout. For an ordinary app target, select its built app or fix the project's scheme to run that app directly within authorized project-edit scope. Cancel an unrelated app picker. |
+| “Choose an app to run” appears | Inspect the active scheme's `LaunchAction` and runnable. `askForAppToLaunch="Yes"` caused this in the observed Zoe checkout. For an ordinary app target, select its built app or fix the project's scheme to run that app directly within authorized project-edit scope. Cancel an unrelated app picker. |
 | Phone reports an untrusted developer | Ask the user to trust only the expected signing identity under Settings → General → VPN & Device Management. Do not change trust, accounts, signing identities, or developer settings automatically. |
 | Launch succeeds, followed by a black screen or exit | Query the correct launch's filtered console and crash reports before guessing. A build/launch acknowledgment alone does not prove visible UI or continued execution. |
 | `Library not loaded: @rpath/WebRTC.framework/WebRTC` | Check **both** embedded `Frameworks/WebRTC.framework/WebRTC` and the app's `LC_RPATH` with `otool -l`. In the observed checkout, embedding was already present; the iOS target lacked `@executable_path/Frameworks` in `LD_RUNPATH_SEARCH_PATHS`. Fix the applicable project configurations, rebuild, and confirm installation of that binary. Do not change system library paths. |
@@ -55,11 +55,11 @@ Use `xcrun devicectl ... --help` for the installed Xcode's exact syntax. As a di
 
 ```sh
 # Run on the Mac, using the discovered device name/identifier and built app path.
-xcrun devicectl device info processes --device "$DEVICE" --search Cylo --timeout 10
+xcrun devicectl device info processes --device "$DEVICE" --search Zoe --timeout 10
 xcrun devicectl device info files --device "$DEVICE" \
-  --domain-type systemCrashLogs --search Cylo --timeout 10
+  --domain-type systemCrashLogs --search Zoe --timeout 10
 xcrun devicectl device install app --device "$DEVICE" "$BUILT_APP" --timeout 45
-xcrun devicectl device process launch --device "$DEVICE" com.cylo.mobile --timeout 15
+xcrun devicectl device process launch --device "$DEVICE" com.zoe.mobile --timeout 15
 ```
 
 Use separate bounded calls and inspect each result. After a timeout, check the active process/debugger and install outcome before retrying; it may have completed partially. Do not uninstall to recover from a deployment timeout, since that can remove app data. If no concrete recoverable cause is found, report the pending device/user action instead of continuing retries. Keep crash copies and build artifacts under the repository's approved dedicated Mac workspace, not in system directories; extract only relevant diagnostics and do not commit raw private reports.

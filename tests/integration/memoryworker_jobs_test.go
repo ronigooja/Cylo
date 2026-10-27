@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/memory"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/memory"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 func memoryWorkerHarness(t *testing.T, scopes, workspaces []string) (*storage.Store, http.Handler, string) {
@@ -202,7 +202,7 @@ func TestDeletionOnlyWorkerRoutesAreAuthenticatedAndTombstoneOnlyBehindRestoreGa
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := store.DB().Exec(`UPDATE cylo_instance_state SET restore_deletion_reconciliation_required=1,derived_retrieval_enabled=0 WHERE singleton=1`); err != nil {
+	if _, err := store.DB().Exec(`UPDATE zoe_instance_state SET restore_deletion_reconciliation_required=1,derived_retrieval_enabled=0 WHERE singleton=1`); err != nil {
 		t.Fatal(err)
 	}
 	seedMemoryWorkerClaim(t, store.DB(), "default", "tombstoned-claim")
@@ -243,7 +243,7 @@ func TestDeletionOnlyWorkerRoutesAreAuthenticatedAndTombstoneOnlyBehindRestoreGa
 		t.Fatalf("deletion-only completion status=%d body=%s", complete.Code, complete.Body.String())
 	}
 	var gate int
-	if err := store.DB().QueryRow(`SELECT restore_deletion_reconciliation_required FROM cylo_instance_state WHERE singleton=1`).Scan(&gate); err != nil {
+	if err := store.DB().QueryRow(`SELECT restore_deletion_reconciliation_required FROM zoe_instance_state WHERE singleton=1`).Scan(&gate); err != nil {
 		t.Fatal(err)
 	}
 	if gate != 1 {

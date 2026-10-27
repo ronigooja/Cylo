@@ -27,11 +27,11 @@ class PinnedFastEmbedEmbedding(EmbeddingBase):
     def __init__(self, config=None):
         super().__init__(config)
         if self.config.model != MODEL_ID or self.config.embedding_dims != EMBEDDING_DIMENSIONS:
-            raise ValueError("Mem0 embedding configuration does not match the pinned Cylo codec")
+            raise ValueError("Mem0 embedding configuration does not match the pinned Zoe codec")
         if _pinned_embedder is None:
-            raise RuntimeError("the pinned Cylo embedder was not registered before Mem0 initialization")
+            raise RuntimeError("the pinned Zoe embedder was not registered before Mem0 initialization")
         if _pinned_embedder.dimensions != EMBEDDING_DIMENSIONS:
-            raise ValueError("the pinned Cylo embedder has an unexpected dimension")
+            raise ValueError("the pinned Zoe embedder has an unexpected dimension")
         self.embedder = _pinned_embedder
         self.revision = MODEL_REVISION
 

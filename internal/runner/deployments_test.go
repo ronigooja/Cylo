@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Zoe/contracts"
 )
 
 type fakeDocker struct {
@@ -47,7 +47,7 @@ func (d *fakeDocker) Run(_ context.Context, args ...string) ([]byte, error) {
 		return []byte("volume"), nil
 	}
 	if args[0] == "volume" && args[1] == "inspect" {
-		raw, _ := json.Marshal(map[string]string{"io.cylo.workspace": labelValue(d.claim.WorkspaceID), "io.cylo.volume": labelValue(d.claim.Manifest.Mounts[0].VolumeID)})
+		raw, _ := json.Marshal(map[string]string{"io.zoe.workspace": labelValue(d.claim.WorkspaceID), "io.zoe.volume": labelValue(d.claim.Manifest.Mounts[0].VolumeID)})
 		return raw, nil
 	}
 	if args[0] == "run" {
@@ -85,7 +85,7 @@ func (d *fakeDocker) Run(_ context.Context, args ...string) ([]byte, error) {
 			d.replaceOnStop = false
 			d.containerID = "replacement-container"
 			d.containerRunning = true
-			d.containerLabels = map[string]string{"io.cylo.deployment": "different-deployment"}
+			d.containerLabels = map[string]string{"io.zoe.deployment": "different-deployment"}
 			return []byte("stopped original"), nil
 		}
 		d.containerRunning, d.containerPaused = false, false
@@ -214,9 +214,9 @@ func TestDeploymentExecutorRequiresVerifiedTerminationForStop(t *testing.T) {
 	claim := validDeploymentClaim()
 	claim.DesiredOp = "stop"
 	priorLabels := deploymentOwnershipLabels(claim)
-	priorLabels["io.cylo.release"] = strings.TrimPrefix(claim.ReleaseDigest, "sha256:")
-	priorLabels["io.cylo.fence"] = "1"
-	priorLabels["io.cylo.attempt"] = labelValue("attempt-old")
+	priorLabels["io.zoe.release"] = strings.TrimPrefix(claim.ReleaseDigest, "sha256:")
+	priorLabels["io.zoe.fence"] = "1"
+	priorLabels["io.zoe.attempt"] = labelValue("attempt-old")
 	docker := &fakeDocker{claim: claim, containerRunning: true, containerID: "container-id", created: true, containerLabels: priorLabels}
 	obs := (&DeploymentExecutor{Docker: docker, Fences: deploymentTestAuthority(t)}).Execute(context.Background(), claim)
 	if obs.State != "stopped" || obs.TerminationProof == nil || !obs.TerminationProof.CleanupComplete {
@@ -238,9 +238,9 @@ func TestDeploymentExecutorCleanupOnlyBypassesGrantOnlyForOwnedStop(t *testing.T
 	claim.VolumeIDs = []string{"persistent-data"}
 	claim.ConfigRef, claim.ConfigSHA256 = "deployment-config", strings.Repeat("d", 64)
 	labels := deploymentOwnershipLabels(claim)
-	labels["io.cylo.release"] = "sha256:" + strings.Repeat("c", 64)
-	labels["io.cylo.fence"] = "1"
-	labels["io.cylo.attempt"] = labelValue("old-install")
+	labels["io.zoe.release"] = "sha256:" + strings.Repeat("c", 64)
+	labels["io.zoe.fence"] = "1"
+	labels["io.zoe.attempt"] = labelValue("old-install")
 	docker := &fakeDocker{claim: claim, containerRunning: true, containerID: "container-owned", created: true, containerLabels: labels}
 	obs := (&DeploymentExecutor{Docker: docker, Fences: deploymentTestAuthority(t)}).Execute(context.Background(), claim)
 	if obs.State != "stopped" || obs.TerminationProof == nil || !obs.TerminationProof.CleanupComplete {
@@ -259,9 +259,9 @@ func TestDeploymentExecutorCleanupOnlyBypassesGrantOnlyForOwnedStop(t *testing.T
 func TestDeploymentExecutorCleanupOnlyRejectsUnownedOrNewerFence(t *testing.T) {
 	for name, mutate := range map[string]func(map[string]string, contracts.DeploymentClaim){
 		"unowned labels": func(labels map[string]string, claim contracts.DeploymentClaim) {
-			labels["io.cylo.deployment"] = labelValue("other-deployment")
+			labels["io.zoe.deployment"] = labelValue("other-deployment")
 		},
-		"newer fence": func(labels map[string]string, claim contracts.DeploymentClaim) { labels["io.cylo.fence"] = "3" },
+		"newer fence": func(labels map[string]string, claim contracts.DeploymentClaim) { labels["io.zoe.fence"] = "3" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			claim := validDeploymentClaim()
@@ -269,9 +269,9 @@ func TestDeploymentExecutorCleanupOnlyRejectsUnownedOrNewerFence(t *testing.T) {
 			claim.Grant.Actions = []string{"install"}
 			claim.Grant.ExpiresAt = time.Now().Add(-time.Hour)
 			labels := deploymentOwnershipLabels(claim)
-			labels["io.cylo.release"] = strings.TrimPrefix(claim.ReleaseDigest, "sha256:")
-			labels["io.cylo.fence"] = "1"
-			labels["io.cylo.attempt"] = labelValue("old-install")
+			labels["io.zoe.release"] = strings.TrimPrefix(claim.ReleaseDigest, "sha256:")
+			labels["io.zoe.fence"] = "1"
+			labels["io.zoe.attempt"] = labelValue("old-install")
 			mutate(labels, claim)
 			docker := &fakeDocker{claim: claim, containerRunning: true, containerID: "container-owned", created: true, containerLabels: labels}
 			obs := (&DeploymentExecutor{Docker: docker, Fences: deploymentTestAuthority(t)}).Execute(context.Background(), claim)
@@ -302,9 +302,9 @@ func TestDeploymentExecutorCleanupStopsInspectedIDAndRejectsNameSwap(t *testing.
 	claim.Grant.Actions = []string{"install"}
 	claim.Grant.ExpiresAt = time.Now().Add(-time.Hour)
 	labels := deploymentOwnershipLabels(claim)
-	labels["io.cylo.release"] = strings.TrimPrefix(claim.ReleaseDigest, "sha256:")
-	labels["io.cylo.fence"] = "1"
-	labels["io.cylo.attempt"] = labelValue("old-install")
+	labels["io.zoe.release"] = strings.TrimPrefix(claim.ReleaseDigest, "sha256:")
+	labels["io.zoe.fence"] = "1"
+	labels["io.zoe.attempt"] = labelValue("old-install")
 	docker := &fakeDocker{claim: claim, containerRunning: true, containerID: "verified-container", created: true, containerLabels: labels, replaceOnStop: true}
 	obs := (&DeploymentExecutor{Docker: docker, Fences: deploymentTestAuthority(t)}).Execute(context.Background(), claim)
 	if obs.State != "uncertain" || len(docker.commands) != 3 || docker.commands[1][0] != "stop" || docker.commands[1][len(docker.commands[1])-1] != "verified-container" {
@@ -338,8 +338,8 @@ func TestDeploymentExecutorRejectsStaleFenceAgainstNewerContainer(t *testing.T) 
 	claim := validDeploymentClaim()
 	claim.DesiredOp = "stop"
 	labels := deploymentLabels(claim)
-	labels["io.cylo.fence"] = "10"
-	labels["io.cylo.attempt"] = labelValue("newer-attempt")
+	labels["io.zoe.fence"] = "10"
+	labels["io.zoe.attempt"] = labelValue("newer-attempt")
 	docker := &fakeDocker{claim: claim, containerRunning: true, containerID: "container-id", created: true, containerLabels: labels}
 	obs := (&DeploymentExecutor{Docker: docker, Fences: deploymentTestAuthority(t)}).Execute(context.Background(), claim)
 	if obs.State != "failed" || len(docker.commands) != 1 || docker.commands[0][0] != "inspect" {
@@ -364,9 +364,9 @@ func TestDeploymentExecutorFenceHighWaterSurvivesRestart(t *testing.T) {
 	claim.DesiredOp = "stop"
 	claim.Fence = 10
 	labels := deploymentOwnershipLabels(claim)
-	labels["io.cylo.release"] = strings.TrimPrefix(claim.ReleaseDigest, "sha256:")
-	labels["io.cylo.fence"] = "1"
-	labels["io.cylo.attempt"] = labelValue("attempt-old")
+	labels["io.zoe.release"] = strings.TrimPrefix(claim.ReleaseDigest, "sha256:")
+	labels["io.zoe.fence"] = "1"
+	labels["io.zoe.attempt"] = labelValue("attempt-old")
 	docker := &fakeDocker{claim: claim, containerRunning: true, containerID: "container-id", created: true, containerLabels: labels}
 	obs := (&DeploymentExecutor{Docker: docker, Fences: first}).Execute(ctx, claim)
 	if obs.State != "stopped" {
@@ -476,7 +476,7 @@ func TestDeploymentExecutorRejectsForeignContainerWithoutSideEffect(t *testing.T
 	claim := validDeploymentClaim()
 	claim.DesiredOp = "stop"
 	labels := deploymentOwnershipLabels(claim)
-	labels["io.cylo.workspace"] = labelValue("another-workspace")
+	labels["io.zoe.workspace"] = labelValue("another-workspace")
 	docker := &fakeDocker{claim: claim, containerRunning: true, containerID: "foreign-container", created: true, containerLabels: labels}
 	obs := (&DeploymentExecutor{Docker: docker, Fences: deploymentTestAuthority(t)}).Execute(context.Background(), claim)
 	if obs.State != "failed" {
@@ -523,9 +523,9 @@ func TestDeploymentExecutorAllowsFencedStopAfterGrantExpiry(t *testing.T) {
 	claim.ClaimState = "claimed"
 	claim.Grant.ExpiresAt = time.Now().Add(-time.Hour)
 	priorLabels := deploymentOwnershipLabels(claim)
-	priorLabels["io.cylo.release"] = strings.TrimPrefix(claim.ReleaseDigest, "sha256:")
-	priorLabels["io.cylo.fence"] = "1"
-	priorLabels["io.cylo.attempt"] = labelValue("attempt-old")
+	priorLabels["io.zoe.release"] = strings.TrimPrefix(claim.ReleaseDigest, "sha256:")
+	priorLabels["io.zoe.fence"] = "1"
+	priorLabels["io.zoe.attempt"] = labelValue("attempt-old")
 	docker := &fakeDocker{claim: claim, containerRunning: true, containerID: "container-id", created: true, containerLabels: priorLabels}
 	obs := (&DeploymentExecutor{Docker: docker, Fences: deploymentTestAuthority(t)}).Execute(context.Background(), claim)
 	if obs.State != "stopped" || obs.TerminationProof == nil || !obs.TerminationProof.CleanupComplete {

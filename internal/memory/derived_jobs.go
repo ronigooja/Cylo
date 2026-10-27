@@ -14,9 +14,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 const (
@@ -1080,7 +1080,7 @@ func (s *derivedService) finish(ctx context.Context, p contracts.RunnerPrincipal
 
 func refreshDeletionCheckpointTx(ctx context.Context, tx *sql.Tx, target, now string) error {
 	var head int64
-	if err := tx.QueryRowContext(ctx, `SELECT deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&head); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT deletion_sequence FROM zoe_instance_state WHERE singleton=1`).Scan(&head); err != nil {
 		if strings.Contains(err.Error(), "no such table") {
 			return nil
 		}
@@ -1103,7 +1103,7 @@ func refreshDeletionCheckpointTx(ctx context.Context, tx *sql.Tx, target, now st
 			lastError = "adapter_missing"
 		}
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO cylo_deletion_reconciliation_checkpoints(target,completed_sequence,updated_at,last_error) VALUES(?,?,?,?) ON CONFLICT(target) DO UPDATE SET completed_sequence=excluded.completed_sequence,updated_at=excluded.updated_at,last_error=excluded.last_error`, target, completed, now, lastError)
+	_, err := tx.ExecContext(ctx, `INSERT INTO zoe_deletion_reconciliation_checkpoints(target,completed_sequence,updated_at,last_error) VALUES(?,?,?,?) ON CONFLICT(target) DO UPDATE SET completed_sequence=excluded.completed_sequence,updated_at=excluded.updated_at,last_error=excluded.last_error`, target, completed, now, lastError)
 	if err != nil && strings.Contains(err.Error(), "no such table") {
 		return nil
 	}

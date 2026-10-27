@@ -10,8 +10,8 @@ from typing import Any
 from mem0.configs.llms.openai import OpenAIConfig
 from mem0.llms.openai import OpenAILLM
 
-_request_timeout_seconds: ContextVar[float | None] = ContextVar("cylo_memory_llm_timeout", default=None)
-_model_call_context: ContextVar[ModelCallContext | None] = ContextVar("cylo_memory_model_call_context", default=None)
+_request_timeout_seconds: ContextVar[float | None] = ContextVar("zoe_memory_llm_timeout", default=None)
+_model_call_context: ContextVar[ModelCallContext | None] = ContextVar("zoe_memory_model_call_context", default=None)
 _safe_provider_request_id = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 
 

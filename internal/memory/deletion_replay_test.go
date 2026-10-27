@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 func TestDeleteReplaysFsyncedJournalWhenPriorAuthorityTransactionRolledBack(t *testing.T) {
@@ -44,7 +44,7 @@ VALUES('proposal-before-crash','default',1,'source-before-crash',1,'extractor-v1
 	}
 	var lineage string
 	var generation int64
-	if err = store.DB().QueryRowContext(ctx, `SELECT lineage_id,generation FROM cylo_instance_state WHERE singleton=1`).Scan(&lineage, &generation); err != nil {
+	if err = store.DB().QueryRowContext(ctx, `SELECT lineage_id,generation FROM zoe_instance_state WHERE singleton=1`).Scan(&lineage, &generation); err != nil {
 		t.Fatal(err)
 	}
 	journal, err := storage.NewDeletionJournal(store.Path())
@@ -85,7 +85,7 @@ VALUES('proposal-before-crash','default',1,'source-before-crash',1,'extractor-v1
 		t.Fatalf("next delete did not repair prior rolled-back authority transaction: %v", err)
 	}
 	var sequence int64
-	if err = store.DB().QueryRowContext(ctx, `SELECT deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&sequence); err != nil {
+	if err = store.DB().QueryRowContext(ctx, `SELECT deletion_sequence FROM zoe_instance_state WHERE singleton=1`).Scan(&sequence); err != nil {
 		t.Fatal(err)
 	}
 	if sequence != 2 {
@@ -147,10 +147,10 @@ func TestReconcileRequiresCompleteJournalAndKeepsMissingAdaptersClosed(t *testin
 	claim := writeMemory(t, ctx, store.DB(), repo, scope, "restore tombstone", "restore-source", 0)
 	var lineage string
 	var generation int64
-	if err = store.DB().QueryRowContext(ctx, `SELECT lineage_id,generation FROM cylo_instance_state WHERE singleton=1`).Scan(&lineage, &generation); err != nil {
+	if err = store.DB().QueryRowContext(ctx, `SELECT lineage_id,generation FROM zoe_instance_state WHERE singleton=1`).Scan(&lineage, &generation); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = store.DB().ExecContext(ctx, `UPDATE cylo_instance_state SET restore_deletion_reconciliation_required=1,derived_retrieval_enabled=0 WHERE singleton=1`); err != nil {
+	if _, err = store.DB().ExecContext(ctx, `UPDATE zoe_instance_state SET restore_deletion_reconciliation_required=1,derived_retrieval_enabled=0 WHERE singleton=1`); err != nil {
 		t.Fatal(err)
 	}
 	journal, err := storage.NewDeletionJournal(store.Path())
@@ -185,7 +185,7 @@ func TestReconcileRequiresCompleteJournalAndKeepsMissingAdaptersClosed(t *testin
 		t.Fatalf("restore gate opened with unresolved external cleanup: %v", err)
 	}
 	var completed int64
-	if err = store.DB().QueryRowContext(ctx, `SELECT completed_sequence FROM cylo_deletion_reconciliation_checkpoints WHERE target='source_ledger'`).Scan(&completed); err != nil {
+	if err = store.DB().QueryRowContext(ctx, `SELECT completed_sequence FROM zoe_deletion_reconciliation_checkpoints WHERE target='source_ledger'`).Scan(&completed); err != nil {
 		t.Fatal(err)
 	}
 	if completed != 1 {
@@ -226,7 +226,7 @@ func TestStaleBackupReplaysLaterIndependentDeletion(t *testing.T) {
 	claim := writeMemory(t, ctx, store.DB(), repo, scope, "must not return from a stale backup", "stale-backup-source", 0)
 	var lineage string
 	var generation, sequence, eventCount, eventSum int64
-	if err = store.DB().QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&lineage, &generation, &sequence); err != nil {
+	if err = store.DB().QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM zoe_instance_state WHERE singleton=1`).Scan(&lineage, &generation, &sequence); err != nil {
 		t.Fatal(err)
 	}
 	if err = store.DB().QueryRowContext(ctx, `SELECT count(*),coalesce(sum(cursor),0) FROM events`).Scan(&eventCount, &eventSum); err != nil {
@@ -260,7 +260,7 @@ func TestStaleBackupReplaysLaterIndependentDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restored.Close()
-	if _, err = restored.DB().ExecContext(ctx, `UPDATE cylo_instance_state SET restore_deletion_reconciliation_required=1,derived_retrieval_enabled=0 WHERE singleton=1`); err != nil {
+	if _, err = restored.DB().ExecContext(ctx, `UPDATE zoe_instance_state SET restore_deletion_reconciliation_required=1,derived_retrieval_enabled=0 WHERE singleton=1`); err != nil {
 		t.Fatal(err)
 	}
 	trusted := TrustedDeletionHead{
@@ -315,10 +315,10 @@ func TestRestoreGenerationsAdvanceAcrossNoDeleteRestoresAndNextDelete(t *testing
 	claim := writeMemory(t, ctx, store.DB(), repo, scope, "generation test claim", "generation-source", 0)
 	var lineage string
 	var generation int64
-	if err = store.DB().QueryRowContext(ctx, `SELECT lineage_id,generation FROM cylo_instance_state WHERE singleton=1`).Scan(&lineage, &generation); err != nil {
+	if err = store.DB().QueryRowContext(ctx, `SELECT lineage_id,generation FROM zoe_instance_state WHERE singleton=1`).Scan(&lineage, &generation); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = store.DB().ExecContext(ctx, `UPDATE cylo_instance_state SET restore_deletion_reconciliation_required=1,derived_retrieval_enabled=0,dispatch_enabled=0 WHERE singleton=1`); err != nil {
+	if _, err = store.DB().ExecContext(ctx, `UPDATE zoe_instance_state SET restore_deletion_reconciliation_required=1,derived_retrieval_enabled=0,dispatch_enabled=0 WHERE singleton=1`); err != nil {
 		t.Fatal(err)
 	}
 	trusted := TrustedDeletionHead{SnapshotLineageID: lineage, SnapshotGeneration: generation, JournalLineageID: lineage, JournalGeneration: generation}
@@ -389,7 +389,7 @@ func TestOldDeletionGenerationSurvivesRepeatedRestoreBeforeNextDelete(t *testing
 	newClaim := writeMemory(t, ctx, store.DB(), repo, Scope{Kind: ScopePersonal, PrincipalID: "old-generation-owner-next"}, "deleted after repeated restore", "new-deletion-source", 0)
 	var lineage string
 	var generation int64
-	if err = store.DB().QueryRowContext(ctx, `SELECT lineage_id,generation FROM cylo_instance_state WHERE singleton=1`).Scan(&lineage, &generation); err != nil {
+	if err = store.DB().QueryRowContext(ctx, `SELECT lineage_id,generation FROM zoe_instance_state WHERE singleton=1`).Scan(&lineage, &generation); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = runDelete(ctx, store.DB(), repo, DeleteInput{WorkspaceID: "default", ActorID: scope.PrincipalID, ClaimID: deletedClaim.ID, Expected: deletedClaim.Revision, ReasonCode: "user_requested"}); err != nil {
@@ -410,12 +410,12 @@ func TestOldDeletionGenerationSurvivesRepeatedRestoreBeforeNextDelete(t *testing
 	fileHash := sha256.Sum256(fileBytes)
 	markPrepared := func() {
 		t.Helper()
-		if _, err := store.DB().ExecContext(ctx, `UPDATE cylo_instance_state SET restore_deletion_reconciliation_required=1,derived_retrieval_enabled=0,dispatch_enabled=0 WHERE singleton=1`); err != nil {
+		if _, err := store.DB().ExecContext(ctx, `UPDATE zoe_instance_state SET restore_deletion_reconciliation_required=1,derived_retrieval_enabled=0,dispatch_enabled=0 WHERE singleton=1`); err != nil {
 			t.Fatal(err)
 		}
 	}
 	markPrepared()
-	if _, err = store.DB().ExecContext(ctx, `UPDATE cylo_deletion_reconciliation_checkpoints SET completed_sequence=1,last_error=''`); err != nil {
+	if _, err = store.DB().ExecContext(ctx, `UPDATE zoe_deletion_reconciliation_checkpoints SET completed_sequence=1,last_error=''`); err != nil {
 		t.Fatal(err)
 	}
 	trusted := TrustedDeletionHead{SnapshotLineageID: lineage, SnapshotGeneration: generation, SnapshotSequence: 1, JournalLineageID: lineage, JournalGeneration: generation, JournalRecordGeneration: records[0].Generation, JournalSequence: 1, JournalHeadSHA256: records[0].Hash, JournalFileSHA256: hex.EncodeToString(fileHash[:])}

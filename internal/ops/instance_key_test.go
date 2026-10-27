@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 func TestGeneratedKeyFormatAndRandomness(t *testing.T) {
@@ -50,11 +50,11 @@ func TestInstallationURLKeepsKeyInFragment(t *testing.T) {
 
 func TestDisplayIsExplicitAndDoesNotAddDiagnostics(t *testing.T) {
 	var out strings.Builder
-	result := KeyResult{Key: "secret", InstallationURL: "cylo://connect?server=x#key=secret"}
+	result := KeyResult{Key: "secret", InstallationURL: "zoe://connect?server=x#key=secret"}
 	if err := result.Display(&out); err != nil {
 		t.Fatal(err)
 	}
-	if out.String() != "secret\ncylo://connect?server=x#key=secret\n" {
+	if out.String() != "secret\nzoe://connect?server=x#key=secret\n" {
 		t.Fatalf("unexpected display output %q", out.String())
 	}
 }

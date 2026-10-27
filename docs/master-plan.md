@@ -1,4 +1,4 @@
-# Cylo delivery plan
+# Zoe delivery plan
 
 **Status:** implementation is underway; no product milestone is accepted. Source, fixtures, hosted CI, installation, and complete scenario acceptance have separate meanings. Detailed requirements live in [product](product.md), technical ownership in [architecture](architecture.md), and recorded choices in [ADRs](architecture/decisions/).
 
@@ -16,6 +16,10 @@ Milestones sequence delivery without reducing product scope. The [acceptance mat
 | 5. Reliability and Apple delivery | Data lifecycle, security, performance, native delivery | Measured restore/RPO/RTO, migration fencing, security negatives, real-device voice/APNs, A–E and all required IDs/quality dimensions | Open |
 
 ## Current status and blockers
+
+The project rename to Zoe is applied in source and paths; see the
+[rename evidence](acceptance/evidence.md#zoe-rename--2026-10-28). Hosted validation
+and external repository/deployment migration remain pending.
 
 | Area | Available evidence | Required next evidence |
 |---|---|---|

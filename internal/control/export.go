@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 // Export data is written to a private temporary file in bounded chunks. The
@@ -322,12 +322,12 @@ func (s *Server) handleScopedExport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiError(http.StatusConflict, "export_snapshot_stale", "export was invalidated during preparation; retry the request", nil))
 		return
 	}
-	w.Header().Set("Content-Type", "application/vnd.cylo.export+zip")
-	w.Header().Set("Content-Disposition", `attachment; filename="cylo-export-`+exportID+`.zip"`)
+	w.Header().Set("Content-Type", "application/vnd.zoe.export+zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="zoe-export-`+exportID+`.zip"`)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("X-Cylo-Archive-SHA256", hex.EncodeToString(archiveHash.Sum(nil)))
-	w.Header().Set("X-Cylo-Manifest-SHA256", hex.EncodeToString(manifestHash[:]))
+	w.Header().Set("X-Zoe-Archive-SHA256", hex.EncodeToString(archiveHash.Sum(nil)))
+	w.Header().Set("X-Zoe-Manifest-SHA256", hex.EncodeToString(manifestHash[:]))
 	w.Header().Set("Content-Length", strconv.FormatInt(archiveOut.count, 10))
 	w.WriteHeader(http.StatusOK)
 	copyRegisteredExport(w, r, lease, s.store.DB(), archiveFile)
@@ -373,7 +373,7 @@ func exportInstanceAuthority(ctx context.Context, q interface {
 }) (string, int64, int64, error) {
 	var lineage string
 	var generation, deletionSequence int64
-	err := q.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&lineage, &generation, &deletionSequence)
+	err := q.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM zoe_instance_state WHERE singleton=1`).Scan(&lineage, &generation, &deletionSequence)
 	return lineage, generation, deletionSequence, err
 }
 
@@ -403,7 +403,7 @@ func verifyDeletionJournalHead(databasePath, lineage string, generation, sequenc
 
 func buildExportManifest(id string, p contracts.Principal, scope string, cursor int64, lineage string, generation, deletionSequence int64, counts exportCounter, dataBytes int64, dataHash string) map[string]any {
 	return map[string]any{
-		"format": "cylo.authority-export", "schema_version": 2, "export_id": id,
+		"format": "zoe.authority-export", "schema_version": 2, "export_id": id,
 		"created_at": time.Now().UTC().Format(time.RFC3339Nano), "workspace_id": p.WorkspaceID, "subject_id": p.SubjectID, "scope": scope,
 		"authority": map[string]any{
 			"instance_lineage_id": lineage, "generation": generation, "deletion_sequence": strconv.FormatInt(deletionSequence, 10),

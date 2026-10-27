@@ -24,8 +24,8 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 
-FORMAT = "cylo-encrypted-backup-v1"
-MAGIC = b"CYLOBK1\0"
+FORMAT = "zoe-encrypted-backup-v1"
+MAGIC = b"ZOEBK1\0"
 SCRYPT_N = 2**18
 SCRYPT_R = 8
 SCRYPT_P = 1
@@ -79,7 +79,7 @@ def database_fence(path: Path) -> Iterator[Path]:
 
 
 def sqlite_snapshot(source: Path, destination: Path) -> dict[str, Any]:
-    """Use SQLite's backup API while fenced from Cylo's single writer."""
+    """Use SQLite's backup API while fenced from Zoe's single writer."""
     uri = f"file:{source.as_posix()}?mode=ro"
     src = sqlite3.connect(uri, uri=True, timeout=5)
     dst = sqlite3.connect(destination)
@@ -104,12 +104,12 @@ def sqlite_snapshot(source: Path, destination: Path) -> dict[str, Any]:
                 safe = table.replace('"', '""')
                 deletion[table] = int(dst.execute(f'SELECT count(*) FROM "{safe}"').fetchone()[0])
         instance_state = None
-        if "cylo_instance_state" in tables:
-            columns = {r[1] for r in dst.execute("PRAGMA table_info(cylo_instance_state)")}
+        if "zoe_instance_state" in tables:
+            columns = {r[1] for r in dst.execute("PRAGMA table_info(zoe_instance_state)")}
             required = {"instance_id", "epoch", "dispatch_enabled", "derived_retrieval_enabled", "fence_reason", "fenced_at", "lineage_id", "generation", "deletion_sequence"}
             if not required <= columns:
                 fail("instance deletion baseline schema is unavailable")
-            row = dst.execute("SELECT instance_id,epoch,dispatch_enabled,derived_retrieval_enabled,fence_reason,fenced_at,lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1").fetchone()
+            row = dst.execute("SELECT instance_id,epoch,dispatch_enabled,derived_retrieval_enabled,fence_reason,fenced_at,lineage_id,generation,deletion_sequence FROM zoe_instance_state WHERE singleton=1").fetchone()
             if row is not None:
                 event_count, event_cursor_sum = 0, 0
                 if "events" in tables:
@@ -171,7 +171,7 @@ def independent_deletion_journal_metadata(path: Path, instance_state: dict[str, 
     if records and (lineage != instance_state["lineage_id"] or generation > authority_generation):
         fail("SQLite authority identity does not match the independent deletion journal")
     return {
-        "path": "authority/cylo.sqlite.deletion-ledger",
+        "path": "authority/zoe.sqlite.deletion-ledger",
         "sequence": len(records),
         "lineage_id": lineage or instance_state["lineage_id"],
         "generation": authority_generation,
@@ -495,10 +495,10 @@ def verify_manifest(payload: Path) -> dict[str, Any]:
     actual_paths = {p.relative_to(payload).as_posix() for p in payload.rglob("*") if p.is_file()}
     if actual_paths != seen | {"manifest.json"}:
         fail("backup payload contains unmanifested or missing files")
-    db = payload / "authority" / "cylo.sqlite"
+    db = payload / "authority" / "zoe.sqlite"
     if not db.is_file():
         fail("backup does not contain authoritative SQLite database")
-    sidecar = payload / "authority" / "cylo.sqlite.deletion-ledger"
+    sidecar = payload / "authority" / "zoe.sqlite.deletion-ledger"
     if not sidecar.is_file():
         fail("backup does not contain the independent deletion journal")
     conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
@@ -525,9 +525,9 @@ def verify_manifest(payload: Path) -> dict[str, Any]:
             fail("memory deletion ledger tables are missing after their migration")
         validate_deletion_ledger_manifest(ledger_metadata, database_manifest)
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        if "cylo_instance_state" not in tables:
+        if "zoe_instance_state" not in tables:
             fail("backup has no verifiable instance deletion baseline")
-        state = conn.execute("SELECT lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1").fetchone()
+        state = conn.execute("SELECT lineage_id,generation,deletion_sequence FROM zoe_instance_state WHERE singleton=1").fetchone()
         if state is None:
             fail("backup instance deletion baseline singleton is missing")
         event_count, event_sum = map(int, conn.execute("SELECT count(*),coalesce(sum(cursor),0) FROM events").fetchone()) if "events" in tables else (0, 0)

@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/agents/ao"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/agents/ao"
 )
 
 func TestSaveClaimReturnsPersistedPhaseAndProtectsDatabaseFiles(t *testing.T) {

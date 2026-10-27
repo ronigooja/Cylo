@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 func openStore(t *testing.T, path string) *storage.Store {

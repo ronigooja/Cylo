@@ -6,9 +6,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 func TestRepositoryAndWorkerRetrievalFailClosedForRestore(t *testing.T) {
@@ -26,7 +26,7 @@ func TestRepositoryAndWorkerRetrievalFailClosedForRestore(t *testing.T) {
 	if _, err := repo.Search(ctx, principal, "snapshot-only", SearchFilter{}); err != nil {
 		t.Fatalf("fresh authority memory search unexpectedly failed: %v", err)
 	}
-	if _, err := store.DB().ExecContext(ctx, `UPDATE cylo_instance_state SET restore_deletion_reconciliation_required=1,derived_retrieval_enabled=0 WHERE singleton=1`); err != nil {
+	if _, err := store.DB().ExecContext(ctx, `UPDATE zoe_instance_state SET restore_deletion_reconciliation_required=1,derived_retrieval_enabled=0 WHERE singleton=1`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repo.Search(ctx, principal, "snapshot-only", SearchFilter{}); !errors.Is(err, storage.ErrRestoreDeletionReconciliationRequired) {

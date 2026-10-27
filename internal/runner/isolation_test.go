@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Zoe/contracts"
 )
 
 func TestNativeCodexIsolationCannotBeEnabledByPinnedRevisionOrPolicy(t *testing.T) {

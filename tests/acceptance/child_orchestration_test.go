@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/control"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/control"
 )
 
 func TestChildProposalAdmissionIsIdempotentAndClaimedThroughOrdinaryRunnerPath(t *testing.T) {

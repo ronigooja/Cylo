@@ -15,7 +15,7 @@ if ! git -C "$ao_source" cat-file -e "$expected^{commit}" 2>/dev/null; then
   exit 1
 fi
 
-test_root="$(mktemp -d "${TMPDIR:-/tmp}/cylo-test-ao-patch.XXXXXX")"
+test_root="$(mktemp -d "${TMPDIR:-/tmp}/zoe-test-ao-patch.XXXXXX")"
 worktrees=()
 cleanup() {
   local path

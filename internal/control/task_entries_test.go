@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 func taskEntriesTestServer(t *testing.T) (*Server, func()) {

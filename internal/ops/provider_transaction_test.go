@@ -20,7 +20,7 @@ func testDeployment(t *testing.T) Deployment {
 	if err := os.WriteFile(base, []byte("services: {}"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	return Deployment{Root: root, Mode: ModeCompose, AOService: "ao", AOEnv: filepath.Join(root, "ao.env"), StackEnv: filepath.Join(root, "stack.env"), ComposeFile: base, ComposeProject: "cylo"}
+	return Deployment{Root: root, Mode: ModeCompose, AOService: "ao", AOEnv: filepath.Join(root, "ao.env"), StackEnv: filepath.Join(root, "stack.env"), ComposeFile: base, ComposeProject: "zoe"}
 }
 func modelServer(t *testing.T) *httptest.Server {
 	t.Helper()

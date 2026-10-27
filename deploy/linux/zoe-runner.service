@@ -1,0 +1,34 @@
+[Unit]
+Description=Zoe trusted AO runner (Docker daemon authority)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zoe-runner
+Group=zoe-runner
+SupplementaryGroups=docker
+EnvironmentFile=/etc/zoe/zoe-runner.env
+Environment=ZOE_SECRET_FILE_MAP=ZOE_RUNNER_TOKEN=/etc/zoe/runner-secrets/runner-token,ZOE_AO_TOKEN=/etc/zoe/runner-secrets/ao-token
+ExecStart=/opt/zoe/releases/current/bin/zoe-secret-entrypoint /opt/zoe/releases/current/bin/zoe-runner
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/zoe/runner /var/lib/zoe/runner-authority /run/lock/zoe-runner-deployments.lock
+ReadOnlyPaths=/etc/zoe/runner-secrets
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=multi-user.target

@@ -45,18 +45,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$HOME/environment/cylo-ci/bin" "$RUNNER_TEMP/cylo-ci"
-          export GOBIN="$HOME/environment/cylo-ci/bin"
-          python3 -m unittest discover -s tools -p test_ci_scope.py > "$RUNNER_TEMP/cylo-ci/scope.log" 2>&1 || { tail -n 80 "$RUNNER_TEMP/cylo-ci/scope.log"; exit 1; }
-          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 > "$RUNNER_TEMP/cylo-ci/install.log" 2>&1 || { tail -n 60 "$RUNNER_TEMP/cylo-ci/install.log"; exit 1; }
-          "$GOBIN/actionlint" -shellcheck='' > "$RUNNER_TEMP/cylo-ci/actionlint.log" 2>&1 || { tail -n 100 "$RUNNER_TEMP/cylo-ci/actionlint.log"; exit 1; }
+          mkdir -p "$HOME/environment/zoe-ci/bin" "$RUNNER_TEMP/zoe-ci"
+          export GOBIN="$HOME/environment/zoe-ci/bin"
+          python3 -m unittest discover -s tools -p test_ci_scope.py > "$RUNNER_TEMP/zoe-ci/scope.log" 2>&1 || { tail -n 80 "$RUNNER_TEMP/zoe-ci/scope.log"; exit 1; }
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 > "$RUNNER_TEMP/zoe-ci/install.log" 2>&1 || { tail -n 60 "$RUNNER_TEMP/zoe-ci/install.log"; exit 1; }
+          "$GOBIN/actionlint" -shellcheck='' > "$RUNNER_TEMP/zoe-ci/actionlint.log" 2>&1 || { tail -n 100 "$RUNNER_TEMP/zoe-ci/actionlint.log"; exit 1; }
           echo 'Scope regressions and workflow syntax checks passed.'
       - name: Upload scope verification logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ci-scope-logs-${{ github.sha }}
-          path: ${{ runner.temp }}/cylo-ci
+          path: ${{ runner.temp }}/zoe-ci
           retention-days: 7
 
   apple:

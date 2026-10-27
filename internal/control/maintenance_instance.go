@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 // InstanceState is the durable single-instance dispatch authority. Epochs rise
@@ -83,7 +83,7 @@ type isolationProofEnvelope struct {
 func RegisterInstanceMaintenanceMigration(store *storage.Store) error {
 	if err := store.RegisterMigration(storage.Migration{Namespace: "instance", Version: 1000, Name: "persistent_instance_dispatch_fence", Up: func(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `
-CREATE TABLE cylo_instance_state (
+CREATE TABLE zoe_instance_state (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
   instance_id TEXT NOT NULL UNIQUE,
   epoch INTEGER NOT NULL CHECK(epoch>0),
@@ -93,14 +93,14 @@ CREATE TABLE cylo_instance_state (
   fenced_at TEXT,
   updated_at TEXT NOT NULL
 );
-CREATE TABLE cylo_instance_fence_proofs (
+CREATE TABLE zoe_instance_fence_proofs (
   old_instance_id TEXT NOT NULL,
   old_epoch INTEGER NOT NULL,
   proof_digest TEXT NOT NULL,
   verified_at TEXT NOT NULL,
   PRIMARY KEY(old_instance_id,old_epoch)
 );
-CREATE TABLE cylo_instance_migration_source (
+CREATE TABLE zoe_instance_migration_source (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
   old_instance_id TEXT NOT NULL,
   old_epoch INTEGER NOT NULL
@@ -112,45 +112,45 @@ CREATE TABLE cylo_instance_migration_source (
 			return err
 		}
 		now := time.Now().UTC().Format(time.RFC3339Nano)
-		_, err = tx.ExecContext(ctx, `INSERT INTO cylo_instance_state(singleton,instance_id,epoch,dispatch_enabled,derived_retrieval_enabled,fence_reason,fenced_at,updated_at) VALUES(1,?,1,1,1,'','',?)`, id, now)
+		_, err = tx.ExecContext(ctx, `INSERT INTO zoe_instance_state(singleton,instance_id,epoch,dispatch_enabled,derived_retrieval_enabled,fence_reason,fenced_at,updated_at) VALUES(1,?,1,1,1,'','',?)`, id, now)
 		return err
 	}}); err != nil {
 		return err
 	}
 	if err := store.RegisterMigration(storage.Migration{Namespace: "instance", Version: 1001, Name: "restore_deletion_reconciliation_gate", Up: func(ctx context.Context, tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `ALTER TABLE cylo_instance_state ADD COLUMN restore_deletion_reconciliation_required INTEGER NOT NULL DEFAULT 0 CHECK(restore_deletion_reconciliation_required IN (0,1))`); err != nil {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE zoe_instance_state ADD COLUMN restore_deletion_reconciliation_required INTEGER NOT NULL DEFAULT 0 CHECK(restore_deletion_reconciliation_required IN (0,1))`); err != nil {
 			return err
 		}
 		// A migration-source row is created only when PrepareRestoredInstance
 		// prepares a restore target. Backfill those targets closed, including
 		// already-prepared databases that predate this marker.
-		_, err := tx.ExecContext(ctx, `UPDATE cylo_instance_state SET restore_deletion_reconciliation_required=1
-WHERE EXISTS (SELECT 1 FROM cylo_instance_migration_source m WHERE m.singleton=1 AND trim(m.old_instance_id)!='' AND m.old_epoch>0)`)
+		_, err := tx.ExecContext(ctx, `UPDATE zoe_instance_state SET restore_deletion_reconciliation_required=1
+WHERE EXISTS (SELECT 1 FROM zoe_instance_migration_source m WHERE m.singleton=1 AND trim(m.old_instance_id)!='' AND m.old_epoch>0)`)
 		return err
 	}}); err != nil {
 		return err
 	}
 	if err := store.RegisterMigration(storage.Migration{Namespace: "instance", Version: 1002, Name: "deletion_lineage_and_reconciliation_checkpoints", Up: func(ctx context.Context, tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `ALTER TABLE cylo_instance_state ADD COLUMN lineage_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE zoe_instance_state ADD COLUMN lineage_id TEXT NOT NULL DEFAULT ''`); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `ALTER TABLE cylo_instance_state ADD COLUMN generation INTEGER NOT NULL DEFAULT 1 CHECK(generation>0)`); err != nil {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE zoe_instance_state ADD COLUMN generation INTEGER NOT NULL DEFAULT 1 CHECK(generation>0)`); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `ALTER TABLE cylo_instance_state ADD COLUMN deletion_sequence INTEGER NOT NULL DEFAULT 0 CHECK(deletion_sequence>=0)`); err != nil {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE zoe_instance_state ADD COLUMN deletion_sequence INTEGER NOT NULL DEFAULT 0 CHECK(deletion_sequence>=0)`); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE cylo_instance_state SET lineage_id=instance_id WHERE lineage_id=''`); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE zoe_instance_state SET lineage_id=instance_id WHERE lineage_id=''`); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx, `
-CREATE TABLE cylo_deletion_reconciliation_checkpoints (
+CREATE TABLE zoe_deletion_reconciliation_checkpoints (
   target TEXT PRIMARY KEY,
   completed_sequence INTEGER NOT NULL CHECK(completed_sequence>=0),
   updated_at TEXT NOT NULL,
   last_error TEXT NOT NULL DEFAULT ''
 );
-INSERT INTO cylo_deletion_reconciliation_checkpoints(target,completed_sequence,updated_at,last_error)
+INSERT INTO zoe_deletion_reconciliation_checkpoints(target,completed_sequence,updated_at,last_error)
 SELECT target,0,strftime('%Y-%m-%dT%H:%M:%fZ','now'),'adapter_missing' FROM (
   SELECT 'claim' AS target UNION ALL SELECT 'source_links' UNION ALL SELECT 'proposals'
   UNION ALL SELECT 'mem0' UNION ALL SELECT 'qdrant' UNION ALL SELECT 'cache'
@@ -162,7 +162,7 @@ SELECT target,0,strftime('%Y-%m-%dT%H:%M:%fZ','now'),'adapter_missing' FROM (
 		return err
 	}
 	if err := store.RegisterMigration(storage.Migration{Namespace: "instance", Version: 1003, Name: "authenticated_restore_deletion_progress", Up: func(ctx context.Context, tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `CREATE TABLE cylo_restore_deletion_progress (
+		_, err := tx.ExecContext(ctx, `CREATE TABLE zoe_restore_deletion_progress (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
   snapshot_lineage_id TEXT NOT NULL,
   snapshot_generation INTEGER NOT NULL CHECK(snapshot_generation>0),
@@ -183,7 +183,7 @@ SELECT target,0,strftime('%Y-%m-%dT%H:%M:%fZ','now'),'adapter_missing' FROM (
 		return err
 	}
 	return store.RegisterMigration(storage.Migration{Namespace: "instance", Version: 1004, Name: "private_export_temp_registry", Up: func(ctx context.Context, tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `CREATE TABLE cylo_export_temp_registry (
+		_, err := tx.ExecContext(ctx, `CREATE TABLE zoe_export_temp_registry (
   export_id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id),
   owner_id TEXT NOT NULL,
@@ -195,7 +195,7 @@ SELECT target,0,strftime('%Y-%m-%dT%H:%M:%fZ','now'),'adapter_missing' FROM (
   updated_at TEXT NOT NULL,
   last_error TEXT NOT NULL DEFAULT ''
 );
-CREATE INDEX cylo_export_temp_scope ON cylo_export_temp_registry(workspace_id,status,created_deletion_sequence);`)
+CREATE INDEX zoe_export_temp_scope ON zoe_export_temp_registry(workspace_id,status,created_deletion_sequence);`)
 		return err
 	}})
 }
@@ -212,7 +212,7 @@ func GetInstanceState(ctx context.Context, tx *sql.Tx) (InstanceState, error) {
 	var state InstanceState
 	var dispatch, derived, restoreReconciliationRequired int
 	var reason, fenced string
-	err := tx.QueryRowContext(ctx, `SELECT instance_id,epoch,dispatch_enabled,derived_retrieval_enabled,restore_deletion_reconciliation_required,fence_reason,coalesce(fenced_at,'') FROM cylo_instance_state WHERE singleton=1`).Scan(&state.InstanceID, &state.Epoch, &dispatch, &derived, &restoreReconciliationRequired, &reason, &fenced)
+	err := tx.QueryRowContext(ctx, `SELECT instance_id,epoch,dispatch_enabled,derived_retrieval_enabled,restore_deletion_reconciliation_required,fence_reason,coalesce(fenced_at,'') FROM zoe_instance_state WHERE singleton=1`).Scan(&state.InstanceID, &state.Epoch, &dispatch, &derived, &restoreReconciliationRequired, &reason, &fenced)
 	if err != nil {
 		return state, err
 	}
@@ -229,7 +229,7 @@ func GetInstanceState(ctx context.Context, tx *sql.Tx) (InstanceState, error) {
 
 func DispatchEnabledTx(ctx context.Context, tx *sql.Tx) (bool, error) {
 	var enabled int
-	err := tx.QueryRowContext(ctx, `SELECT dispatch_enabled FROM cylo_instance_state WHERE singleton=1`).Scan(&enabled)
+	err := tx.QueryRowContext(ctx, `SELECT dispatch_enabled FROM zoe_instance_state WHERE singleton=1`).Scan(&enabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, errors.New("instance dispatch fence is not initialized")
 	}
@@ -238,7 +238,7 @@ func DispatchEnabledTx(ctx context.Context, tx *sql.Tx) (bool, error) {
 
 func DerivedRetrievalEnabledTx(ctx context.Context, tx *sql.Tx) (bool, error) {
 	var enabled int
-	err := tx.QueryRowContext(ctx, `SELECT derived_retrieval_enabled FROM cylo_instance_state WHERE singleton=1`).Scan(&enabled)
+	err := tx.QueryRowContext(ctx, `SELECT derived_retrieval_enabled FROM zoe_instance_state WHERE singleton=1`).Scan(&enabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, errors.New("instance retrieval fence is not initialized")
 	}
@@ -259,14 +259,14 @@ func FenceInstance(ctx context.Context, store *storage.Store, reason string, exp
 	}
 	defer tx.Rollback()
 	var current int64
-	if err = tx.QueryRowContext(ctx, `SELECT epoch FROM cylo_instance_state WHERE singleton=1`).Scan(&current); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT epoch FROM zoe_instance_state WHERE singleton=1`).Scan(&current); err != nil {
 		return InstanceState{}, err
 	}
 	if current != expectedEpoch {
 		return InstanceState{}, errors.New("instance epoch changed; reload state before fencing")
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err = tx.ExecContext(ctx, `UPDATE cylo_instance_state SET epoch=epoch+1,dispatch_enabled=0,derived_retrieval_enabled=0,fence_reason=?,fenced_at=?,updated_at=? WHERE singleton=1 AND epoch=?`, reason, now, now, expectedEpoch); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE zoe_instance_state SET epoch=epoch+1,dispatch_enabled=0,derived_retrieval_enabled=0,fence_reason=?,fenced_at=?,updated_at=? WHERE singleton=1 AND epoch=?`, reason, now, now, expectedEpoch); err != nil {
 		return InstanceState{}, err
 	}
 	state, err := GetInstanceState(ctx, tx)
@@ -301,14 +301,14 @@ func PrepareRestoredInstance(ctx context.Context, store *storage.Store, newID st
 	if err = requireQuiescentAuthority(ctx, tx); err != nil {
 		return InstanceState{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `DELETE FROM cylo_restore_deletion_progress WHERE singleton=1`); err != nil {
+	if _, err = tx.ExecContext(ctx, `DELETE FROM zoe_restore_deletion_progress WHERE singleton=1`); err != nil {
 		return InstanceState{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO cylo_instance_migration_source(singleton,old_instance_id,old_epoch) VALUES(1,?,?) ON CONFLICT(singleton) DO UPDATE SET old_instance_id=excluded.old_instance_id,old_epoch=excluded.old_epoch`, current.InstanceID, current.Epoch); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO zoe_instance_migration_source(singleton,old_instance_id,old_epoch) VALUES(1,?,?) ON CONFLICT(singleton) DO UPDATE SET old_instance_id=excluded.old_instance_id,old_epoch=excluded.old_epoch`, current.InstanceID, current.Epoch); err != nil {
 		return InstanceState{}, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err = tx.ExecContext(ctx, `UPDATE cylo_instance_state SET instance_id=?,epoch=epoch+1,dispatch_enabled=0,derived_retrieval_enabled=0,restore_deletion_reconciliation_required=1,fence_reason='restored target awaiting old-instance isolation and deletion reconciliation',fenced_at=?,updated_at=? WHERE singleton=1 AND epoch=?`, newID, now, now, expectedEpoch); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE zoe_instance_state SET instance_id=?,epoch=epoch+1,dispatch_enabled=0,derived_retrieval_enabled=0,restore_deletion_reconciliation_required=1,fence_reason='restored target awaiting old-instance isolation and deletion reconciliation',fenced_at=?,updated_at=? WHERE singleton=1 AND epoch=?`, newID, now, now, expectedEpoch); err != nil {
 		return InstanceState{}, err
 	}
 	state, err := GetInstanceState(ctx, tx)
@@ -370,7 +370,7 @@ func tableExistsTx(ctx context.Context, tx *sql.Tx, name string) (bool, error) {
 	return found == 1, err
 }
 
-// VerifyIsolationProof authenticates proof bytes emitted by cylo_migrate after
+// VerifyIsolationProof authenticates proof bytes emitted by zoe_migrate after
 // SSH/systemd verification. The HMAC is over canonical JSON payload bytes.
 func VerifyIsolationProof(document, key []byte) (IsolationProof, error) {
 	var verified IsolationProof
@@ -427,7 +427,7 @@ func EnableInstance(ctx context.Context, store *storage.Store, expectedEpoch int
 		return InstanceState{}, err
 	}
 	var exists int
-	err = tx.QueryRowContext(ctx, `SELECT count(*) FROM cylo_instance_fence_proofs WHERE old_instance_id=? AND old_epoch=? AND proof_digest=?`, proof.oldInstanceID, proof.oldEpoch, proof.digest).Scan(&exists)
+	err = tx.QueryRowContext(ctx, `SELECT count(*) FROM zoe_instance_fence_proofs WHERE old_instance_id=? AND old_epoch=? AND proof_digest=?`, proof.oldInstanceID, proof.oldEpoch, proof.digest).Scan(&exists)
 	if err != nil {
 		return InstanceState{}, err
 	}
@@ -435,7 +435,7 @@ func EnableInstance(ctx context.Context, store *storage.Store, expectedEpoch int
 		return InstanceState{}, errors.New("isolation proof does not match a recorded migration source")
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err = tx.ExecContext(ctx, `UPDATE cylo_instance_state SET dispatch_enabled=1,fence_reason='',fenced_at=NULL,updated_at=? WHERE singleton=1 AND epoch=?`, now, expectedEpoch); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE zoe_instance_state SET dispatch_enabled=1,fence_reason='',fenced_at=NULL,updated_at=? WHERE singleton=1 AND epoch=?`, now, expectedEpoch); err != nil {
 		return InstanceState{}, err
 	}
 	state, err := GetInstanceState(ctx, tx)
@@ -468,13 +468,13 @@ func RecordIsolationProof(ctx context.Context, store *storage.Store, proof Isola
 	}
 	var sourceID string
 	var sourceEpoch int64
-	if err = tx.QueryRowContext(ctx, `SELECT old_instance_id,old_epoch FROM cylo_instance_migration_source WHERE singleton=1`).Scan(&sourceID, &sourceEpoch); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT old_instance_id,old_epoch FROM zoe_instance_migration_source WHERE singleton=1`).Scan(&sourceID, &sourceEpoch); err != nil {
 		return err
 	}
 	if sourceID != proof.oldInstanceID || sourceEpoch != proof.oldEpoch {
 		return errors.New("isolation proof does not match this target's recorded migration source")
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO cylo_instance_fence_proofs(old_instance_id,old_epoch,proof_digest,verified_at) VALUES(?,?,?,?) ON CONFLICT(old_instance_id,old_epoch) DO UPDATE SET proof_digest=excluded.proof_digest,verified_at=excluded.verified_at`, proof.oldInstanceID, proof.oldEpoch, proof.digest, proof.verifiedAt.Format(time.RFC3339Nano))
+	_, err = tx.ExecContext(ctx, `INSERT INTO zoe_instance_fence_proofs(old_instance_id,old_epoch,proof_digest,verified_at) VALUES(?,?,?,?) ON CONFLICT(old_instance_id,old_epoch) DO UPDATE SET proof_digest=excluded.proof_digest,verified_at=excluded.verified_at`, proof.oldInstanceID, proof.oldEpoch, proof.digest, proof.verifiedAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return err
 	}

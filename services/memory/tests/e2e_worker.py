@@ -133,7 +133,7 @@ def run() -> int:
         tracked = tracked_memory_ids.get(key, set()) | {str(item.id) for item in current}
         tracked.update(
             str(row[0])
-            for row in db.execute("SELECT memory_id FROM cylo_memory_ownership WHERE user_id=?", (uid,)).fetchall()
+            for row in db.execute("SELECT memory_id FROM zoe_memory_ownership WHERE user_id=?", (uid,)).fetchall()
         )
         tracked_memory_ids.setdefault(key, set()).update(tracked)
         if tracked:

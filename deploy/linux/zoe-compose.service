@@ -1,0 +1,22 @@
+[Unit]
+Description=Zoe server and memory Compose stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300s
+StartLimitBurst=10
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/zoe/releases/current
+EnvironmentFile=/etc/zoe/zoe-stack.env
+ExecStartPre=/usr/bin/docker compose --env-file /etc/zoe/zoe-stack.env -f deploy-linux/docker-compose.yml config --quiet
+ExecStart=/usr/bin/docker compose --env-file /etc/zoe/zoe-stack.env -f deploy-linux/docker-compose.yml up --no-color
+ExecStop=/usr/bin/docker compose --env-file /etc/zoe/zoe-stack.env -f deploy-linux/docker-compose.yml down --remove-orphans
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=0
+TimeoutStopSec=60s
+
+[Install]
+WantedBy=multi-user.target

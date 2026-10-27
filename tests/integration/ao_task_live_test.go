@@ -15,28 +15,28 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/agents/ao"
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/runner"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/agents/ao"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/runner"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
-// TestAOLiveCyloTaskReceiptRunnerCodexProof is an opt-in end-to-end acceptance
+// TestAOLiveZoeTaskReceiptRunnerCodexProof is an opt-in end-to-end acceptance
 // probe for task admission, the independent runner Engine, AO Codex execution,
 // a real tool artifact, and both AO process-wait and exact container stop proof.
-func TestAOLiveCyloTaskReceiptRunnerCodexProof(t *testing.T) {
-	aoURL := strings.TrimSpace(os.Getenv("CYLO_LIVE_AO_URL"))
-	aoProject := strings.TrimSpace(os.Getenv("CYLO_LIVE_AO_PROJECT_ID"))
-	workspaceRoot := strings.TrimSpace(os.Getenv("CYLO_LIVE_AO_WORKSPACE_ROOT"))
-	aoDataDir := strings.TrimSpace(os.Getenv("CYLO_LIVE_AO_DATA_DIR"))
-	evidenceRoot := strings.TrimSpace(os.Getenv("CYLO_LIVE_AO_EVIDENCE_ROOT"))
+func TestAOLiveZoeTaskReceiptRunnerCodexProof(t *testing.T) {
+	aoURL := strings.TrimSpace(os.Getenv("ZOE_LIVE_AO_URL"))
+	aoProject := strings.TrimSpace(os.Getenv("ZOE_LIVE_AO_PROJECT_ID"))
+	workspaceRoot := strings.TrimSpace(os.Getenv("ZOE_LIVE_AO_WORKSPACE_ROOT"))
+	aoDataDir := strings.TrimSpace(os.Getenv("ZOE_LIVE_AO_DATA_DIR"))
+	evidenceRoot := strings.TrimSpace(os.Getenv("ZOE_LIVE_AO_EVIDENCE_ROOT"))
 	if aoURL == "" || aoProject == "" || workspaceRoot == "" || aoDataDir == "" || evidenceRoot == "" {
-		t.Skip("set CYLO_LIVE_AO_URL, CYLO_LIVE_AO_PROJECT_ID, CYLO_LIVE_AO_WORKSPACE_ROOT, CYLO_LIVE_AO_DATA_DIR, and CYLO_LIVE_AO_EVIDENCE_ROOT for local AO acceptance")
+		t.Skip("set ZOE_LIVE_AO_URL, ZOE_LIVE_AO_PROJECT_ID, ZOE_LIVE_AO_WORKSPACE_ROOT, ZOE_LIVE_AO_DATA_DIR, and ZOE_LIVE_AO_EVIDENCE_ROOT for local AO acceptance")
 	}
-	image := strings.TrimSpace(os.Getenv("CYLO_LIVE_AO_IMAGE"))
+	image := strings.TrimSpace(os.Getenv("ZOE_LIVE_AO_IMAGE"))
 	if image == "" {
-		image = "cylo-ao-codex:0.146.0"
+		image = "zoe-ao-codex:0.146.0"
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -98,16 +98,16 @@ func TestAOLiveCyloTaskReceiptRunnerCodexProof(t *testing.T) {
 	}
 	projectReceipt, status, _ := liveCommand(t, controlHTTP.Client(), controlHTTP.URL, deviceToken, "live-project", "project.create", map[string]any{"name": "AO Codex live acceptance"})
 	if status != http.StatusOK {
-		t.Fatalf("create Cylo project receipt status=%d", status)
+		t.Fatalf("create Zoe project receipt status=%d", status)
 	}
 	taskReceipt, status, _ := liveCommand(t, controlHTTP.Client(), controlHTTP.URL, deviceToken, "live-task", "task.create", map[string]any{
 		"project_id": projectReceipt.ResourceID,
 		"title":      "Create a verified workspace artifact",
-		"goal":       "Use your shell tool to create exactly one file named CYLO_RUNTIME_TOOL_PROBE.txt in the current workspace with exactly CYLO_AO_TOOL_OK followed by a newline. Read it back. Then attempt once to create /etc/CYLO_RUNTIME_OUTSIDE_PROBE.txt; do not retry by another path. Report workspace_write=ok outside_write=denied only if both outcomes match.",
+		"goal":       "Use your shell tool to create exactly one file named ZOE_RUNTIME_TOOL_PROBE.txt in the current workspace with exactly ZOE_AO_TOOL_OK followed by a newline. Read it back. Then attempt once to create /etc/ZOE_RUNTIME_OUTSIDE_PROBE.txt; do not retry by another path. Report workspace_write=ok outside_write=denied only if both outcomes match.",
 		"source":     "user",
 	})
 	if status != http.StatusOK || taskReceipt.ResourceID == "" {
-		t.Fatalf("create Cylo task receipt status=%d resource_present=%t", status, taskReceipt.ResourceID != "")
+		t.Fatalf("create Zoe task receipt status=%d resource_present=%t", status, taskReceipt.ResourceID != "")
 	}
 
 	controlClient, err := runner.NewControlClient(controlHTTP.URL, runnerToken, controlHTTP.Client())
@@ -308,10 +308,10 @@ func TestAOLiveCyloTaskReceiptRunnerCodexProof(t *testing.T) {
 		<-engineDone
 		engineJoined = true
 		if err != nil {
-			t.Fatalf("Cylo runner Engine task chain failed (%T)", err)
+			t.Fatalf("Zoe runner Engine task chain failed (%T)", err)
 		}
 	case <-ctx.Done():
-		t.Fatal("Cylo runner Engine task chain did not finish before its acceptance deadline")
+		t.Fatal("Zoe runner Engine task chain did not finish before its acceptance deadline")
 	}
 	entry, ok, err := journal.Entry(ctx, claim.RunID)
 	if err != nil || !ok || !validLiveJournalIdentity(entry, *claim) || entry.Phase != "terminated" || entry.Session == "" || entry.Container != containerID {
@@ -320,7 +320,7 @@ func TestAOLiveCyloTaskReceiptRunnerCodexProof(t *testing.T) {
 	if err := verifyWorkspaceArtifact(containerWorkspace); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat("/etc/CYLO_RUNTIME_OUTSIDE_PROBE.txt"); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat("/etc/ZOE_RUNTIME_OUTSIDE_PROBE.txt"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("outside-workspace probe unexpectedly exists on host (stat error type=%T)", err)
 	}
 	var observationBody []byte
@@ -444,7 +444,7 @@ func validLiveJournalIdentity(entry runner.JournalEntry, claim contracts.JobClai
 		entry.Spec.Model == "gpt-6-luna" &&
 		entry.Spec.ApprovalMode == "auto" &&
 		entry.Spec.DisplayName != "" &&
-		strings.Contains(entry.Spec.Prompt, "CYLO_RUNTIME_TOOL_PROBE.txt")
+		strings.Contains(entry.Spec.Prompt, "ZOE_RUNTIME_TOOL_PROBE.txt")
 }
 
 func liveJournalOwnedSession(entry runner.JournalEntry, claim contracts.JobClaim) (string, string, bool) {
@@ -489,7 +489,7 @@ func TestValidLiveJournalIdentityRejectsChangedRunFenceAndRequest(t *testing.T) 
 		Spec: ao.WorkerSpec{
 			ClientRequestID: claim.RunID, ProjectID: claim.AOProjectID, Harness: "codex",
 			Model: "gpt-6-luna", ApprovalMode: "auto", DisplayName: "worker",
-			Prompt: "Create CYLO_RUNTIME_TOOL_PROBE.txt",
+			Prompt: "Create ZOE_RUNTIME_TOOL_PROBE.txt",
 		},
 		Phase: "effect_unknown",
 	}
@@ -527,7 +527,7 @@ func TestReconcileUnknownJournalCreateRejectsChangedIdentityWithoutDispatch(t *t
 		Spec: ao.WorkerSpec{
 			ClientRequestID: claim.RunID, ProjectID: claim.AOProjectID, Harness: "codex",
 			Model: "gpt-6-luna", ApprovalMode: "auto", DisplayName: "worker",
-			Prompt: "Create CYLO_RUNTIME_TOOL_PROBE.txt",
+			Prompt: "Create ZOE_RUNTIME_TOOL_PROBE.txt",
 		},
 		Phase: "effect_unknown",
 	}
@@ -560,7 +560,7 @@ func TestWrongJournalIdentityCannotExpandCleanupOwnership(t *testing.T) {
 	}
 	entry := runner.JournalEntry{
 		Claim: claim, Session: "session-foreign", Container: "container-foreign", Phase: "bound",
-		Spec: ao.WorkerSpec{ClientRequestID: claim.RunID, ProjectID: claim.AOProjectID, Harness: "codex", Model: "gpt-6-luna", ApprovalMode: "auto", DisplayName: "worker", Prompt: "Create CYLO_RUNTIME_TOOL_PROBE.txt"},
+		Spec: ao.WorkerSpec{ClientRequestID: claim.RunID, ProjectID: claim.AOProjectID, Harness: "codex", Model: "gpt-6-luna", ApprovalMode: "auto", DisplayName: "worker", Prompt: "Create ZOE_RUNTIME_TOOL_PROBE.txt"},
 	}
 	entry.Claim.Fence++
 	creator := &fakeLiveWorkerCreator{}

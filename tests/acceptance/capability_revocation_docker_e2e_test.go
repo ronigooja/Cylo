@@ -11,17 +11,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/control"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/control"
 )
 
 // This opt-in test exercises revocation through the real HTTP control plane
-// and independent cylo-runner process against a local Docker daemon. The
+// and independent zoe-runner process against a local Docker daemon. The
 // runner uses its configured shared host authority DB; each run has a fresh
 // deployment identity and leaves that DB intact.
 func TestDockerBackedCapabilityRevocationLifecycle(t *testing.T) {
-	if os.Getenv("CYLO_TEST_DOCKER_CAPABILITY_REVOCATION") != "1" {
-		t.Skip("set CYLO_TEST_DOCKER_CAPABILITY_REVOCATION=1 to run live Docker revocation acceptance")
+	if os.Getenv("ZOE_TEST_DOCKER_CAPABILITY_REVOCATION") != "1" {
+		t.Skip("set ZOE_TEST_DOCKER_CAPABILITY_REVOCATION=1 to run live Docker revocation acceptance")
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("Docker CLI is unavailable")
@@ -52,8 +52,8 @@ func TestDockerBackedCapabilityRevocationLifecycle(t *testing.T) {
 	manifest.Mounts = []contracts.CapabilityMount{{VolumeID: "revocation-persistent-data-" + reviewToken(t), Target: "/data", ReadOnly: true}}
 	release := submitCapabilityRelease(t, httpServer.Client(), httpServer.URL, deviceToken, manifest, "revoke-release")
 	deployment, version := requestCapabilityDeployment(t, httpServer.Client(), httpServer.URL, deviceToken, "local-revocable-service", release, "install", nil, "revoke-install-request")
-	containerName := "cylo-cap-" + capabilityShortHash(deployment)
-	volumeName := "cylo-vol-" + capabilityShortHash("default\x00"+manifest.Mounts[0].VolumeID)
+	containerName := "zoe-cap-" + capabilityShortHash(deployment)
+	volumeName := "zoe-vol-" + capabilityShortHash("default\x00"+manifest.Mounts[0].VolumeID)
 	assertDockerObjectAbsent(t, ctx, "inspect", containerName)
 	assertDockerObjectAbsent(t, ctx, "volume", "inspect", volumeName)
 	var containerID string
@@ -66,7 +66,7 @@ func TestDockerBackedCapabilityRevocationLifecycle(t *testing.T) {
 					Labels map[string]string `json:"Labels"`
 				} `json:"Config"`
 			}
-			if json.Unmarshal(raw, &inspected) == nil && inspected.ID != "" && (containerID == "" || inspected.ID == containerID) && inspected.Config.Labels["io.cylo.managed"] == "true" && inspected.Config.Labels["io.cylo.deployment"] == capabilityShortHash(deployment) && inspected.Config.Labels["io.cylo.workspace"] == capabilityShortHash("default") {
+			if json.Unmarshal(raw, &inspected) == nil && inspected.ID != "" && (containerID == "" || inspected.ID == containerID) && inspected.Config.Labels["io.zoe.managed"] == "true" && inspected.Config.Labels["io.zoe.deployment"] == capabilityShortHash(deployment) && inspected.Config.Labels["io.zoe.workspace"] == capabilityShortHash("default") {
 				_ = exec.Command("docker", "rm", "--force", inspected.ID).Run()
 			}
 		}
@@ -76,7 +76,7 @@ func TestDockerBackedCapabilityRevocationLifecycle(t *testing.T) {
 				CreatedAt string            `json:"CreatedAt"`
 				Labels    map[string]string `json:"Labels"`
 			}
-			if json.Unmarshal(raw, &inspected) == nil && len(inspected) == 1 && inspected[0].Name == volumeName && (volumeCreatedAt == "" || inspected[0].CreatedAt == volumeCreatedAt) && inspected[0].Labels["io.cylo.workspace"] == capabilityShortHash("default") && inspected[0].Labels["io.cylo.volume"] == capabilityShortHash(manifest.Mounts[0].VolumeID) {
+			if json.Unmarshal(raw, &inspected) == nil && len(inspected) == 1 && inspected[0].Name == volumeName && (volumeCreatedAt == "" || inspected[0].CreatedAt == volumeCreatedAt) && inspected[0].Labels["io.zoe.workspace"] == capabilityShortHash("default") && inspected[0].Labels["io.zoe.volume"] == capabilityShortHash(manifest.Mounts[0].VolumeID) {
 				_ = exec.Command("docker", "volume", "rm", volumeName).Run()
 			}
 		}
@@ -94,7 +94,7 @@ func TestDockerBackedCapabilityRevocationLifecycle(t *testing.T) {
 		CreatedAt string            `json:"CreatedAt"`
 		Labels    map[string]string `json:"Labels"`
 	}
-	if err := json.Unmarshal([]byte(capabilityDockerOutput(t, ctx, "volume", "inspect", volumeName)), &volumeIdentity); err != nil || len(volumeIdentity) != 1 || volumeIdentity[0].Name != volumeName || volumeIdentity[0].CreatedAt == "" || volumeIdentity[0].Labels["io.cylo.workspace"] != capabilityShortHash("default") || volumeIdentity[0].Labels["io.cylo.volume"] != capabilityShortHash(manifest.Mounts[0].VolumeID) {
+	if err := json.Unmarshal([]byte(capabilityDockerOutput(t, ctx, "volume", "inspect", volumeName)), &volumeIdentity); err != nil || len(volumeIdentity) != 1 || volumeIdentity[0].Name != volumeName || volumeIdentity[0].CreatedAt == "" || volumeIdentity[0].Labels["io.zoe.workspace"] != capabilityShortHash("default") || volumeIdentity[0].Labels["io.zoe.volume"] != capabilityShortHash(manifest.Mounts[0].VolumeID) {
 		t.Fatalf("could not capture this run's persistent volume identity: %+v err=%v", volumeIdentity, err)
 	}
 	volumeCreatedAt = volumeIdentity[0].CreatedAt

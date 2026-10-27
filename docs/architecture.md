@@ -1,18 +1,18 @@
-# Cylo architecture
+# Zoe architecture
 
 This document records the current architecture and its boundaries. It describes responsibility and required behavior; it does not certify implementation or production readiness. [Product requirements](product.md) define the full scope. [The master plan](master-plan.md) owns delivery status, evidence, open gaps, and acceptance boundaries. Archived research is historical provenance rather than a competing current design.
 
 ## System and authority
 
-Cylo is a private, self-hosted Linux Go control server with an independent Linux runner, SQLite WAL with `synchronous=FULL`, and native SwiftUI clients for macOS, iPhone, and iPad. The first release is single-instance and multi-project with one fixed owner principal. User/workspace boundaries remain explicit for future evolution.
+Zoe is a private, self-hosted Linux Go control server with an independent Linux runner, SQLite WAL with `synchronous=FULL`, and native SwiftUI clients for macOS, iPhone, and iPad. The first release is single-instance and multi-project with one fixed owner principal. User/workspace boundaries remain explicit for future evolution.
 
 | Component | Responsibility | Authority boundary |
 |---|---|---|
 | Native Apple clients | Conversation, voice/text input, task progress/results, decisions, projects, notices, and local drafts | Render server records and stale/offline state; never establish business completion locally |
 | Go control plane | Projects, commands, permissions, tasks, runs, receipts, events, service definitions, memory versions, and audit | Sole authoritative business-state writer |
 | Independent runner | Claim admitted work, invoke authorized runtime/service operations, observe results, and report evidence | Separate credentials and scoped claims; cannot grant its own authority |
-| AO gateway and AO | Authorized runtime creation and lifecycle, including Super, Workers, and curator runtimes | Cylo gateway admits work; AO owns runtime/session lifecycle |
-| Existing remote CLIProxyAPI | Account selection, quota handling, and proxying for its configured model routes | External deployment reused unchanged; no duplicate account rotation in Cylo/AO |
+| AO gateway and AO | Authorized runtime creation and lifecycle, including Super, Workers, and curator runtimes | Zoe gateway admits work; AO owns runtime/session lifecycle |
+| Existing remote CLIProxyAPI | Account selection, quota handling, and proxying for its configured model routes | External deployment reused unchanged; no duplicate account rotation in Zoe/AO |
 | Space3044 `chatgpt-web-voice` | ChatGPT web real-time transport and voice account pool | Voice transport and spoken output do not authorize or complete business work |
 | Mem0 | Scoped extraction, memory proposals, and permitted worker operations | Controlled worker, never unrestricted task/permission/configuration/decision authority |
 | Qdrant | Derived retrieval vectors and payloads | Rebuildable index; never the source of truth |
@@ -29,7 +29,7 @@ The public API uses REST under `/v1` and SSE for ordered events. Implemented dat
 1. A native client submits a business command with an `Idempotency-Key` and, when applicable, `expected_version`.
 2. The control plane checks the current principal, workspace/resource permissions, command validity, and optimistic version.
 3. One transaction commits the durable command receipt, work record, and outbox event before returning acceptance.
-4. The runner claims admitted work atomically. Cylo checks authority, budget, and the shared run cap before the gateway requests AO work.
+4. The runner claims admitted work atomically. Zoe checks authority, budget, and the shared run cap before the gateway requests AO work.
 5. AO and runner reports return observations/proposals. The control plane validates the current claim, fence, version, and evidence before committing business-state changes.
 6. Event delivery retries from the outbox. Consumers deduplicate stable identities and repair missing history from the authority.
 
@@ -41,13 +41,13 @@ Unknown external effects are reconciled if queryable and escalated otherwise. Th
 
 ## Runtime admission and model routing
 
-Every request, including a child Worker request from Super, uses the same controlled admission path. No automatic dispatcher may bypass it. AO owns creation and lifecycle of every runtime; Cylo owns task authority and accepted effects. Prefer AO configuration/adapters and extend AO only for a measured gap.
+Every request, including a child Worker request from Super, uses the same controlled admission path. No automatic dispatcher may bypass it. AO owns creation and lifecycle of every runtime; Zoe owns task authority and accepted effects. Prefer AO configuration/adapters and extend AO only for a measured gap.
 
 The global ceiling is **four active runs**, counting Super, Workers, and curator work. A waiting or uncertain runtime does not free a slot merely because no output is visible. Ownership/fence checks and termination evidence govern release. Unknown AO creation is not automatic replay authority; explicit reconciliation requires complete, auditable evidence. The [deployment runbook](operations/deployment.md) owns the operational procedure.
 
 Deterministic scheduling, health, state transitions, and routine event routing make no model calls. A semantic event may call a Worker; complex coordination may call Super. Every actual model call must be attributable to an authorized task/run, route, and budget. Usage reservations and settlements must be idempotent; unknown usage remains reserved. Provider calls, tool loops, artifact bytes, and termination limits require enforcement at the actual effect boundary, not merely budget fields in a contract. Full per-provider-call enforcement and cost evidence remain acceptance work; see the master plan.
 
-For routes supplied by CLIProxyAPI, account selection and quota handling remain in that existing deployment. Cylo/AO use deployment-provided endpoint and secret references without changing that service. Adapter registration or a model catalog response does not prove runtime execution, artifact creation, provider usage, or successful stop.
+For routes supplied by CLIProxyAPI, account selection and quota handling remain in that existing deployment. Zoe/AO use deployment-provided endpoint and secret references without changing that service. Adapter registration or a model catalog response does not prove runtime execution, artifact creation, provider usage, or successful stop.
 
 ## Identity, clients, and notices
 

@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-const DefaultProviderSecretPath = "/etc/cylo/runner-secrets/cliproxyapi-api-key"
+const DefaultProviderSecretPath = "/etc/zoe/runner-secrets/cliproxyapi-api-key"
 
 // ProviderConfig is the deployment configuration consumed by the AO daemon.
 // Secret contains the credential only while configuring; it is never rendered
@@ -124,7 +124,7 @@ func writeFileAtomicOwned(path string, data []byte, mode os.FileMode, uid, gid i
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".cylo-config-*")
+	tmp, err := os.CreateTemp(dir, ".zoe-config-*")
 	if err != nil {
 		return err
 	}

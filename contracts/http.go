@@ -421,13 +421,13 @@ type PreexistingCapabilityContainer struct {
 }
 
 func (p PreexistingCapabilityContainer) Valid(runStartedAt, aoStartedAt, verifiedAt time.Time) bool {
-	if !ValidFullContainerID(p.ID) || p.Labels["io.cylo.managed"] != "true" || p.Name != "/cylo-cap-"+p.Labels["io.cylo.deployment"] || p.Image == "" || p.Status != "running" || p.Running == nil || !*p.Running || p.Paused == nil || *p.Paused || p.Restarting == nil || *p.Restarting || p.Dead == nil || *p.Dead || p.PID == nil || *p.PID < 1 || p.StartedAt == nil || p.StartedAt.IsZero() || p.StartedAt.After(p.FirstCheckedAt) || !ValidFullContainerID(p.SnapshotSHA256) {
+	if !ValidFullContainerID(p.ID) || p.Labels["io.zoe.managed"] != "true" || p.Name != "/zoe-cap-"+p.Labels["io.zoe.deployment"] || p.Image == "" || p.Status != "running" || p.Running == nil || !*p.Running || p.Paused == nil || *p.Paused || p.Restarting == nil || *p.Restarting || p.Dead == nil || *p.Dead || p.PID == nil || *p.PID < 1 || p.StartedAt == nil || p.StartedAt.IsZero() || p.StartedAt.After(p.FirstCheckedAt) || !ValidFullContainerID(p.SnapshotSHA256) {
 		return false
 	}
-	if _, exists := p.Labels["io.cylo.runtime"]; exists {
+	if _, exists := p.Labels["io.zoe.runtime"]; exists {
 		return false
 	}
-	if _, exists := p.Labels["io.cylo.ao.session"]; exists {
+	if _, exists := p.Labels["io.zoe.ao.session"]; exists {
 		return false
 	}
 	imageParts := strings.Split(p.Image, "@sha256:")
@@ -445,18 +445,18 @@ func (p PreexistingCapabilityContainer) Valid(runStartedAt, aoStartedAt, verifie
 			return false
 		}
 	}
-	for _, key := range []string{"io.cylo.workspace", "io.cylo.deployment", "io.cylo.attempt"} {
+	for _, key := range []string{"io.zoe.workspace", "io.zoe.deployment", "io.zoe.attempt"} {
 		value := p.Labels[key]
 		decoded, err := hex.DecodeString(value)
 		if err != nil || len(decoded) != 12 || hex.EncodeToString(decoded) != value {
 			return false
 		}
 	}
-	if !ValidFullContainerID(p.Labels["io.cylo.release"]) {
+	if !ValidFullContainerID(p.Labels["io.zoe.release"]) {
 		return false
 	}
-	fence, err := strconv.ParseInt(p.Labels["io.cylo.fence"], 10, 64)
-	if err != nil || fence < 1 || strconv.FormatInt(fence, 10) != p.Labels["io.cylo.fence"] {
+	fence, err := strconv.ParseInt(p.Labels["io.zoe.fence"], 10, 64)
+	if err != nil || fence < 1 || strconv.FormatInt(fence, 10) != p.Labels["io.zoe.fence"] {
 		return false
 	}
 	for _, at := range []time.Time{p.CreatedAt, p.FirstCheckedAt, p.RecheckedAt, *p.StartedAt} {

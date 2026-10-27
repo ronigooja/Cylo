@@ -12,21 +12,21 @@ services:
       context: ../..
       dockerfile: services/memory/Dockerfile
     environment:
-      CYLO_CONTROL_URL: ${CYLO_CONTROL_URL:?set CYLO_CONTROL_URL}
-      CYLO_RUNNER_TOKEN: ${CYLO_RUNNER_TOKEN:?set CYLO_RUNNER_TOKEN}
-      CYLO_QDRANT_URL: http://qdrant:6333
-      CYLO_QDRANT_COLLECTION: cylo_memory_v1_paraphrase_multilingual_minilm_l12_384_faf4aa42
-      CYLO_MEM0_COLLECTION: cylo_mem0_v1
-      CYLO_MEM0_LLM_PROVIDER: ${CYLO_MEM0_LLM_PROVIDER:-openai}
-      CYLO_MEM0_LLM_MODEL: ${CYLO_MEM0_LLM_MODEL:?set CYLO_MEM0_LLM_MODEL}
-      CYLO_MEM0_LLM_BASE_URL: ${CYLO_MEM0_LLM_BASE_URL:?set CYLO_MEM0_LLM_BASE_URL}
-      CYLO_MEM0_LLM_API_KEY: ${CYLO_MEM0_LLM_API_KEY:?set CYLO_MEM0_LLM_API_KEY}
-      CYLO_MEMORY_MODEL_CACHE: /var/lib/cylo/memory/models
-      CYLO_MEM0_HISTORY_DB: /var/lib/cylo/memory/mem0-history.sqlite
+      ZOE_CONTROL_URL: ${ZOE_CONTROL_URL:?set ZOE_CONTROL_URL}
+      ZOE_RUNNER_TOKEN: ${ZOE_RUNNER_TOKEN:?set ZOE_RUNNER_TOKEN}
+      ZOE_QDRANT_URL: http://qdrant:6333
+      ZOE_QDRANT_COLLECTION: zoe_memory_v1_paraphrase_multilingual_minilm_l12_384_faf4aa42
+      ZOE_MEM0_COLLECTION: zoe_mem0_v1
+      ZOE_MEM0_LLM_PROVIDER: ${ZOE_MEM0_LLM_PROVIDER:-openai}
+      ZOE_MEM0_LLM_MODEL: ${ZOE_MEM0_LLM_MODEL:?set ZOE_MEM0_LLM_MODEL}
+      ZOE_MEM0_LLM_BASE_URL: ${ZOE_MEM0_LLM_BASE_URL:?set ZOE_MEM0_LLM_BASE_URL}
+      ZOE_MEM0_LLM_API_KEY: ${ZOE_MEM0_LLM_API_KEY:?set ZOE_MEM0_LLM_API_KEY}
+      ZOE_MEMORY_MODEL_CACHE: /var/lib/zoe/memory/models
+      ZOE_MEM0_HISTORY_DB: /var/lib/zoe/memory/mem0-history.sqlite
     depends_on:
       - qdrant
     volumes:
-      - memory-worker-state:/var/lib/cylo/memory
+      - memory-worker-state:/var/lib/zoe/memory
 
 volumes:
   memory-worker-state:

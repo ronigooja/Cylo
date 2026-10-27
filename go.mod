@@ -1,4 +1,4 @@
-module github.com/ronigooja/Cylo
+module github.com/ronigooja/Zoe
 
 go 1.26
 

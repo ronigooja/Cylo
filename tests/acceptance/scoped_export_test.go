@@ -20,11 +20,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/internal/capabilities"
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/memory"
-	"github.com/ronigooja/Cylo/internal/storage"
-	"github.com/ronigooja/Cylo/internal/voice"
+	"github.com/ronigooja/Zoe/internal/capabilities"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/memory"
+	"github.com/ronigooja/Zoe/internal/storage"
+	"github.com/ronigooja/Zoe/internal/voice"
 )
 
 var exportInstanceScopes = []string{"client:read", "client:command", "export:read", "memory:read:personal", "memory:read:workspace"}
@@ -92,7 +92,7 @@ func TestScopedExportHTTPHonorsOwnerMemoryVersionsAndTombstones(t *testing.T) {
 	if personal.Code != http.StatusOK {
 		t.Fatalf("personal export=%d %s", personal.Code, personal.Body.String())
 	}
-	if personal.Header().Get("Content-Type") != "application/vnd.cylo.export+zip" || !strings.HasPrefix(personal.Header().Get("Content-Disposition"), `attachment; filename="cylo-export-`) || personal.Header().Get("Cache-Control") != "no-store" {
+	if personal.Header().Get("Content-Type") != "application/vnd.zoe.export+zip" || !strings.HasPrefix(personal.Header().Get("Content-Disposition"), `attachment; filename="zoe-export-`) || personal.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("unsafe export response headers: %#v", personal.Header())
 	}
 	if err := assertExportAuditMatchesBody(store.DB(), personal.Body.Bytes(), personal.Header().Get("Content-Length")); err != nil {
@@ -111,7 +111,7 @@ func TestScopedExportHTTPHonorsOwnerMemoryVersionsAndTombstones(t *testing.T) {
 			t.Errorf("personal export disclosed %q", mustOmit)
 		}
 	}
-	if manifest["format"] != "cylo.authority-export" || manifest["schema_version"] != float64(2) || manifest["scope"] != "personal" {
+	if manifest["format"] != "zoe.authority-export" || manifest["schema_version"] != float64(2) || manifest["scope"] != "personal" {
 		t.Fatalf("unstable manifest: %#v", manifest)
 	}
 	memories := personalDoc["memory"].([]any)
@@ -241,7 +241,7 @@ func TestScopedExportSizeLimitAndTemporaryCleanup(t *testing.T) {
 		t.Fatalf("streamed export=%d body length=%d body=%s", response.Code, response.Body.Len(), response.Body.String())
 	}
 	decodeExportPackage(t, response.Body.Bytes(), response.Header())
-	leftovers, err := filepath.Glob(filepath.Join(tempRoot, "cylo-export-*"))
+	leftovers, err := filepath.Glob(filepath.Join(tempRoot, "zoe-export-*"))
 	if err != nil || len(leftovers) != 0 {
 		t.Fatalf("temporary export remains after bounded stream: %v err=%v", leftovers, err)
 	}
@@ -264,7 +264,7 @@ func TestScopedExportRejectsOversizedFieldBeforePreparingArchive(t *testing.T) {
 	if response.Code != http.StatusRequestEntityTooLarge || !strings.Contains(response.Body.String(), "export_field_too_large") {
 		t.Fatalf("oversized field export=%d %s", response.Code, response.Body.String())
 	}
-	leftovers, err := filepath.Glob(filepath.Join(tempRoot, "cylo-export-*"))
+	leftovers, err := filepath.Glob(filepath.Join(tempRoot, "zoe-export-*"))
 	if err != nil || len(leftovers) != 0 {
 		t.Fatalf("temporary export remains after field-bound rejection: %v err=%v", leftovers, err)
 	}
@@ -299,7 +299,7 @@ func TestScopedExportClientCancelCleansTemporaryFile(t *testing.T) {
 	_ = response.Body.Close()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		leftovers, globErr := filepath.Glob(filepath.Join(tempRoot, "cylo-export-*"))
+		leftovers, globErr := filepath.Glob(filepath.Join(tempRoot, "zoe-export-*"))
 		if globErr != nil {
 			t.Fatal(globErr)
 		}
@@ -308,7 +308,7 @@ func TestScopedExportClientCancelCleansTemporaryFile(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	leftovers, _ := filepath.Glob(filepath.Join(tempRoot, "cylo-export-*"))
+	leftovers, _ := filepath.Glob(filepath.Join(tempRoot, "zoe-export-*"))
 	t.Fatalf("temporary export remains after canceled response: %v", leftovers)
 }
 
@@ -365,7 +365,7 @@ func decodeExportPackage(t *testing.T, body []byte, headers http.Header) (map[st
 	manifestBytes, dataBytes := readEntry(archive.File[0]), readEntry(archive.File[1])
 	archiveHash := sha256.Sum256(body)
 	manifestHash := sha256.Sum256(manifestBytes)
-	if headers.Get("X-Cylo-Archive-SHA256") != hex.EncodeToString(archiveHash[:]) || headers.Get("X-Cylo-Manifest-SHA256") != hex.EncodeToString(manifestHash[:]) {
+	if headers.Get("X-Zoe-Archive-SHA256") != hex.EncodeToString(archiveHash[:]) || headers.Get("X-Zoe-Manifest-SHA256") != hex.EncodeToString(manifestHash[:]) {
 		t.Fatal("export package hash headers do not match bytes")
 	}
 	var manifest, data map[string]any
@@ -657,7 +657,7 @@ func TestExportTempCleanupRouteUsesCurrentDeletionLease(t *testing.T) {
 	if _, err = store.DB().Exec(`INSERT INTO memory_jobs(id,workspace_id,kind,entity_id,entity_version,target,payload,status,attempts,available_at,lease_owner,lease_until,last_error_code,created_at,updated_at) VALUES('cleanup-job','default','delete_cleanup','claim-1',2,'export_temp','{}','leased',1,?,'cleanup-runner',?,'',?,?)`, deletedAt, leaseUntil, deletedAt, deletedAt); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = store.DB().Exec(`INSERT INTO cylo_export_temp_registry(export_id,workspace_id,owner_id,export_scope,created_deletion_sequence,status,invalidation_sequence,created_at,updated_at) VALUES('route-export','default','owner','personal',0,'invalidated',1,?,?)`, deletedAt, deletedAt); err != nil {
+	if _, err = store.DB().Exec(`INSERT INTO zoe_export_temp_registry(export_id,workspace_id,owner_id,export_scope,created_deletion_sequence,status,invalidation_sequence,created_at,updated_at) VALUES('route-export','default','owner','personal',0,'invalidated',1,?,?)`, deletedAt, deletedAt); err != nil {
 		t.Fatal(err)
 	}
 	rootPath := databasePath + ".exports"
@@ -684,7 +684,7 @@ func TestExportTempCleanupRouteUsesCurrentDeletionLease(t *testing.T) {
 		t.Fatalf("cleanup route completed the job itself: status=%q err=%v", status, err)
 	}
 	var checkpoint int64
-	if err = store.DB().QueryRow(`SELECT completed_sequence FROM cylo_deletion_reconciliation_checkpoints WHERE target='export_temp'`).Scan(&checkpoint); err != nil || checkpoint != 0 {
+	if err = store.DB().QueryRow(`SELECT completed_sequence FROM zoe_deletion_reconciliation_checkpoints WHERE target='export_temp'`).Scan(&checkpoint); err != nil || checkpoint != 0 {
 		t.Fatalf("cleanup route advanced checkpoint before worker completion: sequence=%d err=%v", checkpoint, err)
 	}
 	invalidBody := map[string]any{"job_id": "cleanup-job", "workspace_id": "default", "entity_id": "claim-1", "entity_version": 2, "attempt": 2}

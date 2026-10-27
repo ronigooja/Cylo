@@ -4,7 +4,7 @@ Status: accepted architecture baseline; implementation and acceptance status rem
 
 ## Context
 
-Cylo coordinates programming and other authorized work through natural interaction. Users need to understand actual progress, results, and decisions without learning runtime infrastructure or reviewing source code. The approved native assistant reference establishes the visual direction; earlier HTML examples are coverage artifacts, not native screenshots or acceptance evidence.
+Zoe coordinates programming and other authorized work through natural interaction. Users need to understand actual progress, results, and decisions without learning runtime infrastructure or reviewing source code. The approved native assistant reference establishes the visual direction; earlier HTML examples are coverage artifacts, not native screenshots or acceptance evidence.
 
 ## Decision
 

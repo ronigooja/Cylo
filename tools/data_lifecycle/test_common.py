@@ -37,8 +37,8 @@ class SnapshotDeletionLineageTests(unittest.TestCase):
             with sqlite3.connect(source) as db:
                 db.executescript(
                     """
-                    CREATE TABLE cylo_instance_state(singleton INTEGER PRIMARY KEY, instance_id TEXT, epoch INTEGER, dispatch_enabled INTEGER, derived_retrieval_enabled INTEGER, fence_reason TEXT, fenced_at TEXT, lineage_id TEXT, generation INTEGER, deletion_sequence INTEGER);
-                    INSERT INTO cylo_instance_state VALUES(1,'source-a',7,1,1,'','','source-lineage-a',2,0);
+                    CREATE TABLE zoe_instance_state(singleton INTEGER PRIMARY KEY, instance_id TEXT, epoch INTEGER, dispatch_enabled INTEGER, derived_retrieval_enabled INTEGER, fence_reason TEXT, fenced_at TEXT, lineage_id TEXT, generation INTEGER, deletion_sequence INTEGER);
+                    INSERT INTO zoe_instance_state VALUES(1,'source-a',7,1,1,'','','source-lineage-a',2,0);
                     CREATE TABLE events(event_id TEXT, cursor INTEGER);
                     INSERT INTO events VALUES('event-a',3);
                     INSERT INTO events VALUES('event-b',5);
@@ -88,16 +88,16 @@ class RestoreDeletionLedgerMetadataTests(unittest.TestCase):
     def make_payload(self, base: Path, *, with_ledger: bool = True) -> tuple[Path, dict]:
         payload = base / "payload"
         (payload / "authority").mkdir(parents=True)
-        database_path = payload / "authority" / "cylo.sqlite"
-        sidecar_path = payload / "authority" / "cylo.sqlite.deletion-ledger"
+        database_path = payload / "authority" / "zoe.sqlite"
+        sidecar_path = payload / "authority" / "zoe.sqlite.deletion-ledger"
         sidecar_path.write_bytes(b"")
         sidecar_path.chmod(0o600)
         with sqlite3.connect(database_path) as db:
             db.executescript(
                 """
                 CREATE TABLE events(event_id TEXT,cursor INTEGER);
-                CREATE TABLE cylo_instance_state(singleton INTEGER PRIMARY KEY,lineage_id TEXT,generation INTEGER,deletion_sequence INTEGER);
-                INSERT INTO cylo_instance_state VALUES(1,'lineage-fixture',1,0);
+                CREATE TABLE zoe_instance_state(singleton INTEGER PRIMARY KEY,lineage_id TEXT,generation INTEGER,deletion_sequence INTEGER);
+                INSERT INTO zoe_instance_state VALUES(1,'lineage-fixture',1,0);
                 """
             )
             if with_ledger:
@@ -122,16 +122,16 @@ class RestoreDeletionLedgerMetadataTests(unittest.TestCase):
                     {"lineage_id": "lineage-fixture", "generation": 1, "deletion_sequence": 0, "event_count": 0, "event_cursor_sum": 0},
                 ),
             },
-            "files": [file_record(database_path, "authority", "authority/cylo.sqlite"), file_record(sidecar_path, "authority", "authority/cylo.sqlite.deletion-ledger")],
+            "files": [file_record(database_path, "authority", "authority/zoe.sqlite"), file_record(sidecar_path, "authority", "authority/zoe.sqlite.deletion-ledger")],
         }
         (payload / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         return payload, manifest
 
     def update_manifest_files(self, manifest, payload, database_path):
-        sidecar = payload / "authority" / "cylo.sqlite.deletion-ledger"
+        sidecar = payload / "authority" / "zoe.sqlite.deletion-ledger"
         manifest["files"] = [
-            file_record(database_path, "authority", "authority/cylo.sqlite"),
-            file_record(sidecar, "authority", "authority/cylo.sqlite.deletion-ledger"),
+            file_record(database_path, "authority", "authority/zoe.sqlite"),
+            file_record(sidecar, "authority", "authority/zoe.sqlite.deletion-ledger"),
         ]
 
     def test_restore_recomputes_and_accepts_matching_ledger_metadata(self):
@@ -166,7 +166,7 @@ class RestoreDeletionLedgerMetadataTests(unittest.TestCase):
     def test_restore_rejects_malformed_database_ledger_rows(self):
         with tempfile.TemporaryDirectory() as directory:
             payload, _ = self.make_payload(Path(directory))
-            database_path = payload / "authority" / "cylo.sqlite"
+            database_path = payload / "authority" / "zoe.sqlite"
             with sqlite3.connect(database_path) as db:
                 db.execute("UPDATE memory_deletion_events SET ledger_generation=2")
             manifest = json.loads((payload / "manifest.json").read_text(encoding="utf-8"))
@@ -178,7 +178,7 @@ class RestoreDeletionLedgerMetadataTests(unittest.TestCase):
     def test_restore_rejects_unsupported_database_ledger_baseline(self):
         with tempfile.TemporaryDirectory() as directory:
             payload, _ = self.make_payload(Path(directory))
-            database_path = payload / "authority" / "cylo.sqlite"
+            database_path = payload / "authority" / "zoe.sqlite"
             with sqlite3.connect(database_path) as db:
                 db.execute("UPDATE memory_deletion_ledger_state SET baseline_kind='future_baseline'")
             manifest = json.loads((payload / "manifest.json").read_text(encoding="utf-8"))
@@ -190,7 +190,7 @@ class RestoreDeletionLedgerMetadataTests(unittest.TestCase):
     def test_restore_rejects_duplicate_event_sequences_in_malformed_table(self):
         with tempfile.TemporaryDirectory() as directory:
             payload, manifest = self.make_payload(Path(directory))
-            database_path = payload / "authority" / "cylo.sqlite"
+            database_path = payload / "authority" / "zoe.sqlite"
             with sqlite3.connect(database_path) as db:
                 db.executescript(
                     """
@@ -214,7 +214,7 @@ class RestoreDeletionLedgerMetadataTests(unittest.TestCase):
         ):
             with self.subTest(expected_error=expected_error), tempfile.TemporaryDirectory() as directory:
                 payload, manifest = self.make_payload(Path(directory))
-                database_path = payload / "authority" / "cylo.sqlite"
+                database_path = payload / "authority" / "zoe.sqlite"
                 with sqlite3.connect(database_path) as db:
                     db.execute(sequence_updates)
                 self.update_manifest_files(manifest, payload, database_path)
@@ -225,7 +225,7 @@ class RestoreDeletionLedgerMetadataTests(unittest.TestCase):
     def test_restore_rejects_ledger_tables_missing_after_migration(self):
         with tempfile.TemporaryDirectory() as directory:
             payload, manifest = self.make_payload(Path(directory))
-            database_path = payload / "authority" / "cylo.sqlite"
+            database_path = payload / "authority" / "zoe.sqlite"
             with sqlite3.connect(database_path) as db:
                 db.executescript(
                     """

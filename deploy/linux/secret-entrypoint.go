@@ -1,4 +1,4 @@
-// cylo-secret-entrypoint loads deployment-mounted private secret files into
+// zoe-secret-entrypoint loads deployment-mounted private secret files into
 // the environment and then replaces itself with the configured application.
 package main
 
@@ -11,17 +11,17 @@ import (
 )
 
 var allowedNames = map[string]bool{
-	"CYLO_INSTANCE_KEY":       true,
-	"CYLO_RUNNER_TOKEN":         true,
-	"CYLO_AO_TOKEN":             true,
-	"CYLO_VOICE_GATEWAY_API_KEY": true,
-	"CYLO_MEM0_LLM_API_KEY":     true,
-	"CYLO_QDRANT_API_KEY":       true,
+	"ZOE_INSTANCE_KEY":       true,
+	"ZOE_RUNNER_TOKEN":         true,
+	"ZOE_AO_TOKEN":             true,
+	"ZOE_VOICE_GATEWAY_API_KEY": true,
+	"ZOE_MEM0_LLM_API_KEY":     true,
+	"ZOE_QDRANT_API_KEY":       true,
 }
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "cylo-secret-entrypoint:", err)
+		fmt.Fprintln(os.Stderr, "zoe-secret-entrypoint:", err)
 		os.Exit(1)
 	}
 }
@@ -30,8 +30,8 @@ func run(args []string) error {
 	if len(args) == 0 {
 		return errors.New("application command is required")
 	}
-	mapping := strings.TrimSpace(os.Getenv("CYLO_SECRET_FILE_MAP"))
-	if err := os.Unsetenv("CYLO_SECRET_FILE_MAP"); err != nil {
+	mapping := strings.TrimSpace(os.Getenv("ZOE_SECRET_FILE_MAP"))
+	if err := os.Unsetenv("ZOE_SECRET_FILE_MAP"); err != nil {
 		return err
 	}
 	if mapping != "" {

@@ -37,7 +37,7 @@ func TestAPNSSenderSignsJWTAndSendsSilentWakeup(t *testing.T) {
 		if r.URL.String() != "https://api.sandbox.push.apple.com/3/device/"+strings.Repeat("a", 64) {
 			t.Errorf("unexpected APNs URL: %s", r.URL)
 		}
-		for name, want := range map[string]string{"apns-topic": "com.example.cylo", "apns-push-type": "background", "apns-priority": "5", "apns-id": "apns-test-id", "apns-collapse-id": "cylo-test"} {
+		for name, want := range map[string]string{"apns-topic": "com.example.zoe", "apns-push-type": "background", "apns-priority": "5", "apns-id": "apns-test-id", "apns-collapse-id": "zoe-test"} {
 			if r.Header.Get(name) != want {
 				t.Errorf("%s=%q, want %q", name, r.Header.Get(name), want)
 			}
@@ -69,12 +69,12 @@ func TestAPNSSenderSignsJWTAndSendsSilentWakeup(t *testing.T) {
 		if aps["content-available"] != float64(1) || len(aps) != 1 {
 			t.Fatalf("payload must be a silent wakeup: %#v", payload)
 		}
-		if payload["cylo"].(map[string]any)["inbox_cursor"] != "42" {
+		if payload["zoe"].(map[string]any)["inbox_cursor"] != "42" {
 			t.Fatalf("inbox cursor missing: %#v", payload)
 		}
 		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Apns-Id": []string{"apns-test-id"}}, Body: io.NopCloser(strings.NewReader("{}"))}, nil
 	})}
-	sender, err := NewAPNSSender(APNSConfig{Environment: "sandbox", TeamID: "team-id", KeyID: "key-id", Topic: "com.example.cylo", PrivateKey: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), HTTPClient: client})
+	sender, err := NewAPNSSender(APNSConfig{Environment: "sandbox", TeamID: "team-id", KeyID: "key-id", Topic: "com.example.zoe", PrivateKey: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), HTTPClient: client})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestAPNSSenderSignsJWTAndSendsSilentWakeup(t *testing.T) {
 	sender.providerJWT = ""
 	sender.jwtExpires = time.Time{}
 	sender.mu.Unlock()
-	response := sender.Send(context.Background(), PushRequest{Token: strings.Repeat("a", 64), APNSID: "apns-test-id", CollapseID: "cylo-test", Cursor: "42"})
+	response := sender.Send(context.Background(), PushRequest{Token: strings.Repeat("a", 64), APNSID: "apns-test-id", CollapseID: "zoe-test", Cursor: "42"})
 	if !got || response.StatusCode != http.StatusOK || response.APNSID != "apns-test-id" {
 		t.Fatalf("unexpected send result: got=%v response=%+v", got, response)
 	}

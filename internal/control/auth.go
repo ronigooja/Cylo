@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 func tokenBytes(token string) ([]byte, error) {
@@ -75,7 +75,7 @@ func InitializeInstanceAuth(ctx context.Context, store *storage.Store, configure
 		key := configured
 		generated := false
 		if key == "" {
-			return "", false, errors.New("instance key is not initialized; run cylo key init with an explicit secure output destination")
+			return "", false, errors.New("instance key is not initialized; run zoe key init with an explicit secure output destination")
 		}
 		digest, e := instanceKeyHash(key)
 		if e != nil {
@@ -138,7 +138,7 @@ func (s *Server) instanceAuth(next http.Handler) http.Handler {
 			writeError(w, apiError(http.StatusUnauthorized, "unauthenticated", "instance credential is not recognized", nil))
 			return
 		}
-		p := contracts.Principal{Generation: generation, InstallationID: r.Header.Get("X-Cylo-Installation-ID"), WorkspaceID: "default", SubjectID: "owner", DeviceID: "instance", Scopes: append([]string(nil), s.cfg.InstanceScopes...)}
+		p := contracts.Principal{Generation: generation, InstallationID: r.Header.Get("X-Zoe-Installation-ID"), WorkspaceID: "default", SubjectID: "owner", DeviceID: "instance", Scopes: append([]string(nil), s.cfg.InstanceScopes...)}
 		if required := requiredCoreDeviceScope(r); required != "" && !HasScope(p, required) {
 			writeError(w, apiError(403, "forbidden", "instance lacks required scope", nil))
 			return

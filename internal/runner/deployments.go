@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Zoe/contracts"
 )
 
 // DockerCommand is the narrow privileged boundary used by the capability
@@ -281,11 +281,11 @@ func (e *DeploymentExecutor) reconcileOnly(ctx context.Context, claim contracts.
 			return obs
 		}
 	}
-	if claim.Fence < parseFence(state.Config.Labels["io.cylo.fence"]) || (claim.Fence == parseFence(state.Config.Labels["io.cylo.fence"]) && state.Config.Labels["io.cylo.attempt"] != labelValue(claim.AttemptID)) {
+	if claim.Fence < parseFence(state.Config.Labels["io.zoe.fence"]) || (claim.Fence == parseFence(state.Config.Labels["io.zoe.fence"]) && state.Config.Labels["io.zoe.attempt"] != labelValue(claim.AttemptID)) {
 		obs.State, obs.ErrorCode = "uncertain", "docker_ownership_unverified"
 		return obs
 	}
-	if state.Config.Labels["io.cylo.release"] != strings.TrimPrefix(claim.ReleaseDigest, "sha256:") {
+	if state.Config.Labels["io.zoe.release"] != strings.TrimPrefix(claim.ReleaseDigest, "sha256:") {
 		obs.State, obs.ErrorCode = "uncertain", "docker_release_unverified"
 		return obs
 	}
@@ -407,11 +407,11 @@ func cleanupOwned(labels map[string]string, claim contracts.DeploymentClaim) boo
 }
 
 func cleanupFenceAllows(labels map[string]string, claim contracts.DeploymentClaim) bool {
-	priorFence, err := strconv.ParseInt(labels["io.cylo.fence"], 10, 64)
+	priorFence, err := strconv.ParseInt(labels["io.zoe.fence"], 10, 64)
 	if err != nil || priorFence < 1 || claim.Fence < priorFence {
 		return false
 	}
-	if claim.Fence == priorFence && labels["io.cylo.attempt"] != labelValue(claim.AttemptID) {
+	if claim.Fence == priorFence && labels["io.zoe.attempt"] != labelValue(claim.AttemptID) {
 		return false
 	}
 	return true
@@ -450,12 +450,12 @@ func (e *DeploymentExecutor) install(ctx context.Context, claim contracts.Deploy
 	}
 	for _, mount := range claim.Manifest.Mounts {
 		volume := deploymentVolumeName(claim.WorkspaceID, mount.VolumeID)
-		if _, err := e.Docker.Run(ctx, "volume", "create", "--label", "io.cylo.workspace="+labelValue(claim.WorkspaceID), "--label", "io.cylo.volume="+labelValue(mount.VolumeID), volume); err != nil {
+		if _, err := e.Docker.Run(ctx, "volume", "create", "--label", "io.zoe.workspace="+labelValue(claim.WorkspaceID), "--label", "io.zoe.volume="+labelValue(mount.VolumeID), volume); err != nil {
 			return fmt.Errorf("create managed volume: %w", err)
 		}
 		var got map[string]string
 		body, err := e.Docker.Run(ctx, "volume", "inspect", "--format", "{{json .Labels}}", volume)
-		if err != nil || json.Unmarshal(body, &got) != nil || got["io.cylo.workspace"] != labelValue(claim.WorkspaceID) || got["io.cylo.volume"] != labelValue(mount.VolumeID) {
+		if err != nil || json.Unmarshal(body, &got) != nil || got["io.zoe.workspace"] != labelValue(claim.WorkspaceID) || got["io.zoe.volume"] != labelValue(mount.VolumeID) {
 			return errors.New("volume ownership labels do not match authorized mount")
 		}
 	}
@@ -493,14 +493,14 @@ func (e *DeploymentExecutor) requireOwned(ctx context.Context, name string, clai
 			return errors.New("deployment container ownership labels do not match")
 		}
 	}
-	priorFence, err := strconv.ParseInt(got["io.cylo.fence"], 10, 64)
+	priorFence, err := strconv.ParseInt(got["io.zoe.fence"], 10, 64)
 	if err != nil || priorFence < 1 || claim.Fence < priorFence {
 		return errors.New("deployment claim is stale relative to the container fence")
 	}
-	if claim.DesiredOp != "update" && got["io.cylo.release"] != strings.TrimPrefix(claim.ReleaseDigest, "sha256:") {
+	if claim.DesiredOp != "update" && got["io.zoe.release"] != strings.TrimPrefix(claim.ReleaseDigest, "sha256:") {
 		return errors.New("deployment container release does not match the requested release")
 	}
-	if claim.Fence == priorFence && (got["io.cylo.attempt"] != labelValue(claim.AttemptID) || got["io.cylo.release"] != strings.TrimPrefix(claim.ReleaseDigest, "sha256:")) {
+	if claim.Fence == priorFence && (got["io.zoe.attempt"] != labelValue(claim.AttemptID) || got["io.zoe.release"] != strings.TrimPrefix(claim.ReleaseDigest, "sha256:")) {
 		return errors.New("deployment attempt does not own the current container fence")
 	}
 	return nil
@@ -724,18 +724,18 @@ func deploymentImage(ref, artifactDigest string) (string, error) {
 	return ref, nil
 }
 
-func deploymentContainerName(id string) string { return "cylo-cap-" + shortHash(id) }
+func deploymentContainerName(id string) string { return "zoe-cap-" + shortHash(id) }
 func deploymentVolumeName(workspace, id string) string {
-	return "cylo-vol-" + shortHash(workspace+"\x00"+id)
+	return "zoe-vol-" + shortHash(workspace+"\x00"+id)
 }
 func labelValue(v string) string { return shortHash(v) }
 func shortHash(v string) string  { sum := sha256.Sum256([]byte(v)); return hex.EncodeToString(sum[:12]) }
 func deploymentLabels(c contracts.DeploymentClaim) map[string]string {
-	return map[string]string{"io.cylo.managed": "true", "io.cylo.workspace": labelValue(c.WorkspaceID), "io.cylo.deployment": labelValue(c.DeploymentID), "io.cylo.release": strings.TrimPrefix(c.ReleaseDigest, "sha256:"), "io.cylo.fence": strconv.FormatInt(c.Fence, 10), "io.cylo.attempt": labelValue(c.AttemptID)}
+	return map[string]string{"io.zoe.managed": "true", "io.zoe.workspace": labelValue(c.WorkspaceID), "io.zoe.deployment": labelValue(c.DeploymentID), "io.zoe.release": strings.TrimPrefix(c.ReleaseDigest, "sha256:"), "io.zoe.fence": strconv.FormatInt(c.Fence, 10), "io.zoe.attempt": labelValue(c.AttemptID)}
 }
 
 func deploymentOwnershipLabels(c contracts.DeploymentClaim) map[string]string {
-	return map[string]string{"io.cylo.managed": "true", "io.cylo.workspace": labelValue(c.WorkspaceID), "io.cylo.deployment": labelValue(c.DeploymentID)}
+	return map[string]string{"io.zoe.managed": "true", "io.zoe.workspace": labelValue(c.WorkspaceID), "io.zoe.deployment": labelValue(c.DeploymentID)}
 }
 func deploymentObservationID(c contracts.DeploymentClaim) string {
 	return fmt.Sprintf("deploy-%s-%d", shortHash(c.AttemptID), c.Fence)

@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	DeploymentHostLockPath  = "/run/lock/cylo-runner-deployments.lock"
-	DeploymentAuthorityPath = "/var/lib/cylo/runner-authority/runner-deployment-authority.db"
+	DeploymentHostLockPath  = "/run/lock/zoe-runner-deployments.lock"
+	DeploymentAuthorityPath = "/var/lib/zoe/runner-authority/runner-deployment-authority.db"
 )
 
 // DeploymentAuthority is the trusted Docker-host-wide fence store. It must be

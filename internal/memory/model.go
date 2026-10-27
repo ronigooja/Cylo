@@ -1,4 +1,4 @@
-// Package memory defines Cylo's authoritative, source-linked memory records.
+// Package memory defines Zoe's authoritative, source-linked memory records.
 // External extractors may propose records, but they never own these records.
 package memory
 
@@ -39,7 +39,7 @@ const (
 )
 
 // Scope is always workspace-bound. Personal claims additionally belong to a
-// principal; project/task IDs are opaque Cylo IDs, never host paths.
+// principal; project/task IDs are opaque Zoe IDs, never host paths.
 type Scope struct {
 	Kind        ScopeKind `json:"kind"`
 	ID          string    `json:"id,omitempty"`

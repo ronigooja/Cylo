@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 type Config struct {
@@ -216,7 +216,7 @@ func (s *Service) create(ctx context.Context, p contracts.Principal, req createR
 		return sessionResponse{}, err
 	}
 	// The gateway owns account selection and returns only its opaque sticky
-	// session handle. Cylo never receives or records an account credential/id.
+	// session handle. Zoe never receives or records an account credential/id.
 	gatewayBody, _ := json.Marshal(gatewaySessionRequest{OfferSDP: req.OfferSDP, Voice: req.Voice, VoiceMode: req.VoiceMode, LanguageCode: req.LanguageCode})
 	response, callErr := s.callGateway(ctx, http.MethodPost, "/v1/voice/sessions", gatewayBody)
 	if callErr != nil {
@@ -247,7 +247,7 @@ func (s *Service) create(ctx context.Context, p contracts.Principal, req createR
 		AnswerSDP string `json:"answer_sdp"`
 	}{AnswerSDP: upstream.AnswerSDP})
 	if err := s.markSession(ctx, id, "active", "", answerJSON, upstream.VoiceSessionID); err != nil {
-		// The gateway created a session, but Cylo could not durably bind it. Keep
+		// The gateway created a session, but Zoe could not durably bind it. Keep
 		// the allocating lease; do not free a potentially live media resource.
 		return sessionResponse{}, apiError(http.StatusInternalServerError, "voice_outcome_unknown", "media was negotiated but its durable binding failed; lease remains isolated", nil)
 	}

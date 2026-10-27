@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/agents/ao"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/agents/ao"
 )
 
 type reconciliationControl struct {
@@ -209,11 +209,11 @@ func (d *completeInventoryDocker) Run(_ context.Context, args ...string) ([]byte
 	}
 }
 func neverStartedContainerFixture(id string) map[string]any {
-	return map[string]any{"Id": id, "Name": "/preserved-ao", "Created": time.Now().UTC().Add(-time.Hour), "RestartCount": 0, "Config": map[string]any{"Image": "cylo/ao-codex", "Labels": map[string]string{aoContainerManagedLabel: "true", aoContainerRuntimeLabel: aoContainerCodexRuntime, aoContainerSessionLabel: "legacy-session"}}, "HostConfig": map[string]any{"RestartPolicy": map[string]any{"Name": "no"}}, "State": map[string]any{"Status": "created", "OOMKilled": false, "ExitCode": 0, "Error": "", "Running": false, "Paused": false, "Restarting": false, "Dead": false, "Pid": 0, "StartedAt": time.Time{}, "FinishedAt": time.Time{}}}
+	return map[string]any{"Id": id, "Name": "/preserved-ao", "Created": time.Now().UTC().Add(-time.Hour), "RestartCount": 0, "Config": map[string]any{"Image": "zoe/ao-codex", "Labels": map[string]string{aoContainerManagedLabel: "true", aoContainerRuntimeLabel: aoContainerCodexRuntime, aoContainerSessionLabel: "legacy-session"}}, "HostConfig": map[string]any{"RestartPolicy": map[string]any{"Name": "no"}}, "State": map[string]any{"Status": "created", "OOMKilled": false, "ExitCode": 0, "Error": "", "Running": false, "Paused": false, "Restarting": false, "Dead": false, "Pid": 0, "StartedAt": time.Time{}, "FinishedAt": time.Time{}}}
 }
 func preexistingCapabilityFixture(id string) map[string]any {
-	labels := map[string]string{"io.cylo.managed": "true", "io.cylo.workspace": strings.Repeat("1", 24), "io.cylo.deployment": strings.Repeat("2", 24), "io.cylo.attempt": strings.Repeat("3", 24), "io.cylo.release": strings.Repeat("4", 64), "io.cylo.fence": "1"}
-	return map[string]any{"Id": id, "Name": "/cylo-cap-" + labels["io.cylo.deployment"], "Created": time.Now().UTC().Add(-24 * time.Hour), "RestartCount": 0, "Config": map[string]any{"Image": "python@sha256:" + strings.Repeat("5", 64), "Labels": labels}, "HostConfig": map[string]any{"RestartPolicy": map[string]any{"Name": "unless-stopped"}}, "State": map[string]any{"Status": "running", "Running": true, "Paused": false, "Restarting": false, "Dead": false, "Pid": 42, "StartedAt": time.Now().UTC().Add(-time.Hour), "FinishedAt": time.Time{}}}
+	labels := map[string]string{"io.zoe.managed": "true", "io.zoe.workspace": strings.Repeat("1", 24), "io.zoe.deployment": strings.Repeat("2", 24), "io.zoe.attempt": strings.Repeat("3", 24), "io.zoe.release": strings.Repeat("4", 64), "io.zoe.fence": "1"}
+	return map[string]any{"Id": id, "Name": "/zoe-cap-" + labels["io.zoe.deployment"], "Created": time.Now().UTC().Add(-24 * time.Hour), "RestartCount": 0, "Config": map[string]any{"Image": "python@sha256:" + strings.Repeat("5", 64), "Labels": labels}, "HostConfig": map[string]any{"RestartPolicy": map[string]any{"Name": "unless-stopped"}}, "State": map[string]any{"Status": "running", "Running": true, "Paused": false, "Restarting": false, "Dead": false, "Pid": 42, "StartedAt": time.Now().UTC().Add(-time.Hour), "FinishedAt": time.Time{}}}
 }
 func recordOriginalDispatch(t *testing.T, e *Engine) {
 	t.Helper()
@@ -344,7 +344,7 @@ func TestPreexistingCapabilityExclusionRequiresExactHistoricalEvidence(t *testin
 			case "new-created":
 				fixture["Created"] = time.Now().UTC()
 			case "missing-label":
-				delete(labels, "io.cylo.release")
+				delete(labels, "io.zoe.release")
 			case "ao-tag":
 				labels[aoContainerRuntimeLabel] = aoContainerCodexRuntime
 			case "blank-ao-tag":
@@ -412,7 +412,7 @@ func TestUnmanagedNonAOInventoryRequiresCompleteIdentityAndState(t *testing.T) {
 			fixture := preexistingCapabilityFixture(id)
 			fixture["Name"] = "/control-service"
 			config := fixture["Config"].(map[string]any)
-			config["Image"] = "cylo/control:local"
+			config["Image"] = "zoe/control:local"
 			config["Labels"] = map[string]string{}
 			switch scenario {
 			case "missing-name":

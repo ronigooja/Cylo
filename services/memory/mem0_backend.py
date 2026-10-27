@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 from typing import Any
 
-# Cylo is self-hosted and source text may contain private user data. Mem0's
+# Zoe is self-hosted and source text may contain private user data. Mem0's
 # optional anonymous telemetry is disabled before importing its module.
 os.environ["MEM0_TELEMETRY"] = "false"
 
@@ -59,7 +59,7 @@ class ControlledMem0:
         register_pinned_embedder(embedder)
         qdrant_address = urlparse(config.qdrant_url)
         if not qdrant_address.hostname:
-            raise ValueError("CYLO_QDRANT_URL must include a host")
+            raise ValueError("ZOE_QDRANT_URL must include a host")
         vector_config: dict[str, Any] = {
             "collection_name": config.mem0_collection,
             "embedding_model_dims": config.embedding_dimensions,
@@ -86,7 +86,7 @@ class ControlledMem0:
                 "temperature": 0.1,
             },
         }
-        history_path = Path(os.environ.get("CYLO_MEM0_HISTORY_DB", "/var/lib/cylo/memory/mem0-history.sqlite"))
+        history_path = Path(os.environ.get("ZOE_MEM0_HISTORY_DB", "/var/lib/zoe/memory/mem0-history.sqlite"))
         history_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.memory = Memory.from_config(
             {
@@ -105,7 +105,7 @@ class ControlledMem0:
         self.memory.db.connection.execute("PRAGMA journal_mode=WAL")
         self.memory.db.connection.execute("PRAGMA synchronous=FULL")
         self.memory.db.connection.execute(
-            """CREATE TABLE IF NOT EXISTS cylo_memory_ownership (
+            """CREATE TABLE IF NOT EXISTS zoe_memory_ownership (
                 user_id TEXT NOT NULL,
                 workspace_id TEXT NOT NULL,
                 claim_id TEXT NOT NULL,
@@ -124,11 +124,11 @@ class ControlledMem0:
         if not user_id or not workspace or not claim_id:
             return
         if user_id != mem0_user_id(workspace, claim_id):
-            raise ValueError("Mem0 memory identity does not match its Cylo workspace and claim")
+            raise ValueError("Mem0 memory identity does not match its Zoe workspace and claim")
         db = self.memory.db
         with db._lock:
             db.connection.execute(
-                "INSERT OR IGNORE INTO cylo_memory_ownership(user_id,workspace_id,claim_id,memory_id) VALUES(?,?,?,?)",
+                "INSERT OR IGNORE INTO zoe_memory_ownership(user_id,workspace_id,claim_id,memory_id) VALUES(?,?,?,?)",
                 (user_id, workspace, claim_id, str(memory_id)),
             )
             db.connection.commit()
@@ -226,7 +226,7 @@ class ControlledMem0:
             memory_ids = {
                 str(row[0])
                 for row in db.connection.execute(
-                    "SELECT memory_id FROM cylo_memory_ownership WHERE user_id=? AND workspace_id=? AND claim_id=?",
+                    "SELECT memory_id FROM zoe_memory_ownership WHERE user_id=? AND workspace_id=? AND claim_id=?",
                     (user_id, workspace, claim_id),
                 ).fetchall()
             }
@@ -260,7 +260,7 @@ class ControlledMem0:
                     (f"user_id={user_id}",),
                 )
                 db.connection.execute(
-                    "DELETE FROM cylo_memory_ownership WHERE user_id=? AND workspace_id=? AND claim_id=?",
+                    "DELETE FROM zoe_memory_ownership WHERE user_id=? AND workspace_id=? AND claim_id=?",
                     (user_id, workspace, claim_id),
                 )
                 db.connection.execute("COMMIT")

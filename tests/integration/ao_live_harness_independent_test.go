@@ -35,11 +35,11 @@ func TestIndependentLiveDefiniteCreateFailureDoesNotReplayInCleanup(t *testing.T
 	defer cancel()
 	child := exec.CommandContext(ctx, binary, "-test.run=^TestAOLiveSupervisedCodexRuntime$", "-test.v")
 	child.Env = append(os.Environ(),
-		"CYLO_LIVE_AO_URL="+fakeAO.URL,
-		"CYLO_LIVE_AO_PROJECT_ID=synthetic-owned-project",
-		"CYLO_LIVE_AO_WORKSPACE_ROOT="+filepath.Join(root, "data", "worktrees"),
-		"CYLO_LIVE_AO_DATA_DIR="+filepath.Join(root, "data"),
-		"CYLO_LIVE_AO_EVIDENCE_ROOT="+filepath.Join(root, "evidence"))
+		"ZOE_LIVE_AO_URL="+fakeAO.URL,
+		"ZOE_LIVE_AO_PROJECT_ID=synthetic-owned-project",
+		"ZOE_LIVE_AO_WORKSPACE_ROOT="+filepath.Join(root, "data", "worktrees"),
+		"ZOE_LIVE_AO_DATA_DIR="+filepath.Join(root, "data"),
+		"ZOE_LIVE_AO_EVIDENCE_ROOT="+filepath.Join(root, "evidence"))
 	output, runErr := child.CombinedOutput()
 	if ctx.Err() != nil {
 		t.Fatal("synthetic direct-harness child timed out")
@@ -65,7 +65,7 @@ func TestIndependentLiveBoundaryRejectsSymlinkEscape(t *testing.T) {
 	}
 	for _, mode := range []string{"inside", "symlink-escape"} {
 		child := exec.Command(binary, "-test.run=^TestIndependentLiveBoundaryChild$")
-		child.Env = append(os.Environ(), "CYLO_INDEPENDENT_BOUNDARY_MODE="+mode)
+		child.Env = append(os.Environ(), "ZOE_INDEPENDENT_BOUNDARY_MODE="+mode)
 		output, runErr := child.CombinedOutput()
 		if (mode == "inside") != (runErr == nil) {
 			t.Fatalf("boundary mode=%s accepted=%t output_bytes=%d", mode, runErr == nil, len(output))
@@ -74,7 +74,7 @@ func TestIndependentLiveBoundaryRejectsSymlinkEscape(t *testing.T) {
 }
 
 func TestIndependentLiveBoundaryChild(t *testing.T) {
-	mode := os.Getenv("CYLO_INDEPENDENT_BOUNDARY_MODE")
+	mode := os.Getenv("ZOE_INDEPENDENT_BOUNDARY_MODE")
 	if mode == "" {
 		t.Skip("synthetic child only")
 	}
@@ -97,12 +97,12 @@ func TestIndependentLiveBoundaryChild(t *testing.T) {
 	}
 	body, err := json.Marshal(map[string]any{
 		"Id":         "exact-container",
-		"Config":     map[string]any{"Env": []string{}, "Labels": map[string]string{"io.cylo.managed": "true", "io.cylo.runtime": "ao-codex-chat", "io.cylo.ao.session": "owned-session"}},
+		"Config":     map[string]any{"Env": []string{}, "Labels": map[string]string{"io.zoe.managed": "true", "io.zoe.runtime": "ao-codex-chat", "io.zoe.ao.session": "owned-session"}},
 		"HostConfig": map[string]any{"NetworkMode": "none", "ReadonlyRootfs": true, "CapDrop": []string{"ALL"}, "SecurityOpt": []string{"no-new-privileges"}, "PidsLimit": 256},
 		"Mounts": []map[string]any{
 			{"Type": "bind", "Source": workspace, "Destination": workspace, "RW": true},
 			{"Type": "bind", "Source": filepath.Join(root, "private-home"), "Destination": "/codex-home", "RW": true},
-			{"Type": "bind", "Source": filepath.Join(root, "provider.sock"), "Destination": "/run/cylo/provider.sock", "RW": false},
+			{"Type": "bind", "Source": filepath.Join(root, "provider.sock"), "Destination": "/run/zoe/provider.sock", "RW": false},
 		},
 	})
 	if err != nil {

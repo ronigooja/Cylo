@@ -1,4 +1,4 @@
-// Package ops contains explicit operator actions that mutate a Cylo instance.
+// Package ops contains explicit operator actions that mutate a Zoe instance.
 package ops
 
 import (
@@ -13,11 +13,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ronigooja/Cylo/internal/capabilities"
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/memory"
-	"github.com/ronigooja/Cylo/internal/storage"
-	"github.com/ronigooja/Cylo/internal/voice"
+	"github.com/ronigooja/Zoe/internal/capabilities"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/memory"
+	"github.com/ronigooja/Zoe/internal/storage"
+	"github.com/ronigooja/Zoe/internal/voice"
 )
 
 // KeyOptions describes an explicit key operation. DatabasePath must identify
@@ -94,7 +94,7 @@ func run(ctx context.Context, options KeyOptions, rotate bool) (result KeyResult
 			return KeyResult{}, err
 		}
 		if count != 0 {
-			return KeyResult{}, errors.New("instance credential already exists; use cylo key rotate")
+			return KeyResult{}, errors.New("instance credential already exists; use zoe key rotate")
 		}
 	}
 
@@ -177,7 +177,7 @@ func registerMigrations(store *storage.Store) error {
 // InstallationURL constructs the canonical import link. The key is kept in
 // the fragment so it is not sent as an HTTP query parameter.
 func InstallationURL(server, key string) string {
-	return "cylo://connect?" + url.Values{"server": {server}}.Encode() + "#" + url.Values{"key": {key}}.Encode()
+	return "zoe://connect?" + url.Values{"server": {server}}.Encode() + "#" + url.Values{"key": {key}}.Encode()
 }
 
 // ValidateServerURL rejects addresses that cannot be safely imported by the

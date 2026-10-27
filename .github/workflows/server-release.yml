@@ -22,51 +22,51 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/cylo-release/logs" "$RUNNER_TEMP/cylo-release/artifacts"
+          mkdir -p "$RUNNER_TEMP/zoe-release/logs" "$RUNNER_TEMP/zoe-release/artifacts"
           {
             git rev-parse HEAD
             git status --short
             uname -a
             go version
             docker version
-          } > "$RUNNER_TEMP/cylo-release/logs/environment.txt"
+          } > "$RUNNER_TEMP/zoe-release/logs/environment.txt"
           set +e
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -buildvcs=false -ldflags='-s -w' \
-            -o "$RUNNER_TEMP/cylo-release/artifacts/cylo-server" ./cmd/cylo-server \
-            2>&1 | tee "$RUNNER_TEMP/cylo-release/logs/binary-build.log"
+            -o "$RUNNER_TEMP/zoe-release/artifacts/zoe-server" ./cmd/zoe-server \
+            2>&1 | tee "$RUNNER_TEMP/zoe-release/logs/binary-build.log"
           status=$?
-          echo "$status" > "$RUNNER_TEMP/cylo-release/logs/binary-build.exit"
+          echo "$status" > "$RUNNER_TEMP/zoe-release/logs/binary-build.exit"
           test "$status" -eq 0 || exit "$status"
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -buildvcs=false -ldflags='-s -w' \
-            -o "$RUNNER_TEMP/cylo-release/artifacts/cylo-runner" ./cmd/cylo-runner \
-            2>&1 | tee "$RUNNER_TEMP/cylo-release/logs/runner-build.log"
+            -o "$RUNNER_TEMP/zoe-release/artifacts/zoe-runner" ./cmd/zoe-runner \
+            2>&1 | tee "$RUNNER_TEMP/zoe-release/logs/runner-build.log"
           status=$?
-          echo "$status" > "$RUNNER_TEMP/cylo-release/logs/runner-build.exit"
+          echo "$status" > "$RUNNER_TEMP/zoe-release/logs/runner-build.exit"
           test "$status" -eq 0 || exit "$status"
           docker build --platform linux/arm64 -f deploy/linux/Dockerfile.server \
-            -t "cylo-server:reconciliation-${GITHUB_SHA:0:12}" . \
-            2>&1 | tee "$RUNNER_TEMP/cylo-release/logs/image-build.log"
+            -t "zoe-server:reconciliation-${GITHUB_SHA:0:12}" . \
+            2>&1 | tee "$RUNNER_TEMP/zoe-release/logs/image-build.log"
           status=$?
-          echo "$status" > "$RUNNER_TEMP/cylo-release/logs/image-build.exit"
+          echo "$status" > "$RUNNER_TEMP/zoe-release/logs/image-build.exit"
           test "$status" -eq 0 || exit "$status"
           set -e
-          docker image inspect "cylo-server:reconciliation-${GITHUB_SHA:0:12}" \
-            --format '{{.Id}} {{.Architecture}}' > "$RUNNER_TEMP/cylo-release/artifacts/image.txt"
-          docker save "cylo-server:reconciliation-${GITHUB_SHA:0:12}" | gzip > "$RUNNER_TEMP/cylo-release/artifacts/server-image.tar.gz"
-          cd "$RUNNER_TEMP/cylo-release/artifacts"
-          sha256sum cylo-server cylo-runner server-image.tar.gz > SHA256SUMS
+          docker image inspect "zoe-server:reconciliation-${GITHUB_SHA:0:12}" \
+            --format '{{.Id}} {{.Architecture}}' > "$RUNNER_TEMP/zoe-release/artifacts/image.txt"
+          docker save "zoe-server:reconciliation-${GITHUB_SHA:0:12}" | gzip > "$RUNNER_TEMP/zoe-release/artifacts/server-image.tar.gz"
+          cd "$RUNNER_TEMP/zoe-release/artifacts"
+          sha256sum zoe-server zoe-runner server-image.tar.gz > SHA256SUMS
       - name: Upload release logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: server-release-logs-${{ github.sha }}
-          path: ${{ runner.temp }}/cylo-release/logs
+          path: ${{ runner.temp }}/zoe-release/logs
           retention-days: 7
       - name: Upload deployment artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: server-release-${{ github.sha }}
-          path: ${{ runner.temp }}/cylo-release/artifacts
+          path: ${{ runner.temp }}/zoe-release/artifacts
           retention-days: 7
           if-no-files-found: error
           compression-level: 0

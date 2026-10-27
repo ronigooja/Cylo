@@ -10,8 +10,8 @@ from pathlib import Path
 
 
 BASE_URL = "http://127.0.0.1:18090"
-ENV_FILE = Path("/etc/cylo/voice.env")
-KEY_FILE = Path("/etc/cylo/voice-api-key.env")
+ENV_FILE = Path("/etc/zoe/voice.env")
+KEY_FILE = Path("/etc/zoe/voice-api-key.env")
 
 
 def read_env(path: Path) -> dict[str, str]:
@@ -38,7 +38,7 @@ def main() -> None:
     if os.geteuid() != 0:
         raise SystemExit("Run API key provisioning as root.")
     if KEY_FILE.exists():
-        print("Downstream API key already exists at /etc/cylo/voice-api-key.env.")
+        print("Downstream API key already exists at /etc/zoe/voice-api-key.env.")
         return
     env = read_env(ENV_FILE)
     wait_for_gateway()
@@ -62,7 +62,7 @@ def main() -> None:
         raise SystemExit("gateway admin login did not issue a CSRF cookie")
     create = urllib.request.Request(
         BASE_URL + "/api/keys",
-        data=json.dumps({"name": "cylo-control-plane"}).encode(),
+        data=json.dumps({"name": "zoe-control-plane"}).encode(),
         headers={"Content-Type": "application/json", "X-CSRF-Token": csrf},
         method="POST",
     )
@@ -88,7 +88,7 @@ def main() -> None:
         opener.open(logout, timeout=10).close()
     except Exception:
         pass
-    print("Downstream API key created at /etc/cylo/voice-api-key.env (root-readable only).")
+    print("Downstream API key created at /etc/zoe/voice-api-key.env (root-readable only).")
 
 
 if __name__ == "__main__":

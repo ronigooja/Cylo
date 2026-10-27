@@ -7,7 +7,7 @@ import (
 )
 
 func TestDeletionJournalAppendIsContinuousIdempotentAndTamperEvident(t *testing.T) {
-	database := filepath.Join(t.TempDir(), "cylo.sqlite")
+	database := filepath.Join(t.TempDir(), "zoe.sqlite")
 	journal, err := NewDeletionJournal(database)
 	if err != nil {
 		t.Fatal(err)

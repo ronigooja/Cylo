@@ -24,22 +24,22 @@ type Deployment struct {
 
 func DiscoverDeployment(ctx context.Context, m Manager, root string) (Deployment, error) {
 	if root == "" {
-		root = "/etc/cylo"
+		root = "/etc/zoe"
 	}
 	if !filepath.IsAbs(root) {
 		return Deployment{}, errors.New("deployment root must be absolute")
 	}
-	d := Deployment{Root: root, Mode: ModeUnknown, AOEnv: filepath.Join(root, "ao.env"), RunnerEnv: filepath.Join(root, "cylo-runner.env"), StackEnv: filepath.Join(root, "cylo-stack.env"), RunnerService: "cylo-runner.service", ComposeProject: "cylo"}
-	if v := os.Getenv("CYLO_DEPLOYMENT_MODE"); v != "" {
+	d := Deployment{Root: root, Mode: ModeUnknown, AOEnv: filepath.Join(root, "ao.env"), RunnerEnv: filepath.Join(root, "zoe-runner.env"), StackEnv: filepath.Join(root, "zoe-stack.env"), RunnerService: "zoe-runner.service", ComposeProject: "zoe"}
+	if v := os.Getenv("ZOE_DEPLOYMENT_MODE"); v != "" {
 		d.Mode = Mode(v)
 	}
 	if m.Run == nil {
 		m = NewManager(nil)
 	}
 	// Only fixed metadata properties are requested; Environment is deliberately excluded.
-	out, err := m.Run(ctx, "systemctl", "show", "cylo-ao.service", "--property=LoadState,EnvironmentFiles,FragmentPath", "--no-pager")
+	out, err := m.Run(ctx, "systemctl", "show", "zoe-ao.service", "--property=LoadState,EnvironmentFiles,FragmentPath", "--no-pager")
 	if err == nil && strings.Contains(string(out), "LoadState=loaded") {
-		d.AOService = "cylo-ao.service"
+		d.AOService = "zoe-ao.service"
 		if d.Mode == ModeUnknown {
 			d.Mode = ModeSystemd
 		}
@@ -61,10 +61,10 @@ func DiscoverDeployment(ctx context.Context, m Manager, root string) (Deployment
 		}
 	}
 	stack, _ := readEnv(d.StackEnv)
-	if p := stack["CYLO_COMPOSE_FILE"]; filepath.IsAbs(p) {
+	if p := stack["ZOE_COMPOSE_FILE"]; filepath.IsAbs(p) {
 		d.ComposeFile = p
 	}
-	if p := os.Getenv("CYLO_COMPOSE_FILE"); filepath.IsAbs(p) {
+	if p := os.Getenv("ZOE_COMPOSE_FILE"); filepath.IsAbs(p) {
 		d.ComposeFile = p
 	}
 	if d.ComposeFile != "" && d.Mode == ModeUnknown {
@@ -73,17 +73,17 @@ func DiscoverDeployment(ctx context.Context, m Manager, root string) (Deployment
 	if p := stack["COMPOSE_PROJECT_NAME"]; p != "" {
 		d.ComposeProject = p
 	}
-	if p := stack["CYLO_DATABASE_PATH"]; filepath.IsAbs(p) {
+	if p := stack["ZOE_DATABASE_PATH"]; filepath.IsAbs(p) {
 		d.DatabasePath = p
-	} else if p := stack["CYLO_SERVER_DATA_ROOT"]; filepath.IsAbs(p) {
-		d.DatabasePath = filepath.Join(p, "data", "cylo.sqlite")
+	} else if p := stack["ZOE_SERVER_DATA_ROOT"]; filepath.IsAbs(p) {
+		d.DatabasePath = filepath.Join(p, "data", "zoe.sqlite")
 	}
 	if d.DatabasePath == "" {
-		d.DatabasePath = "/var/lib/cylo/server/data/cylo.sqlite"
+		d.DatabasePath = "/var/lib/zoe/server/data/zoe.sqlite"
 	}
-	d.DropInPath = "/etc/systemd/system/cylo-ao.service.d/90-cylo-provider.conf"
-	if root != "/etc/cylo" {
-		d.DropInPath = filepath.Join(root, "systemd", "cylo-ao.service.d", "90-cylo-provider.conf")
+	d.DropInPath = "/etc/systemd/system/zoe-ao.service.d/90-zoe-provider.conf"
+	if root != "/etc/zoe" {
+		d.DropInPath = filepath.Join(root, "systemd", "zoe-ao.service.d", "90-zoe-provider.conf")
 	}
 	// Reload the non-secret managed deployment descriptor, if present.
 	if b, e := os.ReadFile(filepath.Join(root, "provider-deployment.json")); e == nil && len(b) < 16384 {
@@ -148,12 +148,12 @@ func (d Deployment) InspectConfig() InspectConfig {
 	c, _ := d.ProviderConfig()
 	services := []string{}
 	if d.Mode == ModeCompose {
-		services = []string{"cylo-server", "cylo-memory-worker", "qdrant"}
+		services = []string{"zoe-server", "zoe-memory-worker", "qdrant"}
 		if d.AOService != "" {
 			services = append(services, d.AOService)
 		}
 	} else {
-		services = []string{"cylo-compose.service", d.RunnerService}
+		services = []string{"zoe-compose.service", d.RunnerService}
 		if d.AOService != "" {
 			services = append(services, d.AOService)
 		}
@@ -260,8 +260,8 @@ func (m Manager) ConfigureProvider(ctx context.Context, d Deployment, c Provider
 		_ = saveProviderCheck(d, result)
 		return result, fmt.Errorf("provider validation failed: %s", result.ErrorCategory)
 	}
-	if d.Mode == ModeSystemd && strings.HasSuffix(d.DropInPath, "/cylo-ao.service.d/90-cylo-provider.conf") && d.AOService != "cylo-ao.service" {
-		d.DropInPath = filepath.Join(filepath.Dir(filepath.Dir(d.DropInPath)), d.AOService+".d", "90-cylo-provider.conf")
+	if d.Mode == ModeSystemd && strings.HasSuffix(d.DropInPath, "/zoe-ao.service.d/90-zoe-provider.conf") && d.AOService != "zoe-ao.service" {
+		d.DropInPath = filepath.Join(filepath.Dir(filepath.Dir(d.DropInPath)), d.AOService+".d", "90-zoe-provider.conf")
 	}
 	composeUID, composeGID := -1, -1
 	if d.Mode == ModeCompose {
@@ -328,15 +328,15 @@ func (m Manager) ConfigureProvider(ctx context.Context, d Deployment, c Provider
 		return errors.Join(errs...)
 	}
 	if d.Mode == ModeSystemd {
-		canonicalSecretDir := filepath.Clean(c.SecretPath) == filepath.Join("/etc/cylo", "runner-secrets", filepath.Base(c.SecretPath)) && filepath.Dir(filepath.Clean(c.SecretPath)) == "/etc/cylo/runner-secrets"
-		if d.Root == "/etc/cylo" && !canonicalSecretDir {
-			return result, errors.New("systemd credential must be inside /etc/cylo/runner-secrets")
+		canonicalSecretDir := filepath.Clean(c.SecretPath) == filepath.Join("/etc/zoe", "runner-secrets", filepath.Base(c.SecretPath)) && filepath.Dir(filepath.Clean(c.SecretPath)) == "/etc/zoe/runner-secrets"
+		if d.Root == "/etc/zoe" && !canonicalSecretDir {
+			return result, errors.New("systemd credential must be inside /etc/zoe/runner-secrets")
 		}
 		uid, gid := -1, -1
 		if canonicalSecretDir {
-			u, e := user.Lookup("cylo-runner")
+			u, e := user.Lookup("zoe-runner")
 			if e != nil {
-				return result, errors.New("cylo-runner account unavailable")
+				return result, errors.New("zoe-runner account unavailable")
 			}
 			uid, e = strconv.Atoi(u.Uid)
 			if e != nil {

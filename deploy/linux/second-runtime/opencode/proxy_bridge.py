@@ -11,7 +11,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-SOCKET_PATH = os.environ.get("CYLO_OPENCODE_PROVIDER_SOCKET", "/run/cylo/provider.sock")
+SOCKET_PATH = os.environ.get("ZOE_OPENCODE_PROVIDER_SOCKET", "/run/zoe/provider.sock")
 ALLOWED = {
     ("GET", "/v1/models"),
     ("POST", "/v1/chat/completions"),

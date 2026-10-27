@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 func instanceAuthFixture(t *testing.T) (*storage.Store, *Server, string) {

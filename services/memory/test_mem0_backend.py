@@ -50,7 +50,7 @@ class DeleteClaimTests(unittest.TestCase):
             db_path = str(Path(temp_dir) / "mem0-history.sqlite")
             db = SQLiteManager(db_path)
             db.connection.execute(
-                """CREATE TABLE cylo_memory_ownership (
+                """CREATE TABLE zoe_memory_ownership (
                     user_id TEXT NOT NULL, workspace_id TEXT NOT NULL, claim_id TEXT NOT NULL,
                     memory_id TEXT NOT NULL, PRIMARY KEY(user_id, memory_id)
                 )"""
@@ -62,7 +62,7 @@ class DeleteClaimTests(unittest.TestCase):
                     (workspace, "claim-b") if user_id == other_claim_user else ("workspace-b", claim_id)
                 )
                 db.connection.execute(
-                    "INSERT INTO cylo_memory_ownership(user_id,workspace_id,claim_id,memory_id) VALUES(?,?,?,?)",
+                    "INSERT INTO zoe_memory_ownership(user_id,workspace_id,claim_id,memory_id) VALUES(?,?,?,?)",
                     (user_id, owner_workspace, owner_claim, item.id),
                 )
                 db.connection.commit()
@@ -71,7 +71,7 @@ class DeleteClaimTests(unittest.TestCase):
             # Its vector is absent, but the durable ownership map remains.
             db.add_history("target-inferred-delete", "old fact", None, "DELETE", is_deleted=1)
             db.connection.execute(
-                "INSERT INTO cylo_memory_ownership(user_id,workspace_id,claim_id,memory_id) VALUES(?,?,?,?)",
+                "INSERT INTO zoe_memory_ownership(user_id,workspace_id,claim_id,memory_id) VALUES(?,?,?,?)",
                 (target_user, workspace, claim_id, "target-inferred-delete"),
             )
             db.connection.commit()

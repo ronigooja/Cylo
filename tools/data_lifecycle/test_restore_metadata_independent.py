@@ -13,14 +13,14 @@ class IndependentLedgerCorruptionTests(unittest.TestCase):
     def assert_rejected(self, sql, *, watermark=None):
         with tempfile.TemporaryDirectory() as directory:
             payload, manifest = fixtures.RestoreDeletionLedgerMetadataTests().make_payload(Path(directory))
-            database = payload / "authority" / "cylo.sqlite"
+            database = payload / "authority" / "zoe.sqlite"
             with sqlite3.connect(database) as connection:
                 connection.executescript(sql)
             if watermark is not None:
                 manifest["database"]["deletion_ledger"]["watermark"] = watermark
                 manifest["database"]["deletion_ledger"]["event_count"] = watermark
-            sidecar = payload / "authority" / "cylo.sqlite.deletion-ledger"
-            manifest["files"] = [file_record(database, "authority", "authority/cylo.sqlite"), file_record(sidecar, "authority", "authority/cylo.sqlite.deletion-ledger")]
+            sidecar = payload / "authority" / "zoe.sqlite.deletion-ledger"
+            manifest["files"] = [file_record(database, "authority", "authority/zoe.sqlite"), file_record(sidecar, "authority", "authority/zoe.sqlite.deletion-ledger")]
             (payload / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaises((RuntimeError, sqlite3.DatabaseError)):
                 verify_manifest(payload)

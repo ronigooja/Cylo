@@ -6,12 +6,12 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false -ldflags='-s -w' -o /out/cylo-runner ./cmd/cylo-runner
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false -ldflags='-s -w' -o /out/cylo-secret-entrypoint ./deploy/linux/secret-entrypoint.go
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false -ldflags='-s -w' -o /out/zoe-runner ./cmd/zoe-runner
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false -ldflags='-s -w' -o /out/zoe-secret-entrypoint ./deploy/linux/secret-entrypoint.go
 
 FROM ${RUNTIME_IMAGE}
-COPY --from=build --chown=65532:65532 /out/cylo-runner /usr/local/bin/cylo-runner
-COPY --from=build --chown=65532:65532 /out/cylo-secret-entrypoint /usr/local/bin/cylo-secret-entrypoint
+COPY --from=build --chown=65532:65532 /out/zoe-runner /usr/local/bin/zoe-runner
+COPY --from=build --chown=65532:65532 /out/zoe-secret-entrypoint /usr/local/bin/zoe-secret-entrypoint
 USER 65532:65532
-ENTRYPOINT ["/usr/local/bin/cylo-secret-entrypoint"]
-CMD ["/usr/local/bin/cylo-runner"]
+ENTRYPOINT ["/usr/local/bin/zoe-secret-entrypoint"]
+CMD ["/usr/local/bin/zoe-runner"]

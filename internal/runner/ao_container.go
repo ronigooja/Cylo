@@ -8,13 +8,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Zoe/contracts"
 )
 
 const (
-	aoContainerManagedLabel    = "io.cylo.managed"
-	aoContainerRuntimeLabel    = "io.cylo.runtime"
-	aoContainerSessionLabel    = "io.cylo.ao.session"
+	aoContainerManagedLabel    = "io.zoe.managed"
+	aoContainerRuntimeLabel    = "io.zoe.runtime"
+	aoContainerSessionLabel    = "io.zoe.ao.session"
 	aoContainerCodexRuntime    = "ao-codex-chat"
 	aoContainerOpenCodeRuntime = "ao-opencode-acp"
 	aoContainerRuntimeValue    = aoContainerCodexRuntime

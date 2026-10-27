@@ -12,8 +12,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 type backupManifestHTTPFixture struct {
@@ -111,7 +111,7 @@ func TestExportTempCleanupHTTPThenDeletionCompletionAdvancesCheckpoint(t *testin
 	}
 	id := "drill-export"
 	now := "2026-10-22T00:00:00Z"
-	if _, err := f.store.DB().ExecContext(context.Background(), `INSERT INTO cylo_export_temp_registry(export_id,workspace_id,owner_id,export_scope,created_deletion_sequence,status,invalidation_sequence,created_at,updated_at) VALUES(?, 'default', 'fixture-owner', 'personal', 0, 'active', 0, ?, ?)`, id, now, now); err != nil {
+	if _, err := f.store.DB().ExecContext(context.Background(), `INSERT INTO zoe_export_temp_registry(export_id,workspace_id,owner_id,export_scope,created_deletion_sequence,status,invalidation_sequence,created_at,updated_at) VALUES(?, 'default', 'fixture-owner', 'personal', 0, 'active', 0, ?, ?)`, id, now, now); err != nil {
 		t.Fatal(err)
 	}
 	root := f.store.Path() + ".exports"
@@ -123,7 +123,7 @@ func TestExportTempCleanupHTTPThenDeletionCompletionAdvancesCheckpoint(t *testin
 			t.Fatal(err)
 		}
 	}
-	if _, err := f.store.DB().ExecContext(context.Background(), `UPDATE cylo_instance_state SET restore_deletion_reconciliation_required=1,derived_retrieval_enabled=0 WHERE singleton=1`); err != nil {
+	if _, err := f.store.DB().ExecContext(context.Background(), `UPDATE zoe_instance_state SET restore_deletion_reconciliation_required=1,derived_retrieval_enabled=0 WHERE singleton=1`); err != nil {
 		t.Fatal(err)
 	}
 	ordinary := performBackupManifestRequest(t, f.handler, "POST", "/runner/v1/memory/jobs/claim", map[string]any{"limit": 1}, backupManifestRunnerToken)
@@ -152,7 +152,7 @@ func TestExportTempCleanupHTTPThenDeletionCompletionAdvancesCheckpoint(t *testin
 		t.Fatalf("export cleanup job status=%q err=%v", status, err)
 	}
 	var checkpoint int64
-	if err := f.store.DB().QueryRowContext(context.Background(), `SELECT completed_sequence FROM cylo_deletion_reconciliation_checkpoints WHERE target='export_temp'`).Scan(&checkpoint); err != nil || checkpoint != 1 {
+	if err := f.store.DB().QueryRowContext(context.Background(), `SELECT completed_sequence FROM zoe_deletion_reconciliation_checkpoints WHERE target='export_temp'`).Scan(&checkpoint); err != nil || checkpoint != 1 {
 		t.Fatalf("export temp checkpoint=%d err=%v", checkpoint, err)
 	}
 }
@@ -326,7 +326,7 @@ func TestBackupDeleteManifestCleanupHTTPRejectsInvalidTombstoneAndPersistenceFai
 			}
 			assertBackupManifestJobNotDone(t, f)
 			assertBackupManifestJobNotDone(t, f)
-			if _, err := f.store.DB().ExecContext(context.Background(), `UPDATE cylo_instance_state SET restore_deletion_reconciliation_required=1,derived_retrieval_enabled=0 WHERE singleton=1`); err != nil {
+			if _, err := f.store.DB().ExecContext(context.Background(), `UPDATE zoe_instance_state SET restore_deletion_reconciliation_required=1,derived_retrieval_enabled=0 WHERE singleton=1`); err != nil {
 				t.Fatal(err)
 			}
 			gated := performBackupManifestRequest(t, f.handler, http.MethodPost, "/runner/v1/memory/jobs/claim", map[string]any{"limit": 1}, backupManifestRunnerToken)
@@ -347,7 +347,7 @@ func assertBackupManifestJobDone(t *testing.T, f *backupManifestHTTPFixture, att
 	if status != "done" {
 		t.Fatalf("backup manifest cleanup job status=%q", status)
 	}
-	if err := f.store.DB().QueryRowContext(context.Background(), `SELECT completed_sequence FROM cylo_deletion_reconciliation_checkpoints WHERE target='backup_delete_manifest'`).Scan(&checkpoint); err != nil {
+	if err := f.store.DB().QueryRowContext(context.Background(), `SELECT completed_sequence FROM zoe_deletion_reconciliation_checkpoints WHERE target='backup_delete_manifest'`).Scan(&checkpoint); err != nil {
 		t.Fatal(err)
 	}
 	if checkpoint != 1 {
@@ -365,7 +365,7 @@ func assertBackupManifestJobNotDone(t *testing.T, f *backupManifestHTTPFixture) 
 		t.Fatal("backup manifest cleanup job completed after manifest persistence failure")
 	}
 	var checkpoint int64
-	err := f.store.DB().QueryRowContext(context.Background(), `SELECT completed_sequence FROM cylo_deletion_reconciliation_checkpoints WHERE target='backup_delete_manifest'`).Scan(&checkpoint)
+	err := f.store.DB().QueryRowContext(context.Background(), `SELECT completed_sequence FROM zoe_deletion_reconciliation_checkpoints WHERE target='backup_delete_manifest'`).Scan(&checkpoint)
 	if err == nil && checkpoint != 0 {
 		t.Fatalf("backup deletion checkpoint advanced to %d after manifest persistence failure", checkpoint)
 	}

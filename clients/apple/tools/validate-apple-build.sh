@@ -18,9 +18,9 @@ contents are copied into the new output directory. No Keychain access is
 needed when the seed contains the pinned artifact.
 
 The default checks run Swift package tests, an unsigned macOS Xcode app build,
-an iOS SDK build of CyloKit and CyloUI, and a direct compile of the iOS app
+an iOS SDK build of ZoeKit and ZoeUI, and a direct compile of the iOS app
 entry point. The entry-point compile is source evidence, not an Xcode app build.
-Pass --include-ios-xcode-app-target to separately attempt the CyloMobile Xcode
+Pass --include-ios-xcode-app-target to separately attempt the ZoeMobile Xcode
 scheme build. A missing eligible destination is reported as
 BLOCKED_NO_ELIGIBLE_DESTINATION and does not change the source compile result.
 Pass --require-ios-xcode-app-target to require that build to pass; a missing
@@ -114,7 +114,7 @@ mkdir -p "$OUTPUT_ROOT"
 mkdir -p "$OUTPUT_ROOT/source"
 git -C "$REPOSITORY_ROOT" archive "$SOURCE_REVISION" clients/apple | tar -x -C "$OUTPUT_ROOT/source" || fail "could not create source snapshot"
 SOURCE_APPLE_ROOT="$OUTPUT_ROOT/source/clients/apple"
-PACKAGE_ROOT="$SOURCE_APPLE_ROOT/Packages/CyloKit"
+PACKAGE_ROOT="$SOURCE_APPLE_ROOT/Packages/ZoeKit"
 REPORT="$OUTPUT_ROOT/validation-report.txt"
 
 record() {
@@ -178,8 +178,8 @@ seed_swiftpm "$XCODE_PACKAGE_ROOT"
 mkdir -p "$OUTPUT_ROOT/package-cache"
 if ! run_logged "unsigned universal macOS app build" "$OUTPUT_ROOT/macos-xcodebuild.log" \
     xcodebuild -quiet \
-    -project "$SOURCE_APPLE_ROOT/Cylo.xcodeproj" \
-    -scheme CyloMac \
+    -project "$SOURCE_APPLE_ROOT/Zoe.xcodeproj" \
+    -scheme ZoeMac \
     -destination "generic/platform=macOS" \
     -derivedDataPath "$OUTPUT_ROOT/macos-derived" \
     -clonedSourcePackagesDirPath "$XCODE_PACKAGE_ROOT" \
@@ -205,8 +205,8 @@ if ! run_logged "direct iOS SDK package source build" "$OUTPUT_ROOT/ios-sdk-buil
 fi
 record "PASS iOS shared-package source compile (manual SDK build; not an Xcode app-target build)"
 
-IOS_MODULE_PATH=$(find "$IOS_BUILD_ROOT" -name CyloUI.swiftmodule -print -quit)
-[ -n "$IOS_MODULE_PATH" ] || fail "iOS SDK build did not produce CyloUI.swiftmodule"
+IOS_MODULE_PATH=$(find "$IOS_BUILD_ROOT" -name ZoeUI.swiftmodule -print -quit)
+[ -n "$IOS_MODULE_PATH" ] || fail "iOS SDK build did not produce ZoeUI.swiftmodule"
 IOS_MODULES=$(dirname "$IOS_MODULE_PATH")
 IOS_WEBRTC_FRAMEWORK="$IOS_BUILD_ROOT/artifacts/webrtc/WebRTC/WebRTC.xcframework/ios-arm64"
 mkdir -p "$OUTPUT_ROOT/ios-app-module-cache"
@@ -218,8 +218,8 @@ if ! run_logged "direct iOS app entry-point source compile" "$OUTPUT_ROOT/ios-ap
     -module-cache-path "$OUTPUT_ROOT/ios-app-module-cache" \
     -I "$IOS_MODULES" \
     -F "$IOS_WEBRTC_FRAMEWORK" \
-    -emit-object "$SOURCE_APPLE_ROOT/Apps/iOS/CyloMobileApp.swift" \
-    -o "$OUTPUT_ROOT/CyloMobileApp.o"; then
+    -emit-object "$SOURCE_APPLE_ROOT/Apps/iOS/ZoeMobileApp.swift" \
+    -o "$OUTPUT_ROOT/ZoeMobileApp.o"; then
     record "FAIL direct iOS app entry-point source compile"
     exit 1
 fi
@@ -229,10 +229,10 @@ IOS_APP_TARGET_STATUS=NOT_ATTEMPTED
 if [ "$INCLUDE_IOS_XCODE_APP_TARGET" -eq 1 ]; then
     IOS_RESULT_BUNDLE="$OUTPUT_ROOT/ios-app-target.xcresult"
     IOS_TARGET_LOG="$OUTPUT_ROOT/ios-app-target-xcodebuild.log"
-    if run_logged "Xcode CyloMobile app-target build" "$IOS_TARGET_LOG" \
+    if run_logged "Xcode ZoeMobile app-target build" "$IOS_TARGET_LOG" \
         xcodebuild -quiet \
-        -project "$SOURCE_APPLE_ROOT/Cylo.xcodeproj" \
-        -scheme CyloMobile \
+        -project "$SOURCE_APPLE_ROOT/Zoe.xcodeproj" \
+        -scheme ZoeMobile \
         -sdk iphoneos \
         -destination "generic/platform=iOS" \
         -derivedDataPath "$OUTPUT_ROOT/ios-app-target-derived" \
@@ -244,7 +244,7 @@ if [ "$INCLUDE_IOS_XCODE_APP_TARGET" -eq 1 ]; then
         record "PASS iOS Xcode app-target build"
     elif grep -Eiq 'no destinations|eligible destinations|not installed|unable to find a destination' "$IOS_TARGET_LOG"; then
         IOS_APP_TARGET_STATUS=BLOCKED_NO_ELIGIBLE_DESTINATION
-        record "BLOCKED_NO_ELIGIBLE_DESTINATION Xcode did not compile the CyloMobile app target"
+        record "BLOCKED_NO_ELIGIBLE_DESTINATION Xcode did not compile the ZoeMobile app target"
     else
         IOS_APP_TARGET_STATUS=FAIL
         record "FAIL iOS Xcode app-target build (see $IOS_TARGET_LOG)"

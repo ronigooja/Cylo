@@ -36,8 +36,8 @@ Keep connection details in operator-provided environment variables or SSH config
 
 See [operations.md](references/operations.md) for the single-session run example, optional persistent Codex registration, real-device troubleshooting, and evidence boundaries. Read it before device installation or diagnosing startup failures.
 
-Always discover the current workspace, scheme, and eligible destination. Workspace identifiers are opaque and temporary. In the observed background-server workflow, new connections could revert to `CyloMac`/`My Mac`. Select the intended scheme and physical destination in the **same bridge session** as `RunProject`; never assume the previous connection's selection persists. Prefer `attachDebugger=false` for manual testing unless debugging is needed.
+Always discover the current workspace, scheme, and eligible destination. Workspace identifiers are opaque and temporary. In the observed background-server workflow, new connections could revert to `ZoeMac`/`My Mac`. Select the intended scheme and physical destination in the **same bridge session** as `RunProject`; never assume the previous connection's selection persists. Prefer `attachDebugger=false` for manual testing unless debugging is needed.
 
 ## Completion
 
-Separate MCP connectivity, project authorization, successful build, confirmed installation, launch, continued process existence, visible UI, and functional acceptance. Report only the stages actually checked. Keep repository decisions and acceptance evidence in `docs/master-plan.md`; this skill is an operator workflow, not a Cylo runtime or a macOS control server.
+Separate MCP connectivity, project authorization, successful build, confirmed installation, launch, continued process existence, visible UI, and functional acceptance. Report only the stages actually checked. Keep repository decisions and acceptance evidence in `docs/master-plan.md`; this skill is an operator workflow, not a Zoe runtime or a macOS control server.

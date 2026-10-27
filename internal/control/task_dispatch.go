@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Zoe/contracts"
 )
 
 // RegisterTaskDispatchGuard installs the dispatch policy for a trusted task

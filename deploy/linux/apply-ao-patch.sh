@@ -29,7 +29,7 @@ if [[ -n "$(git -C "$ao_source" ls-files --others --exclude-standard)" ]]; then
 fi
 git -C "$ao_source" apply --check "$patch"
 git -C "$ao_source" apply "$patch"
-index_root="$(mktemp -d "${TMPDIR:-/tmp}/cylo-ao-patch-index.XXXXXX")"
+index_root="$(mktemp -d "${TMPDIR:-/tmp}/zoe-ao-patch-index.XXXXXX")"
 cleanup_index() {
   rm -rf -- "$index_root"
 }
@@ -42,4 +42,4 @@ if [[ "$actual_tree" != "$expected_tree" ]]; then
   echo "AO patch output tree mismatch: expected $expected_tree, found $actual_tree" >&2
   exit 1
 fi
-echo "Applied Cylo supervised Codex container patch to AO $expected"
+echo "Applied Zoe supervised Codex container patch to AO $expected"

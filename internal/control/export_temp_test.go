@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 func exportTempTestStore(t *testing.T) *storage.Store {
@@ -36,7 +36,7 @@ func exportTempTestStore(t *testing.T) *storage.Store {
 func addExportTempFixture(t *testing.T, store *storage.Store, id, workspace string, sequence int64) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := store.DB().Exec(`INSERT INTO cylo_export_temp_registry(export_id,workspace_id,owner_id,export_scope,created_deletion_sequence,status,invalidation_sequence,created_at,updated_at) VALUES(?,?,?,'workspace',?,'active',0,?,?)`, id, workspace, "owner", sequence, now, now); err != nil {
+	if _, err := store.DB().Exec(`INSERT INTO zoe_export_temp_registry(export_id,workspace_id,owner_id,export_scope,created_deletion_sequence,status,invalidation_sequence,created_at,updated_at) VALUES(?,?,?,'workspace',?,'active',0,?,?)`, id, workspace, "owner", sequence, now, now); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -91,11 +91,11 @@ func TestExportTempCleanupIsIdempotentAndWorkspaceScoped(t *testing.T) {
 		t.Fatalf("idempotent cleanup completed=%t code=%q err=%v", done, code, err)
 	}
 	var otherStatus string
-	if err = store.DB().QueryRow(`SELECT status FROM cylo_export_temp_registry WHERE export_id='workspace-b-old'`).Scan(&otherStatus); err != nil || otherStatus != "active" {
+	if err = store.DB().QueryRow(`SELECT status FROM zoe_export_temp_registry WHERE export_id='workspace-b-old'`).Scan(&otherStatus); err != nil || otherStatus != "active" {
 		t.Fatalf("other workspace registry status=%q err=%v", otherStatus, err)
 	}
 	var checkpoint int64
-	if err = store.DB().QueryRow(`SELECT completed_sequence FROM cylo_deletion_reconciliation_checkpoints WHERE target='export_temp'`).Scan(&checkpoint); err != nil || checkpoint != 0 {
+	if err = store.DB().QueryRow(`SELECT completed_sequence FROM zoe_deletion_reconciliation_checkpoints WHERE target='export_temp'`).Scan(&checkpoint); err != nil || checkpoint != 0 {
 		t.Fatalf("file cleanup alone advanced reconciliation checkpoint=%d err=%v", checkpoint, err)
 	}
 }

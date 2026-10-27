@@ -20,4 +20,4 @@ Task life survives voice loss and account changes without duplicate dispatch. Co
 
 ## Sources
 
-[Product chapters 3, 8, and 12](../../product.md); [voice architecture](../../architecture.md#voice-and-business-work); [selected upstream](https://github.com/Space3044/chatgpt-web-voice); historical evidence: [voice/Super boundary](https://github.com/ronigooja/Cylo/blob/95ee55a5bbd8dccfb7f14af9f9703bb83727da6c/docs/archive/research/reports/12-voice-super-boundary.md).
+[Product chapters 3, 8, and 12](../../product.md); [voice architecture](../../architecture.md#voice-and-business-work); [selected upstream](https://github.com/Space3044/chatgpt-web-voice); historical evidence: [voice/Super boundary](https://github.com/ronigooja/Zoe/blob/95ee55a5bbd8dccfb7f14af9f9703bb83727da6c/docs/archive/research/reports/12-voice-super-boundary.md).

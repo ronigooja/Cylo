@@ -1,7 +1,7 @@
 package contracts
 
 // RunBudgetUsage is a vector of countable per-run resources. Units are kept in
-// the upstream provider's native usage units; Cylo does not infer money.
+// the upstream provider's native usage units; Zoe does not infer money.
 type RunBudgetUsage struct {
 	ModelCalls    int64 `json:"model_calls"`
 	InputUnits    int64 `json:"input_units"`

@@ -4,13 +4,13 @@ set -euo pipefail
 # Rebuild the iOS/macOS WebRTC framework from the upstream source revision
 # corresponding to the pinned M155 binary package. All generated source and
 # build outputs live under the dedicated Mac folder.
-build_root=${CYLO_APPLE_BUILD_ROOT:-/Users/zhuwei/terminal/cylo-apple-build/webrtc-source}
+build_root=${ZOE_APPLE_BUILD_ROOT:-/Users/zhuwei/terminal/zoe-apple-build/webrtc-source}
 source_revision=3b7ef6826ea6cb4c89c3972b1f14fcb3ed0fa469
 depot_tools_revision=c84f5f5081e89eda268785a04a9e8a9a1987724f
 
 case "$build_root" in
-  /Users/zhuwei/terminal/cylo-apple-build/*) ;;
-  *) echo "CYLO_APPLE_BUILD_ROOT must stay beneath /Users/zhuwei/terminal/cylo-apple-build" >&2; exit 2 ;;
+  /Users/zhuwei/terminal/zoe-apple-build/*) ;;
+  *) echo "ZOE_APPLE_BUILD_ROOT must stay beneath /Users/zhuwei/terminal/zoe-apple-build" >&2; exit 2 ;;
 esac
 
 mkdir -p "$build_root"

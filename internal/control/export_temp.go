@@ -12,8 +12,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 const exportTempCleanupScope = "memory:jobs:complete"
@@ -80,7 +80,7 @@ func exportTempRootPath(store *storage.Store) (string, error) {
 		if existing, ok := inMemoryExportRoots.Load(store); ok {
 			return existing.(string), nil
 		}
-		path, err := os.MkdirTemp("", "cylo-export-instance-")
+		path, err := os.MkdirTemp("", "zoe-export-instance-")
 		if err != nil {
 			return "", err
 		}
@@ -156,13 +156,13 @@ func (s *Server) beginExportTemp(ctx context.Context, p contracts.Principal, sco
 	}
 	defer tx.Rollback()
 	var sequence int64
-	if err = tx.QueryRowContext(ctx, `SELECT deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&sequence); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT deletion_sequence FROM zoe_instance_state WHERE singleton=1`).Scan(&sequence); err != nil {
 		_ = root.Close()
 		releaseExportTempLock(exportID, lock)
 		return nil, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err = tx.ExecContext(ctx, `INSERT INTO cylo_export_temp_registry(export_id,workspace_id,owner_id,export_scope,created_deletion_sequence,status,invalidation_sequence,created_at,updated_at,last_error) VALUES(?,?,?,?,?,'active',0,?,?, '')`, exportID, p.WorkspaceID, p.SubjectID, scope, sequence, now, now); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO zoe_export_temp_registry(export_id,workspace_id,owner_id,export_scope,created_deletion_sequence,status,invalidation_sequence,created_at,updated_at,last_error) VALUES(?,?,?,?,?,'active',0,?,?, '')`, exportID, p.WorkspaceID, p.SubjectID, scope, sequence, now, now); err != nil {
 		_ = root.Close()
 		releaseExportTempLock(exportID, lock)
 		return nil, err
@@ -202,7 +202,7 @@ func (l *exportTempLease) createArchive() (*os.File, error) {
 
 func (l *exportTempLease) invalidated(ctx context.Context, db *sql.DB) (bool, error) {
 	var status string
-	err := db.QueryRowContext(ctx, `SELECT status FROM cylo_export_temp_registry WHERE export_id=?`, l.id).Scan(&status)
+	err := db.QueryRowContext(ctx, `SELECT status FROM zoe_export_temp_registry WHERE export_id=?`, l.id).Scan(&status)
 	if err != nil {
 		return false, err
 	}
@@ -215,9 +215,9 @@ func (l *exportTempLease) closeAndClean(db *sql.DB) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if err := removeRegisteredExportFiles(l.root, l.id); err != nil {
-		_, _ = db.Exec(`UPDATE cylo_export_temp_registry SET last_error='self_cleanup_failed',updated_at=? WHERE export_id=?`, now, l.id)
+		_, _ = db.Exec(`UPDATE zoe_export_temp_registry SET last_error='self_cleanup_failed',updated_at=? WHERE export_id=?`, now, l.id)
 	} else {
-		_, _ = db.Exec(`UPDATE cylo_export_temp_registry SET status='cleaned',updated_at=?,last_error='' WHERE export_id=?`, now, l.id)
+		_, _ = db.Exec(`UPDATE zoe_export_temp_registry SET status='cleaned',updated_at=?,last_error='' WHERE export_id=?`, now, l.id)
 	}
 	_ = l.root.Close()
 	releaseExportTempLock(l.id, l.lock)
@@ -305,7 +305,7 @@ func (s *Server) validateExportTempLease(ctx context.Context, p contracts.Runner
 
 func (s *Server) cleanExportTemps(ctx context.Context, workspace string, sequence int64) (bool, string, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := s.store.DB().ExecContext(ctx, `UPDATE cylo_export_temp_registry SET status='invalidated',invalidation_sequence=?,updated_at=?,last_error=''
+	if _, err := s.store.DB().ExecContext(ctx, `UPDATE zoe_export_temp_registry SET status='invalidated',invalidation_sequence=?,updated_at=?,last_error=''
 WHERE workspace_id=? AND status='active' AND created_deletion_sequence<?`, sequence, now, workspace, sequence); err != nil {
 		return false, "registry_unavailable", err
 	}
@@ -314,7 +314,7 @@ WHERE workspace_id=? AND status='active' AND created_deletion_sequence<?`, seque
 		return false, "unsafe_private_root", err
 	}
 	defer root.Close()
-	rows, err := s.store.DB().QueryContext(ctx, `SELECT export_id,status FROM cylo_export_temp_registry ORDER BY export_id`)
+	rows, err := s.store.DB().QueryContext(ctx, `SELECT export_id,status FROM zoe_export_temp_registry ORDER BY export_id`)
 	if err != nil {
 		return false, "registry_unavailable", err
 	}
@@ -341,7 +341,7 @@ WHERE workspace_id=? AND status='active' AND created_deletion_sequence<?`, seque
 		return false, "registry_unavailable", err
 	}
 	var idsRows *sql.Rows
-	idsRows, err = s.store.DB().QueryContext(ctx, `SELECT export_id FROM cylo_export_temp_registry WHERE workspace_id=? AND status='invalidated' AND invalidation_sequence<=? ORDER BY export_id`, workspace, sequence)
+	idsRows, err = s.store.DB().QueryContext(ctx, `SELECT export_id FROM zoe_export_temp_registry WHERE workspace_id=? AND status='invalidated' AND invalidation_sequence<=? ORDER BY export_id`, workspace, sequence)
 	if err != nil {
 		return false, "registry_unavailable", err
 	}
@@ -383,10 +383,10 @@ WHERE workspace_id=? AND status='active' AND created_deletion_sequence<?`, seque
 		removeErr := removeRegisteredExportFiles(root, id)
 		releaseExportTempLock(id, lock)
 		if removeErr != nil {
-			_, _ = s.store.DB().ExecContext(ctx, `UPDATE cylo_export_temp_registry SET last_error='unsafe_or_unremovable_artifact',updated_at=? WHERE export_id=?`, now, id)
+			_, _ = s.store.DB().ExecContext(ctx, `UPDATE zoe_export_temp_registry SET last_error='unsafe_or_unremovable_artifact',updated_at=? WHERE export_id=?`, now, id)
 			return false, "unsafe_or_unremovable_artifact", removeErr
 		}
-		if _, err = s.store.DB().ExecContext(ctx, `UPDATE cylo_export_temp_registry SET status='cleaned',updated_at=?,last_error='' WHERE export_id=? AND status='invalidated'`, now, id); err != nil {
+		if _, err = s.store.DB().ExecContext(ctx, `UPDATE zoe_export_temp_registry SET status='cleaned',updated_at=?,last_error='' WHERE export_id=? AND status='invalidated'`, now, id); err != nil {
 			return false, "registry_unavailable", err
 		}
 	}

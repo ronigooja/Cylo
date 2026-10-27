@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve a Cylo service hostname to a local IPv4 publish address."""
+"""Resolve a Zoe service hostname to a local IPv4 publish address."""
 
 import ipaddress
 import json
@@ -28,23 +28,23 @@ def main():
         if not ipaddress.ip_address(address).is_loopback
     )
     if len(candidates) != 1:
-        raise SystemExit("Cylo hostname must resolve to exactly one local non-loopback IPv4 address")
+        raise SystemExit("Zoe hostname must resolve to exactly one local non-loopback IPv4 address")
     address = candidates[0]
     path = Path(env_file)
     content = path.read_text()
     content, count = re.subn(
-        r"^CYLO_SERVER_LAN_ADDRESS=.*$",
-        "CYLO_SERVER_LAN_ADDRESS=" + address,
+        r"^ZOE_SERVER_LAN_ADDRESS=.*$",
+        "ZOE_SERVER_LAN_ADDRESS=" + address,
         content,
         flags=re.MULTILINE,
     )
     if count != 1:
-        raise SystemExit("Deployment must define CYLO_SERVER_LAN_ADDRESS exactly once")
+        raise SystemExit("Deployment must define ZOE_SERVER_LAN_ADDRESS exactly once")
     with path.open("w") as output:
         output.write(content)
         output.flush()
         os.fsync(output.fileno())
-    print(f"Cylo publish address: {hostname} -> {address}")
+    print(f"Zoe publish address: {hostname} -> {address}")
 
 
 if __name__ == "__main__":

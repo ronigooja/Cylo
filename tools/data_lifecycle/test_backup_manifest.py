@@ -82,23 +82,23 @@ class BackupDeleteManifestTests(unittest.TestCase):
         ):
             setattr(common_stub, name, lambda *args, **kwargs: None)
         arguments = [
-            "cylo-backup", "--database", str(database), "--destination", str(destination),
+            "zoe-backup", "--database", str(database), "--destination", str(destination),
             "--key-file", str(self.root / "key"),
         ]
         head = {"snapshot_lineage_id": "fixture-lineage", "snapshot_sequence": 1}
         with patch.dict(sys.modules, {"data_lifecycle.common": common_stub}):
-            cylo_backup = importlib.import_module("cylo_backup")
+            zoe_backup = importlib.import_module("zoe_backup")
         with patch.dict(os.environ, {}, clear=True), patch.object(sys, "argv", arguments), \
-                patch.object(cylo_backup, "private_dir"), patch.object(cylo_backup, "read_key", return_value=b"k" * 32), \
-                patch.object(cylo_backup, "load_inventory", return_value={
+                patch.object(zoe_backup, "private_dir"), patch.object(zoe_backup, "read_key", return_value=b"k" * 32), \
+                patch.object(zoe_backup, "load_inventory", return_value={
                     "roots": {}, "service_config_paths": [], "artifact_paths": [],
                     "persistent_volume_paths": [], "secret_refs": [],
                 }), \
-                patch.object(cylo_backup, "database_fence", return_value=contextlib.nullcontext(database)), \
-                patch.object(cylo_backup, "sqlite_snapshot", return_value={"instance_state": None}), \
-                patch.object(cylo_backup, "independent_deletion_journal_metadata", return_value=head):
+                patch.object(zoe_backup, "database_fence", return_value=contextlib.nullcontext(database)), \
+                patch.object(zoe_backup, "sqlite_snapshot", return_value={"instance_state": None}), \
+                patch.object(zoe_backup, "independent_deletion_journal_metadata", return_value=head):
             with self.assertRaisesRegex(RuntimeError, "not configured"):
-                cylo_backup.main()
+                zoe_backup.main()
         self.assertEqual(list(destination.iterdir()), [])
 
     def test_empty_journal_without_adapter_is_explicitly_not_applicable(self):

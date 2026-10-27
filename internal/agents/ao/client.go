@@ -1,4 +1,4 @@
-// Package ao contains the narrow AO gateway used by the independent Cylo runner.
+// Package ao contains the narrow AO gateway used by the independent Zoe runner.
 // It intentionally exposes worker creation, read-only reconciliation, and stop;
 // it does not expose AO's autonomous orchestration, send, or arbitrary lifecycle APIs.
 package ao

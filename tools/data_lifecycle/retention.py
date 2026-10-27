@@ -15,10 +15,10 @@ import stat
 import tempfile
 from typing import Any
 
-MANIFEST_NAME = ".cylo-retention.json"
-LOCK_NAME = ".cylo-retention.lock"
-FORMAT = "cylo-backup-retention-v1"
-ARTIFACT_RE = re.compile(r"cylo-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}\.cylo-backup\Z")
+MANIFEST_NAME = ".zoe-retention.json"
+LOCK_NAME = ".zoe-retention.lock"
+FORMAT = "zoe-backup-retention-v1"
+ARTIFACT_RE = re.compile(r"zoe-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}\.zoe-backup\Z")
 ENTRY_FIELDS = {
     "artifact", "sha256", "size", "created_at", "deletion_baseline",
     "deletion_sequence", "deletion_targets", "deletion_version",

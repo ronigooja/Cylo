@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
+	"github.com/ronigooja/Zoe/contracts"
 )
 
 func TestSnapshotExecutionCapacityRetainsUnknownSlotsAndExplainsQueue(t *testing.T) {
@@ -86,7 +86,7 @@ func TestSnapshotExecutionCapacityRetainsUnknownSlotsAndExplainsQueue(t *testing
 			t.Fatalf("dependency queue=%+v", task)
 		}
 	}
-	if _, err := store.DB().ExecContext(ctx, `UPDATE cylo_instance_state SET dispatch_enabled=0 WHERE singleton=1`); err != nil {
+	if _, err := store.DB().ExecContext(ctx, `UPDATE zoe_instance_state SET dispatch_enabled=0 WHERE singleton=1`); err != nil {
 		t.Fatal(err)
 	}
 	if got := snapshot().ExecutionCapacity.ReasonCode; got != "instance_dispatch_fenced" {

@@ -11,7 +11,7 @@ import (
 func TestRestorePendingFilenamePersistsGuardAcrossRename(t *testing.T) {
 	ctx := context.Background()
 	directory := t.TempDir()
-	pending := filepath.Join(directory, "cylo.sqlite.restore-pending")
+	pending := filepath.Join(directory, "zoe.sqlite.restore-pending")
 	store, err := Open(ctx, Config{Path: pending})
 	if err != nil {
 		t.Fatal(err)
@@ -19,7 +19,7 @@ func TestRestorePendingFilenamePersistsGuardAcrossRename(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	activatedName := filepath.Join(directory, "cylo.sqlite")
+	activatedName := filepath.Join(directory, "zoe.sqlite")
 	if err := os.Rename(pending, activatedName); err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestRestoreStateMarkerClosesDatabaseRegardlessOfContents(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, "restore-state.json"), []byte(`{"restore_state":{"dispatch_enabled":true}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	store, err := Open(ctx, Config{Path: filepath.Join(directory, "cylo.sqlite")})
+	store, err := Open(ctx, Config{Path: filepath.Join(directory, "zoe.sqlite")})
 	if err != nil {
 		t.Fatal(err)
 	}

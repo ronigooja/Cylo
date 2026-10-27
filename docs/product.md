@@ -1,30 +1,30 @@
-# Cylo product requirements
+# Zoe product requirements
 
 This is the current product requirements home. Requirements express required behavior, not implementation or acceptance claims. [The master plan](master-plan.md) owns delivery status and acceptance boundaries; [architecture](architecture.md) owns responsibilities and [decision records](architecture.md#decision-records).
 
-The complete scope retains all 22 chapters, all 75 stable IDs, scenarios A–E, and all fifteen quality dimensions. This document carries forward the valid details of the [original complete PRD](https://github.com/ronigooja/Cylo/blob/95ee55a5bbd8dccfb7f14af9f9703bb83727da6c/docs/archive/research/product-requirements.md) and its [stable-ID mapping](https://github.com/ronigooja/Cylo/blob/95ee55a5bbd8dccfb7f14af9f9703bb83727da6c/docs/archive/research/reports/01-requirements.md). Those immutable sources are provenance, not competing current plans. Current Linux/native-client, AO, optional CLI-handoff, instance-key, and assistant-UI decisions take precedence over superseded proposals.
+The complete scope retains all 22 chapters, all 75 stable IDs, scenarios A–E, and all fifteen quality dimensions. This document carries forward the valid details of the [original complete PRD](https://github.com/ronigooja/Zoe/blob/95ee55a5bbd8dccfb7f14af9f9703bb83727da6c/docs/archive/research/product-requirements.md) and its [stable-ID mapping](https://github.com/ronigooja/Zoe/blob/95ee55a5bbd8dccfb7f14af9f9703bb83727da6c/docs/archive/research/reports/01-requirements.md). Those immutable sources are provenance, not competing current plans. Current Linux/native-client, AO, optional CLI-handoff, instance-key, and assistant-UI decisions take precedence over superseded proposals.
 
 ## 1. Product Positioning
 
-Cylo is a private, self-hosted system that keeps authorized work, projects, memory, and services alive beyond a conversation or client session. The full product scope comprises all 22 chapters; sequencing delivery does not remove an in-scope requirement.
+Zoe is a private, self-hosted system that keeps authorized work, projects, memory, and services alive beyond a conversation or client session. The full product scope comprises all 22 chapters; sequencing delivery does not remove an in-scope requirement.
 
 <a id="cy-01-01"></a>
 
 **Disposition: Required.**
 
-### 1.1 What Cylo Is
+### 1.1 What Zoe Is
 
 **CY-01-01.** Long-running cross-device system with durable memory, autonomous execution, coordination, and extensible capabilities.
 
-**Cylo is a cross-device, long-running AI system with persistent memory, autonomous execution, task coordination, and mechanisms for expanding its capabilities.**
+**Zoe is a cross-device, long-running AI system with persistent memory, autonomous execution, task coordination, and mechanisms for expanding its capabilities.**
 
 It interacts with users through natural language and speech, understands requests, performs tasks, manages projects, coordinates different AI agents, and, when necessary, creates and deploys ordinary programs so the system gains new capabilities that can run over time.
 
-Cylo is not a chat tool that works only when the user issues a command.
+Zoe is not a chat tool that works only when the user issues a command.
 
 It has a background runtime independent of its clients and can continuously maintain tasks, memory, services, and runtime state.
 
-Authorized background work can continue even when the user does not keep Cylo open.
+Authorized background work can continue even when the user does not keep Zoe open.
 
 <a id="cy-01-02"></a>
 
@@ -34,7 +34,7 @@ Authorized background work can continue even when the user does not keep Cylo op
 
 **CY-01-02.** Apply the ten principles: deterministic work outside models, independent workers, replaceable modules, efficiency, reliability, and future ownership boundaries.
 
-Cylo is not intended to make AI responsible for everything. Instead, different kinds of execution units should take on the work best suited to them.
+Zoe is not intended to make AI responsible for everything. Instead, different kinds of execution units should take on the work best suited to them.
 
 The system follows these principles:
 
@@ -44,7 +44,7 @@ The system follows these principles:
 4. **The system can create, deploy, and manage new long-running capabilities.**
 5. **Tasks, memories, and execution state must be stored long term and must not depend on a single conversation.**
 6. **Users can continue the same work from different devices.**
-7. **Cylo should not lock users into its own client.**
+7. **Zoe should not lock users into its own client.**
 8. **AI models, agents, voice services, and other components should be independently replaceable.**
 9. **Accuracy, reliability, and efficient token use take priority over unnecessary AI calls.**
 10. **The product is not limited to personal use; its design leaves room to expand to teams and other scenarios.**
@@ -55,15 +55,15 @@ The system follows these principles:
 
 ### 1.3 Product Boundaries
 
-**CY-01-03.** Use the host OS and existing specialist tools; Cylo does not recreate an OS, IDE, or terminal desktop.
+**CY-01-03.** Use the host OS and existing specialist tools; Zoe does not recreate an OS, IDE, or terminal desktop.
 
-Cylo does not need to replace macOS, Linux, or Windows.
+Zoe does not need to replace macOS, Linux, or Windows.
 
 It runs on an existing operating system and uses the operating system's computing, file, network, and process-management capabilities.
 
-Cylo also does not need to recreate a full code editor, terminal, or operating-system desktop.
+Zoe also does not need to recreate a full code editor, terminal, or operating-system desktop.
 
-For existing specialist software such as Codex, Cylo should make direct use of native capabilities whenever possible and remain interoperable with the official tools.
+For existing specialist software such as Codex, Zoe should make direct use of native capabilities whenever possible and remain interoperable with the official tools.
 
 ## 2. Overall System Composition
 
@@ -75,7 +75,7 @@ The six functional responsibilities are client interaction; core request/project
 
 **CY-02-01.** Keep six system responsibilities explicit and run deterministic state and event handling without model calls.
 
-Cylo separates its clients from its server.
+Zoe separates its clients from its server.
 
 It has six functional parts:
 
@@ -108,7 +108,7 @@ Conversation, Tasks, and Projects are primary entrances; Memory, Capabilities, a
 
 **CY-03-01.** macOS, iPhone, and iPad clients share one authoritative backend and consistent project/task/memory state.
 
-Cylo should support access to the same backend system from different devices.
+Zoe should support access to the same backend system from different devices.
 
 Target clients include:
 
@@ -130,7 +130,7 @@ Clients should not maintain separate, conflicting task states.
 
 **CY-03-02.** Provide a simple voice/text interface for tasks, progress, results, projects, services, approvals, notices, and optional technical detail.
 
-The Cylo client is primarily for communicating with the system, not for managing large amounts of technical detail.
+The Zoe client is primarily for communicating with the system, not for managing large amounts of technical detail.
 
 Core features include:
 
@@ -147,7 +147,7 @@ Core features include:
 
 The interface should be as simple as possible.
 
-Ordinary users should be able to use Cylo without understanding how Super, Workers, databases, or background processes work.
+Ordinary users should be able to use Zoe without understanding how Super, Workers, databases, or background processes work.
 
 Advanced status and operation details should still be available when needed.
 
@@ -159,7 +159,7 @@ Advanced status and operation details should still be available when needed.
 
 **CY-03-03.** Support contextual real-time voice, interruption, cross-device continuation, visible results, and task lifetimes independent from voice sessions.
 
-Natural speech is one of Cylo's primary interaction methods.
+Natural speech is one of Zoe's primary interaction methods.
 
 Requirements:
 
@@ -199,7 +199,7 @@ Complex reports, task lists, programming outcomes, and validation summaries must
 
 **CY-03-04.** Proactively notify users about completion, failure, mail, approvals, scheduled outcomes, and unrecoverable conditions with source links.
 
-Cylo should not merely wait for users to ask questions.
+Zoe should not merely wait for users to ask questions.
 
 It should be able to proactively notify users when important events occur in the background.
 
@@ -216,7 +216,7 @@ A notification should identify its event source and link to the relevant project
 
 ### Native assistant direction
 
-The user approved the [native assistant reference](design/native-assistant-reference.png). Cylo is an automation assistant whose frequent workloads include programming. Its interface centers on natural conversation, durable task progress, results, and decisions. Present programming execution and validation through concise, understandable summaries. The client does not provide source-code browsing or editing, diff viewers, terminals, or test consoles, including optional or hidden variants.
+The user approved the [native assistant reference](design/native-assistant-reference.png). Zoe is an automation assistant whose frequent workloads include programming. Its interface centers on natural conversation, durable task progress, results, and decisions. Present programming execution and validation through concise, understandable summaries. The client does not provide source-code browsing or editing, diff viewers, terminals, or test consoles, including optional or hidden variants.
 
 - **Simple appearance, useful density.** Use native typography, restrained semantic colors, compact rows, and clear grouping. Keep more useful conversation and task information visible by reducing oversized headings, excessive whitespace, decorative cards, and repeated metadata. Preserve readability, keyboard access, Dynamic Type, and platform touch targets; density does not mean uniformly smaller text or controls.
 - **Conversation leads.** Keep projects and recent conversations/tasks in a compact sidebar. Show task receipts and concise progress/results in context. A compact, collapsible task rail may surface ongoing work, pending decisions, and recent completion on wide windows; collapse secondary surfaces before constraining the conversation in narrow windows. Avoid statistics dashboards and compulsory workflow panels.
@@ -252,15 +252,15 @@ The current server and execution host target is Linux. Native Apple clients do n
 
 **CY-04-01.** Run the backend independently on supported host OSes; report sleep, shutdown, and network loss accurately and recover safely.
 
-The Cylo server should be able to run as an independent background system.
+The Zoe server should be able to run as an independent background system.
 
 For the first release, the server and execution host use **Linux**. They can be deployed on a Linux server or another supported Linux environment to execute agent tasks and run ordinary background services.
 
-Running the Cylo server, AO, or Worker background services on macOS is outside the current baseline. Native macOS clients remain in scope; there is no browser/PWA client.
+Running the Zoe server, AO, or Worker background services on macOS is outside the current baseline. Native macOS clients remain in scope; there is no browser/PWA client.
 
 The server should not depend on a graphical client remaining open.
 
-Closing the Cylo client should not stop background services that are already running independently.
+Closing the Zoe client should not stop background services that are already running independently.
 
 If the execution environment becomes unavailable because a device is powered off, asleep, or disconnected, the system must be able to identify that condition and continue processing according to task rules when conditions recover.
 
@@ -296,7 +296,7 @@ Users can access the same backend through different clients.
 
 **CY-04-03.** Migrate linked projects, history, agents, tasks, memory, permissions, services, state, and execution files between environments.
 
-Cylo data and work products must remain migratable across supported Linux environments.
+Zoe data and work products must remain migratable across supported Linux environments.
 
 When moving to a different Linux backend server or supported execution environment, it should be possible to migrate through backup, export, and restore:
 
@@ -314,7 +314,7 @@ Native operating-system processes may not migrate directly, but the system shoul
 
 ## 5. Agent and native-tool integration requirements
 
-Codex is one development runtime, not the product authority or the only execution engine. AO owns runtime creation and lifecycle through the Cylo gateway. Basic execution, evidence, artifacts, supported recovery, conflict protection, and real stop remain required. Official Codex desktop-app integration is excluded. Seamless manual takeover and two-way native CLI handoff are optional, must use supported native facilities, and cannot be simulated by exporting a summary. Cylo has no Codex-specific recovery subsystem.
+Codex is one development runtime, not the product authority or the only execution engine. AO owns runtime creation and lifecycle through the Zoe gateway. Basic execution, evidence, artifacts, supported recovery, conflict protection, and real stop remain required. Official Codex desktop-app integration is excluded. Seamless manual takeover and two-way native CLI handoff are optional, must use supported native facilities, and cannot be simulated by exporting a summary. Zoe has no Codex-specific recovery subsystem.
 
 **First-release Codex integration must support CLI execution, viewing real status and artifacts, stopping, and persistent recovery. Seamless human takeover within the same thread, live switching of input control, and a complete bidirectional handoff entry point are optional future enhancements; they are not hard requirements for first-release selection or delivery.**
 
@@ -324,11 +324,11 @@ The first release prioritizes automatic Super planning, independent Workers, mul
 
 **Disposition: Required.**
 
-### 5.1 Cylo Invoking Codex
+### 5.1 Zoe Invoking Codex
 
 **CY-05-01.** Create and manage agent work with a real workspace, instructions, state/results, task links, supported continuation, and stop.
 
-Cylo should be able to assign software-development tasks to Codex.
+Zoe should be able to assign software-development tasks to Codex.
 
 This includes:
 
@@ -341,9 +341,9 @@ This includes:
 - Appending requirements to a saved session
 - Resuming sessions that support recovery
 - Interrupting or canceling execution where supported
-- Including Codex tasks in Cylo's unified task system
+- Including Codex tasks in Zoe's unified task system
 
-Cylo should not guess whether a task is complete based only on Codex chat content.
+Zoe should not guess whether a task is complete based only on Codex chat content.
 
 <a id="cy-05-02"></a>
 
@@ -355,7 +355,7 @@ Cylo should not guess whether a task is complete based only on Codex chat conten
 
 Under the user's latest scope decision, support for discovering, resuming, deep-linking, or handing off sessions from the official macOS Codex desktop app across hosts is not required. This section number is retained for historical traceability.
 
-The native macOS Cylo client and users' independent use of Codex CLI remain in scope; there is no browser/PWA client. First-release server and execution-host support is defined in §4.1; cross-environment data migration remains in scope.
+The native macOS Zoe client and users' independent use of Codex CLI remain in scope; there is no browser/PWA client. First-release server and execution-host support is defined in §4.1; cross-environment data migration remains in scope.
 
 <a id="cy-05-03"></a>
 
@@ -363,13 +363,13 @@ The native macOS Cylo client and users' independent use of Codex CLI remain in s
 
 ### 5.3 Codex CLI Continuation
 
-**CY-05-03.** Optional: hand Cylo-started work to the supported native CLI session.
+**CY-05-03.** Optional: hand Zoe-started work to the supported native CLI session.
 
 The first-release Linux execution environment must preserve basic CLI invocation and a recoverable session association. Users can access that Linux environment over SSH. A macOS-hosted control server or runtime service is outside the current baseline. The following experience of manually continuing the original session through the official CLI is an optional future enhancement:
 
 A user can:
 
-1. Create a Codex development task through Cylo.
+1. Create a Codex development task through Zoe.
 2. Have Codex perform development work in the background.
 3. Later enter the same background execution environment directly; the remote environment can be accessed over SSH.
 4. Use the official Codex CLI's supported session-recovery mechanism.
@@ -385,17 +385,17 @@ The project, code, and execution results should remain accessible. Human continu
 
 **CY-05-04.** Optional: discover and continue authorized work created in the native CLI.
 
-As an optional enhancement, in addition to continuing sessions created by Cylo through the official Codex CLI, the system may support the reverse direction.
+As an optional enhancement, in addition to continuing sessions created by Zoe through the official Codex CLI, the system may support the reverse direction.
 
 For example:
 
 A user first develops a project in the official Codex CLI.
 
-Later, the user opens Cylo and says:
+Later, the user opens Zoe and says:
 
 “Continue that project from earlier and finish the tests.”
 
-Cylo should identify the relevant project, existing session, and work state as far as possible, then continue the work when the required support and permissions are available.
+Zoe should identify the relevant project, existing session, and work state as far as possible, then continue the work when the required support and permissions are available.
 
 **Bidirectional native continuation is optional; basic CLI invocation and persistent task recovery remain required.**
 
@@ -425,7 +425,7 @@ The system must also distinguish between two concepts:
 
 These are different capabilities.
 
-If a session is still running in another client, Cylo must not modify the same work state simultaneously without coordination.
+If a session is still running in another client, Zoe must not modify the same work state simultaneously without coordination.
 
 It must prevent duplicate execution, session conflicts, and code overwrites.
 
@@ -435,13 +435,13 @@ It must prevent duplicate execution, session conflicts, and code overwrites.
 
 ### 5.6 Codex Independence
 
-**CY-05-06.** Keep project outputs usable without Cylo and optionally synchronize external native-tool changes.
+**CY-05-06.** Keep project outputs usable without Zoe and optionally synchronize external native-tool changes.
 
-Cylo coordinates development tasks; it is not the only way to access development tools.
+Zoe coordinates development tasks; it is not the only way to access development tools.
 
-Even when Cylo is temporarily unavailable, users should be able to access existing projects and work products directly through the official Codex CLI as far as possible.
+Even when Zoe is temporarily unavailable, users should be able to access existing projects and work products directly through the official Codex CLI as far as possible.
 
-Likewise, Cylo should be able to recognize and synchronize changes made by users in the official Codex CLI.
+Likewise, Zoe should be able to recognize and synchronize changes made by users in the official Codex CLI.
 
 **Clarification: CLI execution, viewing, stopping, and task recovery under §5.1, along with preservation of work products, remain required. Manual same-session continuation under §§5.3–5.5 and automatic synchronization of external changes under §5.6 are optional enhancements; their absence does not block first-release or full required-scope acceptance. Basic access to code and artifacts must not depend on the human-takeover feature. Session discovery and control are limited by what official interfaces support and what has been tested; recovery must never create uncoordinated concurrent writes.**
 
@@ -563,7 +563,7 @@ Agent execution must follow unified permission, task, and state rules rather tha
 
 A generated program is not permission to deploy it. Authorized capability work must produce a validated release and constrained deployment manifest before a runner applies it. Installed capabilities retain their own lifecycle, health, configuration, permissions, immutable release artifact, and persistent-data policy. Pluggable domain examples describe extensibility, not a claim that every connector exists.
 
-This is one of Cylo's most distinctive requirements.
+This is one of Zoe's most distinctive requirements.
 
 <a id="cy-07-01"></a>
 
@@ -573,13 +573,13 @@ This is one of Cylo's most distinctive requirements.
 
 **CY-07-01.** Identify durable capability needs and create or configure the program only for authorized deployment.
 
-Cylo should not only use existing features; it should also be able to create new system capabilities in response to user needs.
+Zoe should not only use existing features; it should also be able to create new system capabilities in response to user needs.
 
 For example, a user says:
 
 “Check my important email every day from now on, and tell me when something important arrives.”
 
-Cylo should understand that this is a request for a long-term capability, not a one-time email lookup.
+Zoe should understand that this is a request for a long-term capability, not a one-time email lookup.
 
 The system can arrange for a Worker to write a program or configure existing tools and services.
 
@@ -595,7 +595,7 @@ The service can then run independently.
 
 **CY-07-02.** Manage capability install, configuration, authorization, run, pause, resume, update, stop, removal, health, and errors.
 
-Cylo must be able to manage the complete lifecycle of an added capability, including:
+Zoe must be able to manage the complete lifecycle of an added capability, including:
 
 - Creation
 - Installation
@@ -640,7 +640,7 @@ This means:
 
 **CY-07-04.** Allow pluggable capabilities across mail, calendar, files, development, web, apps, system, schedules, and monitoring.
 
-Cylo should be able to gain a range of capabilities through modules, external services, or programs it creates autonomously.
+Zoe should be able to gain a range of capabilities through modules, external services, or programs it creates autonomously.
 
 Examples include email, calendars, file management, development tools, GitHub, browser automation, third-party apps, system operations, scheduled tasks, information monitoring, and other software services that can be authorized.
 
@@ -658,7 +658,7 @@ Task state represents observed reality rather than a conversation or UI animatio
 
 **CY-08-01.** Represent every execution subject with a unified task identity, goal, source, status, times, result, errors, recovery, and records.
 
-Cylo needs a unified system for managing all tasks.
+Zoe needs a unified system for managing all tasks.
 
 Every task, whether executed by Super, a Worker, Codex, an ordinary program, or another service, should have a clear identity and status.
 
@@ -710,7 +710,7 @@ It must not mark work as complete without verification merely because an Agent s
 
 **CY-08-03.** Allow long tasks to outlive sessions and expose current evidence-backed progress later.
 
-Cylo should support tasks that take a long time, such as software development, complex research, or multi-step automation.
+Zoe should support tasks that take a long time, such as software development, complex research, or multi-step automation.
 
 Users do not need to keep a conversation open.
 
@@ -757,7 +757,7 @@ Tasks can have:
 - Parent-child relationships
 - Shared-resource relationships
 
-Cylo should understand what the user means by “that earlier project,” “the task from a moment ago,” or “yesterday's development work.”
+Zoe should understand what the user means by “that earlier project,” “the task from a moment ago,” or “yesterday's development work.”
 
 If several objects are possible, it must not choose one arbitrarily.
 
@@ -773,7 +773,7 @@ A finite task and a durable service have different lifetimes. Each service trigg
 
 **CY-09-01.** Separate finite task lifecycles from durable service lifecycles and give each service trigger a run record.
 
-Cylo must clearly distinguish between a **one-time task** and a **long-running service**.
+Zoe must clearly distinguish between a **one-time task** and a **long-running service**.
 
 For example:
 
@@ -854,7 +854,7 @@ Memory has global, project, task, and raw-history layers, each respecting its ac
 
 **CY-10-01.** Retain source-linked memory across conversations, tasks, projects, devices, and restarts.
 
-Cylo needs long-term memory that works across conversations, tasks, projects, and devices.
+Zoe needs long-term memory that works across conversations, tasks, projects, and devices.
 
 Memory must not depend on the context window of a single model call.
 
@@ -926,7 +926,7 @@ Raw history should be available as evidence for other memory content.
 
 **CY-10-03.** Optional event-driven Memory Agent may identify facts, links, duplicates, staleness, conflicts, and update suggestions.
 
-Cylo can use a separate Memory Agent to organize memory.
+Zoe can use a separate Memory Agent to organize memory.
 
 Its responsibilities include:
 
@@ -953,7 +953,7 @@ The system should allow memory organization to run on background events or suita
 
 This is a core requirement.
 
-Cylo must distinguish between:
+Zoe must distinguish between:
 
 **Facts explicitly confirmed by the user, results actually produced by the system, and content inferred by AI.**
 
@@ -997,7 +997,7 @@ In particular, an automatic summary must not overwrite a confirmed user decision
 
 **CY-10-06.** Retrieve only relevant authorized history, cite sources, save context, and surface missing/conflicting evidence as uncertainty.
 
-Cylo should not send the entire history to the model on every call.
+Zoe should not send the entire history to the model on every call.
 
 The system needs to retrieve only information relevant to the current task.
 
@@ -1023,7 +1023,7 @@ Current execution context and long-term memory are separate. Assemble the contex
 
 Long-term memory and the current execution context need to be managed separately.
 
-Cylo should be able to provide each Agent with context relevant to its task.
+Zoe should be able to provide each Agent with context relevant to its task.
 
 For example, a development Worker needs the project structure, technical requirements, and current task.
 
@@ -1053,7 +1053,7 @@ Clients show the same durable project/task identities and authoritative versions
 
 **CY-12-01.** Use one versioned state authority across devices and expose stale cache/conflicts clearly.
 
-Cylo should have one authoritative source of state.
+Zoe should have one authoritative source of state.
 
 Different clients viewing the same task must not show unexplained conflicting states.
 
@@ -1069,7 +1069,7 @@ For example, if a Mac shows a task as completed, an iPhone should not incorrectl
 
 A typical scenario:
 
-A user tells Cylo on a Mac:
+A user tells Zoe on a Mac:
 
 “Develop a new user authentication module for me.”
 
@@ -1079,7 +1079,7 @@ On an iPhone, the user asks:
 
 “How is the authentication module from earlier coming along?”
 
-Cylo should identify the original task and report its actual progress.
+Zoe should identify the original task and report its actual progress.
 
 The user then says:
 
@@ -1087,7 +1087,7 @@ The user then says:
 
 The system should associate this request correctly with the original task or a follow-up task.
 
-When the user returns to the Mac, they can continue interacting through Cylo and, where supported, continue development directly in the official Codex tool.
+When the user returns to the Mac, they can continue interacting through Zoe and, where supported, continue development directly in the official Codex tool.
 
 <a id="cy-12-03"></a>
 
@@ -1105,7 +1105,7 @@ A conversation is only one way to access and control tasks.
 
 ## 13. Modular AI and Services
 
-Model, agent, voice, and external-service implementations remain replaceable through explicit contracts. Dependency failure should isolate affected work and preserve unrelated state and functionality. The existing remote CLIProxyAPI deployment is reused unchanged; it is an external dependency, not a Cylo deployment target.
+Model, agent, voice, and external-service implementations remain replaceable through explicit contracts. Dependency failure should isolate affected work and preserve unrelated state and functionality. The existing remote CLIProxyAPI deployment is reused unchanged; it is an external dependency, not a Zoe deployment target.
 
 <a id="cy-13-01"></a>
 
@@ -1115,7 +1115,7 @@ Model, agent, voice, and external-service implementations remain replaceable thr
 
 **CY-13-01.** Replace models without rewriting task, memory, and service records.
 
-Cylo must not bind its core capabilities to a single model.
+Zoe must not bind its core capabilities to a single model.
 
 The system should support different kinds of AI models and services.
 
@@ -1135,7 +1135,7 @@ Other Agents can handle other work.
 
 Different Agents do not need to share the same internal implementation.
 
-Cylo needs to know what capabilities they provide, how they execute, how they return results, and how permissions constrain them.
+Zoe needs to know what capabilities they provide, how they execute, how they return results, and how permissions constrain them.
 
 <a id="cy-13-03"></a>
 
@@ -1173,7 +1173,7 @@ Authorization applies to the actual action and resource: reading differs from se
 
 The current fresh-deployment identity is the fixed owner/workspace using a shared instance key. Runner and memory-worker credentials remain separate. Local client clearing removes local connection data; it does not revoke the shared key or stop server tasks. See the [authentication decision](architecture/decisions/0004-instance-key-authentication.md).
 
-Cylo can run programs, modify files, and operate external applications, so it must have clear permission controls.
+Zoe can run programs, modify files, and operate external applications, so it must have clear permission controls.
 
 <a id="cy-14-01"></a>
 
@@ -1243,7 +1243,7 @@ Important operations need traceable execution records.
 
 Detect process failure, API/network loss, timeout, denial, resource shortage, and conflict. Retry only when safe. Query and reconcile unknown external effects where possible; otherwise retain uncertainty and escalate. Distinguish receipt, scheduling, execution, agent output, actual operation success, and achieved user goal. Preserve the record while no client is connected.
 
-Cylo is a system that needs to run over long periods.
+Zoe is a system that needs to run over long periods.
 
 It must therefore handle more than successful tasks.
 
@@ -1288,7 +1288,7 @@ For example, recovery after an email-send failure must avoid sending the same em
 
 **CY-15-03.** Distinguish request receipt, scheduling, execution, agent output, successful operation, and user-goal completion.
 
-Cylo should distinguish between:
+Zoe should distinguish between:
 
 - A task has been received
 - Execution has been scheduled
@@ -1299,7 +1299,7 @@ Cylo should distinguish between:
 
 These states must not be conflated.
 
-When users ask about progress, Cylo should answer from actual records.
+When users ask about progress, Zoe should answer from actual records.
 
 <a id="cy-15-04"></a>
 
@@ -1327,7 +1327,7 @@ Persist important records beyond model context and process lifetime. Acceptance 
 
 **CY-16-01.** Persist important records and report acceptance only after durable commit.
 
-Important Cylo data must be saved long term and must not exist only in model context or process memory.
+Important Zoe data must be saved long term and must not exist only in model context or process memory.
 
 <a id="cy-16-02"></a>
 
@@ -1392,7 +1392,7 @@ Users or authorized administrators should be able to view, export, and delete da
 
 Ordinary programs handle timers, file checks, explicit rules, conversion, state changes, and health. Idle scheduling and event processing make no model calls. Each admitted model action needs task/run authority, a route, and a budget; record usage and prevent further dispatch when limits are exhausted. Unknown consumption stays reserved pending reconciliation. Numeric limits represented in a DTO do not establish actual provider/tool/artifact enforcement.
 
-Cylo should pay attention to long-term operating costs, especially token use.
+Zoe should pay attention to long-term operating costs, especially token use.
 
 <a id="cy-17-01"></a>
 
@@ -1461,7 +1461,7 @@ The initial release is private, single-owner, single-instance, and multi-project
 
 **CY-18-01.** Retain extensible ownership and access boundaries for multiple users, projects, agents, devices, and services.
 
-Cylo is not defined as a product that can serve only one person.
+Zoe is not defined as a product that can serve only one person.
 
 Although an individual can deploy and use it independently, the product structure should not assume that there will forever be only one user, one project, or one Agent.
 
@@ -1482,7 +1482,7 @@ Future multi-user support will need corresponding identity, data isolation, perm
 
 These five scenarios combine requirements across components; they are acceptance journeys. Required evidence and gaps belong in [the acceptance matrix](acceptance/requirements.md).
 
-The scenarios below show how the requirements work together in Cylo; they are not development steps.
+The scenarios below show how the requirements work together in Zoe; they are not development steps.
 
 <a id="cy-19-a"></a>
 
@@ -1492,11 +1492,11 @@ The scenarios below show how the requirements work together in Cylo; they are no
 
 **CY-19-A.** Scenario A: voice/text software task, native agent execution, client disconnect, cross-device progress, continuation and safe stop.
 
-A user says through Cylo on a Mac:
+A user says through Zoe on a Mac:
 
 “Develop a new login system for me.”
 
-Cylo understands the request and creates a project task.
+Zoe understands the request and creates a project task.
 
 Super plans the work when needed and assigns specific development work to a Codex Worker.
 
@@ -1504,11 +1504,11 @@ Codex performs the development.
 
 The task system continuously records the actual state.
 
-Closing the Cylo client should not interrupt background execution.
+Closing the Zoe client should not interrupt background execution.
 
 The user picks up an iPhone and asks about development progress.
 
-Cylo answers from the actual task records.
+Zoe answers from the actual task records.
 
 The user then asks to add tests.
 
@@ -1518,7 +1518,7 @@ The first release needs to verify persistent task recovery, real stopping, and a
 
 If the official CLI supports it, the user finds the original development session and continues work.
 
-Cylo can then recognize the updated work state.
+Zoe can then recognize the updated work state.
 
 Throughout the process, the project, task, session, and code workspace must remain correctly associated.
 
@@ -1534,7 +1534,7 @@ A user says:
 
 “Monitor important email for me from now on.”
 
-Cylo understands this as a long-term service request.
+Zoe understands this as a long-term service request.
 
 Super can coordinate a plan as needed.
 
@@ -1564,7 +1564,7 @@ Important results are proactively reported to the user.
 
 **CY-19-C.** Scenario C: recover dated project decisions and reasons across devices without inventing missing evidence.
 
-A user discusses a project with Cylo.
+A user discusses a project with Zoe.
 
 At first, they decide to use a particular technical approach.
 
@@ -1574,11 +1574,11 @@ Several weeks later, the user asks:
 
 “Why did we move away from that approach?”
 
-Cylo should find the relevant discussion and formal decision using long-term memory and historical records.
+Zoe should find the relevant discussion and formal decision using long-term memory and historical records.
 
 Its answer should include not only the approach currently in use, but also the change process, timing, and rationale.
 
-If a rationale was not recorded, Cylo should say that it cannot confirm it rather than make one up.
+If a rationale was not recorded, Zoe should say that it cannot confirm it rather than make one up.
 
 <a id="cy-19-d"></a>
 
@@ -1592,7 +1592,7 @@ A user says:
 
 “Check this project's security and organize its API documentation at the same time.”
 
-Cylo can create the corresponding tasks.
+Zoe can create the corresponding tasks.
 
 It assigns them to different Workers.
 
@@ -1614,7 +1614,7 @@ The user receives one consolidated result.
 
 A long-running background service fails because of a network interruption.
 
-Cylo should detect the exception.
+Zoe should detect the exception.
 
 Once the service recovers, it should continue or retry according to the safety requirements of the specific task.
 
@@ -1652,43 +1652,43 @@ Human native-session handoff remains optional under chapter 5; required interope
 | Ease of use | Make natural interaction primary; do not require users to understand internal technology |
 | Long-term evolution | Integrate new capabilities without repeatedly rebuilding the system from scratch |
 
-## 21. Key Boundaries of Cylo
+## 21. Key Boundaries of Zoe
 
-Cylo manages persistent projects, tasks, services, and memory through conversation. Super coordinates complex work; Workers and ordinary programs retain independent roles. Cylo extends execution through authorized capabilities on existing operating systems and specialist tools. The interface remains an assistant, and the architecture retains future ownership boundaries.
+Zoe manages persistent projects, tasks, services, and memory through conversation. Super coordinates complex work; Workers and ordinary programs retain independent roles. Zoe extends execution through authorized capabilities on existing operating systems and specialist tools. The interface remains an assistant, and the architecture retains future ownership boundaries.
 
 <a id="cy-21-01"></a>
 
 **Disposition: Required.**
 
-**CY-21-01.** Keep Cylo outside the boundaries of chat-only, Super-only, orchestration-only, editor, OS, memory-only, and personal-only products.
+**CY-21-01.** Keep Zoe outside the boundaries of chat-only, Super-only, orchestration-only, editor, OS, memory-only, and personal-only products.
 
 Several distinctions need to remain clear to avoid future misunderstandings.
 
-**First, Cylo is not an ordinary chat assistant.**
+**First, Zoe is not an ordinary chat assistant.**
 
-Conversation is its interaction method. What Cylo actually manages are projects, tasks, memories, and execution capabilities that persist over time.
+Conversation is its interaction method. What Zoe actually manages are projects, tasks, memories, and execution capabilities that persist over time.
 
-**Second, Cylo is not a centralized Agent that requires Super to direct everything.**
+**Second, Zoe is not a centralized Agent that requires Super to direct everything.**
 
 Super handles complex coordination, Workers can execute independently, and ordinary background services can keep running.
 
-**Third, Cylo is more than an Agent orchestration tool.**
+**Third, Zoe is more than an Agent orchestration tool.**
 
 In addition to invoking and coordinating Agents, it can create, deploy, and manage ordinary programs under authorization, giving the system new capabilities that keep running.
 
-**Fourth, Cylo is not a new code editor.**
+**Fourth, Zoe is not a new code editor.**
 
 It should use native development tools such as Codex and preserve CLI execution, stopping, viewing, task recovery, and access to code artifacts. Seamless human takeover and bidirectional native-session handoff are optional future enhancements.
 
-**Fifth, Cylo is not an operating system in the traditional sense.**
+**Fifth, Zoe is not an operating system in the traditional sense.**
 
 It does not replace macOS or Linux; it builds an AI system with long-term execution, memory, coordination, and extensibility on top of existing operating systems.
 
-**Sixth, Cylo is more than a memory system.**
+**Sixth, Zoe is more than a memory system.**
 
-Long-term memory is one foundational capability, but Cylo must ultimately be able to act on memory, real-world state, and user instructions.
+Long-term memory is one foundational capability, but Zoe must ultimately be able to act on memory, real-world state, and user instructions.
 
-**Seventh, Cylo is not limited to a personal product.**
+**Seventh, Zoe is not limited to a personal product.**
 
 The system can serve individuals, but its product definition should not prevent future development for teams or other scenarios.
 
@@ -1702,7 +1702,7 @@ The complete product combines natural interaction; complex planning and speciali
 
 **CY-22-01.** Deliver the complete product behavior across interaction, decisions, execution, interoperability, services, memory, state, security, modularity, and evolution.
 
-**Cylo is an open AI system that can run long term, continuously accumulate knowledge, coordinate intelligent execution units, and gain new capabilities over time under authorization.**
+**Zoe is an open AI system that can run long term, continuously accumulate knowledge, coordinate intelligent execution units, and gain new capabilities over time under authorization.**
 
 It has the following complete capabilities:
 
@@ -1728,7 +1728,7 @@ It has the following complete capabilities:
 
 **Long-term evolution:** Expand to new scenarios while preserving the core architecture and continuity of existing data.
 
-### Cylo's Core Operating Logic
+### Zoe's Core Operating Logic
 
 **The user sets a goal; Super performs complex planning and coordination when needed; Workers perform specialist execution; ordinary programs handle work that can run reliably over time.**
 
@@ -1736,10 +1736,10 @@ All execution results enter a unified task and state system, and important infor
 
 Users can view, intervene in, or continue work at any time from different devices, and can also continue tasks directly in native tools such as Codex where supported.
 
-As it is used over time, Cylo should gain more than a larger conversation history: it should accumulate knowledge, preserve work products, manage more continuously running services, and gain more reusable practical capabilities.
+As it is used over time, Zoe should gain more than a larger conversation history: it should accumulate knowledge, preserve work products, manage more continuously running services, and gain more reusable practical capabilities.
 
-**Ultimate goal: to make Cylo an AI system that understands and executes instructions into a system that can run long term, accumulate knowledge continuously, expand its capabilities autonomously under control, and coordinate intelligent and non-intelligent programs to do real work.**
+**Ultimate goal: to make Zoe an AI system that understands and executes instructions into a system that can run long term, accumulate knowledge continuously, expand its capabilities autonomously under control, and coordinate intelligent and non-intelligent programs to do real work.**
 
 ---
 
-*This complete product requirements definition was organized from requirements expressed earlier. It does not assume a specific technology framework or describe unverified Codex interoperability as implemented. It does not divide the product into development phases or an MVP; all sections together describe the capabilities the complete Cylo product should have.*
+*This complete product requirements definition was organized from requirements expressed earlier. It does not assume a specific technology framework or describe unverified Codex interoperability as implemented. It does not divide the product into development phases or an MVP; all sections together describe the capabilities the complete Zoe product should have.*

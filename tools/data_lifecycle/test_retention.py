@@ -35,9 +35,9 @@ class BackupRetentionTests(unittest.TestCase):
         return artifact
 
     def test_default_policy_removes_only_manifest_owned_expired_backup(self):
-        expired = self.backup("cylo-20260901T000000Z-aabbccdd.cylo-backup", self.now - timedelta(days=31))
-        fresh = self.backup("cylo-20261001T000000Z-aabbccdd.cylo-backup", self.now - timedelta(days=21))
-        unknown = self.directory / "cylo-20200101T000000Z-ffffffff.cylo-backup"
+        expired = self.backup("zoe-20260901T000000Z-aabbccdd.zoe-backup", self.now - timedelta(days=31))
+        fresh = self.backup("zoe-20261001T000000Z-aabbccdd.zoe-backup", self.now - timedelta(days=21))
+        unknown = self.directory / "zoe-20200101T000000Z-ffffffff.zoe-backup"
         unknown.write_bytes(b"existing unmanaged backup")
 
         removed = purge_expired(self.directory, self.key, now=self.now)
@@ -54,10 +54,10 @@ class BackupRetentionTests(unittest.TestCase):
         self.assertEqual(manifest["entries"][0]["deletion_version"], 1)
 
     def test_authenticated_manifest_tampering_fails_before_deletion(self):
-        artifact = self.backup("cylo-20260901T000000Z-aabbccdd.cylo-backup", self.now - timedelta(days=31))
+        artifact = self.backup("zoe-20260901T000000Z-aabbccdd.zoe-backup", self.now - timedelta(days=31))
         path = self.directory / MANIFEST_NAME
         document = json.loads(path.read_text())
-        document["entries"][0]["artifact"] = "../valuable.cylo-backup"
+        document["entries"][0]["artifact"] = "../valuable.zoe-backup"
         path.write_text(json.dumps(document))
         os.chmod(path, 0o600)
 
@@ -66,13 +66,13 @@ class BackupRetentionTests(unittest.TestCase):
         self.assertTrue(artifact.exists())
 
     def test_future_timestamp_fails_closed(self):
-        future = self.backup("cylo-20261101T000000Z-aabbccdd.cylo-backup", self.now + timedelta(days=1))
+        future = self.backup("zoe-20261101T000000Z-aabbccdd.zoe-backup", self.now + timedelta(days=1))
         with self.assertRaisesRegex(RuntimeError, "future backup timestamp"):
             purge_expired(self.directory, self.key, now=self.now)
         self.assertTrue(future.exists())
 
     def test_modified_artifact_and_symlink_fail_closed(self):
-        artifact = self.backup("cylo-20260901T000000Z-aabbccdd.cylo-backup", self.now - timedelta(days=31))
+        artifact = self.backup("zoe-20260901T000000Z-aabbccdd.zoe-backup", self.now - timedelta(days=31))
         artifact.write_bytes(b"changed")
         with self.assertRaisesRegex(RuntimeError, "does not match"):
             purge_expired(self.directory, self.key, now=self.now)
@@ -82,7 +82,7 @@ class BackupRetentionTests(unittest.TestCase):
             purge_expired(self.directory, self.key, now=self.now)
 
     def test_path_traversal_record_fails_closed(self):
-        artifact = self.backup("cylo-20260901T000000Z-aabbccdd.cylo-backup", self.now - timedelta(days=31))
+        artifact = self.backup("zoe-20260901T000000Z-aabbccdd.zoe-backup", self.now - timedelta(days=31))
         path = self.directory / MANIFEST_NAME
         document = json.loads(path.read_text())
         document["entries"][0]["artifact"] = "../outside"
@@ -94,8 +94,8 @@ class BackupRetentionTests(unittest.TestCase):
 
     def test_concurrent_registration_preserves_both_manifest_records(self):
         entries = [
-            ("cylo-20261001T000000Z-aabbcc01.cylo-backup", self.now - timedelta(days=5)),
-            ("cylo-20261002T000000Z-aabbcc02.cylo-backup", self.now - timedelta(days=4)),
+            ("zoe-20261001T000000Z-aabbcc01.zoe-backup", self.now - timedelta(days=5)),
+            ("zoe-20261002T000000Z-aabbcc02.zoe-backup", self.now - timedelta(days=4)),
         ]
         barrier = Barrier(2)
         def register(item):
@@ -110,8 +110,8 @@ class BackupRetentionTests(unittest.TestCase):
         self.assertEqual({row["artifact"] for row in manifest["entries"]}, {item[0] for item in entries})
 
     def test_concurrent_registration_and_purge_preserve_new_backup(self):
-        expired = self.backup("cylo-20260901T000000Z-aabbccdd.cylo-backup", self.now - timedelta(days=31))
-        fresh_name = "cylo-20261021T000000Z-aabbcc01.cylo-backup"
+        expired = self.backup("zoe-20260901T000000Z-aabbccdd.zoe-backup", self.now - timedelta(days=31))
+        fresh_name = "zoe-20261021T000000Z-aabbcc01.zoe-backup"
         fresh = self.directory / fresh_name
         fresh.write_bytes(b"new backup")
         os.chmod(fresh, 0o600)

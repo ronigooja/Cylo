@@ -14,7 +14,7 @@ cat >"$fake_go" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == env && "${2:-}" == GOARCH ]]; then
-  printf '%s\n' "${CYLO_FAKE_GOARCH:-arm64}"
+  printf '%s\n' "${ZOE_FAKE_GOARCH:-arm64}"
   exit 0
 fi
 out=""
@@ -26,7 +26,7 @@ while (($#)); do
     shift
   fi
 done
-if [[ -n "${CYLO_FAKE_GO_FAIL_OUTPUT:-}" && "$out" == *"$CYLO_FAKE_GO_FAIL_OUTPUT"* ]]; then
+if [[ -n "${ZOE_FAKE_GO_FAIL_OUTPUT:-}" && "$out" == *"$ZOE_FAKE_GO_FAIL_OUTPUT"* ]]; then
   exit 31
 fi
 mkdir -p "$(dirname "$out")"
@@ -36,16 +36,16 @@ EOF
 cat >"$fake_docker" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >>"$CYLO_FAKE_DOCKER_LOG"
-case "${CYLO_FAKE_DOCKER_FAIL_FILE:-}" in
+printf '%s\n' "$*" >>"$ZOE_FAKE_DOCKER_LOG"
+case "${ZOE_FAKE_DOCKER_FAIL_FILE:-}" in
   server) if [[ "$*" == *Dockerfile.server* ]]; then exit 32; fi ;;
   memory) if [[ "$*" == *Dockerfile.memory* ]]; then exit 32; fi ;;
   runner) if [[ "$*" == *Dockerfile.runner* ]]; then exit 32; fi ;;
 esac
-if [[ -n "${CYLO_FAKE_DOCKER_BARRIER:-}" && "$*" == *Dockerfile.runner* ]]; then
-  : >"$CYLO_FAKE_DOCKER_BARRIER/ready.$PPID"
+if [[ -n "${ZOE_FAKE_DOCKER_BARRIER:-}" && "$*" == *Dockerfile.runner* ]]; then
+  : >"$ZOE_FAKE_DOCKER_BARRIER/ready.$PPID"
   for _ in {1..500}; do
-    if [[ "$(find "$CYLO_FAKE_DOCKER_BARRIER" -maxdepth 1 -name 'ready.*' -type f | wc -l)" -ge 2 ]]; then
+    if [[ "$(find "$ZOE_FAKE_DOCKER_BARRIER" -maxdepth 1 -name 'ready.*' -type f | wc -l)" -ge 2 ]]; then
       exit 0
     fi
     sleep 0.01
@@ -61,11 +61,11 @@ run_release() {
   shift 4
   env \
     GO="$fake_go" \
-    CYLO_DOCKER_BINARY="$fake_docker" \
-    CYLO_BUILD_ROOT="$build_root" \
-    CYLO_RELEASE_ROOT="$release_root" \
-    CYLO_FAKE_DOCKER_LOG="$docker_log" \
-    CYLO_FAKE_GOARCH="${CYLO_FAKE_GOARCH:-arm64}" \
+    ZOE_DOCKER_BINARY="$fake_docker" \
+    ZOE_BUILD_ROOT="$build_root" \
+    ZOE_RELEASE_ROOT="$release_root" \
+    ZOE_FAKE_DOCKER_LOG="$docker_log" \
+    ZOE_FAKE_GOARCH="${ZOE_FAKE_GOARCH:-arm64}" \
     "$@" \
     bash "$repo_root/deploy/linux/build-release.sh" "$tag"
 }
@@ -76,7 +76,7 @@ mkdir -p "$release_root" "$build_root"
 
 # A Go failure must discard its private build/release stages so the same
 # release tag can be retried after correcting the local build issue.
-if run_release go-retry-tag "$release_root" "$build_root" "$tmp_root/go-fail.log" CYLO_FAKE_GO_FAIL_OUTPUT=cylo-runner; then
+if run_release go-retry-tag "$release_root" "$build_root" "$tmp_root/go-fail.log" ZOE_FAKE_GO_FAIL_OUTPUT=zoe-runner; then
   echo "expected synthetic Go failure" >&2
   exit 1
 fi
@@ -90,12 +90,12 @@ if find "$build_root" -maxdepth 1 -name '.go-retry-tag.build.*' -print -quit | g
   exit 1
 fi
 run_release go-retry-tag "$release_root" "$build_root" "$tmp_root/go-retry.log"
-[[ -x "$release_root/go-retry-tag/bin/cylo-runner" ]]
+[[ -x "$release_root/go-retry-tag/bin/zoe-runner" ]]
 grep -q -- '--platform linux/arm64' "$tmp_root/go-retry.log"
 
 # A Docker failure must discard only its private stage so the same immutable
 # release tag can be retried successfully.
-if run_release retry-tag "$release_root" "$build_root" "$tmp_root/docker-fail.log" CYLO_FAKE_DOCKER_FAIL_FILE=memory; then
+if run_release retry-tag "$release_root" "$build_root" "$tmp_root/docker-fail.log" ZOE_FAKE_DOCKER_FAIL_FILE=memory; then
   echo "expected synthetic Docker failure" >&2
   exit 1
 fi
@@ -105,12 +105,12 @@ if find "$release_root" -maxdepth 1 -name '.retry-tag.staging.*' -print -quit | 
   exit 1
 fi
 run_release retry-tag "$release_root" "$build_root" "$tmp_root/docker-retry.log"
-[[ -x "$release_root/retry-tag/bin/cylo" ]]
-[[ "$(cat "$release_root/retry-tag/bin/cylo")" == "synthetic executable: cylo" ]]
-[[ -x "$release_root/retry-tag/bin/cylo-runner" ]]
-[[ -x "$release_root/retry-tag/bin/cylo-secret-entrypoint" ]]
+[[ -x "$release_root/retry-tag/bin/zoe" ]]
+[[ "$(cat "$release_root/retry-tag/bin/zoe")" == "synthetic executable: zoe" ]]
+[[ -x "$release_root/retry-tag/bin/zoe-runner" ]]
+[[ -x "$release_root/retry-tag/bin/zoe-secret-entrypoint" ]]
 [[ -f "$release_root/retry-tag/deploy-linux/build-release.sh" ]]
-[[ "$(cat "$release_root/retry-tag/bin/cylo-runner")" == "synthetic executable: cylo-runner" ]]
+[[ "$(cat "$release_root/retry-tag/bin/zoe-runner")" == "synthetic executable: zoe-runner" ]]
 grep -q -- '--platform linux/arm64' "$tmp_root/docker-retry.log"
 [[ "$(stat -c '%a' "$release_root/retry-tag")" == 755 ]]
 if find "$release_root" -maxdepth 1 -name '.retry-tag.staging.*' -print -quit | grep -q .; then
@@ -146,9 +146,9 @@ done
 # atomically publish the final release directory.
 mkdir "$tmp_root/concurrent-barrier"
 set +e
-run_release concurrent-tag "$release_root" "$build_root" "$tmp_root/concurrent-a.log" CYLO_FAKE_DOCKER_BARRIER="$tmp_root/concurrent-barrier" >"$tmp_root/concurrent-a.out" 2>&1 &
+run_release concurrent-tag "$release_root" "$build_root" "$tmp_root/concurrent-a.log" ZOE_FAKE_DOCKER_BARRIER="$tmp_root/concurrent-barrier" >"$tmp_root/concurrent-a.out" 2>&1 &
 pid_a=$!
-run_release concurrent-tag "$release_root" "$build_root" "$tmp_root/concurrent-b.log" CYLO_FAKE_DOCKER_BARRIER="$tmp_root/concurrent-barrier" >"$tmp_root/concurrent-b.out" 2>&1 &
+run_release concurrent-tag "$release_root" "$build_root" "$tmp_root/concurrent-b.log" ZOE_FAKE_DOCKER_BARRIER="$tmp_root/concurrent-barrier" >"$tmp_root/concurrent-b.out" 2>&1 &
 pid_b=$!
 wait "$pid_a"
 status_a=$?
@@ -165,7 +165,7 @@ for status in "$status_a" "$status_b"; do
   fi
 done
 [[ "$successes" == 1 && "$failures" == 1 ]]
-[[ -x "$release_root/concurrent-tag/bin/cylo-runner" ]]
+[[ -x "$release_root/concurrent-tag/bin/zoe-runner" ]]
 published_messages=0
 grep -q '^Built Linux release concurrent-tag ' "$tmp_root/concurrent-a.out" && ((published_messages += 1)) || true
 grep -q '^Built Linux release concurrent-tag ' "$tmp_root/concurrent-b.out" && ((published_messages += 1)) || true

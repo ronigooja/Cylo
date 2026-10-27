@@ -1,14 +1,14 @@
 services:
   voice-gateway:
-    container_name: cylo-voice-gateway
+    container_name: zoe-voice-gateway
     build:
-      context: /opt/cylo/voice/upstream
+      context: /opt/zoe/voice/upstream
       dockerfile: Dockerfile
       args:
-        VERSION: cylo-pinned
+        VERSION: zoe-pinned
         REVISION: 6338ac478070aaa34bfe7a3c0469caf9e9174c02
     env_file:
-      - /etc/cylo/voice.env
+      - /etc/zoe/voice.env
     environment:
       VOICE_DATABASE_FILE: /app/data/voice.db
       VOICE_LISTEN_ADDR: 0.0.0.0:8090
@@ -16,9 +16,9 @@ services:
     ports:
       - "127.0.0.1:18090:8090"
     volumes:
-      - /var/lib/cylo/voice:/app/data
+      - /var/lib/zoe/voice:/app/data
     networks:
-      - cylo
+      - zoe
     restart: unless-stopped
     init: true
     read_only: true
@@ -38,6 +38,6 @@ services:
         max-file: "3"
 
 networks:
-  cylo:
+  zoe:
     external: true
-    name: cylo
+    name: zoe

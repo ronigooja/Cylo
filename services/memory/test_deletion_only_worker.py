@@ -36,9 +36,9 @@ class DeletionOnlyWorkerTests(unittest.TestCase):
 
     def test_environment_mode_does_not_require_or_load_model_configuration(self) -> None:
         env = {
-            "CYLO_CONTROL_URL": "http://control.invalid",
-            "CYLO_RUNNER_TOKEN": "fixture-token",
-            "CYLO_MEMORY_DELETION_ONLY": "1",
+            "ZOE_CONTROL_URL": "http://control.invalid",
+            "ZOE_RUNNER_TOKEN": "fixture-token",
+            "ZOE_MEMORY_DELETION_ONLY": "1",
         }
         with patch.dict(os.environ, env, clear=True), patch("services.memory.worker.LocalEmbedder") as embedder, patch(
             "services.memory.worker.ControlledMem0"

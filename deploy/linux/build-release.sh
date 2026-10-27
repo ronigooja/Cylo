@@ -7,25 +7,25 @@ if [[ ! "$tag" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]]; then
   echo "usage: $0 RELEASE_TAG" >&2
   exit 2
 fi
-if [[ ! -d "$repo_root/cmd/cylo-runner" ]]; then
-  echo "cmd/cylo-runner is not present in this source revision; integrate the coordinated runtime source before building the Linux release" >&2
+if [[ ! -d "$repo_root/cmd/zoe-runner" ]]; then
+  echo "cmd/zoe-runner is not present in this source revision; integrate the coordinated runtime source before building the Linux release" >&2
   exit 1
 fi
 
 cd "$repo_root"
 
-build_root="${CYLO_BUILD_ROOT:-/var/cache/cylo/builds}"
-release_root="${CYLO_RELEASE_ROOT:-/opt/cylo/releases}"
-docker_bin="${CYLO_DOCKER_BINARY:-docker}"
+build_root="${ZOE_BUILD_ROOT:-/var/cache/zoe/builds}"
+release_root="${ZOE_RELEASE_ROOT:-/opt/zoe/releases}"
+docker_bin="${ZOE_DOCKER_BINARY:-docker}"
 go_bin="${GO:-go}"
-build_goarch="${CYLO_BUILD_GOARCH:-$("$go_bin" env GOARCH)}"
-build_platform="${CYLO_BUILD_PLATFORM:-linux/$build_goarch}"
+build_goarch="${ZOE_BUILD_GOARCH:-$("$go_bin" env GOARCH)}"
+build_platform="${ZOE_BUILD_PLATFORM:-linux/$build_goarch}"
 case "$build_goarch" in
   amd64|arm64) ;;
   *) echo "unsupported release GOARCH: $build_goarch" >&2; exit 1 ;;
 esac
 if [[ "$build_platform" != "linux/$build_goarch" ]]; then
-  echo "CYLO_BUILD_PLATFORM must match the release binaries' linux/$build_goarch architecture" >&2
+  echo "ZOE_BUILD_PLATFORM must match the release binaries' linux/$build_goarch architecture" >&2
   exit 1
 fi
 release_dir="$release_root/$tag"
@@ -48,18 +48,18 @@ mkdir -p "$build_dir/bin" "$release_stage/bin"
 chmod 0755 "$release_stage"
 
 export CGO_ENABLED=0 GOOS=linux GOARCH="$build_goarch"
-"$go_bin" build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_dir/bin/cylo" ./cmd/cylo
-"$go_bin" build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_dir/bin/cylo-server" ./cmd/cylo-server
-"$go_bin" build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_dir/bin/cylo-runner" ./cmd/cylo-runner
-"$go_bin" build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_dir/bin/cylo-secret-entrypoint" ./deploy/linux/secret-entrypoint.go
-install -m 0755 "$build_dir/bin/cylo" "$release_stage/bin/cylo"
-install -m 0755 "$build_dir/bin/cylo-runner" "$release_stage/bin/cylo-runner"
-install -m 0755 "$build_dir/bin/cylo-secret-entrypoint" "$release_stage/bin/cylo-secret-entrypoint"
+"$go_bin" build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_dir/bin/zoe" ./cmd/zoe
+"$go_bin" build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_dir/bin/zoe-server" ./cmd/zoe-server
+"$go_bin" build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_dir/bin/zoe-runner" ./cmd/zoe-runner
+"$go_bin" build -trimpath -buildvcs=false -ldflags='-s -w' -o "$build_dir/bin/zoe-secret-entrypoint" ./deploy/linux/secret-entrypoint.go
+install -m 0755 "$build_dir/bin/zoe" "$release_stage/bin/zoe"
+install -m 0755 "$build_dir/bin/zoe-runner" "$release_stage/bin/zoe-runner"
+install -m 0755 "$build_dir/bin/zoe-secret-entrypoint" "$release_stage/bin/zoe-secret-entrypoint"
 cp -a "$repo_root/deploy/linux" "$release_stage/deploy-linux"
 
-"$docker_bin" buildx build --load --platform "$build_platform" -f "$repo_root/deploy/linux/Dockerfile.server" -t "cylo-server:$tag" "$repo_root"
-"$docker_bin" buildx build --load --platform "$build_platform" -f "$repo_root/deploy/linux/Dockerfile.memory" -t "cylo-memory-worker:$tag" "$repo_root"
-"$docker_bin" buildx build --load --platform "$build_platform" -f "$repo_root/deploy/linux/Dockerfile.runner" -t "cylo-runner:$tag" "$repo_root"
+"$docker_bin" buildx build --load --platform "$build_platform" -f "$repo_root/deploy/linux/Dockerfile.server" -t "zoe-server:$tag" "$repo_root"
+"$docker_bin" buildx build --load --platform "$build_platform" -f "$repo_root/deploy/linux/Dockerfile.memory" -t "zoe-memory-worker:$tag" "$repo_root"
+"$docker_bin" buildx build --load --platform "$build_platform" -f "$repo_root/deploy/linux/Dockerfile.runner" -t "zoe-runner:$tag" "$repo_root"
 
 # Linux GNU mv -Tn publishes the directory as one no-clobber rename. The image
 # tags above are separate Docker operations and are not a multi-tag transaction.
@@ -73,5 +73,5 @@ if [[ -e "$release_stage" || -L "$release_stage" ]]; then
 fi
 release_stage=""
 
-printf 'Built Linux release %s (%s) under %s and images cylo-server:%s, cylo-memory-worker:%s, cylo-runner:%s\n' "$tag" "$build_platform" "$release_dir" "$tag" "$tag" "$tag"
-printf 'Build scratch was private under %s and removed; authoritative and runner state remain under /var/lib/cylo.\n' "$build_root"
+printf 'Built Linux release %s (%s) under %s and images zoe-server:%s, zoe-memory-worker:%s, zoe-runner:%s\n' "$tag" "$build_platform" "$release_dir" "$tag" "$tag" "$tag"
+printf 'Build scratch was private under %s and removed; authoritative and runner state remain under /var/lib/zoe.\n' "$build_root"

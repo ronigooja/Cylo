@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/control"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/control"
 )
 
 func seedSourceLedgerTombstone(t *testing.T, ctx context.Context, store *sql.DB, repo *Repository) (Claim, Claim, int64) {

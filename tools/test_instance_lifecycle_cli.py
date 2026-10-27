@@ -9,7 +9,7 @@ import sqlite3
 import tempfile
 import unittest
 from unittest import mock
-from tools import cylo_destroy, cylo_export
+from tools import zoe_destroy, zoe_export
 
 class LifecycleCLI(unittest.TestCase):
     def setUp(self):
@@ -21,23 +21,23 @@ class LifecycleCLI(unittest.TestCase):
         deployment = self.root / "instance"
         deployment.mkdir()
         roots = []
-        for category in sorted(cylo_destroy.REQUIRED_CATEGORIES):
+        for category in sorted(zoe_destroy.REQUIRED_CATEGORIES):
             path = deployment / category
             path.mkdir()
             (path / "fixture").write_text("owned content")
             roots.append({"category": category, "path": str(path)})
-        database = deployment / "data" / "cylo.sqlite"
+        database = deployment / "data" / "zoe.sqlite"
         with sqlite3.connect(database) as connection:
-            connection.execute("CREATE TABLE cylo_instance_state(singleton INTEGER,instance_id TEXT,dispatch_enabled INTEGER)")
-            connection.execute("INSERT INTO cylo_instance_state VALUES(1,'instance-fixture',1)")
+            connection.execute("CREATE TABLE zoe_instance_state(singleton INTEGER,instance_id TEXT,dispatch_enabled INTEGER)")
+            connection.execute("INSERT INTO zoe_instance_state VALUES(1,'instance-fixture',1)")
         database.chmod(0o600)
         adapter = self.root / "cleanup-adapter"
         adapter.write_text("#!/bin/sh\nexit 1\n")
         adapter.chmod(0o700)
-        maintenance = self.root / "cylo-maintenance"
+        maintenance = self.root / "zoe-maintenance"
         maintenance.write_text("#!/bin/sh\nexit 1\n")
         maintenance.chmod(0o700)
-        return {"schema_version": 1, "topology": "linux-systemd-compose", "instance_id": "instance-fixture", "deployment_root": str(deployment), "database": str(database), "roots": roots, "service_units": sorted(cylo_destroy.ALLOWED_UNITS), "external_resources": [{"kind": "ao_runtime", "id": "owned-runtime"}, {"kind": "qdrant_index", "id": "owned-index"}], "cleanup_adapter": str(adapter), "maintenance_binary": str(maintenance)}
+        return {"schema_version": 1, "topology": "linux-systemd-compose", "instance_id": "instance-fixture", "deployment_root": str(deployment), "database": str(database), "roots": roots, "service_units": sorted(zoe_destroy.ALLOWED_UNITS), "external_resources": [{"kind": "ao_runtime", "id": "owned-runtime"}, {"kind": "qdrant_index", "id": "owned-index"}], "cleanup_adapter": str(adapter), "maintenance_binary": str(maintenance)}
 
     def executor(self, manifest, *, incomplete=False, active=False):
         calls = []
@@ -47,7 +47,7 @@ class LifecycleCLI(unittest.TestCase):
                 return "active" if active else "inactive"
             if command[0] == manifest["maintenance_binary"]:
                 with sqlite3.connect(manifest["database"]) as connection:
-                    connection.execute("UPDATE cylo_instance_state SET dispatch_enabled=0")
+                    connection.execute("UPDATE zoe_instance_state SET dispatch_enabled=0")
             if command[0] == manifest["cleanup_adapter"]:
                 request = json.loads(input)
                 return json.dumps({"instance_id": manifest["instance_id"], "challenge": request["challenge"], "inventory_complete": not incomplete, "unaccounted_resources": [], "active_runtimes": [], "removed_resources": manifest["external_resources"]})
@@ -58,11 +58,11 @@ class LifecycleCLI(unittest.TestCase):
         manifest = self.manifest()
         receipt = self.root / "receipt.jsonl"
         runner, calls = self.executor(manifest)
-        plan = cylo_destroy.destroy(manifest, receipt, False, "", runner)
+        plan = zoe_destroy.destroy(manifest, receipt, False, "", runner)
         self.assertFalse(plan["executed"])
         self.assertEqual(calls, [])
         self.assertFalse(receipt.exists())
-        result = cylo_destroy.destroy(manifest, receipt, True, manifest["instance_id"], runner)
+        result = zoe_destroy.destroy(manifest, receipt, True, manifest["instance_id"], runner)
         self.assertTrue(result["executed"])
         self.assertTrue(all(not Path(item["path"]).exists() for item in manifest["roots"]))
         self.assertTrue(Path(manifest["cleanup_adapter"]).exists())
@@ -80,7 +80,7 @@ class LifecycleCLI(unittest.TestCase):
                 manifest = self.manifest()
                 runner, _ = self.executor(manifest, incomplete=incomplete, active=active)
                 with self.assertRaises(ValueError):
-                    cylo_destroy.destroy(manifest, self.root / "receipt", True, manifest["instance_id"], runner)
+                    zoe_destroy.destroy(manifest, self.root / "receipt", True, manifest["instance_id"], runner)
                 self.assertTrue(all(Path(item["path"]).exists() for item in manifest["roots"]))
                 self.root = base
 
@@ -88,21 +88,21 @@ class LifecycleCLI(unittest.TestCase):
         manifest = self.manifest()
         receipt = self.root / "receipt"
         with self.assertRaises(ValueError):
-            cylo_destroy.destroy({**manifest, "instance_id": "another-instance"}, receipt, False, "")
+            zoe_destroy.destroy({**manifest, "instance_id": "another-instance"}, receipt, False, "")
         unsafe = [{**item, "path": "/"} if item["category"] == "config" else item for item in manifest["roots"]]
         with self.assertRaises(ValueError):
-            cylo_destroy.destroy({**manifest, "roots": unsafe}, receipt, False, "")
-        with mock.patch.object(cylo_destroy, "mounted_paths", return_value={Path(manifest["roots"][0]["path"])}):
+            zoe_destroy.destroy({**manifest, "roots": unsafe}, receipt, False, "")
+        with mock.patch.object(zoe_destroy, "mounted_paths", return_value={Path(manifest["roots"][0]["path"])}):
             with self.assertRaises(ValueError):
-                cylo_destroy.destroy(manifest, receipt, False, "")
+                zoe_destroy.destroy(manifest, receipt, False, "")
         link = Path(manifest["roots"][0]["path"]) / "outside"
         link.symlink_to(self.root)
         with self.assertRaises(ValueError):
-            cylo_destroy.destroy(manifest, receipt, False, "")
+            zoe_destroy.destroy(manifest, receipt, False, "")
         link.unlink()
         Path(manifest["cleanup_adapter"]).unlink()
         with self.assertRaises(FileNotFoundError):
-            cylo_destroy.destroy(manifest, receipt, True, manifest["instance_id"])
+            zoe_destroy.destroy(manifest, receipt, True, manifest["instance_id"])
         self.assertFalse(receipt.exists())
 
     def test_export_private_json_and_plain_keys_preserve_credentials_off_url(self):
@@ -110,7 +110,7 @@ class LifecycleCLI(unittest.TestCase):
         class Response(io.BytesIO):
             status = 200
             headers = email.message.Message()
-        Response.headers["Content-Type"] = "application/vnd.cylo.export+zip"
+        Response.headers["Content-Type"] = "application/vnd.zoe.export+zip"
         class Opener:
             def open(self, request, timeout):
                 self.request = request
@@ -121,16 +121,16 @@ class LifecycleCLI(unittest.TestCase):
             source.chmod(0o600)
             output = self.root / (key_format + ".zip")
             opener = Opener()
-            cylo_export.export_archive("https://instance.example/base", source, key_format, output, "workspace", opener)
+            zoe_export.export_archive("https://instance.example/base", source, key_format, output, "workspace", opener)
             self.assertEqual(output.read_bytes(), b"PK-fixture")
             self.assertEqual(output.stat().st_mode & 0o777, 0o600)
             self.assertNotIn(key, opener.request.full_url)
             self.assertEqual(opener.request.get_header("Authorization"), "Bearer " + key)
             with self.assertRaises(FileExistsError):
-                cylo_export.export_archive("https://instance.example/base", source, key_format, output, "workspace", opener)
+                zoe_export.export_archive("https://instance.example/base", source, key_format, output, "workspace", opener)
         source.chmod(0o644)
         with self.assertRaises(ValueError):
-            cylo_export.read_instance_key(source, "plain")
+            zoe_export.read_instance_key(source, "plain")
 
     def test_failed_export_removes_partial_file_and_refuses_redirects(self):
         source = self.root / "key"
@@ -141,10 +141,10 @@ class LifecycleCLI(unittest.TestCase):
                 raise OSError("fixture transport interruption")
         destination = self.root / "partial"
         with self.assertRaises(OSError):
-            cylo_export.export_archive("https://instance.example", source, "plain", destination, "personal", Broken())
+            zoe_export.export_archive("https://instance.example", source, "plain", destination, "personal", Broken())
         self.assertFalse(destination.exists())
         with self.assertRaises(ValueError):
-            cylo_export.NoRedirect().redirect_request(None, None, 302, "", {}, "https://other.example")
+            zoe_export.NoRedirect().redirect_request(None, None, 302, "", {}, "https://other.example")
 
 if __name__ == "__main__":
     unittest.main()

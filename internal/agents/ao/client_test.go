@@ -40,7 +40,7 @@ func TestCreateWorkerKeepsServerFailureUnknownWithoutCreateReplay(t *testing.T) 
 	}
 	_, err = client.CreateWorker(context.Background(), WorkerSpec{
 		ClientRequestID: "run-1", ProjectID: "safe-fixture", Harness: "codex",
-		Model: "gpt-6.1-sol", DisplayName: "Cylo run run-1", Prompt: "Inspect the local fixture.",
+		Model: "gpt-6.1-sol", DisplayName: "Zoe run run-1", Prompt: "Inspect the local fixture.",
 	})
 	if !errors.Is(err, ErrOutcomeUnknown) || requests != 1 {
 		t.Fatalf("error=%v requests=%d; unknown create must not be replayed", err, requests)

@@ -4,10 +4,10 @@ Status: accepted architecture baseline; implementation and acceptance status rem
 
 ## Context
 
-Cylo needs durable background execution independent of conversation and client availability, plus consistent access from macOS, iPhone, and iPad. Archived proposals considered web/PWA and macOS background hosts, but those are not the selected baseline. The six product responsibilities must remain explicit without forcing every responsibility into a separate process.
+Zoe needs durable background execution independent of conversation and client availability, plus consistent access from macOS, iPhone, and iPad. Archived proposals considered web/PWA and macOS background hosts, but those are not the selected baseline. The six product responsibilities must remain explicit without forcing every responsibility into a separate process.
 
 
-Commands, runner reports, voice retransmissions, and reconnects may duplicate messages or lose responses. External work can succeed even when Cylo never receives a receipt. Conversation state, an agent answer, or an optimistic client update cannot establish actual business success.
+Commands, runner reports, voice retransmissions, and reconnects may duplicate messages or lose responses. External work can succeed even when Zoe never receives a receipt. Conversation state, an agent answer, or an optimistic client update cannot establish actual business success.
 
 ## Decision
 

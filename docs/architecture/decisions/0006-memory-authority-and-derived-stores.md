@@ -4,7 +4,7 @@ Status: accepted architecture baseline; implementation and acceptance status rem
 
 ## Context
 
-Cylo needs accurate historical decisions and scoped context beyond conversation lifetime. Extraction and retrieval are asynchronous and can be stale. A memory model must not overwrite confirmed decisions or revive deleted content from an old index or backup.
+Zoe needs accurate historical decisions and scoped context beyond conversation lifetime. Extraction and retrieval are asynchronous and can be stale. A memory model must not overwrite confirmed decisions or revive deleted content from an old index or backup.
 
 ## Decision
 
@@ -18,8 +18,8 @@ Deletion immediately blocks retrieval/new context through a versioned tombstone,
 
 ## Consequences
 
-Mem0 and Qdrant can evolve without replacing Cylo's task/memory authority. Rebuild and cleanup lag require explicit reconciliation and stale-version rejection. A backup's embedded journal head cannot establish freshness or prove later deletions were applied. Physical erasure and production retention require each applicable store/backup checkpoint, not a design or local cleanup fixture. Model versions, artifact hashes, and storage configuration remain in the worker's primary documentation rather than duplicated in the ADR.
+Mem0 and Qdrant can evolve without replacing Zoe's task/memory authority. Rebuild and cleanup lag require explicit reconciliation and stale-version rejection. A backup's embedded journal head cannot establish freshness or prove later deletions were applied. Physical erasure and production retention require each applicable store/backup checkpoint, not a design or local cleanup fixture. Model versions, artifact hashes, and storage configuration remain in the worker's primary documentation rather than duplicated in the ADR.
 
 ## Sources
 
-[Product chapters 10–11 and 16](../../product.md); [memory architecture](../../architecture.md#memory-retrieval-and-context); [memory worker](../../../services/memory/README.md); historical evidence: [memory requirements](https://github.com/ronigooja/Cylo/blob/95ee55a5bbd8dccfb7f14af9f9703bb83727da6c/docs/archive/research/reports/17-memory-requirements-and-design.md).
+[Product chapters 10–11 and 16](../../product.md); [memory architecture](../../architecture.md#memory-retrieval-and-context); [memory worker](../../../services/memory/README.md); historical evidence: [memory requirements](https://github.com/ronigooja/Zoe/blob/95ee55a5bbd8dccfb7f14af9f9703bb83727da6c/docs/archive/research/reports/17-memory-requirements-and-design.md).

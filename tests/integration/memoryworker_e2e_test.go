@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/memory"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/memory"
 )
 
 const memoryE2EModelCodec = "paraphrase_multilingual_minilm_l12_384_faf4aa42"
@@ -73,18 +73,18 @@ func (p *memoryWorkerE2EProcess) stop(t *testing.T) {
 }
 
 func TestMemoryWorkerGoPythonMem0QdrantEndToEnd(t *testing.T) {
-	if os.Getenv("CYLO_MEMORY_E2E") != "1" {
-		t.Skip("set CYLO_MEMORY_E2E=1 to run the live Go/Python/Mem0/Qdrant acceptance flow")
+	if os.Getenv("ZOE_MEMORY_E2E") != "1" {
+		t.Skip("set ZOE_MEMORY_E2E=1 to run the live Go/Python/Mem0/Qdrant acceptance flow")
 	}
-	proxyURL := strings.TrimSpace(os.Getenv("CYLO_MEMORY_E2E_LLM_BASE_URL"))
-	proxyModel := strings.TrimSpace(os.Getenv("CYLO_MEMORY_E2E_LLM_MODEL"))
-	proxyKey := os.Getenv("CYLO_MEMORY_E2E_LLM_API_KEY")
-	if os.Getenv("CYLO_MEMORY_E2E_MOCK_RESPONSES") == "1" {
+	proxyURL := strings.TrimSpace(os.Getenv("ZOE_MEMORY_E2E_LLM_BASE_URL"))
+	proxyModel := strings.TrimSpace(os.Getenv("ZOE_MEMORY_E2E_LLM_MODEL"))
+	proxyKey := os.Getenv("ZOE_MEMORY_E2E_LLM_API_KEY")
+	if os.Getenv("ZOE_MEMORY_E2E_MOCK_RESPONSES") == "1" {
 		mock := httptest.NewServer(http.HandlerFunc(memoryE2EResponsesStub))
 		t.Cleanup(mock.Close)
 		proxyURL, proxyModel, proxyKey = mock.URL+"/v1", "e2e-responses-stub", "e2e-test-key"
 	} else if proxyURL == "" || proxyModel == "" || proxyKey == "" {
-		t.Skip("live E2E requires CYLO_MEMORY_E2E_LLM_BASE_URL, CYLO_MEMORY_E2E_LLM_MODEL, and a deployment-provided CYLO_MEMORY_E2E_LLM_API_KEY")
+		t.Skip("live E2E requires ZOE_MEMORY_E2E_LLM_BASE_URL, ZOE_MEMORY_E2E_LLM_MODEL, and a deployment-provided ZOE_MEMORY_E2E_LLM_API_KEY")
 	}
 
 	qdrantURL := startEphemeralMemoryE2EQdrant(t)
@@ -102,27 +102,27 @@ func TestMemoryWorkerGoPythonMem0QdrantEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	python := strings.TrimSpace(os.Getenv("CYLO_MEMORY_E2E_PYTHON"))
+	python := strings.TrimSpace(os.Getenv("ZOE_MEMORY_E2E_PYTHON"))
 	if python == "" {
 		python = filepath.Join(repositoryRoot, "services", "memory", ".venv", "bin", "python")
 	}
 	historyDB := filepath.Join(t.TempDir(), "mem0-history.sqlite")
 	workerEnv := memoryE2EEnv(os.Environ(), map[string]string{
-		"CYLO_CONTROL_URL":              server.URL,
-		"CYLO_RUNNER_TOKEN":             runnerToken,
-		"CYLO_QDRANT_URL":               qdrantURL,
-		"CYLO_QDRANT_API_KEY":           "",
-		"CYLO_QDRANT_COLLECTION":        "cylo_memory_v1_" + memoryE2EModelCodec + "_e2e",
-		"CYLO_MEM0_COLLECTION":          "cylo_mem0_e2e",
-		"CYLO_MEM0_HISTORY_DB":          historyDB,
-		"CYLO_MEM0_LLM_PROVIDER":        "openai",
-		"CYLO_MEM0_LLM_MODEL":           proxyModel,
-		"CYLO_MEM0_LLM_BASE_URL":        proxyURL,
-		"CYLO_MEM0_LLM_API_KEY":         proxyKey,
-		"CYLO_MEMORY_EXTRACTOR_VERSION": "mem0-controlled-e2e-v1",
-		"CYLO_MEMORY_BATCH_SIZE":        "100",
-		"CYLO_MEMORY_MODEL_CACHE":       "/tmp/cylo-fastembed-cache",
-		"FASTEMBED_CACHE_PATH":          "/tmp/cylo-fastembed-cache",
+		"ZOE_CONTROL_URL":              server.URL,
+		"ZOE_RUNNER_TOKEN":             runnerToken,
+		"ZOE_QDRANT_URL":               qdrantURL,
+		"ZOE_QDRANT_API_KEY":           "",
+		"ZOE_QDRANT_COLLECTION":        "zoe_memory_v1_" + memoryE2EModelCodec + "_e2e",
+		"ZOE_MEM0_COLLECTION":          "zoe_mem0_e2e",
+		"ZOE_MEM0_HISTORY_DB":          historyDB,
+		"ZOE_MEM0_LLM_PROVIDER":        "openai",
+		"ZOE_MEM0_LLM_MODEL":           proxyModel,
+		"ZOE_MEM0_LLM_BASE_URL":        proxyURL,
+		"ZOE_MEM0_LLM_API_KEY":         proxyKey,
+		"ZOE_MEMORY_EXTRACTOR_VERSION": "mem0-controlled-e2e-v1",
+		"ZOE_MEMORY_BATCH_SIZE":        "100",
+		"ZOE_MEMORY_MODEL_CACHE":       "/tmp/zoe-fastembed-cache",
+		"FASTEMBED_CACHE_PATH":          "/tmp/zoe-fastembed-cache",
 		"MEM0_TELEMETRY":                "false",
 		"PYTHONUNBUFFERED":              "1",
 	})
@@ -274,10 +274,10 @@ func memoryE2EResponsesStub(w http.ResponseWriter, r *http.Request) {
 	}
 	outputText, _ := json.Marshal(map[string]any{"memory": []map[string]string{{"text": text}}})
 	response := map[string]any{
-		"id": "resp-cylo-e2e", "object": "response", "created_at": time.Now().Unix(),
+		"id": "resp-zoe-e2e", "object": "response", "created_at": time.Now().Unix(),
 		"status": "completed", "model": "e2e-responses-stub", "output_text": string(outputText),
 		"output": []map[string]any{{
-			"id": "msg-cylo-e2e", "type": "message", "status": "completed", "role": "assistant",
+			"id": "msg-zoe-e2e", "type": "message", "status": "completed", "role": "assistant",
 			"content": []map[string]any{{"type": "output_text", "text": string(outputText), "annotations": []any{}}},
 		}},
 	}

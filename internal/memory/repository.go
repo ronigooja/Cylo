@@ -12,9 +12,9 @@ import (
 	"unicode"
 
 	"github.com/google/uuid"
-	"github.com/ronigooja/Cylo/contracts"
-	"github.com/ronigooja/Cylo/internal/control"
-	"github.com/ronigooja/Cylo/internal/storage"
+	"github.com/ronigooja/Zoe/contracts"
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/storage"
 )
 
 var (
@@ -46,7 +46,7 @@ func (r *Repository) replayPendingDeletionsTx(ctx context.Context, tx *sql.Tx) e
 	}
 	var lineage string
 	var generation, sequence int64
-	if err := tx.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&lineage, &generation, &sequence); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM zoe_instance_state WHERE singleton=1`).Scan(&lineage, &generation, &sequence); err != nil {
 		if strings.Contains(err.Error(), "no such table") {
 			return nil
 		}
@@ -61,7 +61,7 @@ func journalledDeletionVersionsTx(ctx context.Context, tx *sql.Tx, journal *stor
 		return versions, nil
 	}
 	var lineage string
-	if err := tx.QueryRowContext(ctx, `SELECT lineage_id FROM cylo_instance_state WHERE singleton=1`).Scan(&lineage); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT lineage_id FROM zoe_instance_state WHERE singleton=1`).Scan(&lineage); err != nil {
 		if strings.Contains(err.Error(), "no such table") {
 			return versions, nil
 		}
@@ -264,7 +264,7 @@ func (r *Repository) DeleteTx(ctx context.Context, tx *sql.Tx, in DeleteInput) (
 	}
 	var lineageID string
 	var generation, currentSequence int64
-	if err := tx.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&lineageID, &generation, &currentSequence); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT lineage_id,generation,deletion_sequence FROM zoe_instance_state WHERE singleton=1`).Scan(&lineageID, &generation, &currentSequence); err != nil {
 		if !strings.Contains(err.Error(), "no such table") {
 			return Claim{}, fmt.Errorf("read deletion instance lineage: %w", err)
 		}
@@ -334,7 +334,7 @@ func (r *Repository) DeleteTx(ctx context.Context, tx *sql.Tx, in DeleteInput) (
 	if err != nil {
 		return Claim{}, fmt.Errorf("append memory claim deletion event: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE cylo_instance_state SET deletion_sequence=? WHERE singleton=1 AND generation=? AND deletion_sequence=?`, globalSequence, generation, currentSequence); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE zoe_instance_state SET deletion_sequence=? WHERE singleton=1 AND generation=? AND deletion_sequence=?`, globalSequence, generation, currentSequence); err != nil {
 		if !strings.Contains(err.Error(), "no such table") {
 			return Claim{}, fmt.Errorf("advance instance deletion sequence: %w", err)
 		}
@@ -388,7 +388,7 @@ WHERE s.workspace_id=? AND EXISTS (
 
 func completeLocalDeletionCheckpointsTx(ctx context.Context, tx *sql.Tx, sequence int64, now string) error {
 	for _, target := range []string{"claim", "source_links", "proposals", "cache", "source_ledger"} {
-		_, err := tx.ExecContext(ctx, `INSERT INTO cylo_deletion_reconciliation_checkpoints(target,completed_sequence,updated_at,last_error) VALUES(?,?,?,'')
+		_, err := tx.ExecContext(ctx, `INSERT INTO zoe_deletion_reconciliation_checkpoints(target,completed_sequence,updated_at,last_error) VALUES(?,?,?,'')
 ON CONFLICT(target) DO UPDATE SET completed_sequence=max(completed_sequence,excluded.completed_sequence),updated_at=excluded.updated_at,last_error=''`, target, sequence, now)
 		if err != nil && strings.Contains(err.Error(), "no such table") {
 			return nil
@@ -401,7 +401,7 @@ ON CONFLICT(target) DO UPDATE SET completed_sequence=max(completed_sequence,excl
 }
 
 func invalidateExportTempsTx(ctx context.Context, tx *sql.Tx, workspace string, sequence int64, now string) error {
-	_, err := tx.ExecContext(ctx, `UPDATE cylo_export_temp_registry SET status='invalidated',invalidation_sequence=?,updated_at=?,last_error=''
+	_, err := tx.ExecContext(ctx, `UPDATE zoe_export_temp_registry SET status='invalidated',invalidation_sequence=?,updated_at=?,last_error=''
 WHERE workspace_id=? AND status='active' AND created_deletion_sequence<?`, sequence, now, workspace, sequence)
 	if err != nil && strings.Contains(err.Error(), "no such table") {
 		// Older isolated memory-only fixtures do not register the control-plane
@@ -697,7 +697,7 @@ func (r *Repository) contextDeletionSequence(ctx context.Context) (int64, error)
 
 func contextDeletionSequenceTx(ctx context.Context, tx *sql.Tx) (int64, error) {
 	var sequence int64
-	err := tx.QueryRowContext(ctx, `SELECT deletion_sequence FROM cylo_instance_state WHERE singleton=1`).Scan(&sequence)
+	err := tx.QueryRowContext(ctx, `SELECT deletion_sequence FROM zoe_instance_state WHERE singleton=1`).Scan(&sequence)
 	if err != nil && strings.Contains(err.Error(), "no such table") {
 		return 0, nil
 	}
