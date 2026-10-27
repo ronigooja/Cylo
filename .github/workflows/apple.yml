@@ -38,12 +38,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CI_OUTPUT="$RUNNER_TEMP/cylo-apple/release"
-          echo "CI_OUTPUT=$CI_OUTPUT" >> "$GITHUB_ENV"
-          CI_OUTPUT="$RUNNER_TEMP/cylo-apple/ios"
-          echo "CI_OUTPUT=$CI_OUTPUT" >> "$GITHUB_ENV"
-          CI_OUTPUT="$RUNNER_TEMP/cylo-apple/macos"
-          echo "CI_OUTPUT=$CI_OUTPUT" >> "$GITHUB_ENV"
           CI_OUTPUT="$RUNNER_TEMP/cylo-apple/tests"
           echo "CI_OUTPUT=$CI_OUTPUT" >> "$GITHUB_ENV"
           mkdir -p "$CI_OUTPUT/logs" "$HOME/environment/cylo-apple"
@@ -92,6 +86,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          CI_OUTPUT="$RUNNER_TEMP/cylo-apple/macos"
+          echo "CI_OUTPUT=$CI_OUTPUT" >> "$GITHUB_ENV"
           mkdir -p "$CI_OUTPUT/logs" "$HOME/environment/cylo-apple"
           echo "CYLO_BUILD_ROOT=$CI_OUTPUT/test-data" >> "$GITHUB_ENV"
           {
@@ -140,6 +136,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          CI_OUTPUT="$RUNNER_TEMP/cylo-apple/ios"
+          echo "CI_OUTPUT=$CI_OUTPUT" >> "$GITHUB_ENV"
           mkdir -p "$CI_OUTPUT/logs" "$HOME/environment/cylo-apple"
           echo "CYLO_BUILD_ROOT=$CI_OUTPUT/test-data" >> "$GITHUB_ENV"
           {
@@ -242,6 +240,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          CI_OUTPUT="$RUNNER_TEMP/cylo-apple/release"
+          echo "CI_OUTPUT=$CI_OUTPUT" >> "$GITHUB_ENV"
           mkdir -p "$CI_OUTPUT/logs" "$HOME/environment/cylo-apple"
           echo "CYLO_BUILD_ROOT=$CI_OUTPUT/test-data" >> "$GITHUB_ENV"
           {
