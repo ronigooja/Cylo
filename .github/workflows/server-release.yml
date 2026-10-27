@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -31,19 +31,19 @@ jobs:
             docker version
           } > "$RUNNER_TEMP/zoe-release/logs/environment.txt"
           set +e
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -buildvcs=false -ldflags='-s -w' \
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags='-s -w' \
             -o "$RUNNER_TEMP/zoe-release/artifacts/zoe-server" ./cmd/zoe-server \
             2>&1 | tee "$RUNNER_TEMP/zoe-release/logs/binary-build.log"
           status=$?
           echo "$status" > "$RUNNER_TEMP/zoe-release/logs/binary-build.exit"
           test "$status" -eq 0 || exit "$status"
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -buildvcs=false -ldflags='-s -w' \
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags='-s -w' \
             -o "$RUNNER_TEMP/zoe-release/artifacts/zoe-runner" ./cmd/zoe-runner \
             2>&1 | tee "$RUNNER_TEMP/zoe-release/logs/runner-build.log"
           status=$?
           echo "$status" > "$RUNNER_TEMP/zoe-release/logs/runner-build.exit"
           test "$status" -eq 0 || exit "$status"
-          docker build --platform linux/arm64 -f deploy/linux/Dockerfile.server \
+          docker build --platform linux/amd64 -f deploy/linux/Dockerfile.server \
             -t "zoe-server:reconciliation-${GITHUB_SHA:0:12}" . \
             2>&1 | tee "$RUNNER_TEMP/zoe-release/logs/image-build.log"
           status=$?
