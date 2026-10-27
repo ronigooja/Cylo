@@ -17,12 +17,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.1'
-      - name: Fetch pinned AO and apply patch
+      - name: Fetch pinned patched AO fork
         run: |
-          git clone --filter=blob:none https://github.com/OrchestratorInc/agent-orchestrator.git "$RUNNER_TEMP/ao"
-          git -C "$RUNNER_TEMP/ao" checkout 7c83bd68c1e60c85b6a90e3ffa1340c859e4a3ff
-          bash deploy/linux/test-apply-ao-patch.sh "$RUNNER_TEMP/ao"
-          bash deploy/linux/apply-ao-patch.sh "$RUNNER_TEMP/ao"
+          git clone --filter=blob:none https://github.com/ronigooja/agent-orchestrator.git "$RUNNER_TEMP/ao"
+          git -C "$RUNNER_TEMP/ao" checkout 744f6c77f
+          test -z "$(git -C "$RUNNER_TEMP/ao" status --porcelain)"
       - name: Test AO container and provider adapters
         working-directory: ${{ runner.temp }}/ao/backend
         run: go test ./internal/adapters/chatdriver/codexappserver ./internal/adapters/agentaccount ./internal/session_manager ./internal/service/session ./internal/httpd/controllers
