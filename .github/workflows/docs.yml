@@ -1,0 +1,60 @@
+name: Documentation checks
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/**']
+    paths:
+      - '**/*.md'
+      - 'docs/**'
+      - 'tools/check_docs.py'
+      - 'tools/test_check_docs.py'
+      - 'tools/docs_requirements.json'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - '**/*.md'
+      - 'docs/**'
+      - 'tools/check_docs.py'
+      - 'tools/test_check_docs.py'
+      - 'tools/docs_requirements.json'
+      - '.github/workflows/docs.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Prepare environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/environment" "$RUNNER_TEMP/cylo-docs"
+          python3 -m venv "$HOME/environment/cylo-docs" > "$RUNNER_TEMP/cylo-docs/setup.log" 2>&1 || { tail -n 60 "$RUNNER_TEMP/cylo-docs/setup.log"; exit 1; }
+          { git rev-parse HEAD; "$HOME/environment/cylo-docs/bin/python" --version; uname -a; } > "$RUNNER_TEMP/cylo-docs/environment.txt"
+      - name: Check documentation and checker regressions
+        shell: bash
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          set -euo pipefail
+          "$HOME/environment/cylo-docs/bin/python" tools/check_docs.py > "$RUNNER_TEMP/cylo-docs/docs.log" 2>&1 || { tail -n 80 "$RUNNER_TEMP/cylo-docs/docs.log"; exit 1; }
+          "$HOME/environment/cylo-docs/bin/python" -m unittest discover -s tools -p test_check_docs.py > "$RUNNER_TEMP/cylo-docs/regressions.log" 2>&1 || { tail -n 80 "$RUNNER_TEMP/cylo-docs/regressions.log"; exit 1; }
+          git diff --check > "$RUNNER_TEMP/cylo-docs/whitespace.log" 2>&1 || { tail -n 60 "$RUNNER_TEMP/cylo-docs/whitespace.log"; exit 1; }
+          echo 'Documentation and checker regression checks passed.'
+      - name: Upload verification logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: documentation-logs-${{ github.sha }}
+          path: ${{ runner.temp }}/cylo-docs
+          retention-days: 7
+          if-no-files-found: error

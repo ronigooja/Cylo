@@ -1,31 +1,87 @@
-# Data lifecycle and recovery
+# Data lifecycle operations
 
-This policy applies to the current single-instance Cylo baseline. The Go control plane is authoritative for tasks, permissions, events, and memory versions. Mem0 is a controlled worker and Qdrant is a rebuildable index. Derived stores must never become the source of truth.
+This runbook applies when exporting, backing up, restoring, migrating, or deleting a Cylo instance. [Architecture](../architecture.md#backup-deletion-and-recovery) defines authority and fencing; [acceptance evidence](../acceptance/evidence.md) records what has actually been checked. No production all-store restore or erasure is accepted.
 
-## Storage and durability
+## Logical export
 
-SQLite runs in WAL mode with `synchronous=FULL`. Important records are accepted only after a durable commit. Keep one active writer instance during migration or restore; fence and stop the old instance before starting a restored one. A health response does not prove that a commit, worker effect, or external provider operation completed.
+Use a new destination and a private key file produced by `cylo key init` or `cylo key rotate`:
 
-Use the SQLite Online Backup API or the reviewed export tooling for consistent logical copies. Do not treat a direct copy of an active database file as a complete backup when WAL frames may be pending. A backup manifest should identify schema/version, event water level, release/configuration references, object checksums, tombstones, and explicit omissions. Secret values and raw credentials are never included in manifests or evidence.
+```sh
+python3 tools/cylo_export.py --server URL --key-file PRIVATE_JSON --output NEW_ZIP --scope workspace
+```
 
-## Export, migration, and restore
+Use `--scope personal` for the authorized personal scope or `--key-format plain` for a private raw-key file. The [export tool](../../tools/cylo_export.py) requires an operator-owned regular credential file without group/other access, refuses redirects/overwrites, creates a mode-0600 ZIP, caps transfer at 1 GiB, and removes partial output on failure. Schema-2 contents include authority records, hashes, inventory, and explicit omissions. Runtime volumes, secrets, and backups are omitted. This command does not perform the native client's ZIP/hash validation. Export is not a deployable backup.
 
-`tools/cylo_export.py` produces a bounded logical ZIP containing authority records, hashes, inventory, and omissions. It omits runtime volumes, secrets, and backups. Validate the archive and its checksums before transfer. Migration and restore require a fenced single-instance rehearsal, verification of task/run state, permissions, memory versions, derived-index rebuild, and external-effect reconciliation. Database rollback does not undo messages, orders, or other external effects that already occurred.
+## Offline encrypted backup
 
-The current repository contains source and design checks for these boundaries. A production restore rehearsal, measured RPO/RTO, and all-store migration are still open acceptance work (see [`CY-16-01`–`CY-16-06`](../master-plan.md#requirements-and-acceptance-index)).
+Use the [backup inventory example](../../deploy/linux/backup/backup-inventory.example.json) to name service configuration, immutable artifacts, persistent volumes, and secret references. Keep secrets outside the payload. Prepare the Python dependencies from [requirements](../../tools/data_lifecycle/requirements.txt) in a private operator environment. The encryption key is a separate deployment-managed mode-0600 file containing exactly 32 bytes, not the client instance-key JSON.
 
-## Deletion and retention
+Stop writers and run the tool under the authority-data account. It requires the server's exclusive database lock and uses SQLite's backup API plus integrity checking; copying an active database file can omit pending WAL frames. Persistent volumes require an executable quiesce adapter proving consistency before they can be included.
 
-Authoritative deletion creates a tombstone/version change first, then propagates to Mem0, Qdrant, caches, exports, and other derived stores according to policy. Rebuildable indexes may be recreated from the authority, but deletion is not complete until the rebuild no longer returns the record. Backups retain deleted data until their defined expiry; a restore must replay tombstones so deleted records do not reappear.
+```sh
+python3 tools/cylo_backup.py --database DATABASE --destination PRIVATE_BACKUP_DIR \
+  --key-file BACKUP_KEY --inventory PRIVATE_INVENTORY \
+  --backup-delete-manifest CURRENT_PRIVATE_DELETE_MANIFEST \
+  --retention-days 30
+```
 
-Raw voice audio is not retained by default. Voice account/session leases and external grants must end before reuse; uncertain accounts are quarantined. Logs and evidence must omit keys, authorization headers, complete audio, private message text, and full environment variables.
+Add `--data-root ID=PATH` for reviewed roots and `--volume-quiesce-adapter ABSOLUTE_ADAPTER` when including persistent volumes. [The source](../../tools/cylo_backup.py) defines the manifest and adapter contract. The encrypted artifact records schema, event water level, checksums, managed paths, omissions, and snapshot-bound deletion metadata. A nonempty deletion journal requires a matching independent durable deletion manifest; the journal cannot synthesize successful cleanup evidence.
 
-## Incident and unknown-effect handling
+The [retention registry](../../tools/data_lifecycle/retention.py) authenticates and locks the artifact inventory and purges expired registered artifacts when backup runs (default 30 days). This is not a continuously enforced wall-clock guarantee. Daily backup scheduling, RPO 24 hours, and RTO two hours remain unmeasured targets. Separately protect the current deletion ledger, head attestation, keys, configuration references, and required service data.
 
-Persist operation identity, request digest, target, policy/grant version, dispatch state, provider receipt or query result, and uncertainty classification. `dispatching` is not proof of delivery, and an HTTP response alone is not proof of a business effect. Query or reconcile an external effect where possible; otherwise keep the task waiting/escalated and do not blindly retry an irreversible operation.
+## Migration and staged restore
 
-For AO creation uncertainty, use the reconciliation procedure in [deployment operations](deployment.md#unknown-ao-create-outcomes). Preserve journal rows, task/run history, and container records; never edit them to force a check to pass.
+1. Resolve outstanding runs, external effects, deployments, and voice sessions under their normal authority paths. Stop/mask every source unit capable of writing or dispatching. Preserve the old instance fence and independently retained current deletion generation/head/hash; an old backup's embedded head is not a freshness authority.
+2. Generate source-isolation proof with the [migration tool](../../tools/cylo_migrate.py). It requires readiness with zero unresolved runs/effects/deployments/voice sessions and every named unit inactive and masked. The optional `--stop-mask-and-fence` performs those local actions before checking; it does not administer remote hosts.
 
-## Current limits
+```sh
+python3 tools/cylo_migrate.py --maintenance ABSOLUTE_MAINTENANCE_BINARY \
+  --database DATABASE --proof-key-file PRIVATE_PROOF_KEY --proof-output NEW_PROOF \
+  --unit cylo-compose.service --unit cylo-runner.service --unit cylo-ao.service \
+  --stop-mask-and-fence
+```
 
-No production backup, restore, deletion across every store, or external-world reconciliation has been accepted. The archived reliability report is a design and source reference, not evidence that those procedures ran: [report 05](../archive/research/reports/05-reliability-security-operations.md).
+Enumerate any additional deployment writers; the example unit list does not inventory every installation. Proof keys are operator-owned mode-0600 32-byte files. A refusal leaves the source closed; investigate it rather than modifying records to manufacture readiness.
+
+3. While holding the source offline, record its current deletion head using the reviewed [maintenance CLI](../../cmd/cylo-maintenance/main.go), and retain the current `.deletion-ledger` independently of the chosen backup. The attestation must come from the current authority, not the selected snapshot.
+
+```sh
+cylo-maintenance deletion-head --database DATABASE --output NEW_CURRENT_HEAD
+python3 tools/cylo_restore.py --artifact ENCRYPTED_BACKUP --key-file BACKUP_KEY \
+  --latest-deletion-ledger CURRENT_DELETION_LEDGER \
+  --latest-deletion-head-file NEW_CURRENT_HEAD --restore-directory NEW_STAGE
+```
+
+4. Transfer the encrypted backup, independent ledger/head, isolation proof, and required references through the deployment-approved private channel. [Restore](../../tools/cylo_restore.py) verifies hashes, deletion continuity, and safe paths, then creates a new stage with `data/cylo.sqlite.restore-pending` and `restore-state.json`. It never overwrites a target or enables dispatch. The database itself carries a persistent restore-only guard; renaming cannot bypass it.
+5. Read the restored epoch using offline maintenance status. Install the staged database under a new target identity and reconcile deletions:
+
+```sh
+cylo-maintenance prepare-restore --database NEW_STAGE/data/cylo.sqlite.restore-pending \
+  --activate-as NEW_DATABASE --expected-epoch RESTORED_SOURCE_EPOCH
+cylo-maintenance reconcile-deletions --database NEW_DATABASE --restore-state NEW_STAGE/restore-state.json
+```
+
+Reconciliation prepares deletion work; it does not prove external cleanup is complete. The deletion-only maintenance worker and cleanup adapters must produce the required checkpoints before activation or derived reads. Inspect [worker deployment configuration](../../services/memory/config.py) and [restore gates](../../internal/control/restore_gate.go). Unsupported Mem0/Qdrant or external resources remain `adapter_missing`; no operator success flag replaces proof.
+
+6. Only after source isolation, required deletion checkpoints, task/run/service reconciliation, required managed data restoration, and target status checks pass, enable with the reviewed proof and current target epoch:
+
+```sh
+cylo-maintenance enable --database NEW_DATABASE --expected-epoch TARGET_EPOCH \
+  --proof-file NEW_PROOF --proof-key-file PRIVATE_PROOF_KEY
+```
+
+Keep the old instance fenced. Validate permissions, task/run identities, memory versions/tombstones, artifact and volume inventory, index rebuild, and external effects before accepting recovery. Database rollback cannot undo a message or other external business action. Report index rebuild duration separately from core recovery time.
+
+## Deletion and destruction
+
+Authoritative deletion immediately excludes content through a version/tombstone change, then propagates idempotent cleanup through Mem0 history, Qdrant vectors/payloads, caches, export temporaries, replicas, and registered backups. Preserve deletion metadata across restore; stale derived copies cannot resurrect records. Conversations, formal memory, and task evidence are retained until user deletion by default, with configurable retention. Raw audio retention is off by default. Actual erasure requires target-specific evidence; unsupported cleanup stays closed.
+
+For complete instance destruction, start with the [inventory example](../../deploy/linux/destroy-inventory.example.json) and inspect a read-only plan:
+
+```sh
+python3 tools/cylo_destroy.py --manifest PRIVATE_MANIFEST --receipt NEW_PRIVATE_RECEIPT
+```
+
+[Execution](../../tools/cylo_destroy.py) additionally requires `--execute --confirm-instance INSTANCE_ID`. The supported topology is one dedicated operator-owned directory with declared data/artifact/backup/config roots, enumerated systemd units, and exact external resources. The recorded split `/etc/cylo` and `/var/lib/cylo` installation does not automatically match this topology. Private receipt and cleanup executables must survive outside deletion roots. Mounted resources, including bind mounts, must be detached; mount identity is rechecked before actions/deletion.
+
+Execution stops/masks services and fences dispatch, then challenges a deployment-owned adapter to prove complete inventory, no active/unaccounted runtime, and exact external cleanup. Only then may owned roots be removed after repeated identity/path checks. No real AO/container/volume/Mem0/Qdrant destruction adapter is shipped. Missing proof retains owned files, but services may already be stopped/fenced; inspect the receipt and state before recovery. The existing external CLIProxyAPI is excluded. No command here claims an actual production migration or destruction was performed.

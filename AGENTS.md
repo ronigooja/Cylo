@@ -1,33 +1,16 @@
 # Repository guidance
 
-## Documentation
+## Documentation and product changes
 
-- Treat archived documents as historical evidence. Do not describe them as the current plan.
-- Keep implementation status honest. A design, static check, fixture, or proof of concept is not production implementation or end-to-end acceptance.
-- Keep decisions and acceptance boundaries in `docs/master-plan.md`; keep the README concise.
+- When changing product behavior or interfaces, follow [product requirements](docs/product.md) and [architecture](docs/architecture.md); update their applicable requirements or decisions when the approved baseline changes.
+- When changing native UI, follow [product chapter 3](docs/product.md#3-client-requirements) and the approved [native assistant reference](docs/design/native-assistant-reference.png).
+- When reporting implementation or verification, keep source review, fixtures, CI, installation, and end-to-end acceptance distinct; record applicable evidence and limitations in [the evidence register](docs/acceptance/evidence.md), with delivery status in [the master plan](docs/master-plan.md).
 
-## UI design
+## Coordination and operational safety
 
-- Follow the UI rule in `docs/master-plan.md`, section 4: communicate function through clear naming, layout, and interaction; omit redundant purpose descriptions and operating tutorials by default. Provide necessary help on demand and state material consequences, risks, and limits at the point of action.
-- Use the approved native assistant direction in that section: compact, readable layouts centered on conversation, task progress, results, and decisions. Present programming work through goals, progress, outcome summaries, and required decisions. Do not add source-code browsers, editors, diff viewers, terminals, or test consoles, including optional or hidden variants.
-- Give voice a prominent, compact microphone control in the composer. Express routine voice state through icons, color, and subtle motion with accessible labels; omit persistent voice explanations, status banners, large waveforms, and separate control strips.
-
-## Current product and architecture baseline
-
-- The product is private and self-hosted: a Linux Go control server, independent runner, SQLite WAL with `synchronous=FULL`, and native SwiftUI macOS/iPhone/iPad clients.
-- AO (OrchestratorInc/agent-orchestrator) owns creation and lifecycle of every runtime. Cylo calls AO only through its authorized gateway.
-- Reuse the existing remote CLIProxyAPI deployment without changing its configuration or lifecycle.
-- Space3044 `chatgpt-web-voice` is the selected ChatGPT web real-time gateway and voice account pool.
-- The Go control plane is authoritative for tasks, permissions, events, and memory versions. Mem0 is a controlled worker; Qdrant is a rebuildable index.
-- There is no PWA, CAO implementation, macOS server, or Codex-specific recovery feature in the current scope. The remote CLIProxyAPI remains an existing external dependency, not a Cylo deployment target.
-
-## Work coordination and safety
-
-- The main agent coordinates planning, assignments, dependencies, review, and integration. Use GPT-6 Luna at medium reasoning effort for simple tasks. Use GPT-6.1 Sol at medium reasoning effort for complex tasks, independent review, and UI design and implementation. Use at most four concurrent implementation subagents and reserve one independent review slot.
-- Run concurrent work in separate branches and worktrees under `$HOME/subagents`, with explicit file ownership for each assignment. Do not edit outside assigned ownership or take over another agent's archive scope.
-- Store Mac task inputs, signing/install staging, artifacts, and logs under `~/Developer/Cylo/runs/<task-id>/` on the Mac. The installed application remains at `/Applications/Cylo.app`.
-- Before ending a delegated task or handing work to a fresh context, leave a concise handoff with the branch/worktree, ownership, commit, completed work, remaining work, verification, and known limitations.
-- Coordinate cross-module API and data changes with the main agent and affected owners before editing. Review delegated commits before integration; report relevant tests, commands, outcomes, and limitations without claiming checks that were not run.
-- Never put credentials, tokens, private account data, or secret values in source, documentation, logs, or test fixtures. Refer to secret names or deployment-provided references only.
-- Do not change external services or the existing CLIProxyAPI deployment as part of repository work unless explicitly authorized.
-- Prefer evidence that can be repeated. Report commands and outcomes accurately; do not claim checks that were not run.
+- When delegating complex work, UI work, or independent review, use GPT-6.1 Sol at medium reasoning effort; when delegating simple work, use GPT-6 Luna at medium effort. Keep at most four implementation subagents and reserve an available slot for independent review.
+- When delegating repository edits, assign explicit file ownership and coordinate shared API/data changes with affected owners before editing. Review each delegated commit before integration; do not edit outside the assignment or take over another owner's deletion scope.
+- Before ending a delegated task or handing it to a fresh context, record branch/worktree, ownership, commit, completed and remaining work, verification, and limitations.
+- When staging Mac task inputs, signing/install work, artifacts, or logs, use `~/Developer/Cylo/runs/<task-id>/` on the Mac. Install the application at `/Applications/Cylo.app`.
+- When working with credentials or private account data, use secret names or deployment references; never put their values in source, documentation, logs, or fixtures.
+- When modifying the repository, do not change external services or the existing CLIProxyAPI deployment unless explicitly authorized.

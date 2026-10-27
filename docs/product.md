@@ -8,19 +8,6 @@ The complete scope retains all 22 chapters, all 75 stable IDs, scenarios A–E, 
 
 Cylo is a private, self-hosted system that keeps authorized work, projects, memory, and services alive beyond a conversation or client session. The full product scope comprises all 22 chapters; sequencing delivery does not remove an in-scope requirement.
 
-The ten principles apply when designing or changing Cylo:
-
-1. Use AI for judgment and ordinary programs for deterministic, continuous work.
-2. Use Super for complex coordination when needed.
-3. Let Workers execute specialist tasks independently.
-4. Create, deploy, and manage durable capabilities only under authorization.
-5. Preserve tasks, memory, and execution state beyond conversations.
-6. Continue the same work across devices.
-7. Preserve usable work products and supported native-tool access outside Cylo.
-8. Keep models, agents, voice, and integrations replaceable.
-9. Prioritize accuracy, reliability, and efficient model use.
-10. Reserve ownership and access boundaries for future team and organization use.
-
 <a id="cy-01-01"></a>
 
 **Disposition: Required.**
@@ -249,9 +236,9 @@ Every task entrance leads to the same workspace. The workspace shows persisted m
 
 Submission has accepted, failed, and unknown outcomes. Drafts clear only after durable acceptance. Unknown submissions reconcile the original journaled receipt rather than issuing a new command; the interface must retain the draft and show confirmation pending. Task drafts and selection survive navigation within the connected context and are cleared when the server or identity changes. Voice has one compact composer entrance; its transcript-draft review opens when needed rather than permanently occupying the conversation. Submission requires confirmation, and End voice remains distinct from Stop task. macOS keyboard targets are Command-Return to send, Command-N for a new conversation, and Command-F for task search.
 
-`GET /v1/tasks/{task_id}/entries` reads the existing authoritative message table using task-read permissions. The response contains `messages` (`id`, `task_id`, `kind`, `content`, `created_at`) and nullable `next_cursor`; `cursor` and bounded `limit` page forward. Clients load history on entry/reconnect and deduplicate by message ID. This does not establish a second conversation authority or provide assistant messages that the server has not recorded. Dates and counts use the system region; server-authored content remains in its original language.
+Authoritative task-history paging and reconnect contracts are defined in [the HTTP contract](../contracts/http.go) and [task-entry handlers](../internal/control/task_entries.go); clients must not fabricate messages or maintain a competing conversation authority. Dates and counts use the system region; server-authored content remains in its original language.
 
-Acceptance remains open until native application checks cover Mac 840×620 and desktop sizes, iPad portrait/landscape/narrow windows, and small/large iPhones; both languages and appearances; long titles and Dynamic Type; keyboard avoidance; VoiceOver, keyboard focus, reduced motion, and 44×44 pt mobile targets. Core flows must verify one-tap continuation, contextual approvals/results, linked notifications, retained failed drafts, unknown receipts, duplicate events, reconnect history, terminal tasks, rejected/rotated instance keys, connection clearing, and identity changes. Record Go tests, Swift state/contract tests, Xcode app builds, simulator UI runs, real-device runs, and real-service checks separately. Linux source review and design references cannot establish Apple compilation, screenshots, interaction, or end-to-end acceptance.
+Native application acceptance must cover Mac 840×620 and desktop sizes, iPad portrait/landscape/narrow windows, and small/large iPhones; both languages and appearances; long titles and Dynamic Type; keyboard avoidance; VoiceOver, keyboard focus, reduced motion, and 44×44 pt mobile targets. Core flows must verify one-tap continuation, contextual approvals/results, linked notifications, retained failed drafts, unknown receipts, duplicate events, reconnect history, terminal tasks, rejected/rotated instance keys, connection clearing, and identity changes. Record Go tests, Swift state/contract tests, Xcode app builds, simulator UI runs, real-device runs, and real-service checks separately. Linux source review and design references cannot establish Apple compilation, screenshots, interaction, or end-to-end acceptance.
 
 ## 4. Server Requirements
 
@@ -1493,7 +1480,7 @@ Future multi-user support will need corresponding identity, data isolation, perm
 
 ## 19. Complete Usage Scenarios
 
-These five scenarios combine requirements across components; they are acceptance journeys, not development phases. Required evidence and current gaps belong in [the master plan](master-plan.md). Each scenario remains unaccepted until its complete chain is demonstrated.
+These five scenarios combine requirements across components; they are acceptance journeys. Required evidence and gaps belong in [the acceptance matrix](acceptance/requirements.md).
 
 The scenarios below show how the requirements work together in Cylo; they are not development steps.
 
