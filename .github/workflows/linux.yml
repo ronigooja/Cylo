@@ -1,28 +1,23 @@
 name: Linux checks
 
 on:
+  workflow_call:
+    inputs:
+      go:
+        type: boolean
+        required: true
+      race:
+        type: boolean
+        required: true
+      scripts:
+        type: boolean
+        required: true
   workflow_dispatch:
-  push:
-    branches: [main, 'codex/**']
-    paths:
-      - '**/*.go'
-      - 'deploy/linux/*.sh'
-      - 'tools/cylo_export.py'
-      - 'tools/cylo_destroy.py'
-      - 'tools/test_instance_lifecycle_cli.py'
-      - 'go.mod'
-      - 'go.sum'
-      - '.github/workflows/linux.yml'
-  pull_request:
-    paths:
-      - '**/*.go'
-      - 'deploy/linux/*.sh'
-      - 'tools/cylo_export.py'
-      - 'tools/cylo_destroy.py'
-      - 'tools/test_instance_lifecycle_cli.py'
-      - 'go.mod'
-      - 'go.sum'
-      - '.github/workflows/linux.yml'
+    inputs:
+      release:
+        description: Build operator release artifacts after all checks pass
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,10 +28,24 @@ concurrency:
 
 jobs:
   go:
+    if: github.event_name == 'workflow_dispatch' || inputs.go
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Prepare runner environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$HOME/environment/cylo-linux"
+          mkdir -p "$root/logs" "$root/tmp" "$root/go-cache" "$root/go" "$root/toolcache"
+          {
+            echo "CYLO_OUTPUT=$root"
+            echo "TMPDIR=$root/tmp"
+            echo "GOCACHE=$root/go-cache"
+            echo "GOPATH=$root/go"
+            echo "RUNNER_TOOL_CACHE=$root/toolcache"
+          } >> "$GITHUB_ENV"
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: go.mod
@@ -45,56 +54,188 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/cylo-linux/logs"
           {
             git rev-parse HEAD
             git status --short
             go version
             uname -a
-          } > "$RUNNER_TEMP/cylo-linux/logs/environment.txt"
+          } > "$CYLO_OUTPUT/logs/environment.txt"
       - name: Run Go tests
         shell: bash
         run: |
           set +e
           set -uo pipefail
-          printf '%s\n' 'go test ./...' > "$RUNNER_TEMP/cylo-linux/logs/go-tests.command"
-          go test ./... 2>&1 | tee "$RUNNER_TEMP/cylo-linux/logs/go-tests.log"
+          printf '%s\n' 'go test ./...' > "$CYLO_OUTPUT/logs/go-tests.command"
+          go test ./... > "$CYLO_OUTPUT/logs/go-tests.log" 2>&1
           status=$?
-          echo "$status" > "$RUNNER_TEMP/cylo-linux/logs/go-tests.exit"
+          echo "$status" > "$CYLO_OUTPUT/logs/go-tests.exit"
+          if [[ "$status" -ne 0 ]]; then
+            tail -n 80 "$CYLO_OUTPUT/logs/go-tests.log"
+          fi
           exit "$status"
+      - name: Upload verification logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-go-logs-${{ github.sha }}
+          path: ${{ env.CYLO_OUTPUT }}/logs
+          retention-days: 7
+          if-no-files-found: error
+
+  race:
+    if: github.event_name == 'workflow_dispatch' || inputs.race
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Prepare runner environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$HOME/environment/cylo-linux"
+          mkdir -p "$root/logs" "$root/tmp" "$root/go-cache" "$root/go" "$root/toolcache"
+          {
+            echo "CYLO_OUTPUT=$root"
+            echo "TMPDIR=$root/tmp"
+            echo "GOCACHE=$root/go-cache"
+            echo "GOPATH=$root/go"
+            echo "RUNNER_TOOL_CACHE=$root/toolcache"
+          } >> "$GITHUB_ENV"
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Record source and environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            git rev-parse HEAD
+            git status --short
+            go version
+            uname -a
+          } > "$CYLO_OUTPUT/logs/environment.txt"
       - name: Race-check authorization
         shell: bash
         run: |
           set +e
           set -uo pipefail
-          printf '%s\n' 'go test -race ./internal/control ./internal/runner ./internal/agents/ao ./cmd/cylo-server ./internal/ops ./cmd/cylo' > "$RUNNER_TEMP/cylo-linux/logs/auth-race.command"
-          go test -race ./internal/control ./internal/runner ./internal/agents/ao ./cmd/cylo-server ./internal/ops ./cmd/cylo 2>&1 | tee "$RUNNER_TEMP/cylo-linux/logs/auth-race.log"
+          printf '%s\n' 'go test -race ./internal/control ./internal/runner ./internal/agents/ao ./cmd/cylo-server ./internal/ops ./cmd/cylo' > "$CYLO_OUTPUT/logs/auth-race.command"
+          go test -race ./internal/control ./internal/runner ./internal/agents/ao ./cmd/cylo-server ./internal/ops ./cmd/cylo > "$CYLO_OUTPUT/logs/auth-race.log" 2>&1
           status=$?
-          echo "$status" > "$RUNNER_TEMP/cylo-linux/logs/auth-race.exit"
+          echo "$status" > "$CYLO_OUTPUT/logs/auth-race.exit"
+          if [[ "$status" -ne 0 ]]; then
+            tail -n 80 "$CYLO_OUTPUT/logs/auth-race.log"
+          fi
           exit "$status"
-      - name: Verify immutable release and CLI installation
-        shell: bash
-        run: |
-          set +e
-          set -uo pipefail
-          for script in deploy/linux/test-build-release.sh deploy/linux/test-install-cli.sh; do
-            name="$(basename "$script" .sh)"
-            printf 'bash %s\n' "$script" > "$RUNNER_TEMP/cylo-linux/logs/$name.command"
-            bash "$script" 2>&1 | tee "$RUNNER_TEMP/cylo-linux/logs/$name.log"
-            status=$?
-            echo "$status" > "$RUNNER_TEMP/cylo-linux/logs/$name.exit"
-            test "$status" -eq 0 || exit "$status"
-          done
       - name: Upload verification logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: linux-logs-${{ github.sha }}
-          path: ${{ runner.temp }}/cylo-linux/logs
+          name: linux-race-logs-${{ github.sha }}
+          path: ${{ env.CYLO_OUTPUT }}/logs
           retention-days: 7
           if-no-files-found: error
 
+  scripts:
+    if: github.event_name == 'workflow_dispatch' || inputs.scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Prepare runner environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$HOME/environment/cylo-linux"
+          mkdir -p "$root/logs" "$root/tmp" "$root/go-cache" "$root/go" "$root/toolcache"
+          {
+            echo "CYLO_OUTPUT=$root"
+            echo "TMPDIR=$root/tmp"
+            echo "GOCACHE=$root/go-cache"
+            echo "GOPATH=$root/go"
+            echo "RUNNER_TOOL_CACHE=$root/toolcache"
+          } >> "$GITHUB_ENV"
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Record source and environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            git rev-parse HEAD
+            git status --short
+            go version
+            uname -a
+          } > "$CYLO_OUTPUT/logs/environment.txt"
+      - name: Verify immutable release
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          printf '%s\n' 'bash deploy/linux/test-build-release.sh' > "$CYLO_OUTPUT/logs/test-build-release.command"
+          bash deploy/linux/test-build-release.sh > "$CYLO_OUTPUT/logs/test-build-release.log" 2>&1
+          status=$?
+          echo "$status" > "$CYLO_OUTPUT/logs/test-build-release.exit"
+          if [[ "$status" -ne 0 ]]; then
+            tail -n 80 "$CYLO_OUTPUT/logs/test-build-release.log"
+          fi
+          exit "$status"
+      - name: Verify CLI installation
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          printf '%s\n' 'bash deploy/linux/test-install-cli.sh' > "$CYLO_OUTPUT/logs/test-install-cli.command"
+          bash deploy/linux/test-install-cli.sh > "$CYLO_OUTPUT/logs/test-install-cli.log" 2>&1
+          status=$?
+          echo "$status" > "$CYLO_OUTPUT/logs/test-install-cli.exit"
+          if [[ "$status" -ne 0 ]]; then
+            tail -n 80 "$CYLO_OUTPUT/logs/test-install-cli.log"
+          fi
+          exit "$status"
+      - name: Upload verification logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-scripts-logs-${{ github.sha }}
+          path: ${{ env.CYLO_OUTPUT }}/logs
+          retention-days: 7
+          if-no-files-found: error
+
+  checks:
+    if: always()
+    needs: [go, race, scripts]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require selected checks to pass
+        env:
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+          GO_SELECTED: ${{ inputs.go }}
+          RACE_SELECTED: ${{ inputs.race }}
+          SCRIPTS_SELECTED: ${{ inputs.scripts }}
+          GO_RESULT: ${{ needs.go.result }}
+          RACE_RESULT: ${{ needs.race.result }}
+          SCRIPTS_RESULT: ${{ needs.scripts.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for check in GO RACE SCRIPTS; do
+            selected="${check}_SELECTED"
+            result="${check}_RESULT"
+            if [[ "$MANUAL" == true || "${!selected}" == true ]]; then
+              [[ "${!result}" == success ]] || { echo "$check check: ${!result}"; exit 1; }
+            else
+              [[ "${!result}" == skipped ]] || { echo "$check unexpectedly ran: ${!result}"; exit 1; }
+            fi
+          done
+
   operator-artifacts:
+    if: github.event_name == 'workflow_dispatch' && inputs.release
+    needs: [checks]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -103,6 +244,19 @@ jobs:
         arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Prepare runner environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$HOME/environment/cylo-linux"
+          mkdir -p "$root/logs" "$root/tmp" "$root/go-cache" "$root/go" "$root/toolcache"
+          {
+            echo "CYLO_OUTPUT=$root"
+            echo "TMPDIR=$root/tmp"
+            echo "GOCACHE=$root/go-cache"
+            echo "GOPATH=$root/go"
+            echo "RUNNER_TOOL_CACHE=$root/toolcache"
+          } >> "$GITHUB_ENV"
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: go.mod
@@ -114,9 +268,10 @@ jobs:
           GOOS: linux
           CGO_ENABLED: '0'
         run: |
+          set +e
           set -uo pipefail
-          output="$RUNNER_TEMP/cylo-operator"
-          mkdir -p "$output/logs" "$output/artifacts/bin" "$output/artifacts/deploy-linux"
+          output="$CYLO_OUTPUT"
+          mkdir -p "$output/artifacts/bin" "$output/artifacts/deploy-linux"
           {
             git rev-parse HEAD
             git status --short
@@ -125,10 +280,14 @@ jobs:
             printf 'GOOS=%s GOARCH=%s CGO_ENABLED=%s\n' "$GOOS" "$GOARCH" "$CGO_ENABLED"
           } > "$output/logs/environment.txt"
           printf '%s\n' "CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH go build -trimpath -buildvcs=false -ldflags='-s -w' -o bin/cylo ./cmd/cylo" > "$output/logs/build.command"
-          go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$output/artifacts/bin/cylo" ./cmd/cylo 2>&1 | tee "$output/logs/build.log"
+          go build -trimpath -buildvcs=false -ldflags='-s -w' -o "$output/artifacts/bin/cylo" ./cmd/cylo > "$output/logs/build.log" 2>&1
           status=$?
           echo "$status" > "$output/logs/build.exit"
-          test "$status" -eq 0 || exit "$status"
+          if [[ "$status" -ne 0 ]]; then
+            tail -n 80 "$output/logs/build.log"
+            exit "$status"
+          fi
+          set -e
           cp deploy/linux/install-cli.sh "$output/artifacts/deploy-linux/"
           git rev-parse HEAD > "$output/artifacts/SOURCE_REVISION"
           cd "$output/artifacts"
@@ -139,14 +298,14 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: operator-linux-${{ matrix.arch }}-logs-${{ github.sha }}
-          path: ${{ runner.temp }}/cylo-operator/logs
+          path: ${{ env.CYLO_OUTPUT }}/logs
           retention-days: 7
           if-no-files-found: error
       - name: Upload operator release
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: operator-linux-${{ matrix.arch }}-${{ github.sha }}
-          path: ${{ runner.temp }}/cylo-operator/cylo-linux-${{ matrix.arch }}.tar.gz
+          path: ${{ env.CYLO_OUTPUT }}/cylo-linux-${{ matrix.arch }}.tar.gz
           retention-days: 7
           if-no-files-found: error
           compression-level: 0
