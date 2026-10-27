@@ -52,11 +52,58 @@ Use the [Linux deployment templates](../../deploy/linux/) and [release workflow]
 
 The operator release installation procedure below installs only the maintenance CLI. It does not install server images or configure a complete deployment. Run `zoe status` before `zoe setup`, `zoe provider configure`, or `zoe provider test`; these operations are also available from the interactive menu. Follow [the CLI implementation](../../cmd/zoe/) for current flags and [deployment configuration](../../internal/ops/deployment_config.go) for detection and rollback behavior.
 
+### Complete Linux deployment order
+
+Use this order when installing a complete Zoe instance. Each step applies to
+the host being deployed; the build steps apply to GitHub-hosted Linux runners.
+
+1. Build and review the Linux amd64 server/runner release and the patched AO
+   amd64 release from the pinned [server workflow](../../.github/workflows/server-release.yml)
+   and [AO workflow](../../.github/workflows/ao-release.yml). Verify every
+   `SHA256SUMS` file before transfer.
+2. Run `prepare-host-layout.sh`. It creates the Docker network, service user,
+   persistent roots, and protected secret directories. It does not create AO
+   state or an AO unit.
+3. Install the AO daemon and its matching `AO_CODEX_CONTAINER_IMAGE`, then
+   create the host-managed `zoe-ao.service`. AO listens on loopback port
+   `18001` and stores state under `/var/lib/zoe/ao`; set `HOME` to that private
+   directory. The repository provides the patched AO source and runtime image,
+   but the AO systemd unit remains deployment-owned.
+4. Install the immutable server/runner release under
+   `/opt/zoe/releases/<revision>` and update the `current` selector. Create
+   the server, runner, and memory-worker secret files with the documented owner
+   and mode before starting Compose.
+5. Configure and start `zoe-compose.service`, then start `zoe-runner.service`.
+   Start AO first so runner readiness can reach `ZOE_AO_URL`.
+6. Verify service state and health/readiness endpoints. These checks establish
+   installation and process readiness; model execution, memory processing, and
+   end-to-end task completion require a separate acceptance run.
+
+The complete host installation therefore includes the AO daemon/runtime image,
+Zoe server image, trusted runner, memory worker image, Qdrant service, Docker,
+and the three Zoe systemd services. An external model gateway is not installed
+by this procedure. Its URL, selected model, and API-key file are deployment
+configuration applied to AO and the memory worker after the host components
+are installed; leaving them unset keeps the daemons available but prevents
+model-backed task execution.
+
 ## Server and worker settings
 
 The Linux control server reads deployment settings from its process environment. Keep instance and runner credentials in deployment-managed secret configuration; the server does not print them. Bind to loopback or a private trusted interface and put external TLS termination behind the deployment's authenticated network boundary.
 
-The Zoe-pinned AO source patch is applied to a separately managed AO checkout; this repository does not provide an AO daemon unit or environment template. The AO daemon requires `AO_CODEX_EXTERNAL_BASE_URL`, `AO_CODEX_EXTERNAL_API_KEY_FILE`, and `AO_CODEX_EXTERNAL_MODEL` together to configure the external Codex Responses route. The selected model is required and requests must match it. Both the AO daemon and Zoe runner require the same `AO_CODEX_CONTAINER_IMAGE` value for the supervised image. The URL, key-file path, and model belong only to the separately managed AO daemon; the image setting belongs to both deployments, not the Zoe server. The [patch helper](../../deploy/linux/apply-ao-patch.sh) and its locked source/tree fingerprints define the supported AO revision; do not replace those pins from historical notes.
+The supported AO release is built from the pinned, prepatched Zoe fork by the
+[AO workflow](../../.github/workflows/ao-release.yml). The repository does not
+provide an AO daemon unit or environment template; the host deployment owns
+`zoe-ao.service`. The [patch helper](../../deploy/linux/apply-ao-patch.sh)
+remains the verification path for the corresponding upstream checkout and its
+locked source/tree fingerprints; do not mix that upstream checkout with a
+prepatched fork release or replace either pin from historical notes. The AO
+daemon requires `AO_CODEX_EXTERNAL_BASE_URL`, `AO_CODEX_EXTERNAL_API_KEY_FILE`,
+and `AO_CODEX_EXTERNAL_MODEL` together only when the external Codex Responses
+route is enabled. Both the AO daemon and Zoe runner require the same
+`AO_CODEX_CONTAINER_IMAGE` value for the supervised image. The URL, key-file
+path, and model belong only to the separately managed AO daemon; the image
+setting belongs to both deployments, not the Zoe server.
 
 Required settings:
 
