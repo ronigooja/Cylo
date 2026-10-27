@@ -20,7 +20,7 @@ jobs:
       - name: Fetch pinned patched AO fork
         run: |
           git clone --filter=blob:none https://github.com/ronigooja/agent-orchestrator.git "$RUNNER_TEMP/ao"
-          git -C "$RUNNER_TEMP/ao" checkout 744f6c77f
+          git -C "$RUNNER_TEMP/ao" checkout 07381ac9e
           test -z "$(git -C "$RUNNER_TEMP/ao" status --porcelain)"
       - name: Test AO container and provider adapters
         working-directory: ${{ runner.temp }}/ao/backend
