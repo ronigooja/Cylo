@@ -10,7 +10,7 @@ permissions:
   contents: read
 jobs:
   release:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -33,7 +33,7 @@ jobs:
           CGO_ENABLED=0 go build -trimpath -buildvcs=false -o "$RUNNER_TEMP/artifacts/ao" ./cmd/ao
           cd "$GITHUB_WORKSPACE"
           if [ "${{ inputs.build_runtime }}" = true ]; then
-            docker build -t "zoe-ao-codex:${GITHUB_SHA:0:12}" deploy/linux/AO/runtime
+            docker build --platform linux/amd64 -t "zoe-ao-codex:${GITHUB_SHA:0:12}" deploy/linux/AO/runtime
             docker save "zoe-ao-codex:${GITHUB_SHA:0:12}" | gzip > "$RUNNER_TEMP/artifacts/runtime-image.tar.gz"
           fi
           cd "$RUNNER_TEMP/artifacts"
