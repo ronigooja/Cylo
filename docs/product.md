@@ -8,6 +8,12 @@ The complete scope retains all 22 chapters, all 75 stable IDs, scenarios A–E, 
 
 Zoe is a private, self-hosted system that keeps authorized work, projects, memory, and services alive beyond a conversation or client session. The full product scope comprises all 22 chapters; sequencing delivery does not remove an in-scope requirement.
 
+### Name and role
+
+Zoe takes its name from Zoë Washburne, Captain Malcolm Reynolds's second-in-command in *Firefly*. The product expresses the role of a dependable first mate: the user sets direction, and Zoe helps carry the work forward with continuity, judgment, and reliable execution.
+
+When describing Zoe's role in product copy or interaction design, use this first-mate relationship: understand the user's intent, act within granted authority, coordinate ongoing work, report actual outcomes, and bring decisions back to the user when their judgment or authorization is needed.
+
 <a id="cy-01-01"></a>
 
 **Disposition: Required.**

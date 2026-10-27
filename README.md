@@ -1,6 +1,8 @@
 # Zoe
 
-Zoe is a private, self-hosted AI task and service system with a Linux control plane, independent runner, and native macOS, iPhone, and iPad clients. Implementation is underway; no product milestone has been accepted.
+Zoe is a private, self-hosted AI first mate, named after Zoë Washburne, Captain Malcolm Reynolds's second-in-command in *Firefly*. See [product positioning](docs/product.md#1-product-positioning) for the role this name expresses.
+
+The system has a Linux control plane, independent runner, and native macOS, iPhone, and iPad clients. Implementation is underway; no product milestone has been accepted.
 
 Choose a starting point:
 
