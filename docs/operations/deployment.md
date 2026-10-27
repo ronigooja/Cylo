@@ -206,8 +206,10 @@ prints keys, tokens, or installation links.
 
 ## Operator release installation
 
-Linux checks build the `cylo` operator CLI for Linux `amd64` and `arm64` on
-GitHub-hosted runners. Each `operator-linux-<arch>-<revision>` artifact contains
+The Linux workflow's manual release option builds the `cylo` operator CLI for
+Linux `amd64` and `arm64` on GitHub-hosted runners after its complete checks pass;
+see [CI verification](../development/verification.md#completion-gate-and-manual-checks).
+Each `operator-linux-<arch>-<revision>` artifact contains
 a tarball with `bin/cylo`, `deploy-linux/install-cli.sh`, `SOURCE_REVISION`, and
 `SHA256SUMS`. Select the host architecture, extract into a new immutable release
 directory, and verify `sha256sum -c SHA256SUMS` from that directory. This operator

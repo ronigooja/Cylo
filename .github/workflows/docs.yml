@@ -1,24 +1,8 @@
 name: Documentation checks
 
 on:
+  workflow_call:
   workflow_dispatch:
-  push:
-    branches: [main, 'codex/**']
-    paths:
-      - '**/*.md'
-      - 'docs/**'
-      - 'tools/check_docs.py'
-      - 'tools/test_check_docs.py'
-      - 'tools/docs_requirements.json'
-      - '.github/workflows/**'
-  pull_request:
-    paths:
-      - '**/*.md'
-      - 'docs/**'
-      - 'tools/check_docs.py'
-      - 'tools/test_check_docs.py'
-      - 'tools/docs_requirements.json'
-      - '.github/workflows/**'
 
 permissions:
   contents: read

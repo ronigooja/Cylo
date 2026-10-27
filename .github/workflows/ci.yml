@@ -1,0 +1,107 @@
+name: Scoped verification
+
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verification-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tests: ${{ steps.scope.outputs.tests }}
+      macos: ${{ steps.scope.outputs.macos }}
+      ios: ${{ steps.scope.outputs.ios }}
+      go: ${{ steps.scope.outputs.go }}
+      race: ${{ steps.scope.outputs.race }}
+      scripts: ${{ steps.scope.outputs.scripts }}
+      docs: ${{ steps.scope.outputs.docs }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Select verification scope
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--base "$BASE_SHA" --head "$HEAD_SHA" --output "$GITHUB_OUTPUT")
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then args+=(--full); fi
+          python3 tools/ci_scope.py "${args[@]}"
+      - name: Check selection and workflow syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/environment/cylo-ci/bin" "$RUNNER_TEMP/cylo-ci"
+          export GOBIN="$HOME/environment/cylo-ci/bin"
+          python3 -m unittest discover -s tools -p test_ci_scope.py > "$RUNNER_TEMP/cylo-ci/scope.log" 2>&1 || { tail -n 80 "$RUNNER_TEMP/cylo-ci/scope.log"; exit 1; }
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 > "$RUNNER_TEMP/cylo-ci/install.log" 2>&1 || { tail -n 60 "$RUNNER_TEMP/cylo-ci/install.log"; exit 1; }
+          "$GOBIN/actionlint" -shellcheck='' > "$RUNNER_TEMP/cylo-ci/actionlint.log" 2>&1 || { tail -n 100 "$RUNNER_TEMP/cylo-ci/actionlint.log"; exit 1; }
+          echo 'Scope regressions and workflow syntax checks passed.'
+      - name: Upload scope verification logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-scope-logs-${{ github.sha }}
+          path: ${{ runner.temp }}/cylo-ci
+          retention-days: 7
+
+  apple:
+    needs: scope
+    if: needs.scope.outputs.tests == 'true' || needs.scope.outputs.macos == 'true' || needs.scope.outputs.ios == 'true'
+    uses: ./.github/workflows/apple.yml
+    with:
+      tests: ${{ needs.scope.outputs.tests == 'true' }}
+      macos: ${{ needs.scope.outputs.macos == 'true' }}
+      ios: ${{ needs.scope.outputs.ios == 'true' }}
+
+  linux:
+    needs: scope
+    if: needs.scope.outputs.go == 'true' || needs.scope.outputs.race == 'true' || needs.scope.outputs.scripts == 'true'
+    uses: ./.github/workflows/linux.yml
+    with:
+      go: ${{ needs.scope.outputs.go == 'true' }}
+      race: ${{ needs.scope.outputs.race == 'true' }}
+      scripts: ${{ needs.scope.outputs.scripts == 'true' }}
+
+  docs:
+    needs: scope
+    if: needs.scope.outputs.docs == 'true'
+    uses: ./.github/workflows/docs.yml
+
+  verification:
+    name: Required verification
+    needs: [scope, apple, linux, docs]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require all selected checks
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          jobs = json.loads(os.environ['NEEDS_JSON'])
+          assert jobs['scope']['result'] == 'success', 'Scope selection failed'
+          outputs = jobs['scope']['outputs']
+          groups = {'apple': ('tests', 'macos', 'ios'), 'linux': ('go', 'race', 'scripts'), 'docs': ('docs',)}
+          for job, keys in groups.items():
+              expected = 'success' if any(outputs.get(key) == 'true' for key in keys) else 'skipped'
+              actual = jobs[job]['result']
+              assert actual == expected, f'{job}: expected {expected}, got {actual}'
+          print('All selected verification passed.')
+          PY
