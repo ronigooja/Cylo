@@ -1,16 +1,23 @@
 name: Apple build and tests
 
 on:
+  workflow_call:
+    inputs:
+      tests:
+        type: boolean
+        required: true
+      macos:
+        type: boolean
+        required: true
+      ios:
+        type: boolean
+        required: true
   workflow_dispatch:
-  push:
-    branches: [main, 'codex/**']
-    paths:
-      - 'clients/apple/**'
-      - '.github/workflows/apple.yml'
-  pull_request:
-    paths:
-      - 'clients/apple/**'
-      - '.github/workflows/apple.yml'
+    inputs:
+      release:
+        description: Package unsigned apps after all checks pass
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -20,20 +27,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  apple:
+  tests:
+    if: github.event_name == 'workflow_dispatch' || inputs.tests
     runs-on: macos-15
     timeout-minutes: 30
+    env:
+      CI_OUTPUT: ${{ runner.temp }}/cylo-apple/tests
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Record build environment
+      - name: Prepare build environment
         shell: bash
         run: |
           set -euo pipefail
-          CI_OUTPUT="$RUNNER_TEMP/cylo-apple"
-          echo "CI_OUTPUT=$CI_OUTPUT" >> "$GITHUB_ENV"
+          mkdir -p "$CI_OUTPUT/logs" "$HOME/environment/cylo-apple"
           echo "CYLO_BUILD_ROOT=$CI_OUTPUT/test-data" >> "$GITHUB_ENV"
-          mkdir -p "$CI_OUTPUT/logs" "$CI_OUTPUT/artifacts"
           {
             git rev-parse HEAD
             sw_vers
@@ -41,75 +49,255 @@ jobs:
             xcode-select -p
             xcodebuild -version
             swift --version
-          } | tee "$CI_OUTPUT/logs/environment.txt"
+          } > "$CI_OUTPUT/logs/environment.txt" 2>&1
 
       - name: Run Swift package tests
         shell: bash
         run: |
-          set +e
-          set -uo pipefail
+          set -euo pipefail
           swift test --package-path clients/apple/Packages/CyloKit \
             --scratch-path "$CI_OUTPUT/swift-build" \
-            --cache-path "$CI_OUTPUT/package-cache" \
-            --config-path "$CI_OUTPUT/swift-config" \
-            --security-path "$CI_OUTPUT/swift-security" \
-            2>&1 | tee "$CI_OUTPUT/logs/swift-tests.log"
-          status=${PIPESTATUS[0]}
-          echo "$status" > "$CI_OUTPUT/logs/swift-tests.exit"
-          exit "$status"
-
-      - name: Archive unsigned macOS app
-        shell: bash
-        run: |
-          set +e
-          set -uo pipefail
-          xcodebuild -project clients/apple/Cylo.xcodeproj \
-            -scheme CyloMac -configuration Release \
-            -destination 'generic/platform=macOS' \
-            -derivedDataPath "$CI_OUTPUT/mac-derived" \
-            -clonedSourcePackagesDirPath "$CI_OUTPUT/xcode-packages" \
-            -packageCachePath "$CI_OUTPUT/package-cache" \
-            -archivePath "$CI_OUTPUT/CyloMac.xcarchive" \
-            CODE_SIGNING_ALLOWED=NO archive \
-            2>&1 | tee "$CI_OUTPUT/logs/macos-archive.log"
-          status=${PIPESTATUS[0]}
-          echo "$status" > "$CI_OUTPUT/logs/macos-archive.exit"
-          exit "$status"
-
-      - name: Build unsigned iOS app
-        shell: bash
-        run: |
-          set +e
-          set -uo pipefail
-          xcodebuild -project clients/apple/Cylo.xcodeproj \
-            -scheme CyloMobile -configuration Release \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath "$CI_OUTPUT/ios-derived" \
-            -clonedSourcePackagesDirPath "$CI_OUTPUT/xcode-packages" \
-            -packageCachePath "$CI_OUTPUT/package-cache" \
-            CODE_SIGNING_ALLOWED=NO build \
-            2>&1 | tee "$CI_OUTPUT/logs/ios-build.log"
-          status=${PIPESTATUS[0]}
-          echo "$status" > "$CI_OUTPUT/logs/ios-build.exit"
-          exit "$status"
-
-      - name: Package unsigned artifacts
-        shell: bash
-        run: |
-          set -euo pipefail
-          ditto -c -k --sequesterRsrc --keepParent \
-            "$CI_OUTPUT/CyloMac.xcarchive" "$CI_OUTPUT/artifacts/CyloMac.xcarchive.zip"
-          ditto -c -k --sequesterRsrc --keepParent \
-            "$CI_OUTPUT/ios-derived/Build/Products/Release-iphoneos/CyloMobile.app" \
-            "$CI_OUTPUT/artifacts/CyloMobile-unsigned.app.zip"
-          cd "$CI_OUTPUT/artifacts"
-          shasum -a 256 *.zip > SHA256SUMS
+            --cache-path "$HOME/environment/cylo-apple/package-cache" \
+            --config-path "$HOME/environment/cylo-apple/swift-config" \
+            --security-path "$HOME/environment/cylo-apple/swift-security" \
+            > "$CI_OUTPUT/logs/swift-tests.log" 2>&1 || {
+              status=$?
+              tail -n 80 "$CI_OUTPUT/logs/swift-tests.log"
+              exit "$status"
+            }
 
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: apple-logs-${{ github.sha }}
+          name: apple-tests-logs-${{ github.sha }}
+          path: ${{ env.CI_OUTPUT }}/logs
+          retention-days: 7
+          if-no-files-found: error
+
+  macos:
+    if: github.event_name == 'workflow_dispatch' || inputs.macos
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      CI_OUTPUT: ${{ runner.temp }}/cylo-apple/macos
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Prepare build environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CI_OUTPUT/logs" "$HOME/environment/cylo-apple"
+          echo "CYLO_BUILD_ROOT=$CI_OUTPUT/test-data" >> "$GITHUB_ENV"
+          {
+            git rev-parse HEAD
+            sw_vers
+            uname -m
+            xcode-select -p
+            xcodebuild -version
+            swift --version
+          } > "$CI_OUTPUT/logs/environment.txt" 2>&1
+
+      - name: Build unsigned macOS app
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -project clients/apple/Cylo.xcodeproj \
+            -scheme CyloMac -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$CI_OUTPUT/mac-derived" \
+            -clonedSourcePackagesDirPath "$HOME/environment/cylo-apple/xcode-packages" \
+            -packageCachePath "$HOME/environment/cylo-apple/package-cache" \
+            CODE_SIGNING_ALLOWED=NO build \
+            > "$CI_OUTPUT/logs/macos-build.log" 2>&1 || {
+              status=$?
+              tail -n 80 "$CI_OUTPUT/logs/macos-build.log"
+              exit "$status"
+            }
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: apple-macos-logs-${{ github.sha }}
+          path: ${{ env.CI_OUTPUT }}/logs
+          retention-days: 7
+          if-no-files-found: error
+
+  ios:
+    if: github.event_name == 'workflow_dispatch' || inputs.ios
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      CI_OUTPUT: ${{ runner.temp }}/cylo-apple/ios
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Prepare build environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CI_OUTPUT/logs" "$HOME/environment/cylo-apple"
+          echo "CYLO_BUILD_ROOT=$CI_OUTPUT/test-data" >> "$GITHUB_ENV"
+          {
+            git rev-parse HEAD
+            sw_vers
+            uname -m
+            xcode-select -p
+            xcodebuild -version
+            swift --version
+          } > "$CI_OUTPUT/logs/environment.txt" 2>&1
+
+      - name: Build unsigned iOS app
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -project clients/apple/Cylo.xcodeproj \
+            -scheme CyloMobile -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$CI_OUTPUT/ios-derived" \
+            -clonedSourcePackagesDirPath "$HOME/environment/cylo-apple/xcode-packages" \
+            -packageCachePath "$HOME/environment/cylo-apple/package-cache" \
+            CODE_SIGNING_ALLOWED=NO build \
+            > "$CI_OUTPUT/logs/ios-build.log" 2>&1 || {
+              status=$?
+              tail -n 80 "$CI_OUTPUT/logs/ios-build.log"
+              exit "$status"
+            }
+
+      # Preserve permissions and symlinks when transporting the release build.
+      - name: Stage iOS build for release
+        if: github.event_name == 'workflow_dispatch' && inputs.release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -cf "$CI_OUTPUT/ios-build.tar" \
+            -C "$CI_OUTPUT/ios-derived/Build/Products/Release-iphoneos" CyloMobile.app \
+            > "$CI_OUTPUT/logs/ios-stage.log" 2>&1 || {
+              status=$?
+              tail -n 80 "$CI_OUTPUT/logs/ios-stage.log"
+              exit "$status"
+            }
+
+      - name: Upload intermediate iOS build
+        if: github.event_name == 'workflow_dispatch' && inputs.release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: apple-ios-build-${{ github.sha }}
+          path: ${{ env.CI_OUTPUT }}/ios-build.tar
+          retention-days: 1
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: apple-ios-logs-${{ github.sha }}
+          path: ${{ env.CI_OUTPUT }}/logs
+          retention-days: 7
+          if-no-files-found: error
+
+  apple-checks:
+    name: Apple checks
+    if: always()
+    needs: [tests, macos, ios]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every selected check to succeed
+        env:
+          TESTS_SELECTED: ${{ github.event_name == 'workflow_dispatch' || inputs.tests }}
+          MACOS_SELECTED: ${{ github.event_name == 'workflow_dispatch' || inputs.macos }}
+          IOS_SELECTED: ${{ github.event_name == 'workflow_dispatch' || inputs.ios }}
+          TESTS_RESULT: ${{ needs.tests.result }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+          IOS_RESULT: ${{ needs.ios.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for check in TESTS MACOS IOS; do
+            selected_var="${check}_SELECTED"
+            result_var="${check}_RESULT"
+            expected=skipped
+            if [[ "${!selected_var}" == true ]]; then expected=success; fi
+            if [[ "${!result_var}" != "$expected" ]]; then
+              echo "::error::$check returned ${!result_var}; expected $expected"
+              exit 1
+            fi
+          done
+
+  release:
+    if: github.event_name == 'workflow_dispatch' && inputs.release
+    needs: [apple-checks, tests, macos, ios]
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      CI_OUTPUT: ${{ runner.temp }}/cylo-apple/release
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Prepare build environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CI_OUTPUT/logs" "$HOME/environment/cylo-apple"
+          echo "CYLO_BUILD_ROOT=$CI_OUTPUT/test-data" >> "$GITHUB_ENV"
+          {
+            git rev-parse HEAD
+            sw_vers
+            uname -m
+            xcode-select -p
+            xcodebuild -version
+            swift --version
+          } > "$CI_OUTPUT/logs/environment.txt" 2>&1
+
+      - name: Download successful iOS build
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: apple-ios-build-${{ github.sha }}
+          path: ${{ env.CI_OUTPUT }}/ios-build
+
+      - name: Archive unsigned macOS app
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -project clients/apple/Cylo.xcodeproj \
+            -scheme CyloMac -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$CI_OUTPUT/mac-derived" \
+            -clonedSourcePackagesDirPath "$HOME/environment/cylo-apple/xcode-packages" \
+            -packageCachePath "$HOME/environment/cylo-apple/package-cache" \
+            -archivePath "$CI_OUTPUT/CyloMac.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO archive \
+            > "$CI_OUTPUT/logs/macos-archive.log" 2>&1 || {
+              status=$?
+              tail -n 80 "$CI_OUTPUT/logs/macos-archive.log"
+              exit "$status"
+            }
+
+      - name: Package unsigned artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'status=$?; tail -n 80 "$CI_OUTPUT/logs/package.log" >&2; exit "$status"' ERR
+          (
+            mkdir -p "$CI_OUTPUT/artifacts"
+            tar -xf "$CI_OUTPUT/ios-build/ios-build.tar" -C "$CI_OUTPUT/ios-build"
+            ditto -c -k --sequesterRsrc --keepParent \
+              "$CI_OUTPUT/CyloMac.xcarchive" "$CI_OUTPUT/artifacts/CyloMac.xcarchive.zip"
+            ditto -c -k --sequesterRsrc --keepParent \
+              "$CI_OUTPUT/ios-build/CyloMobile.app" "$CI_OUTPUT/artifacts/CyloMobile-unsigned.app.zip"
+            cd "$CI_OUTPUT/artifacts"
+            shasum -a 256 *.zip > SHA256SUMS
+          ) > "$CI_OUTPUT/logs/package.log" 2>&1
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: apple-release-logs-${{ github.sha }}
           path: ${{ env.CI_OUTPUT }}/logs
           retention-days: 7
           if-no-files-found: error
