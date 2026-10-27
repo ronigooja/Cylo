@@ -22,7 +22,7 @@ appropriate to its behavior; selecting existing groups does not create coverage.
 | Files under the iOS app directory | iOS build |
 | Other Apple files, including packages, project configuration, and shared resources | Swift package tests and both app builds |
 | Go source | Full Go suite and the existing authorization/concurrency race package set |
-| Control/voice API, shared protocol, integration fixtures, or Go dependencies | Go/race checks plus Swift tests and both app builds |
+| Control, voice, memory, or capabilities API packages; shared protocol; integration fixtures; or Go dependencies | Go/race checks plus Swift tests and both app builds |
 | Linux deployment shell scripts | Release-script and CLI-installation regression checks |
 | CI configuration, scope selector, unknown files, or unavailable diff history | All existing check groups |
 

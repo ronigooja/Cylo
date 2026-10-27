@@ -29,7 +29,7 @@ def select(paths, full=False):
             scope["go"] = scope["race"] = True
             # The API and wire models have native consumers. Dependency changes
             # and integration fixtures may alter that shared contract as well.
-            if path.startswith(("contracts/", "internal/control/", "internal/voice/", "tests/")) or path in ("go.mod", "go.sum"):
+            if path.startswith(("contracts/", "internal/control/", "internal/voice/", "internal/memory/", "internal/capabilities/", "tests/")) or path in ("go.mod", "go.sum"):
                 for key in ("tests", "macos", "ios"):
                     scope[key] = True
         elif path.startswith("deploy/linux/") and path.endswith(".sh"):
