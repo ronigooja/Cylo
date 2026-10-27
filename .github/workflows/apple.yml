@@ -31,8 +31,6 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || inputs.tests
     runs-on: macos-15
     timeout-minutes: 30
-    env:
-      CI_OUTPUT: ${{ runner.temp }}/cylo-apple/tests
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -40,6 +38,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          CI_OUTPUT="$RUNNER_TEMP/cylo-apple/release"
+          echo "CI_OUTPUT=$CI_OUTPUT" >> "$GITHUB_ENV"
+          CI_OUTPUT="$RUNNER_TEMP/cylo-apple/ios"
+          echo "CI_OUTPUT=$CI_OUTPUT" >> "$GITHUB_ENV"
+          CI_OUTPUT="$RUNNER_TEMP/cylo-apple/macos"
+          echo "CI_OUTPUT=$CI_OUTPUT" >> "$GITHUB_ENV"
+          CI_OUTPUT="$RUNNER_TEMP/cylo-apple/tests"
+          echo "CI_OUTPUT=$CI_OUTPUT" >> "$GITHUB_ENV"
           mkdir -p "$CI_OUTPUT/logs" "$HOME/environment/cylo-apple"
           echo "CYLO_BUILD_ROOT=$CI_OUTPUT/test-data" >> "$GITHUB_ENV"
           {
@@ -79,8 +85,6 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || inputs.macos
     runs-on: macos-15
     timeout-minutes: 30
-    env:
-      CI_OUTPUT: ${{ runner.temp }}/cylo-apple/macos
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -129,8 +133,6 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || inputs.ios
     runs-on: macos-15
     timeout-minutes: 30
-    env:
-      CI_OUTPUT: ${{ runner.temp }}/cylo-apple/ios
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -233,8 +235,6 @@ jobs:
     needs: [apple-checks, tests, macos, ios]
     runs-on: macos-15
     timeout-minutes: 30
-    env:
-      CI_OUTPUT: ${{ runner.temp }}/cylo-apple/release
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
