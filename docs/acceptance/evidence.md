@@ -77,6 +77,26 @@ The subsequent correction permits exact operator-selected never-started AO recor
 
 **Source reviewed; remote recovery unverified.** The source review does not show these corrections deployed, the old queue reconciled, slots released, or a new live chat completed. The four previously refused runs must not be inferred recovered.
 
+## Scoped CI verification
+
+On source `d0a786ecac14681f5808ccdef1eb96dfdd02355e`,
+[hosted run 40549291218](https://github.com/ronigooja/Cylo/actions/runs/40549291218)
+passed scope-selection regressions (including renames, deletions, and unavailable
+history), actionlint workflow syntax validation, documentation/checker regressions,
+`go test ./...`, the existing authorization race package set, release/CLI-install
+script regressions, Swift package tests, and independent unsigned macOS/iOS builds.
+The Linux, Apple, and overall required-check gates passed. Checks ran on
+GitHub-hosted Linux and macOS runners; no local build or test suite ran.
+
+Independent source review findings were corrected before this run. Artifact
+metadata showed only logs, and both release jobs were skipped as expected for
+routine verification. This establishes the full selection path and current
+component builds/tests; path-specific omissions are protected by selector
+regressions. Manual release packaging, installation, external-service integration,
+end-to-end acceptance, and remote branch-protection configuration were not
+verified or changed. See [CI verification](../development/verification.md) for
+scope and manual entry points.
+
 ## Evidence boundaries
 
 When adding verification records, state source revision, environment, action/command, result, and limitations. Keep source review, fixtures, hosted CI, installation/startup, and full acceptance distinct. Link immutable CI or source records; omit keys, account data, private message text, and raw audio. The [acceptance matrix](requirements.md) records remaining gates.

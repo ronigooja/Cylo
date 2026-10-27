@@ -28,6 +28,13 @@ Milestones sequence delivery without reducing product scope. The [acceptance mat
 
 No fixture, health response, model catalog, or installation result accepts a complete milestone. The [matrix](acceptance/requirements.md) and [evidence register](acceptance/evidence.md) provide the detailed boundary for each claim. Operations belong in [deployment](operations/deployment.md) and [data lifecycle](operations/data-lifecycle.md).
 
+CI scope optimization is implemented and its full hosted selection passed:
+independent Apple/Go/race/script checks, routine builds without release packaging,
+and a gate requiring every selected group. See [verification procedures](development/verification.md)
+and [retained evidence](acceptance/evidence.md#scoped-ci-verification).
+Manual release packaging and remote branch-protection configuration remain outside
+this verification; product milestone acceptance is unchanged.
+
 ## Delivery dependencies
 
 Runtime work depends on AO and supported adapters; model routes depend on the existing external CLIProxyAPI; voice depends on Space3044 gateway lifecycle evidence and trusted media transport. Apple delivery depends on signing, platform permissions, Keychain, APNs, and real devices. Integration must recheck each dependency's actual compatibility without changing the external CLIProxyAPI deployment.
