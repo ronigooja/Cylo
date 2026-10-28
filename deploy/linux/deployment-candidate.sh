@@ -60,6 +60,24 @@ for item in artifacts:
     actual=h.hexdigest()
     if actual != sha: raise SystemExit(f"artifact {name} sha256 mismatch: expected {sha}, got {actual}")
     checked.append({"name":name,"path":rel,"sha256":actual, **({"digest":digest} if digest else {})})
+images = doc.get("images", {})
+if not isinstance(images, dict): raise SystemExit("manifest images must be an object")
+checked_images = {}
+for name, item in images.items():
+    if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", name):
+        raise SystemExit(f"invalid image name: {name!r}")
+    if isinstance(item, str):
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", item):
+            raise SystemExit(f"image {name} has an invalid local image ID")
+        checked_images[name] = {"local_id": item}
+        continue
+    if not isinstance(item, dict): raise SystemExit(f"image {name} must be an object")
+    ref, digest = item.get("ref"), item.get("digest")
+    if not isinstance(ref, str) or not re.fullmatch(r"ghcr\.io/[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*:[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", ref):
+        raise SystemExit(f"image {name} has an invalid GHCR reference")
+    if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise SystemExit(f"image {name} has an invalid immutable digest")
+    checked_images[name] = {"ref": ref, "digest": digest}
 if compose:
     cmd=["docker","compose","-f",compose]
     if env_file: cmd += ["--env-file", env_file]
@@ -67,7 +85,7 @@ if compose:
     try: subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
     except FileNotFoundError: raise SystemExit("docker is required for --compose validation")
     except subprocess.CalledProcessError: raise SystemExit("docker compose config validation failed")
-plan={"source_revision":source,"architecture":arch,"artifacts":checked,
+plan={"source_revision":source,"architecture":arch,"artifacts":checked,"images":checked_images,
       "installation_order":["verify manifest and artifact hashes","install AO/runtime and immutable Zoe release","switch current selector","start services and verify health/readiness"],
       "rollback":{"selector":"/opt/zoe/releases/current","target":"previous immutable release","images":"previous manifest image digests"},
       "checks":{"manifest_sha256":True,"compose_config":bool(compose),"host_mutation":False}}

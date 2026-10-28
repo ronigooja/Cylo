@@ -80,13 +80,21 @@ the host being deployed; the build steps apply to GitHub-hosted Linux runners.
 
 1. Build and review the Linux amd64 server/runner release and the patched AO
    amd64 release from the pinned [server workflow](../../.github/workflows/server-release.yml)
-   and [AO workflow](../../.github/workflows/ao-release.yml). Verify every
-   `SHA256SUMS` file before transfer.
+   and [AO workflow](../../.github/workflows/ao-release.yml). Those workflows
+   publish the container images directly to GHCR and record their immutable
+   digests in the release manifest (server) or `IMAGE_DIGEST` (AO). Verify the
+   binary `SHA256SUMS` file before transferring the small daemon/CLI binaries;
+   do not export or re-upload image tarballs.
 2. Run `prepare-host-layout.sh`. It creates the Docker network, service user,
    persistent roots, and protected secret directories. It does not create AO
    state or an AO unit.
-3. Install the AO daemon and its matching `AO_CODEX_CONTAINER_IMAGE`, then
-   create the host-managed `zoe-ao.service`. AO listens on loopback port
+3. Authenticate the deployment host to `ghcr.io` with a deployment-managed
+   GitHub token that has read-only package access, then set the server and
+   worker image variables to the GHCR references from the reviewed server
+   manifest. Use `@sha256:<digest>` references for the running Compose
+   configuration. Set `AO_CODEX_CONTAINER_IMAGE` to the reviewed GHCR AO
+   reference and digest, install the AO daemon, then create the host-managed
+   `zoe-ao.service`. AO listens on loopback port
    `18001` and stores state under `/var/lib/zoe/ao`; set `HOME` to that private
    directory. The repository provides the patched AO source and runtime image,
    but the AO systemd unit remains deployment-owned.
@@ -105,7 +113,9 @@ the host being deployed; the build steps apply to GitHub-hosted Linux runners.
    before first startup, retaining mode `0600`. Do not recursively change the
    directory's private JSON exports.
 6. Configure and start `zoe-compose.service`, then start `zoe-runner.service`.
-   Start AO first so runner readiness can reach `ZOE_AO_URL`.
+   Run `docker compose pull` from the reviewed Compose directory so Docker
+   fetches the pinned GHCR images directly, then start AO first so runner
+   readiness can reach `ZOE_AO_URL`.
 7. Verify service state and health/readiness endpoints. These checks establish
    installation and process readiness; model execution, memory processing, and
    end-to-end task completion require a separate acceptance run.

@@ -5,7 +5,7 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 printf 'candidate artifact\n' > "$tmp/server.bin"
 sha="$(sha256sum "$tmp/server.bin" | awk '{print $1}')"
 cat > "$tmp/manifest.json" <<JSON
-{"source_revision":"0123456789012345678901234567890123456789","architecture":"amd64","artifacts":[{"name":"server","path":"server.bin","sha256":"$sha","digest":"sha256:$sha"}]}
+{"source_revision":"0123456789012345678901234567890123456789","architecture":"amd64","artifacts":[{"name":"server","path":"server.bin","sha256":"$sha","digest":"sha256:$sha"}],"images":{"zoe-server":{"ref":"ghcr.io/ronigooja/zoe-server:0123456789012345678901234567890123456789","digest":"sha256:$sha"}}}
 JSON
 "$root/deploy/linux/deployment-candidate.sh" "$tmp/manifest.json" --output "$tmp/plan.json" >/dev/null
 python3 - "$tmp/plan.json" <<'PY'

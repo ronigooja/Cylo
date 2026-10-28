@@ -8,6 +8,7 @@ on:
 permissions:
   contents: read
   actions: write
+  packages: write
 
 jobs:
   release:
@@ -18,6 +19,12 @@ jobs:
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: go.mod
+      - name: Log in to GHCR
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Set up BuildKit
         uses: docker/setup-buildx-action@v3
       - name: Build deployment artifact
@@ -27,6 +34,15 @@ jobs:
           image_tag="${GITHUB_REF_NAME:-reconciliation-${GITHUB_SHA:0:12}}"
           export image_tag
           mkdir -p "$RUNNER_TEMP/zoe-release/logs" "$RUNNER_TEMP/zoe-release/artifacts"
+          image_namespace="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          export image_namespace
+          server_image="$image_namespace/zoe-server"
+          memory_image="$image_namespace/zoe-memory-worker"
+          runner_image="$image_namespace/zoe-runner"
+          export server_image memory_image runner_image
+          printf '%s\n' "$server_image:$image_tag" > "$RUNNER_TEMP/zoe-release/artifacts/IMAGE_REFERENCES"
+          printf '%s\n' "$memory_image:$image_tag" >> "$RUNNER_TEMP/zoe-release/artifacts/IMAGE_REFERENCES"
+          printf '%s\n' "$runner_image:$image_tag" >> "$RUNNER_TEMP/zoe-release/artifacts/IMAGE_REFERENCES"
           {
             git rev-parse HEAD
             git status --short
@@ -47,41 +63,39 @@ jobs:
           status=$?
           echo "$status" > "$RUNNER_TEMP/zoe-release/logs/runner-build.exit"
           test "$status" -eq 0 || exit "$status"
-          docker buildx build --load --platform linux/amd64 --cache-from "type=gha,scope=server-${GITHUB_REF_NAME}" --cache-to "type=gha,mode=max,scope=server-${GITHUB_REF_NAME}" -f deploy/linux/Dockerfile.server \
-            -t "zoe-server:${image_tag}" . \
+          docker buildx build --push --platform linux/amd64 --cache-from "type=gha,scope=server-${GITHUB_REF_NAME}" --cache-to "type=gha,mode=max,scope=server-${GITHUB_REF_NAME}" -f deploy/linux/Dockerfile.server \
+            -t "${server_image}:${image_tag}" -t "${server_image}:${GITHUB_SHA}" --metadata-file "$RUNNER_TEMP/zoe-release/server-metadata.json" . \
             2>&1 | tee "$RUNNER_TEMP/zoe-release/logs/image-build.log"
           status=$?
           echo "$status" > "$RUNNER_TEMP/zoe-release/logs/image-build.exit"
           test "$status" -eq 0 || exit "$status"
-          docker buildx build --load --platform linux/amd64 --cache-from "type=gha,scope=memory-${GITHUB_REF_NAME}" --cache-to "type=gha,mode=max,scope=memory-${GITHUB_REF_NAME}" -f deploy/linux/Dockerfile.memory \
-            -t "zoe-memory-worker:${image_tag}" . \
+          docker buildx build --push --platform linux/amd64 --cache-from "type=gha,scope=memory-${GITHUB_REF_NAME}" --cache-to "type=gha,mode=max,scope=memory-${GITHUB_REF_NAME}" -f deploy/linux/Dockerfile.memory \
+            -t "${memory_image}:${image_tag}" -t "${memory_image}:${GITHUB_SHA}" --metadata-file "$RUNNER_TEMP/zoe-release/memory-metadata.json" . \
             2>&1 | tee "$RUNNER_TEMP/zoe-release/logs/memory-image-build.log"
           status=$?
           echo "$status" > "$RUNNER_TEMP/zoe-release/logs/memory-image-build.exit"
           test "$status" -eq 0 || exit "$status"
-          docker buildx build --load --platform linux/amd64 --cache-from "type=gha,scope=runner-${GITHUB_REF_NAME}" --cache-to "type=gha,mode=max,scope=runner-${GITHUB_REF_NAME}" -f deploy/linux/Dockerfile.runner \
-            -t "zoe-runner:${image_tag}" . \
+          docker buildx build --push --platform linux/amd64 --cache-from "type=gha,scope=runner-${GITHUB_REF_NAME}" --cache-to "type=gha,mode=max,scope=runner-${GITHUB_REF_NAME}" -f deploy/linux/Dockerfile.runner \
+            -t "${runner_image}:${image_tag}" -t "${runner_image}:${GITHUB_SHA}" --metadata-file "$RUNNER_TEMP/zoe-release/runner-metadata.json" . \
             2>&1 | tee "$RUNNER_TEMP/zoe-release/logs/runner-image-build.log"
           status=$?
           echo "$status" > "$RUNNER_TEMP/zoe-release/logs/runner-image-build.exit"
           test "$status" -eq 0 || exit "$status"
           set -e
-          docker image inspect "zoe-server:${image_tag}" \
-            --format '{{.Id}} {{.Architecture}}' > "$RUNNER_TEMP/zoe-release/artifacts/image.txt"
-          docker save "zoe-server:${image_tag}" | gzip > "$RUNNER_TEMP/zoe-release/artifacts/server-image.tar.gz"
-          docker save "zoe-memory-worker:${image_tag}" | gzip > "$RUNNER_TEMP/zoe-release/artifacts/memory-image.tar.gz"
-          docker save "zoe-runner:${image_tag}" | gzip > "$RUNNER_TEMP/zoe-release/artifacts/runner-image.tar.gz"
           cd "$RUNNER_TEMP/zoe-release/artifacts"
           printf '%s\n' "$GITHUB_SHA" > SOURCE_REVISION
-          sha256sum zoe-server zoe-runner SOURCE_REVISION server-image.tar.gz memory-image.tar.gz runner-image.tar.gz > SHA256SUMS
+          sha256sum zoe-server zoe-runner SOURCE_REVISION IMAGE_REFERENCES > SHA256SUMS
           python3 - <<'PYJSON'
-          import hashlib, json, os, pathlib, subprocess
+          import hashlib, json, os, pathlib
           root = pathlib.Path(".")
           files = [{"name": p.name, "path": p.name, "sha256": hashlib.sha256(p.read_bytes()).hexdigest()} for p in root.iterdir() if p.is_file() and p.name != "release-manifest.json"]
           images = {}
-          for name in ("zoe-server", "zoe-memory-worker", "zoe-runner"):
-              ref = f"{name}:{os.environ['image_tag']}"
-              images[name] = subprocess.check_output(["docker", "image", "inspect", ref, "--format", "{{.Id}}"], text=True).strip()
+          for name, metadata in (("zoe-server", "server-metadata.json"), ("zoe-memory-worker", "memory-metadata.json"), ("zoe-runner", "runner-metadata.json")):
+              data = json.loads(pathlib.Path(os.environ["RUNNER_TEMP"], "zoe-release", metadata).read_text())
+              digest = data.get("containerimage.digest", "")
+              if not digest.startswith("sha256:"):
+                  raise SystemExit(f"missing immutable digest in {metadata}")
+              images[name] = {"ref": f"{os.environ['image_namespace']}/{name}:{os.environ['image_tag']}", "digest": digest}
           (root / "release-manifest.json").write_text(json.dumps({"schema":1,"release":os.environ["image_tag"],"source_revision":os.environ["GITHUB_SHA"],"architecture":"amd64","platform":"linux/amd64","artifacts":files,"images":images}, indent=2)+"\n")
           PYJSON
       - name: Upload release logs
