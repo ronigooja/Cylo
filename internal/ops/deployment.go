@@ -202,6 +202,16 @@ func (m Manager) Reload(ctx context.Context, mode Mode, services []string, compo
 	}
 }
 
+// ReloadCompose reloads selected Compose services with the deployment env file.
+func (m Manager) ReloadCompose(ctx context.Context, services []string, composeProject, composeFile, composeEnv string) error {
+	args := append(composeArgs(composeProject, composeFile), "--env-file", composeEnv, "up", "-d", "--no-build", "--no-deps", "--force-recreate")
+	args = append(args, services...)
+	if _, err := m.Run(ctx, "docker", args...); err != nil {
+		return commandError("docker compose up", err)
+	}
+	return nil
+}
+
 func commandError(action string, err error) error { return fmt.Errorf("%s failed: %w", action, err) }
 
 func redactURL(raw string) string {
