@@ -26,6 +26,14 @@ The external Docker network `zoe` is prepared by
 deployment remains outside Zoe's lifecycle. Preserve the existing runner
 deployment-authority database and capability containers during maintenance.
 
+Voice account-pool behavior belongs to the selected `chatgpt-web-voice`
+gateway. That gateway chooses and persists its sticky pool account for each
+voice session. `ZOE_VOICE_ACCOUNT_MEDIA_ENABLED` is a separate, optional Zoe
+account-lease adapter; it is not required for the gateway account pool and
+must remain `false` unless a gateway release explicitly implements Zoe's
+lease-identity and exact-release contract. With the default `false`, voice
+sessions still use the gateway's normal account pool.
+
 Check service status without printing environment files or secret values:
 
 ```bash
