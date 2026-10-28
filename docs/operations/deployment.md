@@ -342,3 +342,29 @@ Install reviewed CI artifacts with the applicable platform signing/provisioning.
 The current client accepts an operator-selected server URL and shared instance key stored only in Keychain. The exact QR/link interaction is defined in [product](../product.md#3-client-requirements). Use HTTPS across an untrusted network; HTTP exposes the key in transit. Key initialization/rotation requires the server's exclusive database lock; stop it first. Rotation preserves the fixed owner/workspace, tasks, and separate worker credentials. Remove any legacy `ZOE_INSTANCE_KEY` or instance-key secret-map configuration before restart; the canonical Compose deployment does not inject a plaintext owner key. Restart closes old streams. Clearing a client removes its local data, not the shared key or durable tasks.
 
 For export, backup, migration, restore, and destruction, use [data lifecycle operations](data-lifecycle.md).
+
+## Deployment candidates and rollback
+
+A deployment candidate is a reviewed release manifest plus the immutable artifacts
+named by that manifest. Generate and inspect its plan before transferring files:
+
+```sh
+deploy/linux/deployment-candidate.sh RELEASE_MANIFEST.json \
+  --compose deploy/linux/docker-compose.yml \
+  --env-file /path/to/reviewed/zoe-stack.env \
+  --output deployment-plan.json
+```
+
+This command is read-only. It verifies the source revision, architecture, every
+artifact SHA-256 and optional image digest, and the rendered Compose configuration.
+It prints an explicit order: verify hashes, install AO and the immutable Zoe
+release, switch `/opt/zoe/releases/current`, then start and check services. The
+plan records the previous immutable release and image digests as rollback targets.
+It never contacts a host, changes a selector, pulls an image, or starts a service.
+
+On the host, apply the reviewed plan manually. Keep old immutable release
+ directories and image tags. Rollback changes only the `current` selector and
+Compose image tags, then repeats `/healthz`, `/readyz`, runner/AO/Qdrant, and
+independent task checks. Record integrity, installation, readiness, connectivity,
+and end-to-end results separately; a candidate check does not establish product
+acceptance or modify the external CLIProxyAPI deployment.

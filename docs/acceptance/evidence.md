@@ -146,3 +146,13 @@ and end-to-end acceptance were not run for this rename. The existing Git remote
 and external deployments were not renamed; rewritten repository URLs and new
 application, credential, storage, and service identifiers require corresponding
 external migration before deployment. The raster design reference was retained.
+
+## Release candidate validation — 2026-10-29
+
+The read-only `deploy/linux/deployment-candidate.sh` check validates a release
+manifest's source revision, target architecture, artifact SHA-256 values and image
+digests, and can render a supplied Compose file. Its regression script covers a
+valid candidate and tampered-artifact rejection. The check emits installation and
+rollback targets without connecting to or modifying a host. No release transfer,
+service startup, health endpoint, external AO/model task, or end-to-end product
+acceptance is claimed by this source-level validation.

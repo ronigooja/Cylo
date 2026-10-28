@@ -71,3 +71,27 @@ When reporting verification, link the immutable workflow run, state the source
 revision and selected checks, and distinguish fixtures, builds, installation, and
 end-to-end acceptance. Use the [evidence register](../acceptance/evidence.md) for
 retained observations and limitations.
+
+## Release and deployment-candidate verification
+
+Pull requests and ordinary pushes validate the affected scope; they do not publish
+release artifacts. A release tag on `main` is the only formal artifact entry point.
+After required verification succeeds, the release workflow records one manifest for
+the server, runner, operator CLI, memory worker, AO, and unsigned Apple artifacts.
+The manifest includes the source revision, target architecture, image digests, and
+SHA-256 values. A failed job must not be treated as a complete release.
+
+Before transfer, run the read-only candidate check from the repository root:
+
+```sh
+deploy/linux/deployment-candidate.sh path/to/release-manifest.json \
+  --compose deploy/linux/docker-compose.yml \
+  --env-file /path/to/reviewed/zoe-stack.env \
+  --output deployment-plan.json
+```
+
+The check validates the manifest schema and every artifact hash, asks Docker
+Compose to render the supplied configuration, and emits the installation order
+and immutable rollback target. It does not connect to a host, switch a release,
+or start a service. Keep its output with the release evidence and record the
+source revision, cache status, artifact sizes, and elapsed time.
