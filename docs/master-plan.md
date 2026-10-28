@@ -17,6 +17,11 @@ Milestones sequence delivery without reducing product scope. The [acceptance mat
 
 ## Current status and blockers
 
+The [2026-10-29 voice deployment repair](acceptance/evidence.md#voice-deployment-configuration-repair--2026-10-29)
+restored the missing gateway credential mount and startup configuration on the
+current Zoe host. Server startup and gateway configuration checks passed;
+authenticated client and real media acceptance remain open.
+
 The project rename to Zoe is applied in source and paths; see the
 [rename evidence](acceptance/evidence.md#zoe-rename--2026-10-28). Hosted validation
 and external repository/deployment migration remain pending.

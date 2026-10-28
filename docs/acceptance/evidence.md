@@ -97,6 +97,25 @@ end-to-end acceptance, and remote branch-protection configuration were not
 verified or changed. See [CI verification](../development/verification.md) for
 scope and manual entry points.
 
+## Voice deployment configuration repair — 2026-10-29
+
+On the user-identified Zoe host `136.0.11.159`, the configured HTTPS gateway's
+authenticated `/v1/health` and `/v1/voice/config` returned HTTP 200. The latter
+contained the expected public configuration fields. The running server's old
+`/etc/zoe/active.compose.yaml` omitted the voice secret mount and secret-file
+mapping despite the host environment already configuring both. This left the
+server without its gateway credential, triggering the generic unavailable response.
+
+The deployment Compose file was backed up and updated with the voice secret
+mount and mapping from the repository template. The first recreation exposed
+root-only ownership of the private credential; ownership was corrected to the
+server's UID/GID 65532 while retaining mode 0600. The recreated server was running
+with zero restarts, `/healthz` returned `ok`, and a value-free inspection confirmed
+that the server process loaded the voice credential. No gateway or CLIProxyAPI
+configuration changed. No build or test suite ran. An authenticated request through
+Zoe's public voice endpoint, macOS retry, and real microphone/WebRTC acceptance
+remain unverified.
+
 ## Evidence boundaries
 
 When adding verification records, state source revision, environment, action/command, result, and limitations. Keep source review, fixtures, hosted CI, installation/startup, and full acceptance distinct. Link immutable CI or source records; omit keys, account data, private message text, and raw audio. The [acceptance matrix](requirements.md) records remaining gates.
