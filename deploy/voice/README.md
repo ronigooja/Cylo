@@ -1,14 +1,15 @@
-# Space3044 voice gateway deployment
+# Zoe-compatible voice gateway deployment
 
-This deployment runs Space3044 `chatgpt-web-voice` at pinned commit
-`6338ac478070aaa34bfe7a3c0469caf9e9174c02` (MIT). It is a separate Go
-gateway container, not a Zoe implementation of voice account leasing or
-media termination.
+This deployment runs the Zoe-compatible fork
+[`ronigooja/chatgpt-web-voice`](https://github.com/ronigooja/chatgpt-web-voice).
+Set `VOICE_GATEWAY_REVISION` to an immutable fork commit for production; the
+default `main` is intended only for operator development. It is a separate Go
+gateway container and does not authorize or complete Zoe business work.
 
 ## Host deployment
 
 Run `sudo deploy/voice/deploy.sh` from a Zoe checkout. The script checks out
-the fixed upstream commit under `/opt/zoe/voice/upstream`, creates the
+the configured fork revision under `/opt/zoe/voice/upstream`, creates the
 gateway's management password and AES encryption key if this is a first
 install, builds the upstream image, and starts the container with Docker's
 `unless-stopped` restart policy. It never imports a ChatGPT account. The
@@ -60,9 +61,9 @@ Bearer API key (`vgw_live_…`) and cannot access the management pages or accoun
 pool. The key is shown only once when created and must be stored in a
 root-readable secret file.
 
-This gateway does not provide trusted HTTPS for Zoe clients. Zoe voice must
-remain disabled until an approved HTTPS path and account/session lifecycle
-integration are in place. In particular, gateway DELETE releases its own
-binding but is not evidence that upstream WebRTC media ended. The account-media
-lease feature therefore remains disabled, and deployment alone does not prove
-that voice calls or task dispatch work.
+The container listener is plain HTTP; expose it to Zoe only through an
+approved private HTTPS reverse proxy or equivalent trusted transport. The Zoe
+account-media feature remains disabled unless the deployed fork revision
+implements and has been tested for account lease identity and exact,
+idempotent termination evidence. Deployment alone does not prove voice calls
+or task dispatch work.

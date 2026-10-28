@@ -6,7 +6,7 @@ services:
       dockerfile: Dockerfile
       args:
         VERSION: zoe-pinned
-        REVISION: 6338ac478070aaa34bfe7a3c0469caf9e9174c02
+        REVISION: ${VOICE_GATEWAY_REVISION:-main}
     env_file:
       - /etc/zoe/voice.env
     environment:

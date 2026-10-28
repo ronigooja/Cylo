@@ -2,7 +2,8 @@
 set -euo pipefail
 umask 077
 
-readonly upstream_revision=6338ac478070aaa34bfe7a3c0469caf9e9174c02
+readonly gateway_repository=${VOICE_GATEWAY_REPOSITORY:-https://github.com/ronigooja/chatgpt-web-voice.git}
+readonly upstream_revision=${VOICE_GATEWAY_REVISION:-main}
 readonly upstream_dir=/opt/zoe/voice/upstream
 readonly config_dir=/etc/zoe
 readonly data_dir=/var/lib/zoe/voice
@@ -22,12 +23,13 @@ install -d -m 0755 /opt/zoe/voice "$config_dir"
 install -d -o 1000 -g 1000 -m 0700 "$data_dir"
 
 if [[ ! -d "$upstream_dir/.git" ]]; then
-  (umask 022; git clone https://github.com/Space3044/chatgpt-web-voice.git "$upstream_dir")
+  (umask 022; git clone "$gateway_repository" "$upstream_dir")
 fi
 git -C "$upstream_dir" fetch --depth 1 origin "$upstream_revision"
-git -C "$upstream_dir" checkout --detach "$upstream_revision"
-if [[ "$(git -C "$upstream_dir" rev-parse HEAD)" != "$upstream_revision" ]]; then
-  echo "Upstream revision did not match the pinned commit." >&2
+git -C "$upstream_dir" checkout --detach FETCH_HEAD
+resolved_revision="$(git -C "$upstream_dir" rev-parse HEAD)"
+if [[ -z "$resolved_revision" ]]; then
+  echo "Voice gateway revision could not be resolved." >&2
   exit 1
 fi
 # The process runs as UID 1000; make public static assets readable even when

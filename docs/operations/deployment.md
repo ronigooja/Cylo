@@ -231,13 +231,14 @@ are not rendered in the product UI. Clients must not resubmit unknown runs.
 
 ## Voice gateway
 
-The separately deployed gateway is
-[Space3044/chatgpt-web-voice](https://github.com/Space3044/chatgpt-web-voice),
-pinned to `6338ac478070aaa34bfe7a3c0469caf9e9174c02`.
+The separately deployed gateway is the Zoe-compatible fork
+[ronigooja/chatgpt-web-voice](https://github.com/ronigooja/chatgpt-web-voice).
+Pin `VOICE_GATEWAY_REVISION` to an immutable fork commit for production.
 See [the deployment instructions](../../deploy/voice/README.md).
 
-- Linux management URL: `http://127.0.0.1:18090/login`.
-- Authorized LAN management URL: `http://debian.local:18090/login`.
+- The management URL is deployment-specific; do not assume a host name or
+  LAN address from this document. Keep management access on an operator-managed
+  trusted path.
 - Source: `/opt/zoe/voice/upstream`.
 - Container: `zoe-voice-gateway`.
 - Persistent data: `/var/lib/zoe/voice`.
@@ -245,19 +246,11 @@ See [the deployment instructions](../../deploy/voice/README.md).
 - Private environment: `/etc/zoe/voice.env`.
 - Management login reference: `/etc/zoe/voice-admin.txt`, on Linux only.
 
-The local installation explicitly publishes the gateway on `192.168.1.4`
-as well as loopback, following the user's request for `debian.local` access.
-The opt-in address is recorded in `/etc/zoe/voice.lan.env`; the repository
-default remains loopback only. The SSH tunnel also forwards Mac loopback
-port 18090. A browser worker in a
-container has its own loopback interface; it needs an explicitly configured
-network route before it can use the gateway. Do not assume the host's
-`127.0.0.1` URL works inside a container.
-
 The user must manually import a ChatGPT Web account in the gateway management
 UI. Deploying the gateway does not establish voice functionality in Zoe:
 trusted HTTPS and account/media lifecycle integration remain required. Keep
-Zoe account-media disabled until those acceptance requirements are met.
+Zoe account-media disabled until the fork revision and its lifecycle contract
+have passed the applicable acceptance checks.
 
 ## Operator CLI deployment metadata
 
