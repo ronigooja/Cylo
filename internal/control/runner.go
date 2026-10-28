@@ -610,10 +610,21 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		if len(summary) > 20000 {
 			summary = summary[:20000]
 		}
-		taskResult = summary
 		if len(observation.Result) == 0 || !json.Valid(observation.Result) {
 			writeError(w, apiError(400, "invalid_request", "result must be valid JSON", nil))
 			return
+		}
+		// Runner results are structured for durable provenance, but the task
+		// result shown in the native clients is the assistant's text. Keep the
+		// structured payload in the evidence row and avoid exposing its JSON
+		// envelope as the chat reply.
+		taskResult = summary
+		var resultFields map[string]json.RawMessage
+		if json.Unmarshal(observation.Result, &resultFields) == nil {
+			var assistantOutput string
+			if raw, ok := resultFields["assistant_output"]; ok && json.Unmarshal(raw, &assistantOutput) == nil && assistantOutput != "" {
+				taskResult = assistantOutput
+			}
 		}
 		eid, e := randomID()
 		if e != nil {
