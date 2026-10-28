@@ -116,6 +116,14 @@ configuration changed. No build or test suite ran. An authenticated request thro
 Zoe's public voice endpoint, macOS retry, and real microphone/WebRTC acceptance
 remain unverified.
 
+The same investigation found that `/etc/zoe/secrets/instance-key` did not match
+the authority database's current key hash. It was replaced from the matching
+private deployment export, retaining the prior file as a mode-0400 backup. The
+matching key authenticated a local `/v1/voice/config` request and returned the
+complete configuration. Existing macOS Keychain credentials may still need to be
+reimported from the current private installation export; the key value is not
+recorded here.
+
 ## Evidence boundaries
 
 When adding verification records, state source revision, environment, action/command, result, and limitations. Keep source review, fixtures, hosted CI, installation/startup, and full acceptance distinct. Link immutable CI or source records; omit keys, account data, private message text, and raw audio. The [acceptance matrix](requirements.md) records remaining gates.
