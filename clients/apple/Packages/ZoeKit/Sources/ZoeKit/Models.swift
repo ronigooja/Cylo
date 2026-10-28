@@ -304,6 +304,15 @@ public struct VoiceConfig: Codable, Equatable, Sendable {
     public var voiceModes: [VoiceChoice]
     public var languages: [VoiceLanguage]
     public var webRTC: VoiceWebRTCConfig
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case defaults
+        case voices
+        case voiceModes
+        case languages
+        case webRTC = "webrtc"
+    }
 }
 
 public struct VoiceDefaults: Codable, Equatable, Sendable {
