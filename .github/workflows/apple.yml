@@ -128,11 +128,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$CI_OUTPUT/artifacts"
-          ditto -c -k --sequesterRsrc --keepParent \
-            "$CI_OUTPUT/mac-derived/Build/Products/Release/ZoeMac.app" \
-            "$CI_OUTPUT/artifacts/ZoeMac-unsigned.app.zip"
+          mkdir -p "$CI_OUTPUT/dmg-root"
+          ditto "$CI_OUTPUT/mac-derived/Build/Products/Release/ZoeMac.app" \
+            "$CI_OUTPUT/dmg-root/ZoeMac.app"
+          ln -s /Applications "$CI_OUTPUT/dmg-root/Applications"
+          hdiutil create -volname Zoe -srcfolder \
+            "$CI_OUTPUT/dmg-root" \
+            -ov -format UDRO "$CI_OUTPUT/artifacts/ZoeMac-unsigned.dmg"
           cd "$CI_OUTPUT/artifacts"
-          shasum -a 256 *.zip > SHA256SUMS
+          shasum -a 256 *.dmg > SHA256SUMS
 
       - name: Upload unsigned macOS app
         if: github.event_name == 'workflow_dispatch' && inputs.release
@@ -307,7 +311,10 @@ jobs:
                 "$CI_OUTPUT/ios-build/ZoeMobile.app" "$CI_OUTPUT/artifacts/ZoeMobile-unsigned.app.zip"
             fi
             cd "$CI_OUTPUT/artifacts"
-            shasum -a 256 *.zip > SHA256SUMS
+            shasum -a 256 *.dmg > SHA256SUMS
+            if [[ "${{ inputs.platform }}" == all ]]; then
+              shasum -a 256 *.zip >> SHA256SUMS
+            fi
           ) > "$CI_OUTPUT/logs/package.log" 2>&1
 
       - name: Upload logs
