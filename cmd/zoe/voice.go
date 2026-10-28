@@ -44,6 +44,9 @@ func voiceConfigureOperation(args []string, in io.Reader, out, errOut io.Writer)
 	if err != nil {
 		return err
 	}
+	if d.Mode != ops.ModeCompose {
+		return errors.New("voice configure requires the managed Compose deployment; configure its stack environment explicitly for systemd")
+	}
 	in = sharedInput(in)
 	if strings.TrimSpace(*base) == "" {
 		if *nonInteractive {
