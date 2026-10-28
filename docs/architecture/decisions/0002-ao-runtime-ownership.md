@@ -15,7 +15,7 @@ Keep role, runtime, and model/provider route separate. Count all active runtime 
 For model routes supplied by the existing remote CLIProxyAPI deployment, keep account selection, quota handling, and proxying there and reuse the deployment unchanged.
 
 
-When integrating external services, isolate their failures and lifecycle from unrelated Zoe modules. The existing remote CLIProxyAPI remains an external dependency, not a Zoe deployment target. Space3044 supplies the selected real-time voice gateway/account pool; Zoe owns the voice-to-command/task bridge and safe lease policy. Mem0 is a controlled memory worker and Qdrant a rebuildable index, with authority retained in Go. Secrets are deployment-provided references; never copy their values into source, documentation, logs, or fixtures. Do not change external services or the existing proxy deployment during repository work without explicit authorization.
+When integrating external services, isolate their failures and lifecycle from unrelated Zoe modules. The existing remote CLIProxyAPI remains an external dependency, not a Zoe deployment target. The Zoe-compatible voice fork supplies the selected real-time voice gateway/account pool; Zoe owns the voice-to-command/task bridge and safe lease policy. Mem0 is a controlled memory worker and Qdrant a rebuildable index, with authority retained in Go. Secrets are deployment-provided references; never copy their values into source, documentation, logs, or fixtures. Do not change external services or the existing proxy deployment during repository work without explicit authorization.
 
 ## Consequences
 

@@ -13,7 +13,7 @@ Zoe is a private, self-hosted Linux Go control server with an independent Linux 
 | Independent runner | Claim admitted work, invoke authorized runtime/service operations, observe results, and report evidence | Separate credentials and scoped claims; cannot grant its own authority |
 | AO gateway and AO | Authorized runtime creation and lifecycle, including Super, Workers, and curator runtimes | Zoe gateway admits work; AO owns runtime/session lifecycle |
 | Existing remote CLIProxyAPI | Account selection, quota handling, and proxying for its configured model routes | External deployment reused unchanged; no duplicate account rotation in Zoe/AO |
-| Space3044 `chatgpt-web-voice` | ChatGPT web real-time transport and voice account pool | Voice transport and spoken output do not authorize or complete business work |
+| Zoe-compatible `ronigooja/chatgpt-web-voice` fork | ChatGPT web real-time transport and voice account pool | Voice transport and spoken output do not authorize or complete business work |
 | Mem0 | Scoped extraction, memory proposals, and permitted worker operations | Controlled worker, never unrestricted task/permission/configuration/decision authority |
 | Qdrant | Derived retrieval vectors and payloads | Rebuildable index; never the source of truth |
 | SQLite and file storage | Durable authority transactions; artifacts/releases and service data in file storage | Database commit establishes acceptance; large outputs do not become database blobs |
@@ -61,7 +61,7 @@ The interface follows [product chapter 3](product.md#3-client-requirements). Inf
 
 ## Voice and business work
 
-Space3044 `chatgpt-web-voice` is the selected gateway/account pool. Native clients use WebRTC with platform-specific audio/lifecycle adapters; WebRTC owns the media pipeline. Dependency pins and platform setup live with [the Apple clients](../clients/apple/README.md) and [voice deployment](../deploy/voice/README.md).
+Zoe-compatible `ronigooja/chatgpt-web-voice` fork is the selected gateway/account pool. Native clients use WebRTC with platform-specific audio/lifecycle adapters; WebRTC owns the media pipeline. Dependency pins and platform setup live with [the Apple clients](../clients/apple/README.md) and [voice deployment](../deploy/voice/README.md).
 
 Opening a microphone or upstream session requires explicit user action and granted platform permission. Stable turn IDs, revisions, and deduplication bind voice turns to durable commands. Partial captions and upstream spoken answers never authorize a business action. When a stable turn-completion signal is unavailable, explicit transcript confirmation is the fallback; it does not establish hands-free acceptance.
 
