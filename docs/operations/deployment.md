@@ -115,6 +115,35 @@ route is enabled. Both the AO daemon and Zoe runner require the same
 path, and model belong only to the separately managed AO daemon; the image
 setting belongs to both deployments, not the Zoe server.
 
+### Register the worker project
+
+During AO deployment, initialize and register the project named `workers` once
+on the AO host. This applies whenever a new AO state directory is created or
+an existing AO database is replaced. The Zoe `worker` runtime profile sends
+ordinary tasks to this project; each task receives its own AO session, so new
+chats do not require additional projects or share conversation context through
+the project record.
+
+The project path must be an absolute directory visible to the AO daemon and
+must be a Git repository. For the standard deployment, use
+`/var/lib/zoe/ao/workers` and run these commands after AO is ready:
+
+```sh
+mkdir -p /var/lib/zoe/ao/workers
+curl --fail --silent --show-error -X POST http://127.0.0.1:18001/api/v1/projects/initialize \
+  -H 'Content-Type: application/json' \
+  --data '{"path":"/var/lib/zoe/ao/workers"}'
+curl --fail --silent --show-error -X POST http://127.0.0.1:18001/api/v1/projects \
+  -H 'Content-Type: application/json' \
+  --data '{"path":"/var/lib/zoe/ao/workers","projectId":"workers","name":"workers"}'
+curl --fail --silent --show-error http://127.0.0.1:18001/api/v1/projects
+```
+
+The final response must list a project with ID `workers` and
+`folderMissing: false`. A missing project causes task execution to fail with
+AO `PROJECT_NOT_FOUND` even though Zoe server and runner health checks remain
+successful. Do not create a new AO project for each chat.
+
 Required settings:
 
 - `ZOE_DATABASE_PATH`: path to the SQLite database. The server acquires a single-writer process lock before opening it.
