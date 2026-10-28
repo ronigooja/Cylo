@@ -31,7 +31,7 @@ services:
       ZOE_MEMORY_RUNNER_WORKSPACES: ${ZOE_MEMORY_RUNNER_WORKSPACES:-default}
       ZOE_MEMORY_RUNNER_SCOPES: memory:jobs:claim,memory:jobs:complete,memory:propose
       ZOE_VOICE_GATEWAY_URL: ${ZOE_VOICE_GATEWAY_URL:-}
-      ZOE_SECRET_FILE_MAP: ZOE_INSTANCE_KEY=/run/secrets/instance_key,ZOE_RUNNER_TOKEN=/run/secrets/runner_token
+      ZOE_SECRET_FILE_MAP: ZOE_RUNNER_TOKEN=/run/secrets/runner_token
     entrypoint: ["/usr/local/bin/zoe-secret-entrypoint"]
     command: ["/usr/local/bin/zoe-server"]
     volumes:
@@ -39,8 +39,6 @@ services:
         source: ${ZOE_SERVER_DATA_ROOT:?set a private server authority root}
         target: /var/lib/zoe/server
     secrets:
-      - source: instance_key
-        target: instance_key
       - source: runner_token
         target: runner_token
       - source: memory_runner_token
@@ -108,8 +106,6 @@ networks:
     external: true
 
 secrets:
-  instance_key:
-    file: ${ZOE_INSTANCE_KEY_FILE:?set a private instance key file path}
   runner_token:
     file: ${ZOE_RUNNER_TOKEN_FILE:?set a private runner token file path}
   memory_runner_token:

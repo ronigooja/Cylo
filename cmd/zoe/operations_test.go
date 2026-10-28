@@ -190,3 +190,69 @@ func TestKeyWithoutTerminalSavesExportWithoutPrintingCredentials(t *testing.T) {
 		t.Fatal("non-terminal output exposed connection details")
 	}
 }
+
+func TestKeyRotationRejectsResolvedComposeStartupCredential(t *testing.T) {
+	for _, fixture := range []struct {
+		name, config string
+	}{
+		{"fixed_secret_path", `{"services":{"zoe-server":{"environment":{"ZOE_SECRET_FILE_MAP":"ZOE_INSTANCE_KEY=/run/secrets/instance_key,ZOE_RUNNER_TOKEN=/run/secrets/runner"}}}}`},
+		{"inline_key", `{"services":{"zoe-server":{"environment":{"ZOE_INSTANCE_KEY":"private-fixture-value"}}}}`},
+		{"missing_server", `{"services":{}}`},
+		{"invalid_config", `private-fixture-value`},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "zoe-stack.env"), []byte("ZOE_COMPOSE_FILE=/deployment/control.yaml\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			old := opsManager
+			defer func() { opsManager = old }()
+			var calls []string
+			opsManager = func() ops.Manager {
+				return ops.NewManager(func(_ context.Context, name string, args ...string) ([]byte, error) {
+					call := name + " " + strings.Join(args, " ")
+					calls = append(calls, call)
+					if name == "docker" {
+						return []byte(fixture.config), nil
+					}
+					return []byte("LoadState=loaded\n"), nil
+				})
+			}
+			db := filepath.Join(root, "untouched.sqlite")
+			var out, errOut bytes.Buffer
+			err := keyOperation(true, []string{"--root", root, "--database", db, "--server", "https://zoe.example", "--yes"}, strings.NewReader(""), &out, &errOut)
+			if err == nil {
+				t.Fatal("unsafe startup configuration accepted")
+			}
+			if strings.Contains(err.Error()+out.String()+errOut.String(), "private-fixture-value") {
+				t.Fatal("resolved configuration leaked into diagnostics")
+			}
+			if _, err := os.Stat(db); !os.IsNotExist(err) {
+				t.Fatal("key maintenance touched database before checking startup sources")
+			}
+			if strings.Contains(strings.Join(calls, "\n"), "systemctl stop") {
+				t.Fatal("key maintenance stopped service before checking startup sources")
+			}
+		})
+	}
+}
+
+func TestComposeKeyCheckAllowsDatabaseOnlyStartup(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "zoe-stack.env"), []byte("ZOE_COMPOSE_FILE=/deployment/control.yaml\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	old := opsManager
+	defer func() { opsManager = old }()
+	opsManager = func() ops.Manager {
+		return ops.NewManager(func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if name == "docker" {
+				return []byte(`{"services":{"zoe-server":{"environment":{"ZOE_INSTANCE_KEY":null,"ZOE_SECRET_FILE_MAP":"ZOE_RUNNER_TOKEN=/run/secrets/runner_token"}}}}`), nil
+			}
+			return []byte("LoadState=loaded\n"), nil
+		})
+	}
+	if err := checkComposeKeySources(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+}

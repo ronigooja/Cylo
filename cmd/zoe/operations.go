@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -226,9 +227,6 @@ func keyOperation(rotate bool, args []string, in io.Reader, out, errOut io.Write
 			}
 		}
 	}
-	if err := checkDeploymentKeySources(*root); err != nil {
-		return err
-	}
 	if *output == "" {
 		*output = filepath.Join(filepath.Dir(*db), "instance-key-"+time.Now().UTC().Format("20060102T150405.000000000")+".json")
 	}
@@ -244,6 +242,12 @@ func keyOperation(rotate bool, args []string, in io.Reader, out, errOut io.Write
 		return fmt.Errorf("acquire deployment operation lock: %w", err)
 	}
 	defer releaseDeployment()
+	if err := checkDeploymentKeySources(*root); err != nil {
+		return err
+	}
+	if err := checkComposeKeySources(ctx, *root); err != nil {
+		return err
+	}
 	resume := func() error { return nil }
 	if !*offline {
 		var pauseErr error
@@ -348,7 +352,7 @@ func pauseControl(ctx context.Context, root string) (func() error, error) {
 func checkDeploymentKeySources(root string) error {
 	for _, name := range []string{"ZOE_INSTANCE_KEY", "ZOE_INSTANCE_KEY_FILE"} {
 		if os.Getenv(name) != "" {
-			return fmt.Errorf("%s is set; remove the startup credential source before offline key maintenance, then configure the new private key before restarting", name)
+			return fmt.Errorf("%s is set; remove the legacy startup credential source before key maintenance; the server uses its database credential", name)
 		}
 	}
 	for _, file := range []string{"zoe-stack.env", "zoe-server.env", "zoe-runner.env", "ao.env", ".env"} {
@@ -364,6 +368,55 @@ func checkDeploymentKeySources(root string) error {
 			name, value, ok := strings.Cut(line, "=")
 			if ok && (strings.TrimSpace(name) == "ZOE_INSTANCE_KEY" || strings.TrimSpace(name) == "ZOE_INSTANCE_KEY_FILE") && strings.Trim(strings.TrimSpace(value), "\"'") != "" {
 				return fmt.Errorf("%s configures a startup instance credential; remove or migrate that source before offline key maintenance to avoid stale credentials on restart", file)
+			}
+		}
+	}
+	return nil
+}
+
+// When a managed deployment selects a Compose file, inspect its resolved
+// server environment before changing the database. A literal secret path can
+// otherwise bypass the environment-file check above.
+func checkComposeKeySources(ctx context.Context, root string) error {
+	m := opsManager()
+	d, err := ops.DiscoverDeployment(ctx, m, root)
+	if err != nil {
+		return errors.New("cannot inspect startup credential sources")
+	}
+	if d.ComposeFile == "" {
+		return nil
+	}
+	args := []string{"compose", "--env-file", d.StackEnv, "--file", d.ComposeFile}
+	if d.ComposeProject != "" {
+		args = append(args, "--project-name", d.ComposeProject)
+	}
+	args = append(args, "config", "--format", "json")
+	data, err := m.Run(ctx, "docker", args...)
+	if err != nil {
+		return errors.New("cannot resolve Compose startup credential sources; no key was changed")
+	}
+	var config struct {
+		Services map[string]struct {
+			Environment map[string]*string `json:"environment"`
+		} `json:"services"`
+	}
+	if json.Unmarshal(data, &config) != nil {
+		return errors.New("cannot parse Compose startup credential sources; no key was changed")
+	}
+	server, ok := config.Services["zoe-server"]
+	if !ok {
+		return errors.New("Compose control service is missing; no key was changed")
+	}
+	for _, name := range []string{"ZOE_INSTANCE_KEY", "ZOE_INSTANCE_KEY_FILE"} {
+		if value := server.Environment[name]; value != nil && strings.TrimSpace(*value) != "" {
+			return errors.New("Compose injects a legacy instance key; remove that startup source before key maintenance")
+		}
+	}
+	if value := server.Environment["ZOE_SECRET_FILE_MAP"]; value != nil {
+		for _, mapping := range strings.Split(*value, ",") {
+			name, _, _ := strings.Cut(mapping, "=")
+			if strings.TrimSpace(name) == "ZOE_INSTANCE_KEY" {
+				return errors.New("Compose injects a legacy instance key through a secret file; remove that startup source before key maintenance")
 			}
 		}
 	}

@@ -76,10 +76,13 @@ the host being deployed; the build steps apply to GitHub-hosted Linux runners.
 5. With the server stopped and no startup instance-key source configured, the
    operator runs `zoe key init --database PATH --server HTTPS_URL
    --output PRIVATE_JSON` (or `zoe key rotate` for an existing instance).
-   The operator keeps the private JSON output and places its `key` value in the
-   deployment-managed instance-key secret file. Configure
-   `ZOE_INSTANCE_KEY_FILE` to reference that file only after this operator
-   step; the installer must not create or populate it.
+   The operator keeps the private JSON output for client connection. The
+   server uses the credential hash stored in its database; the installer must
+   not create, inject, or persist a plaintext instance-key startup secret.
+   When root initializes a new database for the Compose service, set ownership
+   of the database and any existing `-wal` and `-shm` sidecars to `65532:65532`
+   before first startup, retaining mode `0600`. Do not recursively change the
+   directory's private JSON exports.
 6. Configure and start `zoe-compose.service`, then start `zoe-runner.service`.
    Start AO first so runner readiness can reach `ZOE_AO_URL`.
 7. Verify service state and health/readiness endpoints. These checks establish
@@ -115,7 +118,7 @@ setting belongs to both deployments, not the Zoe server.
 Required settings:
 
 - `ZOE_DATABASE_PATH`: path to the SQLite database. The server acquires a single-writer process lock before opening it.
-- The operator initializes or rotates the instance credential with `zoe key init --database PATH --server https://... [--output PRIVATE_JSON]` or `zoe key rotate ...`. The command displays the key and installation link once (and renders a terminal QR using its built-in encoder). The deployment must not generate or inject this credential. After the operator saves the key in the deployment-managed secret file, `ZOE_INSTANCE_KEY_FILE` may reference that file for service startup. `ZOE_BOOTSTRAP_CODE` is removed; use a fresh database for a new deployment.
+- The operator initializes or rotates the instance credential with `zoe key init --database PATH --server https://... [--output PRIVATE_JSON]` or `zoe key rotate ...`. The command displays the key and installation link once (and renders a terminal QR using its built-in encoder). The deployment must not generate, inject, or persist a plaintext startup credential; the server authenticates against the database hash. `ZOE_BOOTSTRAP_CODE` is removed; use a fresh database for a new deployment.
 
 Optional settings:
 
@@ -130,7 +133,7 @@ Optional settings:
 
 ## Fresh-instance operator commands
 
-Stop the server before `zoe key init --database PATH --output PRIVATE_JSON --server URL` or `zoe key rotate --database PATH --output NEW_PRIVATE_JSON --server URL`. Output files must be new private destinations. Update or remove any stale deployment instance-key secret after rotation. Keep generated keys and installation links out of logs and chat.
+Stop the server before `zoe key init --database PATH --output PRIVATE_JSON --server URL` or `zoe key rotate --database PATH --output NEW_PRIVATE_JSON --server URL`. Output files must be new private destinations. For legacy deployments, remove instance-key startup variables, secret-entrypoint mappings, and instance-key mounts before maintenance; leave runner and worker credentials in place. The canonical server restarts against its database hash after rotation and requires no plaintext key synchronization. Keep generated keys and installation links out of logs and chat.
 
 Data export and destruction procedures are in [data lifecycle operations](data-lifecycle.md).
 
@@ -291,6 +294,6 @@ No new deployment or physical-device acceptance is implied by source changes.
 
 Install reviewed CI artifacts with the applicable platform signing/provisioning. Keep Mac inputs, signing/install scripts, artifacts, and logs under `~/Developer/Zoe/runs/<task-id>/`; the installed application belongs at `/Applications/Zoe.app`. A launch/signature check establishes installation only. See [Apple module instructions](../../clients/apple/README.md) and [current evidence](../acceptance/evidence.md) for tested revisions and remaining device/distribution gates.
 
-The current client accepts an operator-selected server URL and shared instance key stored only in Keychain. The exact QR/link interaction is defined in [product](../product.md#3-client-requirements). Use HTTPS across an untrusted network; HTTP exposes the key in transit. Key initialization/rotation requires the server's exclusive database lock; stop it first. Rotation preserves the fixed owner/workspace, tasks, and separate worker credentials. Remove or update stale `ZOE_INSTANCE_KEY` or Compose `ZOE_INSTANCE_KEY_FILE` configuration before restart; a mismatched key fails startup. Restart closes old streams. Clearing a client removes its local data, not the shared key or durable tasks.
+The current client accepts an operator-selected server URL and shared instance key stored only in Keychain. The exact QR/link interaction is defined in [product](../product.md#3-client-requirements). Use HTTPS across an untrusted network; HTTP exposes the key in transit. Key initialization/rotation requires the server's exclusive database lock; stop it first. Rotation preserves the fixed owner/workspace, tasks, and separate worker credentials. Remove any legacy `ZOE_INSTANCE_KEY` or instance-key secret-map configuration before restart; the canonical Compose deployment does not inject a plaintext owner key. Restart closes old streams. Clearing a client removes its local data, not the shared key or durable tasks.
 
 For export, backup, migration, restore, and destruction, use [data lifecycle operations](data-lifecycle.md).

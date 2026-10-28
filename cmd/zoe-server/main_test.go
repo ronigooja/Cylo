@@ -29,9 +29,10 @@ func TestServerSubprocessBootstrapAndRestart(t *testing.T) {
 	_ = probe.Close()
 	db := filepath.Join(t.TempDir(), "state", "zoe.db")
 	token := subprocessSecret(t)
+	startupKey := token
 	start := func() *exec.Cmd {
 		cmd := exec.Command(binary)
-		cmd.Env = append(os.Environ(), "ZOE_LISTEN_ADDR="+addr, "ZOE_DATABASE_PATH="+db, "ZOE_INSTANCE_KEY="+token, "ZOE_VOICE_GATEWAY_URL=", "ZOE_VOICE_GATEWAY_API_KEY=")
+		cmd.Env = append(os.Environ(), "ZOE_LISTEN_ADDR="+addr, "ZOE_DATABASE_PATH="+db, "ZOE_INSTANCE_KEY="+startupKey, "ZOE_VOICE_GATEWAY_URL=", "ZOE_VOICE_GATEWAY_API_KEY=")
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
@@ -115,6 +116,9 @@ func TestServerSubprocessBootstrapAndRestart(t *testing.T) {
 	oldToken := token
 	token = exported.Key
 	newToken := token
+	// Canonical deployments restart with database authority alone: no plaintext
+	// startup secret needs to be synchronized after rotation.
+	startupKey = ""
 	cmd = start()
 	t.Cleanup(func() { stopServer(t, cmd) })
 	deadline = time.Now().Add(8 * time.Second)
