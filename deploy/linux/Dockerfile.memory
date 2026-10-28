@@ -4,7 +4,7 @@ ARG PYTHON_IMAGE=python:3.11-slim-bookworm@sha256:f06d01d4ba3f8ad5af45a3ec87df19
 FROM ${GO_BUILDER_IMAGE} AS secret-entrypoint
 WORKDIR /src
 COPY deploy/linux/secret-entrypoint.go ./secret-entrypoint.go
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false -ldflags='-s -w' -o /out/zoe-secret-entrypoint ./secret-entrypoint.go
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false -ldflags='-s -w' -o /out/zoe-secret-entrypoint ./secret-entrypoint.go
 
 FROM ${PYTHON_IMAGE}
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -13,7 +13,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     MEM0_TELEMETRY=false
 WORKDIR /app
 COPY services/memory/pyproject.toml /app/services/memory/pyproject.toml
-RUN pip install --no-cache-dir fastembed==0.9.0 mem0ai==2.2.1 qdrant-client==1.19.1
+RUN --mount=type=cache,target=/root/.cache/pip pip install fastembed==0.9.0 mem0ai==2.2.1 qdrant-client==1.19.1
 COPY services /app/services
 COPY --from=secret-entrypoint --chown=65532:65532 /out/zoe-secret-entrypoint /usr/local/bin/zoe-secret-entrypoint
 USER 65532:65532

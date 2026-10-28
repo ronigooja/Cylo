@@ -3,11 +3,11 @@ name: Server deployment artifact
 on:
   workflow_dispatch:
   push:
-    branches: ['codex/single-instance-key']
-    paths: ['.github/workflows/server-release.yml']
+    tags: ['v*']
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   release:
@@ -18,10 +18,14 @@ jobs:
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: go.mod
+      - name: Set up BuildKit
+        uses: docker/setup-buildx-action@v3
       - name: Build deployment artifact
         shell: bash
         run: |
           set -euo pipefail
+          image_tag="${GITHUB_REF_NAME:-reconciliation-${GITHUB_SHA:0:12}}"
+          export image_tag
           mkdir -p "$RUNNER_TEMP/zoe-release/logs" "$RUNNER_TEMP/zoe-release/artifacts"
           {
             git rev-parse HEAD
@@ -43,32 +47,43 @@ jobs:
           status=$?
           echo "$status" > "$RUNNER_TEMP/zoe-release/logs/runner-build.exit"
           test "$status" -eq 0 || exit "$status"
-          docker build --platform linux/amd64 -f deploy/linux/Dockerfile.server \
-            -t "zoe-server:reconciliation-${GITHUB_SHA:0:12}" . \
+          docker buildx build --load --platform linux/amd64 --cache-from "type=gha,scope=server-${GITHUB_REF_NAME}" --cache-to "type=gha,mode=max,scope=server-${GITHUB_REF_NAME}" -f deploy/linux/Dockerfile.server \
+            -t "zoe-server:${GITHUB_REF_NAME:-${image_tag}}" . \
             2>&1 | tee "$RUNNER_TEMP/zoe-release/logs/image-build.log"
           status=$?
           echo "$status" > "$RUNNER_TEMP/zoe-release/logs/image-build.exit"
           test "$status" -eq 0 || exit "$status"
-          docker build --platform linux/amd64 -f deploy/linux/Dockerfile.memory \
-            -t "zoe-memory-worker:reconciliation-${GITHUB_SHA:0:12}" . \
+          docker buildx build --load --platform linux/amd64 --cache-from "type=gha,scope=memory-${GITHUB_REF_NAME}" --cache-to "type=gha,mode=max,scope=memory-${GITHUB_REF_NAME}" -f deploy/linux/Dockerfile.memory \
+            -t "zoe-memory-worker:${GITHUB_REF_NAME:-${image_tag}}" . \
             2>&1 | tee "$RUNNER_TEMP/zoe-release/logs/memory-image-build.log"
           status=$?
           echo "$status" > "$RUNNER_TEMP/zoe-release/logs/memory-image-build.exit"
           test "$status" -eq 0 || exit "$status"
-          docker build --platform linux/amd64 -f deploy/linux/Dockerfile.runner \
-            -t "zoe-runner:reconciliation-${GITHUB_SHA:0:12}" . \
+          docker buildx build --load --platform linux/amd64 --cache-from "type=gha,scope=runner-${GITHUB_REF_NAME}" --cache-to "type=gha,mode=max,scope=runner-${GITHUB_REF_NAME}" -f deploy/linux/Dockerfile.runner \
+            -t "zoe-runner:${GITHUB_REF_NAME:-${image_tag}}" . \
             2>&1 | tee "$RUNNER_TEMP/zoe-release/logs/runner-image-build.log"
           status=$?
           echo "$status" > "$RUNNER_TEMP/zoe-release/logs/runner-image-build.exit"
           test "$status" -eq 0 || exit "$status"
           set -e
-          docker image inspect "zoe-server:reconciliation-${GITHUB_SHA:0:12}" \
+          docker image inspect "zoe-server:${image_tag}" \
             --format '{{.Id}} {{.Architecture}}' > "$RUNNER_TEMP/zoe-release/artifacts/image.txt"
-          docker save "zoe-server:reconciliation-${GITHUB_SHA:0:12}" | gzip > "$RUNNER_TEMP/zoe-release/artifacts/server-image.tar.gz"
-          docker save "zoe-memory-worker:reconciliation-${GITHUB_SHA:0:12}" | gzip > "$RUNNER_TEMP/zoe-release/artifacts/memory-image.tar.gz"
-          docker save "zoe-runner:reconciliation-${GITHUB_SHA:0:12}" | gzip > "$RUNNER_TEMP/zoe-release/artifacts/runner-image.tar.gz"
+          docker save "zoe-server:${image_tag}" | gzip > "$RUNNER_TEMP/zoe-release/artifacts/server-image.tar.gz"
+          docker save "zoe-memory-worker:${image_tag}" | gzip > "$RUNNER_TEMP/zoe-release/artifacts/memory-image.tar.gz"
+          docker save "zoe-runner:${image_tag}" | gzip > "$RUNNER_TEMP/zoe-release/artifacts/runner-image.tar.gz"
           cd "$RUNNER_TEMP/zoe-release/artifacts"
-          sha256sum zoe-server zoe-runner server-image.tar.gz memory-image.tar.gz runner-image.tar.gz > SHA256SUMS
+          printf '%s\n' "$GITHUB_SHA" > SOURCE_REVISION
+          sha256sum zoe-server zoe-runner SOURCE_REVISION server-image.tar.gz memory-image.tar.gz runner-image.tar.gz > SHA256SUMS
+          python3 - <<'PYJSON'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path(".")
+          files = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in root.iterdir() if p.is_file() and p.name != "release-manifest.json"}
+          images = {}
+          for name in ("zoe-server", "zoe-memory-worker", "zoe-runner"):
+              ref = f"{name}:{os.environ['image_tag']}"
+              images[name] = subprocess.check_output(["docker", "image", "inspect", ref, "--format", "{{.Id}}"], text=True).strip()
+          (root / "release-manifest.json").write_text(json.dumps({"schema":1,"release":os.environ["image_tag"],"source_revision":os.environ["GITHUB_SHA"],"platform":"linux/amd64","sha256":files,"images":images}, indent=2)+"\n")
+          PYJSON
       - name: Upload release logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

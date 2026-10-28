@@ -4,10 +4,10 @@ ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c8918
 FROM ${GO_BUILDER_IMAGE} AS build
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false -ldflags='-s -w' -o /out/zoe-runner ./cmd/zoe-runner
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false -ldflags='-s -w' -o /out/zoe-secret-entrypoint ./deploy/linux/secret-entrypoint.go
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false -ldflags='-s -w' -o /out/zoe-runner ./cmd/zoe-runner
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 GOOS=linux go build -trimpath -buildvcs=false -ldflags='-s -w' -o /out/zoe-secret-entrypoint ./deploy/linux/secret-entrypoint.go
 
 FROM ${RUNTIME_IMAGE}
 COPY --from=build --chown=65532:65532 /out/zoe-runner /usr/local/bin/zoe-runner
