@@ -34,6 +34,16 @@ must remain `false` unless a gateway release explicitly implements Zoe's
 lease-identity and exact-release contract. With the default `false`, voice
 sessions still use the gateway's normal account pool.
 
+The current voice baseline accepts client-direct WebRTC media: the gateway
+proxies signaling, while the native client owns the media connection to the
+upstream service. This is the root reason account-level termination evidence is
+not available from a gateway session delete. The alternative is a future
+gateway-terminated or relayed media design with two WebRTC legs and a media
+bridge; that is a separate architecture project. Keep
+`ZOE_VOICE_ACCOUNT_MEDIA_ENABLED=true` unsupported for the current baseline:
+it does not change the media topology and can only fail closed when release
+evidence is unavailable.
+
 Check service status without printing environment files or secret values:
 
 ```bash
@@ -259,9 +269,11 @@ See [the deployment instructions](../../deploy/voice/README.md).
 
 The user must manually import a ChatGPT Web account in the gateway management
 UI. Deploying the gateway does not establish voice functionality in Zoe:
-trusted HTTPS and account/media lifecycle integration remain required. Keep
-Zoe account-media disabled until the fork revision and its lifecycle contract
-have passed the applicable acceptance checks.
+trusted HTTPS, client media permissions, and voice acceptance remain required.
+The optional Zoe account-media integration is not part of the current baseline;
+keep it disabled until a future gateway revision and its lifecycle contract
+have passed a separate architecture review and the applicable acceptance
+checks.
 
 ## Operator CLI deployment metadata
 

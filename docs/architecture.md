@@ -61,7 +61,16 @@ The interface follows [product chapter 3](product.md#3-client-requirements). Inf
 
 ## Voice and business work
 
-Zoe-compatible `ronigooja/chatgpt-web-voice` fork is the selected gateway/account pool. Native clients use WebRTC with platform-specific audio/lifecycle adapters; WebRTC owns the media pipeline. Dependency pins and platform setup live with [the Apple clients](../clients/apple/README.md) and [voice deployment](../deploy/voice/README.md).
+Zoe-compatible `ronigooja/chatgpt-web-voice` fork is the selected gateway/account pool. The current baseline deliberately accepts client-direct media: the gateway handles authentication, account selection, and SDP signaling, while the native client owns the WebRTC media and DataChannel connection to the upstream service. Dependency pins and platform setup live with [the Apple clients](../clients/apple/README.md) and [voice deployment](../deploy/voice/README.md).
+
+This media topology is the root reason for the optional `AccountMedia` lease adapter. A gateway `DELETE` can remove its own session binding, but the gateway cannot use that request to prove that the client's PeerConnection or the upstream media connection has ended. Reusing the account therefore requires trusted account identity, generations, and termination evidence; adding fields alone does not create that evidence.
+
+There are two possible architectures, and this baseline selects the first:
+
+- **Client-direct media (selected for the current baseline).** Keep WebRTC between the native client and the upstream service. The gateway owns sticky account selection and session bookkeeping. Account-level reuse remains fail-closed when termination is uncertain, and Zoe's separate `AccountMedia` integration stays disabled.
+- **Gateway-terminated or relayed media (future option).** Make the gateway a WebRTC endpoint for the client and establish a second upstream WebRTC leg, with a media and DataChannel bridge between them. The gateway could then observe both legs and build stronger release evidence, but this requires a separate media-server project covering ICE, codecs, interruption, failure recovery, privacy, latency, and scale.
+
+The second architecture is not required for the current voice baseline. `ZOE_VOICE_ACCOUNT_MEDIA_ENABLED=true` is therefore not a supported deployment mode for this baseline; enabling it does not change the direct-media topology and may only fail closed when release evidence is unavailable. It can become supported only after a separate architecture decision and end-to-end gateway/client acceptance.
 
 Opening a microphone or upstream session requires explicit user action and granted platform permission. Stable turn IDs, revisions, and deduplication bind voice turns to durable commands. Partial captions and upstream spoken answers never authorize a business action. When a stable turn-completion signal is unavailable, explicit transcript confirmation is the fallback; it does not establish hands-free acceptance.
 

@@ -78,8 +78,12 @@ pool. The key is shown only once when created and must be stored in a
 root-readable secret file.
 
 The container listener is plain HTTP; expose it to Zoe only through an
-approved private HTTPS reverse proxy or equivalent trusted transport. The Zoe
-account-media feature remains disabled unless the deployed fork revision
-implements and has been tested for account lease identity and exact,
-idempotent termination evidence. Deployment alone does not prove voice calls
-or task dispatch work.
+approved private HTTPS reverse proxy or equivalent trusted transport. The
+current baseline accepts client-direct WebRTC media: this gateway proxies
+signaling and does not own the client's upstream media connection. That
+topology is why Zoe cannot infer account termination from session deletion.
+Keep the optional Zoe account-media feature disabled. Setting it to `true` does
+not create media termination evidence and is unsupported until a future
+gateway-terminated or relayed media design, with its own architecture review
+and end-to-end acceptance, is complete. Deployment alone does not prove voice
+calls or task dispatch work.

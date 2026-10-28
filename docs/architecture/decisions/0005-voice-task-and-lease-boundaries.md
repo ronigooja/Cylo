@@ -6,17 +6,19 @@ Status: accepted architecture baseline; implementation and acceptance status rem
 
 A real-time voice session can be interrupted, retransmitted, or moved to a different upstream account while accepted work continues. Upstream speech does not prove a business command was accepted or a task completed. An expired lease does not prove microphone, media, account, or runtime resources have terminated.
 
+The selected gateway handles account selection and SDP signaling, while the native client connects its WebRTC media and DataChannel directly to the upstream service. That client-direct topology is the root cause of the separate account-media lease contract: a gateway session deletion cannot prove that the client or upstream PeerConnection has ended. The contract protects account reuse; it does not make the gateway a media owner.
+
 ## Decision
 
-For real-time voice, use Zoe-compatible `ronigooja/chatgpt-web-voice` fork as the selected ChatGPT web gateway/account pool and native WebRTC media with platform audio/lifecycle adapters. Starting microphone capture or an upstream session requires explicit user action and granted platform permission. Retain no raw audio by default.
+For real-time voice, use Zoe-compatible `ronigooja/chatgpt-web-voice` fork as the selected ChatGPT web gateway/account pool and native WebRTC media with platform audio/lifecycle adapters. The current baseline accepts client-direct media and keeps Zoe account-media integration disabled. Starting microphone capture or an upstream session requires explicit user action and granted platform permission. Retain no raw audio by default.
 
 Bridge user turns through stable identity, revisions, and deduplication to the same durable authorized command path as typed input. Partial captions and upstream spoken output do not authorize work. If the gateway lacks a stable completion signal, require transcript confirmation as the fallback. Formal completion notices come only from the task ledger.
 
-Bind device, account, and media resources to holder/generation leases and termination evidence. A new account creates a new media session while keeping task associations. End the old client media session before account reuse. Quarantine uncertain sessions/accounts; expiry alone does not release them. Keep mute, stop playback, End voice, and Stop task distinct.
+Bind device, account, and media resources to holder/generation leases and termination evidence when account-level reuse is enabled. A new account creates a new media session while keeping task associations. End the old client media session before account reuse. Quarantine uncertain sessions/accounts; expiry alone does not release them. Keep mute, stop playback, End voice, and Stop task distinct.
 
 ## Consequences
 
-Task life survives voice loss and account changes without duplicate dispatch. Conversation may continue naturally during work. Safe account reuse depends on trusted account-scoped identity and termination evidence, which the selected gateway response has not established. The adapter remains fail-closed. Stable local fixtures do not establish real pool behavior, background/locked-device audio, interruptions, latency, or end-to-end voice acceptance. Cross-device continuation promises durable context, not live-audio migration.
+Task life survives voice loss and account changes without duplicate dispatch. Conversation may continue naturally during work. With client-direct media, safe account reuse depends on trusted account-scoped identity and termination evidence, which the selected gateway response has not established. The optional adapter remains disabled and fail-closed; `AccountMedia=true` is not a supported current deployment. A future gateway-terminated or relayed media architecture would require a separate decision and acceptance. Stable local fixtures do not establish real pool behavior, background/locked-device audio, interruptions, latency, or end-to-end voice acceptance. Cross-device continuation promises durable context, not live-audio migration.
 
 ## Sources
 
