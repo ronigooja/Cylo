@@ -31,6 +31,7 @@ services:
       ZOE_MEMORY_RUNNER_WORKSPACES: ${ZOE_MEMORY_RUNNER_WORKSPACES:-default}
       ZOE_MEMORY_RUNNER_SCOPES: memory:jobs:claim,memory:jobs:complete,memory:propose
       ZOE_VOICE_GATEWAY_URL: ${ZOE_VOICE_GATEWAY_URL:-}
+      ZOE_VOICE_ACCOUNT_MEDIA_ENABLED: ${ZOE_VOICE_ACCOUNT_MEDIA_ENABLED:-false}
       ZOE_SECRET_FILE_MAP: ZOE_RUNNER_TOKEN=/run/secrets/runner_token${ZOE_VOICE_SECRET_MAP:-}
     entrypoint: ["/usr/local/bin/zoe-secret-entrypoint"]
     command: ["/usr/local/bin/zoe-server"]
