@@ -183,6 +183,31 @@ func TestVoiceCreatePersistsOnlyAccountHashAndOpaqueLease(t *testing.T) {
 	}
 }
 
+func TestVoiceCreateAcceptsGatewayOpaqueLeaseWithoutAccountID(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"answer_sdp": "v=0\\r\\n", "voice_session_id": "gateway-session",
+			"account_lease_id": "opaque-lease", "account_lease_generation": 1,
+		})
+	}))
+	defer server.Close()
+	store, svc := newVoiceTestService(t, Config{GatewayURL: server.URL, GatewayAPIKey: "test-key", HTTPClient: server.Client()})
+	created, err := svc.create(context.Background(), contracts.Principal{WorkspaceID: "default", SubjectID: "user-1", DeviceID: "device-1"}, createRequest{RequestID: "request-opaque", OfferSDP: "v=0\\r\\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.AccountLeaseID != "opaque-lease" || created.AccountLeaseGeneration != 1 {
+		t.Fatalf("opaque lease identity was not accepted: %#v", created)
+	}
+	var accountHash []byte
+	if err := store.DB().QueryRow(`SELECT account_id_hash FROM voice_sessions WHERE id=?`, created.SessionID).Scan(&accountHash); err != nil {
+		t.Fatal(err)
+	}
+	if len(accountHash) != 0 {
+		t.Fatalf("account identity should remain hidden, got hash length %d", len(accountHash))
+	}
+}
+
 func TestSpaceDownstreamSDPDTOUsesObservedFieldNames(t *testing.T) {
 	body, err := json.Marshal(gatewaySessionRequest{OfferSDP: "v=0\r\n", Voice: "", VoiceMode: "", LanguageCode: ""})
 	if err != nil {

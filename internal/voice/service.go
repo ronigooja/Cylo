@@ -267,19 +267,26 @@ func (s *Service) create(ctx context.Context, p contracts.Principal, req createR
 		// the allocating lease; do not free a potentially live media resource.
 		return sessionResponse{}, apiError(http.StatusInternalServerError, "voice_outcome_unknown", "media was negotiated but its durable binding failed; lease remains isolated", nil)
 	}
-	leaseProvided := upstream.AccountLeaseID != "" || upstream.AccountLeaseGeneration != 0 || upstream.AccountID != ""
+	// The Space gateway intentionally keeps account_id server-side. Its
+	// downstream contract exposes only the opaque lease identity and
+	// generation, which are sufficient for an exact release request.
+	leaseProvided := upstream.AccountLeaseID != "" || upstream.AccountLeaseGeneration != 0
 	if leaseProvided {
-		if strings.TrimSpace(upstream.AccountLeaseID) == "" || len(upstream.AccountLeaseID) > 512 || strings.TrimSpace(upstream.AccountLeaseID) != upstream.AccountLeaseID || upstream.AccountLeaseGeneration < 1 || strings.TrimSpace(upstream.AccountID) == "" || len(upstream.AccountID) > 256 || strings.TrimSpace(upstream.AccountID) != upstream.AccountID {
+		if strings.TrimSpace(upstream.AccountLeaseID) == "" || len(upstream.AccountLeaseID) > 512 || strings.TrimSpace(upstream.AccountLeaseID) != upstream.AccountLeaseID || upstream.AccountLeaseGeneration < 1 {
 			_ = s.markSession(ctx, id, "quarantined", "gateway_account_lease_invalid", nil, "")
 			return sessionResponse{}, apiError(http.StatusBadGateway, "voice_outcome_unknown", "Space gateway returned an incomplete account lease identity; media lease quarantined", nil)
 		}
-		accountHash := sha256.Sum256([]byte(upstream.AccountID))
-		if _, err := s.db.ExecContext(ctx, `UPDATE voice_sessions SET account_lease_id=?,account_lease_generation=?,account_id_hash=? WHERE id=? AND state='active'`, upstream.AccountLeaseID, upstream.AccountLeaseGeneration, accountHash[:], id); err != nil {
+		accountHash := []byte{}
+		if strings.TrimSpace(upstream.AccountID) != "" && len(upstream.AccountID) <= 256 && strings.TrimSpace(upstream.AccountID) == upstream.AccountID {
+			hash := sha256.Sum256([]byte(upstream.AccountID))
+			accountHash = hash[:]
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE voice_sessions SET account_lease_id=?,account_lease_generation=?,account_id_hash=? WHERE id=? AND state='active'`, upstream.AccountLeaseID, upstream.AccountLeaseGeneration, accountHash, id); err != nil {
 			// The upstream media exists but its account lease identity is not durably bound.
 			// Keep the owner pool fenced; a future hangup cannot claim account-scoped release.
 			return sessionResponse{}, apiError(http.StatusInternalServerError, "voice_outcome_unknown", "media lease identity could not be durably bound; account pool remains isolated", nil)
 		}
-		accountLeaseID, accountLeaseGeneration, accountLeaseAccountHash = upstream.AccountLeaseID, upstream.AccountLeaseGeneration, accountHash[:]
+		accountLeaseID, accountLeaseGeneration, accountLeaseAccountHash = upstream.AccountLeaseID, upstream.AccountLeaseGeneration, accountHash
 	}
 	return sessionResponse{SessionID: id, Generation: 1, State: "active", AnswerSDP: upstream.AnswerSDP, AccountLeaseID: accountLeaseID, AccountLeaseGeneration: accountLeaseGeneration, AccountLeaseAccountHash: accountLeaseAccountHash}, nil
 }

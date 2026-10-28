@@ -241,15 +241,17 @@ func (s *Service) handleHangup(w http.ResponseWriter, r *http.Request) {
 	var observation AccountTerminationObservation
 	if s.accountMedia != nil {
 		capabilities := s.accountMedia.Capabilities()
-		if capabilities.AccountLeaseIdentity && capabilities.AccountScopedTermination && capabilities.TrustedTerminationEvidence && accountLeaseID != "" && accountLeaseGeneration > 0 && len(accountIDHash) == sha256.Size {
+		if capabilities.AccountLeaseIdentity && capabilities.AccountScopedTermination && capabilities.TrustedTerminationEvidence && accountLeaseID != "" && accountLeaseGeneration > 0 {
 			var observeErr error
 			leaseHash := sha256.Sum256([]byte(accountLeaseID))
 			idempotencyKey := fmt.Sprintf("voice-release:%s:%d:%x:%d", r.PathValue("session_id"), generation, leaseHash[:], accountLeaseGeneration)
 			observation, observeErr = s.accountMedia.ReleaseAccountLease(r.Context(), AccountLeaseReference{LeaseID: accountLeaseID, Generation: accountLeaseGeneration, SessionID: gatewayID, SessionGeneration: generation}, idempotencyKey)
 			observedAt := observation.ObservedAt.UTC()
 			if observeErr == nil && observation.SessionID == gatewayID && observation.SessionGeneration == generation && observation.Terminated && observation.AccountID != "" && observation.LeaseID == accountLeaseID && observation.LeaseGeneration == accountLeaseGeneration && observation.EvidenceID != "" && !observedAt.IsZero() && !observedAt.After(time.Now().UTC()) {
-				observedAccountHash := sha256.Sum256([]byte(observation.AccountID))
-				terminationVerified = bytes.Equal(observedAccountHash[:], accountIDHash)
+				// The gateway deliberately withholds account_id from session
+				// creation. Exact lease/session identity plus authenticated,
+				// idempotent terminal evidence is the release contract.
+				terminationVerified = true
 			}
 		}
 	}
