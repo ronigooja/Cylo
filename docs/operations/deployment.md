@@ -15,6 +15,12 @@ acceptance.
 - `/etc/zoe` contains deployment configuration and secret references.
 - `/var/lib/zoe` contains authority databases and persistent service data.
 
+The operator classifies a host with an absolute `ZOE_COMPOSE_FILE` (including
+the standard `zoe-compose.service` systemd wrapper) as a managed Compose
+deployment. Systemd supervises the Compose process; it does not select the
+AO systemd provider path. Keep `provider-deployment.json` consistent with
+this layout or let the operator rediscover the mode from `zoe-stack.env`.
+
 The external Docker network `zoe` is prepared by
 `deploy/linux/prepare-host-layout.sh`. The existing remote CLIProxyAPI
 deployment remains outside Zoe's lifecycle. Preserve the existing runner
