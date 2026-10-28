@@ -116,13 +116,14 @@ configuration changed. No build or test suite ran. An authenticated request thro
 Zoe's public voice endpoint, macOS retry, and real microphone/WebRTC acceptance
 remain unverified.
 
-The same investigation found that `/etc/zoe/secrets/instance-key` did not match
-the authority database's current key hash. It was replaced from the matching
-private deployment export, retaining the prior file as a mode-0400 backup. The
+During this investigation, the operator explicitly ran the CLI key-generation
+operation. The resulting private export became the authority database's current
+key; the deployment copy was then synchronized from that export and the previous
+copy was retained as a mode-0400 backup. Container recreation does not generate or
+rotate an instance key: only the explicit CLI `key init`/`key rotate` operations do
+so, and every client must reimport the resulting private export after rotation. The
 matching key authenticated a local `/v1/voice/config` request and returned the
-complete configuration. Existing macOS Keychain credentials may still need to be
-reimported from the current private installation export; the key value is not
-recorded here.
+complete configuration. The key value is not recorded here.
 
 ## Evidence boundaries
 
