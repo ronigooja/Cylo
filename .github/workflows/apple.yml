@@ -34,7 +34,7 @@ concurrency:
 
 jobs:
   tests:
-    if: github.event_name != 'workflow_dispatch' || inputs.tests
+    if: github.event_name == 'workflow_dispatch' || inputs.tests
     runs-on: macos-15
     timeout-minutes: 30
     steps:
@@ -73,7 +73,7 @@ jobs:
             }
 
       - name: Upload logs
-        if: always() && github.event_name != 'workflow_dispatch'
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: apple-tests-logs-${{ github.sha }}
@@ -148,7 +148,7 @@ jobs:
           compression-level: 0
 
       - name: Upload logs
-        if: always() && github.event_name != 'workflow_dispatch'
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: apple-macos-logs-${{ github.sha }}
@@ -232,14 +232,14 @@ jobs:
 
   apple-checks:
     name: Apple checks
-    if: always() && (github.event_name != 'workflow_dispatch' || inputs.tests || inputs.platform != 'macos')
+    if: always()
     needs: [tests, macos, ios]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Require every selected check to succeed
         env:
-          TESTS_SELECTED: ${{ github.event_name != 'workflow_dispatch' || inputs.tests }}
+          TESTS_SELECTED: ${{ github.event_name == 'workflow_dispatch' || inputs.tests }}
           MACOS_SELECTED: ${{ github.event_name != 'workflow_dispatch' || inputs.macos || inputs.platform == 'macos' || inputs.platform == 'all' }}
           IOS_SELECTED: ${{ github.event_name != 'workflow_dispatch' || inputs.ios || inputs.platform == 'ios' || inputs.platform == 'all' }}
           TESTS_RESULT: ${{ needs.tests.result }}
