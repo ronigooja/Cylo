@@ -48,19 +48,19 @@ jobs:
           echo "$status" > "$RUNNER_TEMP/zoe-release/logs/runner-build.exit"
           test "$status" -eq 0 || exit "$status"
           docker buildx build --load --platform linux/amd64 --cache-from "type=gha,scope=server-${GITHUB_REF_NAME}" --cache-to "type=gha,mode=max,scope=server-${GITHUB_REF_NAME}" -f deploy/linux/Dockerfile.server \
-            -t "zoe-server:${GITHUB_REF_NAME:-${image_tag}}" . \
+            -t "zoe-server:${image_tag}" . \
             2>&1 | tee "$RUNNER_TEMP/zoe-release/logs/image-build.log"
           status=$?
           echo "$status" > "$RUNNER_TEMP/zoe-release/logs/image-build.exit"
           test "$status" -eq 0 || exit "$status"
           docker buildx build --load --platform linux/amd64 --cache-from "type=gha,scope=memory-${GITHUB_REF_NAME}" --cache-to "type=gha,mode=max,scope=memory-${GITHUB_REF_NAME}" -f deploy/linux/Dockerfile.memory \
-            -t "zoe-memory-worker:${GITHUB_REF_NAME:-${image_tag}}" . \
+            -t "zoe-memory-worker:${image_tag}" . \
             2>&1 | tee "$RUNNER_TEMP/zoe-release/logs/memory-image-build.log"
           status=$?
           echo "$status" > "$RUNNER_TEMP/zoe-release/logs/memory-image-build.exit"
           test "$status" -eq 0 || exit "$status"
           docker buildx build --load --platform linux/amd64 --cache-from "type=gha,scope=runner-${GITHUB_REF_NAME}" --cache-to "type=gha,mode=max,scope=runner-${GITHUB_REF_NAME}" -f deploy/linux/Dockerfile.runner \
-            -t "zoe-runner:${GITHUB_REF_NAME:-${image_tag}}" . \
+            -t "zoe-runner:${image_tag}" . \
             2>&1 | tee "$RUNNER_TEMP/zoe-release/logs/runner-image-build.log"
           status=$?
           echo "$status" > "$RUNNER_TEMP/zoe-release/logs/runner-image-build.exit"
@@ -77,12 +77,12 @@ jobs:
           python3 - <<'PYJSON'
           import hashlib, json, os, pathlib, subprocess
           root = pathlib.Path(".")
-          files = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in root.iterdir() if p.is_file() and p.name != "release-manifest.json"}
+          files = [{"name": p.name, "path": p.name, "sha256": hashlib.sha256(p.read_bytes()).hexdigest()} for p in root.iterdir() if p.is_file() and p.name != "release-manifest.json"]
           images = {}
           for name in ("zoe-server", "zoe-memory-worker", "zoe-runner"):
               ref = f"{name}:{os.environ['image_tag']}"
               images[name] = subprocess.check_output(["docker", "image", "inspect", ref, "--format", "{{.Id}}"], text=True).strip()
-          (root / "release-manifest.json").write_text(json.dumps({"schema":1,"release":os.environ["image_tag"],"source_revision":os.environ["GITHUB_SHA"],"platform":"linux/amd64","sha256":files,"images":images}, indent=2)+"\n")
+          (root / "release-manifest.json").write_text(json.dumps({"schema":1,"release":os.environ["image_tag"],"source_revision":os.environ["GITHUB_SHA"],"architecture":"amd64","platform":"linux/amd64","artifacts":files,"images":images}, indent=2)+"\n")
           PYJSON
       - name: Upload release logs
         if: always()

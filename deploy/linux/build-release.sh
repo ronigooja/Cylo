@@ -75,19 +75,24 @@ source_revision="$(git rev-parse HEAD)"
 (
   cd "$release_stage"
   sha256sum bin/* > SHA256SUMS
-  cat > release-manifest.json <<EOF
-{
-  "schema": 1,
-  "release": "${tag}",
-  "source_revision": "${source_revision}",
-  "platform": "${build_platform}",
-  "images": {
-    "server": "$($docker_bin image inspect "zoe-server:$tag" --format '{{.Id}}')",
-    "memory_worker": "$($docker_bin image inspect "zoe-memory-worker:$tag" --format '{{.Id}}')",
-    "runner": "$($docker_bin image inspect "zoe-runner:$tag" --format '{{.Id}}')"
-  }
-}
-EOF
+  RELEASE_TAG="$tag" SOURCE_REVISION="$source_revision" BUILD_PLATFORM="$build_platform" DOCKER_BIN="$docker_bin" python3 - <<'PY'
+import hashlib, json, os, pathlib, subprocess
+root = pathlib.Path('.')
+artifacts = []
+for item in sorted(root.iterdir()):
+    if not item.is_file() or item.name == 'release-manifest.json':
+        continue
+    artifacts.append({'name': item.name, 'path': item.name, 'sha256': hashlib.sha256(item.read_bytes()).hexdigest()})
+images = {}
+for name in ('zoe-server', 'zoe-memory-worker', 'zoe-runner'):
+    ref = f'{name}:{os.environ["RELEASE_TAG"]}'
+    try:
+        images[name] = subprocess.check_output([os.environ['DOCKER_BIN'], 'image', 'inspect', ref, '--format', '{{.Id}}'], text=True).strip()
+    except (OSError, subprocess.CalledProcessError):
+        images[name] = ''
+manifest = {'schema': 1, 'release': os.environ['RELEASE_TAG'], 'source_revision': os.environ['SOURCE_REVISION'], 'architecture': os.environ['BUILD_PLATFORM'].split('/')[-1], 'platform': os.environ['BUILD_PLATFORM'], 'artifacts': artifacts, 'images': images}
+root.joinpath('release-manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+PY
 )
 
 # Linux GNU mv -Tn publishes the directory as one no-clobber rename. The image
