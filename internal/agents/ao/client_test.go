@@ -302,6 +302,39 @@ func TestGetConversationKeepsLimitInQuery(t *testing.T) {
 	}
 }
 
+func TestSessionReadsRejectUnrelatedIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name, body   string
+		conversation bool
+	}{
+		{name: "session-mismatch", body: `{"session":{"id":"other","status":"terminated"}}`},
+		{name: "conversation-mismatch", body: `{"sessionId":"other","turns":[{"id":"turn","state":"completed"}]}`, conversation: true},
+		{name: "conversation-missing", body: `{"turns":[]}`, conversation: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.WriteString(w, test.body)
+			}))
+			defer srv.Close()
+			client, err := New(Config{BaseURL: srv.URL, Token: "test-token"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.conversation {
+				conversation, err := client.GetConversation(context.Background(), "expected")
+				if err == nil || conversation.SessionID != "" || len(conversation.Turns) != 0 {
+					t.Fatalf("unrelated conversation returned: %+v, err=%v", conversation, err)
+				}
+			} else {
+				session, err := client.GetSession(context.Background(), "expected")
+				if err == nil || session.ID != "" {
+					t.Fatalf("unrelated session returned: %+v, err=%v", session, err)
+				}
+			}
+		})
+	}
+}
+
 func TestNewRejectsCredentialBearingBaseURL(t *testing.T) {
 	if _, err := New(Config{BaseURL: "https://user:pass@example.test", Token: "secret"}); err == nil {
 		t.Fatal("expected credential-bearing base URL rejection")

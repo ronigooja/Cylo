@@ -256,6 +256,9 @@ func (c *Client) GetSession(ctx context.Context, id string) (Session, error) {
 	if response.Session.ID == "" {
 		return Session{}, errors.New("AO session read returned no session id")
 	}
+	if response.Session.ID != id {
+		return Session{}, errors.New("AO session read returned a different session id")
+	}
 	return response.Session, nil
 }
 
@@ -267,6 +270,9 @@ func (c *Client) GetConversation(ctx context.Context, id string) (Conversation, 
 	_, err := c.do(ctx, http.MethodGet, "/api/v1/sessions/"+url.PathEscape(id)+"/conversation?limit=200", nil, &response)
 	if err != nil {
 		return Conversation{}, err
+	}
+	if response.SessionID != id {
+		return Conversation{}, errors.New("AO conversation read returned a different session id")
 	}
 	return response, nil
 }

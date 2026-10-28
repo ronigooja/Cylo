@@ -88,8 +88,8 @@ func exportTempRootPath(store *storage.Store) (string, error) {
 			_ = os.RemoveAll(path)
 			return "", err
 		}
-		actual, _ := inMemoryExportRoots.LoadOrStore(store, path)
-		if actual != nil {
+		actual, loaded := inMemoryExportRoots.LoadOrStore(store, path)
+		if loaded {
 			_ = os.RemoveAll(path)
 			path = actual.(string)
 		}

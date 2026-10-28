@@ -33,6 +33,37 @@ func exportTempTestStore(t *testing.T) *storage.Store {
 	return store
 }
 
+func TestInMemoryExportTempRootExistsAndIsReused(t *testing.T) {
+	store, err := storage.Open(context.Background(), storage.Config{Path: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	path, err := exportTempRootPath(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		inMemoryExportRoots.Delete(store)
+		_ = os.RemoveAll(path)
+	})
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 {
+		t.Fatalf("expected existing private export directory, info=%v err=%v", info, err)
+	}
+	marker := filepath.Join(path, "marker")
+	if err := os.WriteFile(marker, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	again, err := exportTempRootPath(store)
+	if err != nil || again != path {
+		t.Fatalf("root changed: got %q, want %q, err=%v", again, path, err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("reused export root lost its contents: %v", err)
+	}
+}
+
 func addExportTempFixture(t *testing.T, store *storage.Store, id, workspace string, sequence int64) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
