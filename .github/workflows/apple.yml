@@ -34,7 +34,7 @@ concurrency:
 
 jobs:
   tests:
-    if: github.event_name == 'workflow_dispatch' || inputs.tests
+    if: github.event_name != 'workflow_dispatch' || inputs.tests
     runs-on: macos-15
     timeout-minutes: 30
     steps:
@@ -73,7 +73,7 @@ jobs:
             }
 
       - name: Upload logs
-        if: always()
+        if: always() && github.event_name != 'workflow_dispatch'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: apple-tests-logs-${{ github.sha }}
@@ -136,20 +136,19 @@ jobs:
             "$CI_OUTPUT/dmg-root" \
             -ov -format UDRO "$CI_OUTPUT/artifacts/ZoeMac-unsigned.dmg"
           cd "$CI_OUTPUT/artifacts"
-          shasum -a 256 *.dmg > SHA256SUMS
 
       - name: Upload unsigned macOS app
         if: github.event_name == 'workflow_dispatch' && inputs.release
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: apple-macos-build-${{ github.sha }}
-          path: ${{ env.CI_OUTPUT }}/artifacts
+          path: ${{ env.CI_OUTPUT }}/artifacts/ZoeMac-unsigned.dmg
           retention-days: 3
           if-no-files-found: error
           compression-level: 0
 
       - name: Upload logs
-        if: always()
+        if: always() && github.event_name != 'workflow_dispatch'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: apple-macos-logs-${{ github.sha }}
@@ -233,14 +232,14 @@ jobs:
 
   apple-checks:
     name: Apple checks
-    if: always()
+    if: always() && (github.event_name != 'workflow_dispatch' || inputs.tests || inputs.platform != 'macos')
     needs: [tests, macos, ios]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Require every selected check to succeed
         env:
-          TESTS_SELECTED: ${{ github.event_name == 'workflow_dispatch' || inputs.tests }}
+          TESTS_SELECTED: ${{ github.event_name != 'workflow_dispatch' || inputs.tests }}
           MACOS_SELECTED: ${{ github.event_name != 'workflow_dispatch' || inputs.macos || inputs.platform == 'macos' || inputs.platform == 'all' }}
           IOS_SELECTED: ${{ github.event_name != 'workflow_dispatch' || inputs.ios || inputs.platform == 'ios' || inputs.platform == 'all' }}
           TESTS_RESULT: ${{ needs.tests.result }}
@@ -261,7 +260,7 @@ jobs:
           done
 
   release:
-    if: github.event_name == 'workflow_dispatch' && inputs.release && (inputs.platform == 'macos' || inputs.platform == 'all')
+    if: github.event_name == 'workflow_dispatch' && inputs.release && inputs.platform == 'all'
     needs: [apple-checks]
     runs-on: macos-15
     timeout-minutes: 30
