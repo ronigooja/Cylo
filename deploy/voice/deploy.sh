@@ -74,12 +74,12 @@ if ! docker network inspect zoe >/dev/null 2>&1; then
 fi
 
 lan_bind=""
-if [[ -v VOICE_LAN_BIND ]]; then
+if [[ "${VOICE_LAN_BIND+x}" == x ]]; then
   lan_bind="$VOICE_LAN_BIND"
 elif [[ -e "$lan_env_file" ]]; then
   lan_bind="$(sed -n 's/^VOICE_LAN_BIND=//p' "$lan_env_file")"
 fi
-if [[ -v VOICE_LAN_BIND && -z "$lan_bind" ]]; then
+if [[ "${VOICE_LAN_BIND+x}" == x && -z "$lan_bind" ]]; then
   : >"$lan_env_file"
   chmod 0600 "$lan_env_file"
 fi
