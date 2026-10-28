@@ -82,19 +82,24 @@ func TestProviderConfigureTestStatusUsePersistedDeployment(t *testing.T) {
 
 func TestVoiceConfigureAndStatus(t *testing.T) {
 	root := t.TempDir()
+	_ = os.WriteFile(filepath.Join(root, "zoe-stack.env"), []byte("ZOE_COMPOSE_FILE=/tmp/zoe-compose.yaml\nCOMPOSE_PROJECT_NAME=zoe\n"), 0600)
+	oldMode := os.Getenv("ZOE_DEPLOYMENT_MODE")
+	_ = os.Setenv("ZOE_DEPLOYMENT_MODE", "compose")
+	t.Cleanup(func() { _ = os.Setenv("ZOE_DEPLOYMENT_MODE", oldMode) })
+	fakeServices(t, false)
 	var out bytes.Buffer
-	if err := voiceConfigureOperation([]string{"--root", root, "--revision", "600c0fb", "--lan-bind", "192.168.1.4"}, strings.NewReader(""), &out, &out); err != nil {
+	if err := voiceConfigureOperation([]string{"--root", root, "--url", "https://voice.example.test", "--token", "voice-secret", "--non-interactive"}, strings.NewReader(""), &out, &out); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(root, "voice-deploy.env"))
-	if err != nil || !strings.Contains(string(data), "VOICE_GATEWAY_REVISION=600c0fb") || !strings.Contains(string(data), "VOICE_LAN_BIND=192.168.1.4") {
+	data, err := os.ReadFile(filepath.Join(root, "zoe-stack.env"))
+	if err != nil || !strings.Contains(string(data), "ZOE_VOICE_GATEWAY_URL=\"https://voice.example.test\"") {
 		t.Fatalf("unexpected voice config: %s (%v)", data, err)
 	}
 	out.Reset()
 	if err := voiceStatusOperation([]string{"--root", root}, nil, &out, &out); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "Revision: 600c0fb") || !strings.Contains(out.String(), "192.168.1.4") {
+	if !strings.Contains(out.String(), "Voice gateway URL: https://voice.example.test") || strings.Contains(out.String(), "voice-secret") {
 		t.Fatalf("status omitted voice settings: %s", out.String())
 	}
 }

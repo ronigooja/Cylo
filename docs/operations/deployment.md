@@ -50,7 +50,7 @@ execution, memory processing, or task completion.
 
 Use the [Linux deployment templates](../../deploy/linux/) and [release workflow](../../.github/workflows/server-release.yml) for the server/runner release. Prepare the host layout with [prepare-host-layout.sh](../../deploy/linux/prepare-host-layout.sh) before selecting a reviewed immutable release. Use GitHub-hosted runners for builds and prepare build tools under `$HOME/environment`; do not compile on the control host.
 
-The operator release installation procedure below installs only the maintenance CLI. It does not install server images or configure a complete deployment. Run `zoe status` before `zoe setup`, `zoe provider configure`, or `zoe provider test`; these operations are also available from the interactive menu. Follow [the CLI implementation](../../cmd/zoe/) for current flags and [deployment configuration](../../internal/ops/deployment_config.go) for detection and rollback behavior.
+The operator release installation procedure below installs only the maintenance CLI. It does not install server images or configure a complete deployment. Run `zoe status` before `zoe setup`, `zoe provider configure`, or `zoe provider test`; these operations are also available from the interactive menu. For an already deployed external voice gateway, use `zoe voice configure --url HTTPS_URL --token-file PRIVATE_KEY_FILE`, then `zoe voice test` and `zoe voice status`. This writes only the Zoe-side endpoint and secret reference; it does not deploy or modify the gateway. Follow [the CLI implementation](../../cmd/zoe/) for current flags and [deployment configuration](../../internal/ops/deployment_config.go) for detection and rollback behavior.
 
 ### Complete Linux deployment order
 

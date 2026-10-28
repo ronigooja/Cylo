@@ -1,91 +1,149 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/ronigooja/Zoe/internal/ops"
 )
 
 func init() {
 	_ = RegisterOperation("voice configure", voiceConfigureOperation)
+	_ = RegisterOperation("voice test", voiceTestOperation)
 	_ = RegisterOperation("voice status", voiceStatusOperation)
 }
 
-// voiceDeploymentConfig is deliberately limited to non-secret deployment
-// inputs. Account cookies, management passwords and downstream API keys stay
-// in the gateway's own private files and are never handled by this CLI.
-type voiceDeploymentConfig struct {
-	Repository string
-	Revision   string
-	LANBind    string
-}
-
-func voiceConfigPath(root string) string { return filepath.Join(root, "voice-deploy.env") }
-
-func voiceConfigureOperation(args []string, _ io.Reader, out, errOut io.Writer) error {
+func voiceConfigureOperation(args []string, in io.Reader, out, errOut io.Writer) error {
 	fs := flag.NewFlagSet("voice configure", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	root := fs.String("root", "/etc/zoe", "deployment configuration root")
-	repository := fs.String("repository", "", "chatgpt-web-voice fork URL")
-	revision := fs.String("revision", "", "immutable chatgpt-web-voice commit or tag")
-	lanBind := fs.String("lan-bind", "", "private IPv4 address for the optional management LAN bind")
+	base := fs.String("url", "", "remote chatgpt-web-voice downstream HTTPS URL")
+	token := fs.String("token", "", "compatibility API key (prefer --token-file or prompt)")
+	tokenFile := fs.String("token-file", "", "read compatibility API key from a private file")
+	secretFile := fs.String("secret-file", "", "private destination for the API key")
+	nonInteractive := fs.Bool("non-interactive", false, "require URL and token without prompting")
+	enableMedia := fs.Bool("enable-account-media", false, "enable experimental account lease integration")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
 		return errors.New("unexpected arguments")
 	}
-	if !filepath.IsAbs(*root) {
-		return errors.New("deployment root must be absolute")
-	}
-	if *repository == "" {
-		*repository = "https://github.com/ronigooja/chatgpt-web-voice.git"
-	}
-	if err := validateVoiceRepository(*repository); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	d, err := ops.DiscoverDeployment(ctx, opsManager(), *root)
+	if err != nil {
 		return err
 	}
-	if *revision == "" {
-		*revision = "main"
-	}
-	if !validVoiceRevision(*revision) {
-		return errors.New("revision must contain only letters, digits, '.', '/', '_' or '-'")
-	}
-	if *lanBind != "" {
-		ip := net.ParseIP(*lanBind)
-		if ip == nil || ip.To4() == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || !ip.IsPrivate() {
-			return errors.New("lan-bind must be a private IPv4 address")
+	in = sharedInput(in)
+	if strings.TrimSpace(*base) == "" {
+		if *nonInteractive {
+			return errors.New("--url is required")
+		}
+		fmt.Fprint(out, "Voice gateway HTTPS URL: ")
+		*base, err = inputLine(in)
+		if err != nil {
+			return err
 		}
 	}
-	if err := os.MkdirAll(*root, 0750); err != nil {
+	if err = validateVoiceURL(*base); err != nil {
 		return err
 	}
-	data := fmt.Sprintf("# Managed by zoe voice configure\nVOICE_GATEWAY_REPOSITORY=%s\nVOICE_GATEWAY_REVISION=%s\nVOICE_LAN_BIND=%s\n", *repository, *revision, *lanBind)
-	path := voiceConfigPath(*root)
-	tmp, err := os.CreateTemp(*root, ".voice-deploy.env.*")
+	if *token != "" && *tokenFile != "" {
+		return errors.New("use only one of --token and --token-file")
+	}
+	secret := []byte(*token)
+	if *tokenFile != "" {
+		secret, err = os.ReadFile(*tokenFile)
+		if err != nil {
+			return errors.New("cannot read voice API key file")
+		}
+	}
+	if len(secret) == 0 {
+		if *nonInteractive {
+			return errors.New("--token-file or --token is required")
+		}
+		secret, err = readToken(in, out)
+		if err != nil {
+			return err
+		}
+	}
+	value := strings.TrimSpace(string(secret))
+	for i := range secret {
+		secret[i] = 0
+	}
+	if value == "" || strings.ContainsAny(value, "\r\n") {
+		return errors.New("voice API key is empty or invalid")
+	}
+	if *secretFile == "" {
+		*secretFile = filepath.Join(*root, "secrets", "voice-gateway-api-key")
+	}
+	if !filepath.IsAbs(*secretFile) {
+		return errors.New("--secret-file must be absolute")
+	}
+	if err = ops.WritePrivateFile(*secretFile, []byte(value+"\n")); err != nil {
+		return err
+	}
+	if err = ops.WriteVoiceEnvAtomic(d.StackEnv, *base, *secretFile, *enableMedia); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Voice gateway configuration saved. URL: %s\nAPI key file: %s\nAccount media: %t\n", *base, *secretFile, *enableMedia)
+	if d.Mode == ops.ModeCompose {
+		if err = opsManager().Reload(ctx, d.Mode, nil, d.ComposeProject, d.ComposeFile); err != nil {
+			return fmt.Errorf("voice configuration saved but service reload failed: %w", err)
+		}
+		fmt.Fprintln(out, "Zoe services reloaded.")
+	}
+	return nil
+}
+
+func voiceTestOperation(args []string, _ io.Reader, out, errOut io.Writer) error {
+	fs := flag.NewFlagSet("voice test", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	root := fs.String("root", "/etc/zoe", "deployment configuration root")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("unexpected arguments")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	d, err := ops.DiscoverDeployment(ctx, opsManager(), *root)
 	if err != nil {
 		return err
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if err = tmp.Chmod(0600); err == nil {
-		_, err = tmp.WriteString(data)
-	}
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
+	v, err := ops.ReadEnvForVoice(d.StackEnv)
 	if err != nil {
 		return err
 	}
-	if err = os.Rename(tmpName, path); err != nil {
+	key, err := os.ReadFile(v["ZOE_VOICE_GATEWAY_API_KEY_FILE"])
+	if err != nil {
+		return errors.New("cannot read configured voice API key")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(v["ZOE_VOICE_GATEWAY_URL"], "/")+"/v1/health", nil)
+	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Voice deployment configuration saved: %s\nRepository: %s\nRevision: %s\nLAN bind: %s\nRun deploy/voice/deploy.sh to apply it.\n", path, *repository, *revision, displayUnset(*lanBind))
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(key)))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("voice gateway health returned HTTP %d", resp.StatusCode)
+	}
+	fmt.Fprintf(out, "Voice gateway: healthy (%s)\n", v["ZOE_VOICE_GATEWAY_URL"])
 	return nil
 }
 
@@ -99,48 +157,26 @@ func voiceStatusOperation(args []string, _ io.Reader, out, errOut io.Writer) err
 	if fs.NArg() != 0 {
 		return errors.New("unexpected arguments")
 	}
-	b, err := os.ReadFile(voiceConfigPath(*root))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	d, err := ops.DiscoverDeployment(ctx, opsManager(), *root)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return errors.New("voice gateway is not configured; run: zoe voice configure")
-		}
 		return err
 	}
-	values := map[string]string{}
-	for _, line := range strings.Split(string(b), "\n") {
-		if strings.HasPrefix(line, "VOICE_") {
-			k, v, ok := strings.Cut(line, "=")
-			if ok {
-				values[k] = v
-			}
-		}
+	v, err := ops.ReadEnvForVoice(d.StackEnv)
+	if err != nil {
+		return err
 	}
-	fmt.Fprintf(out, "Voice config: %s\nRepository: %s\nRevision: %s\nLAN bind: %s\n", voiceConfigPath(*root), values["VOICE_GATEWAY_REPOSITORY"], values["VOICE_GATEWAY_REVISION"], displayUnset(values["VOICE_LAN_BIND"]))
+	path := v["ZOE_VOICE_GATEWAY_API_KEY_FILE"]
+	info, statErr := os.Stat(path)
+	fmt.Fprintf(out, "Voice gateway URL: %s\nAPI key configured: %t\nAPI key file: %s\nAccount media: %s\n", v["ZOE_VOICE_GATEWAY_URL"], statErr == nil && info.Mode().Perm()&0077 == 0, path, v["ZOE_VOICE_ACCOUNT_MEDIA_ENABLED"])
 	return nil
 }
 
-func validateVoiceRepository(value string) error {
-	u, err := url.Parse(value)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || strings.ContainsAny(value, "\r\n") {
-		return errors.New("repository must be an HTTPS URL")
+func validateVoiceURL(value string) error {
+	u, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("voice gateway URL must be an HTTPS URL without query or credentials")
 	}
 	return nil
-}
-func validVoiceRevision(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, r := range value {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || strings.ContainsRune("._/-", r) {
-			continue
-		}
-		return false
-	}
-	return true
-}
-func displayUnset(value string) string {
-	if value == "" {
-		return "(none)"
-	}
-	return value
 }
