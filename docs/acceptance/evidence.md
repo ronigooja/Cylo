@@ -37,7 +37,7 @@ Artifact SHA-256 checks passed before deployment. At this recorded checkpoint, t
 `944a9ac813f482880d503c93c3bd64e3e24375431b649362c3bd8814b531158a`)
 and AO `/opt/zoe/ao/bin/ao-reconciliation-5f99878` (SHA-256
 `127255213b445b2f1ac832d338f59e0bcecaa2fe05ce5582b29afc6f3fcc5bd6`).
-The loopback and `debian.local` control health endpoints returned `ok`; AO was
+The recorded control health endpoints returned `ok`; AO was
 ready and its inventory reported complete empty sessions with a fresh process
 start time. All three services were active, and the runner had zero restarts
 at the final service check. Existing external CLIProxyAPI configuration was not

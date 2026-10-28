@@ -43,13 +43,10 @@ curl --fail http://127.0.0.1:18001/readyz
 ```
 
 The previously recorded installation binds port 8787 on both host loopback and the authorized
-LAN interface. The LAN endpoint is `http://debian.local:8787`.
-The deployment now resolves `debian.local` at each `zoe-compose` systemd start using
-`/etc/zoe/resolve-server-address.py` (source: `deploy/linux/resolve-server-address.py`).
-The resolver requires one local IPv4 match and updates `ZOE_SERVER_LAN_ADDRESS`
-before Compose reads the environment. Docker receives the resolved numeric IP.
-An address change while the service is already running requires restarting the
-Zoe service to resolve and republish it.
+LAN interface. For deployments exposing the LAN interface, the address is deployment-specific
+and must be supplied as the numeric `ZOE_SERVER_LAN_ADDRESS` value in the host environment.
+An address change while the service is already running requires restarting the Zoe service to
+republish it.
 The deployment override `/etc/zoe/control.lan.compose.yaml` adds this binding;
 `/etc/systemd/system/zoe-compose.service.d/lan.conf` includes the override in
 the service's Compose commands. The source template is
