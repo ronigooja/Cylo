@@ -156,3 +156,14 @@ valid candidate and tampered-artifact rejection. The check emits installation an
 rollback targets without connecting to or modifying a host. No release transfer,
 service startup, health endpoint, external AO/model task, or end-to-end product
 acceptance is claimed by this source-level validation.
+
+## GHCR deployment image publication — 2026-10-29
+
+On source revision `d0f806b`, source review changed the server and AO release
+workflows to push Linux images directly to GHCR and retain only image references
+and immutable digests beside the transferred daemon artifacts. The deployment
+examples and candidate validator now accept GHCR references and validate their
+`sha256` digests; the candidate regression passed, shell syntax passed, and both
+changed workflow files parsed with the local Ruby YAML parser. No hosted workflow
+run, GHCR push/pull, host installation, service startup, or deployment rollback
+was performed by this source-level check.
