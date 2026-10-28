@@ -71,11 +71,18 @@ the host being deployed; the build steps apply to GitHub-hosted Linux runners.
    but the AO systemd unit remains deployment-owned.
 4. Install the immutable server/runner release under
    `/opt/zoe/releases/<revision>` and update the `current` selector. Create
-   the server, runner, and memory-worker secret files with the documented owner
-   and mode before starting Compose.
-5. Configure and start `zoe-compose.service`, then start `zoe-runner.service`.
+   the runner and memory-worker secret files with the documented owner and
+   mode. Do not generate or inject an instance key during installation.
+5. With the server stopped and no startup instance-key source configured, the
+   operator runs `zoe key init --database PATH --server HTTPS_URL
+   --output PRIVATE_JSON` (or `zoe key rotate` for an existing instance).
+   The operator keeps the private JSON output and places its `key` value in the
+   deployment-managed instance-key secret file. Configure
+   `ZOE_INSTANCE_KEY_FILE` to reference that file only after this operator
+   step; the installer must not create or populate it.
+6. Configure and start `zoe-compose.service`, then start `zoe-runner.service`.
    Start AO first so runner readiness can reach `ZOE_AO_URL`.
-6. Verify service state and health/readiness endpoints. These checks establish
+7. Verify service state and health/readiness endpoints. These checks establish
    installation and process readiness; model execution, memory processing, and
    end-to-end task completion require a separate acceptance run.
 
@@ -108,7 +115,7 @@ setting belongs to both deployments, not the Zoe server.
 Required settings:
 
 - `ZOE_DATABASE_PATH`: path to the SQLite database. The server acquires a single-writer process lock before opening it.
-- Initialize the database with `zoe key init --database PATH --server https://... [--output PRIVATE_JSON]`. The command displays the key and installation link once (and renders a terminal QR using its built-in encoder). `ZOE_BOOTSTRAP_CODE` is removed; use a fresh database for this deployment.
+- The operator initializes or rotates the instance credential with `zoe key init --database PATH --server https://... [--output PRIVATE_JSON]` or `zoe key rotate ...`. The command displays the key and installation link once (and renders a terminal QR using its built-in encoder). The deployment must not generate or inject this credential. After the operator saves the key in the deployment-managed secret file, `ZOE_INSTANCE_KEY_FILE` may reference that file for service startup. `ZOE_BOOTSTRAP_CODE` is removed; use a fresh database for a new deployment.
 
 Optional settings:
 
