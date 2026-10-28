@@ -344,6 +344,32 @@ ALTER TABLE runs ADD COLUMN harness TEXT NOT NULL DEFAULT 'codex';
 	}}); err != nil {
 		return err
 	}
+	if err := s.RegisterMigration(Migration{Namespace: "core", Version: 8, Name: "client_diagnostic_events", Up: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+CREATE TABLE client_diagnostic_events (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+  subject_id TEXT NOT NULL,
+  device_hash TEXT NOT NULL,
+  client_request_id TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  app_version TEXT NOT NULL,
+  os_version TEXT NOT NULL,
+  phase TEXT NOT NULL,
+  request_path TEXT NOT NULL,
+  http_status INTEGER NOT NULL DEFAULT 0,
+  response_bytes INTEGER NOT NULL DEFAULT 0,
+  error_type TEXT NOT NULL DEFAULT '',
+  error_summary TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX client_diagnostic_events_device_time ON client_diagnostic_events(device_hash,received_at);
+CREATE INDEX client_diagnostic_events_request ON client_diagnostic_events(client_request_id);
+`)
+		return err
+	}}); err != nil {
+		return err
+	}
 	if err := RegisterInstanceAuthMigration(s); err != nil {
 		return err
 	}

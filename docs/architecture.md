@@ -57,6 +57,8 @@ Apple clients ask for server URL and key, allow external installation links to p
 
 A stable random installation UUID identifies a push registration independently of the shared owner key. One installation cannot overwrite or revoke another installation's token. APNs is only a wake-up hint to reload durable inbox state. Payloads contain no task content or notice body. Delivery retry and invalid-token handling remain server responsibilities; real APNs delivery requires separate acceptance evidence.
 
+Authenticated Apple clients may submit a bounded, encrypted local queue of redacted runtime diagnostics to `POST /v1/diagnostics/client`. This applies only after the client has authenticated the Zoe connection. Events identify a voice stage, request path, status, response size, client request ID, app/OS versions, and a hash of the installation ID; they exclude credentials, headers, response bodies, SDP/ICE, audio, and transcripts. The server stores these events in an independent short-retention table with batch, event-size, and per-device rate limits. Instance restarts and container rebuilds do not create or rotate the instance key; only the explicit CLI `key init` and `key rotate` operations change that authority, and diagnostic records never contain key material.
+
 The interface follows [product chapter 3](product.md#3-client-requirements). Infrastructure capacity, AO faults, runtime IDs, and reconciliation procedures belong in operator diagnostics/audit, not conversation/task surfaces. Actual task state, actionable submission failure, and pending confirmation remain visible. Runtime diagnostics do not change receipt or retry semantics.
 
 ## Voice and business work

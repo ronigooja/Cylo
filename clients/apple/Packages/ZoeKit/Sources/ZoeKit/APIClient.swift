@@ -46,6 +46,8 @@ public final class APIClient: @unchecked Sendable {
     private let installationID: String?
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    private let diagnosticQueue: EncryptedDiagnosticQueue?
+    private let diagnosticsEnabled: Bool
 
     public static func cleanupAbandonedExportDownloads() {
         BoundedDownloadDelegate.cleanupAbandonedFiles()
@@ -59,6 +61,8 @@ public final class APIClient: @unchecked Sendable {
         self.installationID = installationID
         self.credentials = credentials
         self.session = session
+        self.diagnosticQueue = EncryptedDiagnosticQueue(serverURL: self.serverURL, installationID: installationID)
+        self.diagnosticsEnabled = installationID != nil
         encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         decoder = JSONDecoder()
@@ -188,6 +192,33 @@ public final class APIClient: @unchecked Sendable {
         try await request(path: ["v1", "voice", "config"], method: "GET", authenticated: true)
     }
 
+    public func recordDiagnostic(phase: String, requestPath: String, clientRequestID: String = UUID().uuidString.lowercased(), httpStatus: Int = 0, responseBytes: Int64 = 0, errorType: String = "", errorSummary: String = "") {
+        guard diagnosticsEnabled, let queue = diagnosticQueue else { return }
+        let event = DiagnosticEvent(clientRequestID: clientRequestID, phase: phase, requestPath: requestPath, httpStatus: httpStatus, responseBytes: responseBytes, errorType: errorType, errorSummary: errorSummary, installationID: installationID)
+        Task { await queue.append(event); await uploadDiagnosticsIfPossible() }
+    }
+
+    private func uploadDiagnosticsIfPossible() async {
+        guard let credentials, let queue = diagnosticQueue, let token = try? credentials.bearerToken() else { return }
+        guard await queue.canAttempt() else { return }
+        guard await queue.beginUpload() else { return }
+        defer { Task { await queue.endUpload() } }
+        let events = await queue.take(limit: 50)
+        guard !events.isEmpty, let url = try? makeURL(path: ["v1", "diagnostics", "client"]), let body = try? encoder.encode(["events": events]) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = body
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let installationID { request.setValue(installationID, forHTTPHeaderField: "X-Zoe-Installation-ID") }
+        do {
+            let (_, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { await queue.markFailure(); return }
+            await queue.removeFirst(events.count)
+            await queue.markSuccess()
+        } catch { await queue.markFailure() }
+    }
+
     public func voicePoolStatus() async throws -> VoicePoolStatus {
         try await request(path: ["v1", "voice", "pool", "status"], method: "GET", authenticated: true)
     }
@@ -304,19 +335,59 @@ public final class APIClient: @unchecked Sendable {
             request.httpBody = try encoder.encode(body)
         }
         if authenticated { try authorize(&request) }
-        return try await perform(request)
+        let clientRequestID = UUID().uuidString.lowercased()
+        request.setValue(clientRequestID, forHTTPHeaderField: "X-Zoe-Client-Request-ID")
+        return try await perform(request, clientRequestID: clientRequestID)
     }
 
     private func request<Response: Decodable>(path: [String], method: String, authenticated: Bool) async throws -> Response {
         try await request(path: path, method: method, body: Optional<NoBody>.none, authenticated: authenticated)
     }
 
-    private func perform<Response: Decodable>(_ request: URLRequest) async throws -> Response {
-        let (data, response) = try await session.data(for: request)
-        guard let response = response as? HTTPURLResponse else { throw ZoeError.invalidResponse }
-        guard (200..<300).contains(response.statusCode) else { throw decodeFailure(status: response.statusCode, data: data) }
-        do { return try decoder.decode(Response.self, from: data) }
-        catch { throw ZoeError.invalidResponse }
+    private func perform<Response: Decodable>(_ request: URLRequest, clientRequestID: String? = nil) async throws -> Response {
+        let path = request.url?.path ?? ""
+        let requestID = clientRequestID ?? request.value(forHTTPHeaderField: "X-Zoe-Client-Request-ID") ?? UUID().uuidString.lowercased()
+        let phase = diagnosticPhase(path)
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let response = response as? HTTPURLResponse else {
+                recordDiagnostic(phase: phase, requestPath: path, clientRequestID: requestID, errorType: "invalid_response", errorSummary: "non_http_response")
+                throw ZoeError.invalidResponse
+            }
+            guard (200..<300).contains(response.statusCode) else {
+                let failure = decodeFailure(status: response.statusCode, data: data)
+                recordDiagnostic(phase: phase, requestPath: path, clientRequestID: requestID, httpStatus: response.statusCode, responseBytes: Int64(data.count), errorType: "http_error", errorSummary: diagnosticSummary(failure))
+                throw failure
+            }
+            do {
+                let decoded = try decoder.decode(Response.self, from: data)
+                if phase != "request" {
+                    recordDiagnostic(phase: phase, requestPath: path, clientRequestID: requestID, httpStatus: response.statusCode, responseBytes: Int64(data.count))
+                }
+                return decoded
+            }
+            catch {
+                recordDiagnostic(phase: phase == "config_request" ? "config_decode" : phase, requestPath: path, clientRequestID: requestID, httpStatus: response.statusCode, responseBytes: Int64(data.count), errorType: "decoding_error", errorSummary: String(describing: error))
+                throw ZoeError.invalidResponse
+            }
+        } catch let error as ZoeError { throw error }
+        catch {
+            recordDiagnostic(phase: phase, requestPath: path, clientRequestID: requestID, errorType: "transport_error", errorSummary: String(describing: error))
+            throw error
+        }
+    }
+
+    private func diagnosticPhase(_ path: String) -> String {
+        if path.hasSuffix("/voice/config") { return "config_request" }
+        if path.hasSuffix("/voice/pool/status") { return "pool_status" }
+        if path.hasSuffix("/voice/sessions") { return "session_create" }
+        if path.contains("/connected") { return "connected" }
+        return "request"
+    }
+
+    private func diagnosticSummary(_ error: ZoeError) -> String {
+        if case let .http(_, code, _, _) = error { return String(code.prefix(128)) }
+        return "http_error"
     }
 
     private func authorize(_ request: inout URLRequest) throws {

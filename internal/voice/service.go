@@ -37,6 +37,16 @@ type Service struct {
 	accountMedia AccountMediaLifecycle
 }
 
+type gatewayRequestIDContextKey struct{}
+
+func withGatewayRequestID(ctx context.Context, requestID string) context.Context {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, gatewayRequestIDContextKey{}, requestID)
+}
+
 type createRequest struct {
 	RequestID    string `json:"request_id"`
 	OfferSDP     string `json:"offer_sdp"`
@@ -123,9 +133,9 @@ func (s *Service) gatewayReady() bool {
 	return s.base != nil && s.base.Host != "" && s.base.User == nil && s.base.RawQuery == "" && s.base.Fragment == "" && s.base.Scheme == "https" && strings.TrimSpace(s.key) != ""
 }
 
-func (s *Service) callGateway(ctx context.Context, method, endpoint string, body []byte) (*http.Response, error) {
+func (s *Service) callGateway(ctx context.Context, method, endpoint string, body []byte) (*http.Response, string, error) {
 	if !s.gatewayReady() {
-		return nil, errors.New("Space voice gateway is not configured")
+		return nil, "", errors.New("Space voice gateway is not configured")
 	}
 	u := *s.base
 	u.Path = strings.TrimRight(s.base.Path, "/") + endpoint
@@ -135,13 +145,19 @@ func (s *Service) callGateway(ctx context.Context, method, endpoint string, body
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), reader)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
+	requestID, _ := ctx.Value(gatewayRequestIDContextKey{}).(string)
+	if strings.TrimSpace(requestID) == "" {
+		requestID = uuid.NewString()
+	}
+	req.Header.Set("X-Request-ID", requestID)
 	req.Header.Set("Authorization", "Bearer "+s.key)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	return s.client.Do(req)
+	response, err := s.client.Do(req)
+	return response, requestID, err
 }
 
 func (s *Service) create(ctx context.Context, p contracts.Principal, req createRequest) (sessionResponse, error) {
@@ -218,10 +234,10 @@ func (s *Service) create(ctx context.Context, p contracts.Principal, req createR
 	// The gateway owns account selection and returns only its opaque sticky
 	// session handle. Zoe never receives or records an account credential/id.
 	gatewayBody, _ := json.Marshal(gatewaySessionRequest{OfferSDP: req.OfferSDP, Voice: req.Voice, VoiceMode: req.VoiceMode, LanguageCode: req.LanguageCode})
-	response, callErr := s.callGateway(ctx, http.MethodPost, "/v1/voice/sessions", gatewayBody)
+	response, gatewayRequestID, callErr := s.callGateway(ctx, http.MethodPost, "/v1/voice/sessions", gatewayBody)
 	if callErr != nil {
 		_ = s.markSession(ctx, id, "quarantined", "gateway_outcome_unknown", nil, "")
-		return sessionResponse{}, apiError(http.StatusServiceUnavailable, "voice_outcome_unknown", "Space gateway outcome is unknown; media lease quarantined", nil)
+		return sessionResponse{}, apiError(http.StatusServiceUnavailable, "voice_outcome_unknown", "Space gateway outcome is unknown; media lease quarantined", map[string]any{"request_id": gatewayRequestID})
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -234,7 +250,7 @@ func (s *Service) create(ctx context.Context, p contracts.Principal, req createR
 		if state == "quarantined" {
 			return sessionResponse{}, apiError(http.StatusServiceUnavailable, "voice_outcome_unknown", "Space gateway did not establish a provably terminated media session; lease quarantined", nil)
 		}
-		return sessionResponse{}, apiError(http.StatusBadGateway, "voice_gateway_rejected", "Space gateway rejected media negotiation", map[string]any{"status": response.StatusCode})
+		return sessionResponse{}, apiError(http.StatusBadGateway, "voice_gateway_rejected", "Space gateway rejected media negotiation", map[string]any{"status": response.StatusCode, "request_id": gatewayRequestID})
 	}
 	var upstream gatewaySessionResponse
 	if err := json.NewDecoder(io.LimitReader(response.Body, s.maxSDP*2)).Decode(&upstream); err != nil || strings.TrimSpace(upstream.AnswerSDP) == "" || strings.TrimSpace(upstream.VoiceSessionID) == "" {

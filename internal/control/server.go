@@ -309,6 +309,7 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 	}
 	s := &Server{store: store, cfg: cfg, commands: make(map[string]CommandHandler), taskSources: make(map[string]TaskSourceAdmissionHandler), taskDispatchGuards: make(map[string]TaskDispatchGuard), public: http.NewServeMux(), device: http.NewServeMux(), runner: http.NewServeMux(), pushSender: cfg.PushSender}
 	s.registerCoreRoutes()
+	s.registerDiagnosticsRoute()
 	return s, nil
 }
 

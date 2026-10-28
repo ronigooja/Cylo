@@ -35,7 +35,7 @@ func (s *Service) handleCreate(w http.ResponseWriter, r *http.Request) {
 		control.WriteError(w, err)
 		return
 	}
-	result, err := s.create(r.Context(), p, req)
+	result, err := s.create(withGatewayRequestID(r.Context(), r.Header.Get("X-Zoe-Client-Request-ID")), p, req)
 	if err != nil {
 		control.WriteError(w, safeSessionError(err))
 		return
@@ -204,13 +204,13 @@ func (s *Service) handleHangup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if gatewayUnbound == 0 && gatewayUnbindUnknown == 0 {
-		response, gatewayErr := s.callGateway(r.Context(), http.MethodDelete, "/v1/voice/sessions/"+url.PathEscape(gatewayID), nil)
+		response, gatewayRequestID, gatewayErr := s.callGateway(withGatewayRequestID(r.Context(), r.Header.Get("X-Zoe-Client-Request-ID")), http.MethodDelete, "/v1/voice/sessions/"+url.PathEscape(gatewayID), nil)
 		if gatewayErr != nil {
 			if persistErr := s.markSession(r.Context(), r.PathValue("session_id"), "quarantined", "gateway_release_unknown", nil, ""); persistErr != nil {
 				control.WriteError(w, safeSessionError(persistErr))
 				return
 			}
-			control.WriteError(w, apiError(http.StatusServiceUnavailable, "voice_outcome_unknown", "gateway release result is unknown; media lease quarantined", nil))
+			control.WriteError(w, apiError(http.StatusServiceUnavailable, "voice_outcome_unknown", "gateway release result is unknown; media lease quarantined", map[string]any{"request_id": gatewayRequestID}))
 			return
 		}
 		defer response.Body.Close()
@@ -219,7 +219,7 @@ func (s *Service) handleHangup(w http.ResponseWriter, r *http.Request) {
 				control.WriteError(w, safeSessionError(persistErr))
 				return
 			}
-			control.WriteError(w, apiError(http.StatusServiceUnavailable, "voice_outcome_unknown", "gateway did not confirm session unbinding; media lease quarantined", nil))
+			control.WriteError(w, apiError(http.StatusServiceUnavailable, "voice_outcome_unknown", "gateway did not confirm session unbinding; media lease quarantined", map[string]any{"request_id": gatewayRequestID}))
 			return
 		}
 		result, err := s.db.ExecContext(r.Context(), `UPDATE voice_sessions SET gateway_unbound=1,gateway_unbind_unknown=0,updated_at=? WHERE workspace_id=? AND owner_id=? AND id=? AND generation=? AND state='ending'`, time.Now().UTC().Format(time.RFC3339Nano), p.WorkspaceID, p.SubjectID, r.PathValue("session_id"), generation)
@@ -656,21 +656,21 @@ func (s *Service) handleVoiceConfig(w http.ResponseWriter, r *http.Request) {
 		control.WriteError(w, apiError(http.StatusUnauthorized, "unauthenticated", "device authentication required", nil))
 		return
 	}
-	response, err := s.callGateway(r.Context(), http.MethodGet, "/v1/voice/config", nil)
+	response, gatewayRequestID, err := s.callGateway(withGatewayRequestID(r.Context(), r.Header.Get("X-Zoe-Client-Request-ID")), http.MethodGet, "/v1/voice/config", nil)
 	if err != nil {
-		control.WriteError(w, apiError(http.StatusServiceUnavailable, "voice_unavailable", "Space voice configuration is unavailable", nil))
+		control.WriteError(w, apiError(http.StatusServiceUnavailable, "voice_unavailable", "Space voice configuration is unavailable", map[string]any{"request_id": gatewayRequestID}))
 		return
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		control.WriteError(w, apiError(http.StatusServiceUnavailable, "voice_unavailable", "Space voice configuration is unavailable", nil))
+		control.WriteError(w, apiError(http.StatusServiceUnavailable, "voice_unavailable", "Space voice configuration is unavailable", map[string]any{"request_id": gatewayRequestID, "status": response.StatusCode}))
 		return
 	}
 	var config spacePublicConfig
 	dec := json.NewDecoder(io.LimitReader(response.Body, 1<<20))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&config); err != nil || config.Version == "" || len(config.WebRTC) == 0 {
-		control.WriteError(w, apiError(http.StatusBadGateway, "voice_config_invalid", "Space voice configuration response is invalid", nil))
+		control.WriteError(w, apiError(http.StatusBadGateway, "voice_config_invalid", "Space voice configuration response is invalid", map[string]any{"request_id": gatewayRequestID}))
 		return
 	}
 	writeJSON(w, http.StatusOK, config)

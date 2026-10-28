@@ -805,6 +805,7 @@ public final class ZoeAppModel: ObservableObject {
         var audio: VoiceAudioSessionAdapter?
         var transport: LibWebRTCTransport?
         var allocatedSession: VoiceSessionResponse?
+        var diagnosticPhase = "config_request"
         voiceStatus = .connecting
         do {
             let config = try await api.voiceConfig()
@@ -822,12 +823,15 @@ public final class ZoeAppModel: ObservableObject {
             #endif
             voiceAudioSession = audio
             audio?.onLifecycleEvent = { [weak self] event in
+                api.recordDiagnostic(phase: "audio_activate", requestPath: "/v1/voice/audio", errorType: "audio_lifecycle", errorSummary: String(describing: event))
                 Task { @MainActor in
                     await self?.handleVoiceMediaLoss(.audio(event), mediaEpoch: mediaEpoch)
                 }
             }
+            diagnosticPhase = "audio_activate"
             try audio?.activate()
             let iceServers = config.webRTC.iceServers.map { RTCIceServer(urlStrings: $0.urls) }
+            diagnosticPhase = "webrtc_offer"
             transport = try LibWebRTCTransport(iceServers: iceServers, dataChannelLabel: config.webRTC.dataChannel.label)
             voiceTransport = transport
             transport?.onDataMessage = { [weak self] data in
@@ -840,6 +844,7 @@ public final class ZoeAppModel: ObservableObject {
             }
             let offer = try await transport!.createOffer()
             guard generation == connectionGeneration.value, mediaEpoch == voiceMediaEpoch else { throw CancellationError() }
+            diagnosticPhase = "session_create"
             let created = try await api.createVoiceSession(
                 requestID: UUID().uuidString.lowercased(),
                 offerSDP: offer,
@@ -854,6 +859,7 @@ public final class ZoeAppModel: ObservableObject {
             guard generation == connectionGeneration.value, mediaEpoch == voiceMediaEpoch else { throw CancellationError() }
             try await transport!.waitUntilConnected()
             guard generation == connectionGeneration.value, mediaEpoch == voiceMediaEpoch else { throw CancellationError() }
+            diagnosticPhase = "connected"
             let confirmed = try await api.confirmVoiceConnected(sessionID: created.voiceSessionId, generation: created.generation)
             guard generation == connectionGeneration.value, mediaEpoch == voiceMediaEpoch else { throw CancellationError() }
             guard confirmed.ok else { throw ZoeError.invalidResponse }
@@ -869,6 +875,7 @@ public final class ZoeAppModel: ObservableObject {
             voiceStatus = .active(sessionID: created.voiceSessionId, mediaGeneration: created.generation)
             startVoiceHeartbeat(sessionID: created.voiceSessionId, api: api, generation: generation)
         } catch {
+            api.recordDiagnostic(phase: diagnosticPhase, requestPath: "/v1/voice/\(diagnosticPhase)", errorType: String(describing: type(of: error)), errorSummary: String(describing: error))
             let attemptWasCurrent = mediaEpoch == voiceMediaEpoch
             await closeVoiceLocalMedia(mediaEpoch: mediaEpoch)
             var remainsQuarantined = false
