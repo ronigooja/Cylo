@@ -39,6 +39,9 @@ mkdir -p "$cache_dir"
 buildx_cache_args=()
 if [[ -n "${ZOE_BUILDX_CACHE_FROM:-}" ]]; then buildx_cache_args+=(--cache-from "$ZOE_BUILDX_CACHE_FROM"); fi
 if [[ -n "${ZOE_BUILDX_CACHE_TO:-}" ]]; then buildx_cache_args+=(--cache-to "$ZOE_BUILDX_CACHE_TO"); fi
+# Bash with nounset rejects expanding an empty array; use a single command array.
+buildx_base=(buildx build --load --platform "$build_platform")
+buildx_base+=("${buildx_cache_args[@]}")
 build_dir=""
 release_stage=""
 cleanup_stages() {
@@ -63,9 +66,9 @@ install -m 0755 "$build_dir/bin/zoe-runner" "$release_stage/bin/zoe-runner"
 install -m 0755 "$build_dir/bin/zoe-secret-entrypoint" "$release_stage/bin/zoe-secret-entrypoint"
 cp -a "$repo_root/deploy/linux" "$release_stage/deploy-linux"
 
-"$docker_bin" buildx build --load --platform "$build_platform" "${buildx_cache_args[@]}" -f "$repo_root/deploy/linux/Dockerfile.server" -t "zoe-server:$tag" "$repo_root"
-"$docker_bin" buildx build --load --platform "$build_platform" "${buildx_cache_args[@]}" -f "$repo_root/deploy/linux/Dockerfile.memory" -t "zoe-memory-worker:$tag" "$repo_root"
-"$docker_bin" buildx build --load --platform "$build_platform" "${buildx_cache_args[@]}" -f "$repo_root/deploy/linux/Dockerfile.runner" -t "zoe-runner:$tag" "$repo_root"
+"$docker_bin" "${buildx_base[@]}" -f "$repo_root/deploy/linux/Dockerfile.server" -t "zoe-server:$tag" "$repo_root"
+"$docker_bin" "${buildx_base[@]}" -f "$repo_root/deploy/linux/Dockerfile.memory" -t "zoe-memory-worker:$tag" "$repo_root"
+"$docker_bin" "${buildx_base[@]}" -f "$repo_root/deploy/linux/Dockerfile.runner" -t "zoe-runner:$tag" "$repo_root"
 
 # Record immutable source, binary checksums, and local image IDs before publishing.
 source_revision="$(git rev-parse HEAD)"
