@@ -161,7 +161,16 @@ public final class LibWebRTCTransport: NSObject, WebRTCTransport, @unchecked Sen
     private func waitForICEGathering() async throws {
         let deadline = ContinuousClock.now + .seconds(20)
         while peerConnection.iceGatheringState != .complete {
-            guard ContinuousClock.now < deadline else { throw WebRTCTransportError.iceGatheringTimedOut }
+            guard ContinuousClock.now < deadline else {
+                // Non-trickle signaling normally waits for `complete`, but a
+                // STUN server can remain in `gathering` indefinitely while
+                // host candidates are already usable. Continue with the
+                // candidates that have been gathered instead of discarding a
+                // valid offer solely because the state never settled.
+                let hasCandidate = peerConnection.localDescription?.sdp.contains("a=candidate:") == true
+                if hasCandidate { return }
+                throw WebRTCTransportError.iceGatheringTimedOut
+            }
             try await Task.sleep(for: .milliseconds(100))
         }
     }
