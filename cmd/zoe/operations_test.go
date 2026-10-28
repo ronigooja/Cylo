@@ -79,6 +79,25 @@ func TestProviderConfigureTestStatusUsePersistedDeployment(t *testing.T) {
 		t.Fatal("token leaked to command output")
 	}
 }
+
+func TestVoiceConfigureAndStatus(t *testing.T) {
+	root := t.TempDir()
+	var out bytes.Buffer
+	if err := voiceConfigureOperation([]string{"--root", root, "--revision", "600c0fb", "--lan-bind", "192.168.1.4"}, strings.NewReader(""), &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "voice-deploy.env"))
+	if err != nil || !strings.Contains(string(data), "VOICE_GATEWAY_REVISION=600c0fb") || !strings.Contains(string(data), "VOICE_LAN_BIND=192.168.1.4") {
+		t.Fatalf("unexpected voice config: %s (%v)", data, err)
+	}
+	out.Reset()
+	if err := voiceStatusOperation([]string{"--root", root}, nil, &out, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Revision: 600c0fb") || !strings.Contains(out.String(), "192.168.1.4") {
+		t.Fatalf("status omitted voice settings: %s", out.String())
+	}
+}
 func TestKeyMenuInitializesRotatesAndRestoresService(t *testing.T) {
 	calls := fakeServices(t, false)
 	root := t.TempDir()

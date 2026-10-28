@@ -2,8 +2,6 @@
 set -euo pipefail
 umask 077
 
-readonly gateway_repository=${VOICE_GATEWAY_REPOSITORY:-https://github.com/ronigooja/chatgpt-web-voice.git}
-readonly upstream_revision=${VOICE_GATEWAY_REVISION:-main}
 readonly upstream_dir=/opt/zoe/voice/upstream
 readonly config_dir=/etc/zoe
 readonly data_dir=/var/lib/zoe/voice
@@ -13,6 +11,21 @@ readonly admin_file=/etc/zoe/voice-admin.txt
 readonly lan_env_file=/etc/zoe/voice.lan.env
 readonly lan_compose_file=/etc/zoe/voice.lan.compose.yaml
 readonly script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+# `zoe voice configure` writes literal, non-secret settings here. Parse only
+# the three expected keys; never source the file as shell code.
+voice_config_file="${VOICE_CONFIG_FILE:-$config_dir/voice-deploy.env}"
+config_value() { awk -F= -v key="$1" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$voice_config_file" 2>/dev/null || true; }
+gateway_repository="${VOICE_GATEWAY_REPOSITORY:-}"
+upstream_revision="${VOICE_GATEWAY_REVISION:-}"
+lan_config=""
+if [[ -z "$gateway_repository" && -f "$voice_config_file" ]]; then gateway_repository="$(config_value VOICE_GATEWAY_REPOSITORY)"; fi
+if [[ -z "$upstream_revision" && -f "$voice_config_file" ]]; then upstream_revision="$(config_value VOICE_GATEWAY_REVISION)"; fi
+if [[ -z "${VOICE_LAN_BIND+x}" && -f "$voice_config_file" ]]; then lan_config="$(config_value VOICE_LAN_BIND)"; fi
+gateway_repository="${gateway_repository:-https://github.com/ronigooja/chatgpt-web-voice.git}"
+upstream_revision="${upstream_revision:-main}"
+if [[ -n "$lan_config" ]]; then export VOICE_LAN_BIND="$lan_config"; fi
+readonly gateway_repository upstream_revision
 
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "Run this deployment as root." >&2

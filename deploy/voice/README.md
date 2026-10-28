@@ -8,6 +8,22 @@ gateway container and does not authorize or complete Zoe business work.
 
 ## Host deployment
 
+The installed operator CLI manages non-secret gateway deployment settings. It
+writes `/etc/zoe/voice-deploy.env`; it never handles ChatGPT cookies,
+management passwords, or downstream API keys:
+
+```bash
+sudo zoe voice configure \
+  --repository https://github.com/ronigooja/chatgpt-web-voice.git \
+  --revision 600c0fb
+sudo zoe voice status
+sudo ./deploy/voice/deploy.sh
+```
+
+Use `--lan-bind PRIVATE_HOST_IPV4` only for a trusted private LAN. Production
+deployments should pin an immutable commit with `--revision`; `main` is for
+development.
+
 Run `sudo deploy/voice/deploy.sh` from a Zoe checkout. The script checks out
 the configured fork revision under `/opt/zoe/voice/upstream`, creates the
 gateway's management password and AES encryption key if this is a first
