@@ -41,7 +41,7 @@ if [[ -n "${ZOE_BUILDX_CACHE_FROM:-}" ]]; then buildx_cache_args+=(--cache-from 
 if [[ -n "${ZOE_BUILDX_CACHE_TO:-}" ]]; then buildx_cache_args+=(--cache-to "$ZOE_BUILDX_CACHE_TO"); fi
 # Bash with nounset rejects expanding an empty array; use a single command array.
 buildx_base=(buildx build --load --platform "$build_platform")
-buildx_base+=("${buildx_cache_args[@]}")
+if ((${#buildx_cache_args[@]})); then buildx_base+=("${buildx_cache_args[@]}"); fi
 build_dir=""
 release_stage=""
 cleanup_stages() {
