@@ -2,6 +2,12 @@
 
 These retained observations still support current implementation conclusions. They do not accept a complete product milestone. Each record retains its source version, environment, result, and limitations; earlier author-reported checks are not newly rerun by this documentation change. The [pre-restructure source record](https://github.com/ronigooja/Zoe/blob/95ee55a5bbd8dccfb7f14af9f9703bb83727da6c/docs/master-plan.md) supplies provenance for local logs and review reports that have no public CI artifact.
 
+## Chat-first and continuous-voice baseline reconciliation
+
+The approved documentation baseline now removes the composer microphone and generic ordinary-result Accept/Reject workflow. Continuous voice is a Settings opt-in that may be attempted automatically after connection and identity initialization, subject to OS microphone permission, audio policy, application lifecycle, network, account-pool, and server limits; text remains the fallback. The baseline also defines server-owned interaction state, waiting-task `task.append`, authoritative `assistant_message` content, scoped explicit conversational confirmation for high-impact actions, and `task.accept_result` as compatibility only. The API name `awaiting_user` remains documented as a compatibility name.
+
+This record is a requirements and architecture reconciliation only. It does not establish that the Apple client, server contracts, continuous voice, permissions, account lifecycle, authoritative message persistence, confirmation semantics, or end-to-end flows are implemented or accepted. The existing component, hosted, installation, and real-device limitations below remain in force; no product milestone is accepted by this documentation change.
+
 ## Component verification
 
 | Area | Source/environment and observed checks | Acceptance limits |
