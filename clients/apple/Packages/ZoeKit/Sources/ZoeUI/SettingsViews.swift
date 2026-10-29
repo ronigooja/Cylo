@@ -37,27 +37,6 @@ public struct ZoeSettingsView: View {
         message.hasPrefix("Server error:") || message.hasPrefix("服务器错误：") || message.hasPrefix("服务器错误:")
     }
 
-    private var voiceServerError: Bool {
-        guard let reason = voiceStatusReason else { return false }
-        return isVoiceServerError(reason)
-    }
-
-    private var voicePoolIsQuarantined: Bool {
-        guard let reason = voiceStatusReason else { return false }
-        return reason.contains(uiText("The voice account pool is quarantined until an operator confirms termination."))
-            || reason.contains("voice account pool is quarantined")
-            || reason.contains("语音账户池已被隔离")
-    }
-
-    private var voiceRecoveryHint: String? {
-        guard case let .unavailable(reason) = model.voiceStatus,
-              model.voicePoolStatus?.blocked != true,
-              !voiceServerError,
-              !voicePoolIsQuarantined,
-              !reason.isEmpty else { return nil }
-        return uiText("Check microphone permission and system audio settings, then reconnect.")
-    }
-
     public var body: some View {
         Group {
             if model.authentication.isConnected { settingsForm }
@@ -112,10 +91,6 @@ public struct ZoeSettingsView: View {
                 case let .interrupted(reason), let .unavailable(reason): Text(reason).foregroundStyle(.orange)
                 case .stopped: Label(uiText("Voice stopped"), systemImage: "stop.circle")
                 case .idle: EmptyView()
-                }
-                if let hint = voiceRecoveryHint {
-                    Text(hint)
-                        .font(.footnote).foregroundStyle(.secondary)
                 }
             }
             Section(uiText("Your data")) {
