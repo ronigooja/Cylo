@@ -19,9 +19,31 @@ public struct ZoeSettingsView: View {
         ScopedExportFileDocument(fileURL: model.exportArtifact?.fileURL ?? FileManager.default.temporaryDirectory)
     }
 
+    private var voiceStatusReason: String? {
+        switch model.voiceStatus {
+        case let .reconnecting(reason), let .interrupted(reason), let .unavailable(reason): return reason
+        default: return nil
+        }
+    }
+
+    private var connectionNotice: String? {
+        guard let notice = model.notice else { return nil }
+        guard let reason = voiceStatusReason, notice == reason else { return notice }
+        return nil
+    }
+
+    private var voicePoolIsQuarantined: Bool {
+        guard let reason = voiceStatusReason else { return false }
+        return reason.contains(uiText("The voice account pool is quarantined until an operator confirms termination."))
+            || reason.contains("voice account pool is quarantined")
+            || reason.contains("语音账户池已被隔离")
+    }
+
     private var voiceRecoveryHint: String? {
-        guard case .unavailable = model.voiceStatus,
-              model.voicePoolStatus?.blocked != true else { return nil }
+        guard case let .unavailable(reason) = model.voiceStatus,
+              model.voicePoolStatus?.blocked != true,
+              !voicePoolIsQuarantined,
+              !reason.isEmpty else { return nil }
         return uiText("Check microphone permission and system audio settings, then reconnect.")
     }
 
@@ -42,7 +64,7 @@ public struct ZoeSettingsView: View {
                     Label(uiText("Connected"), systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                 }
-                if let notice = model.notice {
+                if let notice = connectionNotice {
                     Text(notice).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                 }
                 Button(uiText("Connect")) { Task { await model.reconnect() } }
