@@ -370,7 +370,7 @@ CREATE INDEX client_diagnostic_events_request ON client_diagnostic_events(client
 	}}); err != nil {
 		return err
 	}
-	if err := s.RegisterMigration(Migration{Namespace: "core", Version: 10, Name: "server_owned_task_interaction", Up: func(ctx context.Context, tx *sql.Tx) error {
+	if err := s.RegisterMigration(Migration{Namespace: "core", Version: 11, Name: "server_owned_task_interaction", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 ALTER TABLE tasks ADD COLUMN interaction_state TEXT NOT NULL DEFAULT 'none' CHECK(interaction_state IN ('none','awaiting_message','explicit_confirmation','approval_required'));
 ALTER TABLE tasks ADD COLUMN interaction_scope TEXT NOT NULL DEFAULT '';

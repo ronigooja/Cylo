@@ -265,6 +265,9 @@ func (s *Server) commandTaskAppend(ctx context.Context, tx *sql.Tx, c CommandCon
 	if (status == "waiting" || status == "awaiting_user") && interaction == "awaiting_message" {
 		nextStatus = "queued"
 	}
+	if interaction == "explicit_confirmation" && confirmed {
+		nextStatus = "queued"
+	}
 	if _, err = tx.ExecContext(ctx, `UPDATE tasks SET status=?,interaction_state=?,version=?,updated_at=? WHERE id=? AND workspace_id=?`, nextStatus, interaction, version, at, p.TaskID, c.Principal.WorkspaceID); err != nil {
 		return contracts.CommandResult{}, nil, err
 	}

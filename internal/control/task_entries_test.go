@@ -312,3 +312,33 @@ func TestAmbiguousConfirmationIsRetainedButDoesNotAuthorize(t *testing.T) {
 		t.Fatal("ambiguous language created an authorization audit record")
 	}
 }
+
+func TestExplicitConfirmationClearsInteractionAndRequeuesTask(t *testing.T) {
+	server, closeStore := taskEntriesTestServer(t)
+	defer closeStore()
+	expires := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
+	if _, err := server.store.DB().Exec(`UPDATE tasks SET status='waiting',interaction_state='explicit_confirmation',interaction_scope='delete:project',interaction_run_id='run-1',interaction_action_digest='digest-1',interaction_expires_at=?,interaction_expected_version=1 WHERE id='entries-task'`, expires); err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := appendTaskMessageForTest(t, server, "entries-task", "confirm", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ResourceVersion != 2 {
+		t.Fatalf("unexpected confirmation version: %d", result.ResourceVersion)
+	}
+	var status, interaction string
+	if err = server.store.DB().QueryRow(`SELECT status,interaction_state FROM tasks WHERE id='entries-task'`).Scan(&status, &interaction); err != nil {
+		t.Fatal(err)
+	}
+	if status != "queued" || interaction != "none" {
+		t.Fatalf("confirmed task was not requeued and cleared: status=%q interaction=%q", status, interaction)
+	}
+	var confirmations int
+	if err = server.store.DB().QueryRow(`SELECT count(*) FROM task_confirmations WHERE task_id='entries-task'`).Scan(&confirmations); err != nil {
+		t.Fatal(err)
+	}
+	if confirmations != 1 {
+		t.Fatalf("confirmation audit count=%d want 1", confirmations)
+	}
+}
