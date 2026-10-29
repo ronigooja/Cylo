@@ -5,6 +5,10 @@ This runbook describes the local Linux installation and the macOS client on
 [evidence register](../acceptance/evidence.md). Starting services is not end-to-end product
 acceptance.
 
+For client error investigation, authenticated diagnostic uploads, bounded
+SQLite inspection, and voice pool isolation checks, see the
+[client diagnostics runbook](diagnostics.md).
+
 ## Linux services and storage
 
 - `/opt/zoe/releases/current` selects the immutable server/runner release.
