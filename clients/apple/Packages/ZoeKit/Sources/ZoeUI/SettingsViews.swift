@@ -28,8 +28,18 @@ public struct ZoeSettingsView: View {
 
     private var connectionNotice: String? {
         guard let notice = model.notice else { return nil }
-        guard let reason = voiceStatusReason, notice == reason else { return notice }
-        return nil
+        guard let reason = voiceStatusReason else { return notice }
+        if notice == reason || isVoiceServerError(reason) || isVoiceServerError(notice) { return nil }
+        return notice
+    }
+
+    private func isVoiceServerError(_ message: String) -> Bool {
+        message.hasPrefix("Server error:") || message.hasPrefix("服务器错误：") || message.hasPrefix("服务器错误:")
+    }
+
+    private var voiceServerError: Bool {
+        guard let reason = voiceStatusReason else { return false }
+        return isVoiceServerError(reason)
     }
 
     private var voicePoolIsQuarantined: Bool {
@@ -42,6 +52,7 @@ public struct ZoeSettingsView: View {
     private var voiceRecoveryHint: String? {
         guard case let .unavailable(reason) = model.voiceStatus,
               model.voicePoolStatus?.blocked != true,
+              !voiceServerError,
               !voicePoolIsQuarantined,
               !reason.isEmpty else { return nil }
         return uiText("Check microphone permission and system audio settings, then reconnect.")
