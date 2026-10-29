@@ -59,6 +59,27 @@ public struct ZoeSettingsView: View {
                     }
                 }
             }
+            Section(uiText("Voice")) {
+                Toggle(uiText("Continuous voice"), isOn: Binding(
+                    get: { model.continuousVoiceEnabled },
+                    set: { model.setContinuousVoiceEnabled($0) }
+                ))
+                Text(uiText("When enabled, Zoe attempts to maintain an authorized voice session after connection. Microphone permission, system audio policy, and explicit transcript submission still apply."))
+                    .font(.footnote).foregroundStyle(.secondary)
+                switch model.voiceStatus {
+                case .active: Label(uiText("Voice active"), systemImage: "waveform").foregroundStyle(.green)
+                case .connecting: Label(uiText("Connecting voice…"), systemImage: "arrow.triangle.2.circlepath")
+                case let .reconnecting(reason): Label(reason, systemImage: "arrow.triangle.2.circlepath")
+                case let .interrupted(reason), let .unavailable(reason): Text(reason).foregroundStyle(.orange)
+                case .stopped: Label(uiText("Voice stopped"), systemImage: "stop.circle")
+                case .idle: EmptyView()
+                }
+                if case let .unavailable(reason) = model.voiceStatus {
+                    Text(uiText("Check microphone permission and system audio settings, then reconnect."))
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Text(reason).font(.footnote).foregroundStyle(.secondary)
+                }
+            }
             Section(uiText("Your data")) {
                 Text(uiText("Prepare a copy of authorized Zoe records. Large artifact files, derived stores, and backups are not included."))
                     .foregroundStyle(.secondary)

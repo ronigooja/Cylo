@@ -268,6 +268,8 @@ public enum VoiceIntegrationStatus: Equatable, Sendable {
     case connecting
     case active(sessionID: String, mediaGeneration: Int64)
     case interrupted(reason: String)
+    case reconnecting(reason: String)
+    case stopped
 }
 
 enum VoiceMediaLoss {

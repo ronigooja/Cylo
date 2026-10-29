@@ -9,6 +9,25 @@ private struct IndependentVoiceCredential: BearerTokenProviding {
 
 final class VoiceLifecycleIndependentTests: XCTestCase {
     @MainActor
+    func testContinuousVoicePreferenceDefaultsOffAndPersists() throws {
+        let suite = UserDefaults(suiteName: UUID().uuidString)!
+        let first = ZoeAppModel(defaults: suite)
+        XCTAssertFalse(first.continuousVoiceEnabled)
+        first.setContinuousVoiceEnabled(true)
+        let second = ZoeAppModel(defaults: suite)
+        XCTAssertTrue(second.continuousVoiceEnabled)
+    }
+
+    @MainActor
+    func testReconnectAndStoppedStatusesAreRepresentable() {
+        let model = ZoeAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        model.setContinuousVoiceEnabled(false)
+        XCTAssertEqual(model.voiceStatus, .idle)
+        XCTAssertNotEqual(model.voiceStatus, .reconnecting(reason: "temporary"))
+        XCTAssertNotEqual(model.voiceStatus, .stopped)
+    }
+
+    @MainActor
     func testHeartbeatFailureRequiresCurrentEpochAPIAndUncancelledTask() async throws {
         let model = ZoeAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
         let api = try APIClient(serverURL: URL(string: "https://zoe.example")!, credentials: IndependentVoiceCredential())

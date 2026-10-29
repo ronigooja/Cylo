@@ -67,7 +67,6 @@ struct TaskComposer: View {
     @State private var submitting = false
     @State private var pendingKey: String?
     @State private var pendingMessage: String?
-    @State private var showVoice = false
     private var draft: Binding<String> { Binding(get: { taskID.map { model.taskDrafts[$0] ?? "" } ?? model.newTaskDraft }, set: { model.updateTaskDraft($0, for: taskID) }) }
     private var canSend: Bool { taskID.map { model.task(id: $0)?.status.canAcceptEntries == true } ?? true }
     var body: some View {
@@ -80,22 +79,6 @@ struct TaskComposer: View {
                     .accessibilityLabel(uiText("Message Zoe…"))
                 HStack(spacing: 8) {
                     Spacer(minLength: 0)
-                    Button { openVoice() } label: {
-                        Group {
-                            if case .connecting = model.voiceStatus {
-                                ProgressView().controlSize(.small).tint(.white)
-                            } else {
-                                Image(systemName: voiceSymbol).font(.system(size: 17, weight: .medium))
-                            }
-                        }
-                        .frame(width: 40, height: 36)
-                        .foregroundStyle(.white)
-                        .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 10))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(uiText("Voice"))
-                    .accessibilityValue(voiceAccessibilityValue)
-                    .help(uiText("Voice"))
                     Button { submit() } label: {
                         Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold))
                             .frame(width: 36, height: 36)
@@ -109,7 +92,6 @@ struct TaskComposer: View {
             #else
             HStack(alignment: .bottom) {
                 TextField(uiText("Message Zoe…"), text: draft, axis: .vertical).lineLimit(2...8).textFieldStyle(.plain).disabled(!canSend || submitting)
-                Button { showVoice = true } label: { Label(uiText("Voice"), systemImage: "waveform").labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle()) }.disabled(submitting || pendingKey != nil)
                 Button { submit() } label: { Label(uiText("Send"), systemImage: "arrow.up.circle.fill").labelStyle(.iconOnly).font(.title2).frame(minWidth: 44, minHeight: 44).contentShape(Rectangle()) }
                     .keyboardShortcut(.return, modifiers: .command)
                     .disabled(submitting || pendingKey != nil || model.isBusy || !canSend || draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -127,35 +109,8 @@ struct TaskComposer: View {
             }
         }
         .padding(16).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18)).overlay(RoundedRectangle(cornerRadius: 18).stroke(.quaternary))
-        #if os(macOS)
-        .popover(isPresented: $showVoice) { VoicePanel(model: model) { transcript in draft.wrappedValue = transcript; showVoice = false } }
-        #else
-        .sheet(isPresented: $showVoice) { VoicePanel(model: model) { transcript in draft.wrappedValue = transcript; showVoice = false } }
-        #endif
         .onAppear { restorePendingFeedback() }
         .onChange(of: model.pendingCommandSummaries) { _, _ in restorePendingFeedback() }
-    }
-    private func openVoice() {
-        showVoice = true
-        if case .idle = model.voiceStatus {
-            Task { await model.startVoice() }
-        }
-    }
-    private var voiceSymbol: String {
-        if model.voicePoolStatus?.blocked == true { return "mic.badge.xmark" }
-        switch model.voiceStatus {
-        case .active: return "waveform"
-        case .unavailable, .interrupted: return "mic.badge.xmark"
-        case .idle, .connecting: return "mic.fill"
-        }
-    }
-    private var voiceAccessibilityValue: String {
-        switch model.voiceStatus {
-        case .idle: uiText("Connect voice")
-        case .connecting: uiText("Connecting voice…")
-        case .active: uiText("Voice connected")
-        case let .unavailable(reason), let .interrupted(reason): reason
-        }
     }
     private func restorePendingFeedback() {
         if let key = model.pendingTaskSubmissionKey(for: taskID) {
@@ -215,6 +170,10 @@ struct VoicePanel: View {
                     Text(reason).font(.callout).foregroundStyle(.secondary)
                     Button(uiText("Retry voice")) { Task { await model.startVoice() } }
                         .disabled(model.canEndVoiceSession || model.isBusy)
+                case let .reconnecting(reason):
+                    Text(reason).font(.callout).foregroundStyle(.secondary)
+                case .stopped:
+                    Label(uiText("Voice stopped"), systemImage: "stop.circle")
                 }
                 Spacer(minLength: 0)
                 if canStopVoice {
@@ -249,6 +208,8 @@ struct VoicePanel: View {
                     case let .unavailable(reason), let .interrupted(reason):
                         Text(reason).foregroundStyle(.secondary)
                         Button(uiText("Retry voice")) { Task { await model.startVoice() } }.disabled(model.canEndVoiceSession || model.isBusy)
+                    case let .reconnecting(reason): Text(reason).foregroundStyle(.secondary)
+                    case .stopped: Label(uiText("Voice stopped"), systemImage: "stop.circle")
                     }
                     if model.voicePoolStatus?.blocked == true { Text(uiText("Voice is unavailable while the account pool is quarantined.")).foregroundStyle(.orange) }
                 }
@@ -402,7 +363,6 @@ struct TaskDetailView: View {
                             }
                         }
                         #endif
-                        ResultDecisionRows(task: task, model: model)
                         ApprovalRows(approvals: model.approvals.filter { $0.taskId == task.id && $0.status == "pending" }, model: model)
                         DisclosureGroup(uiText("Technical details")) {
                             VStack(alignment: .leading, spacing: 12) {
@@ -438,51 +398,6 @@ struct TaskDetailView: View {
         .toolbar(.hidden, for: .tabBar)
         #endif
         .task(id: taskID) { await model.selectTask(taskID) }
-    }
-}
-
-struct ResultDecisionRows: View {
-    let task: TaskRecord
-    @ObservedObject var model: ZoeAppModel
-    @State private var showingRejectConfirmation = false
-    @State private var error: String?
-
-    var body: some View {
-        if task.canAcceptResult {
-            Section(uiText("Review result")) {
-                NoticeCard(message: error)
-                if let run = model.resultRun(for: task) {
-                        Button(uiText("Accept result")) {
-                        Task {
-                            error = nil
-                            if !(await model.decideResult(for: task, run: run, decision: "accept")) { error = model.notice ?? uiText("The decision was not accepted.") }
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(model.isBusy)
-                    Button(uiText("Reject result"), role: .destructive) { showingRejectConfirmation = true }
-                        .disabled(model.isBusy)
-                    Text(uiText("Rejecting returns the task to waiting. It does not automatically retry the task."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text(uiText("The server marks this result as reviewable, but its confirmed run is not available in the current snapshot. Refresh before deciding."))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .confirmationDialog(uiText("Reject this result?"), isPresented: $showingRejectConfirmation) {
-                Button(uiText("Reject result"), role: .destructive) {
-                    guard let run = model.resultRun(for: task) else { return }
-                    Task {
-                        error = nil
-                        if !(await model.decideResult(for: task, run: run, decision: "reject")) { error = model.notice ?? uiText("The decision was not accepted.") }
-                    }
-                }
-                Button(uiText("Cancel"), role: .cancel) {}
-            } message: {
-                Text(uiText("The task will return to waiting. Zoe will not automatically retry it."))
-            }
-        }
     }
 }
 

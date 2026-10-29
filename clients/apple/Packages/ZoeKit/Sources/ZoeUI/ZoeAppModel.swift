@@ -35,6 +35,7 @@ public final class ZoeAppModel: ObservableObject {
     @Published public private(set) var voiceConfig: VoiceConfig?
     @Published public private(set) var voicePoolStatus: VoicePoolStatus?
     @Published public private(set) var voiceStatus: VoiceIntegrationStatus = .idle
+    @Published public private(set) var continuousVoiceEnabled: Bool
     @Published public var voiceDraft = ""
     @Published public private(set) var voiceDraftRevision: Int64 = 0
     @Published public private(set) var exportArtifact: ScopedExportArtifact?
@@ -56,6 +57,7 @@ public final class ZoeAppModel: ObservableObject {
     private var taskIntents: [String: TaskIntent] = [:]
 
     private let defaults: UserDefaults
+    private let continuousVoiceKey = "zoe.voice.continuous"
     private var api: APIClient?
     private var identity: (any InstanceKeyStoring)?
     private var journal: CommandJournal?
@@ -211,6 +213,7 @@ public final class ZoeAppModel: ObservableObject {
         installationID = identifier
         defaults.set(identifier, forKey: "zoe.installationID")
         pushNotificationsEnabled = defaults.bool(forKey: "zoe.apns.optIn")
+        continuousVoiceEnabled = defaults.bool(forKey: continuousVoiceKey)
         snapshotCache = nil
         RemotePushBridge.shared.onToken = { [weak self] token in
             Task { @MainActor [weak self] in self?.receiveAPNSToken(token) }
@@ -277,6 +280,9 @@ public final class ZoeAppModel: ObservableObject {
             if let coordinator { await recoverPendingCommands(expectedGeneration: generation, sourceAPI: configuredAPI, coordinator: coordinator, workspaceID: snapshot?.workspaceId) }
             guard generation == connectionGeneration.value else { return }
             startEventLoop()
+            if continuousVoiceEnabled, voiceSession == nil {
+                Task { @MainActor [weak self] in await self?.startVoiceIfEnabled() }
+            }
         } catch {
             if Self.isAccessDenied(error) || (error as? ZoeError).map({ if case .missingCredential = $0 { true } else { false } }) == true {
                 lockWorkspace(clearDrafts: false)
@@ -287,6 +293,22 @@ public final class ZoeAppModel: ObservableObject {
     }
 
     public func reconnect() async { await start() }
+
+    public func setContinuousVoiceEnabled(_ enabled: Bool) {
+        guard continuousVoiceEnabled != enabled else { return }
+        continuousVoiceEnabled = enabled
+        defaults.set(enabled, forKey: continuousVoiceKey)
+        if enabled, authentication.isConnected {
+            Task { await startVoiceIfEnabled() }
+        } else if !enabled {
+            Task { await endVoiceSession() }
+        }
+    }
+
+    private func startVoiceIfEnabled() async {
+        guard continuousVoiceEnabled, authentication.isConnected, voiceSession == nil else { return }
+        await startVoice()
+    }
 
     public func receiveInstallationLink(_ url: URL) {
         do {
@@ -458,7 +480,7 @@ public final class ZoeAppModel: ObservableObject {
         voiceSessionMediaEpoch = nil
         voiceSessionMediaClosed = false
         voiceAPI = nil
-        voiceStatus = .idle
+        voiceStatus = .stopped
         try? oldAudio?.deactivate()
         Task {
             await oldTransport?.close()
@@ -922,7 +944,7 @@ public final class ZoeAppModel: ObservableObject {
             voiceSessionMediaEpoch = nil
             voiceSessionMediaClosed = false
             voiceAPI = nil
-            if case .unavailable = voiceStatus {} else { voiceStatus = .idle }
+            if case .unavailable = voiceStatus {} else { voiceStatus = .stopped }
             return
         }
         await finishVoiceSession(session, api: api, mediaEpoch: mediaEpoch, lossReason: nil)
@@ -1012,7 +1034,14 @@ public final class ZoeAppModel: ObservableObject {
             reason = uiText(rawReason)
         }
         if let session = voiceSession, let api = voiceAPI, voiceSessionMediaEpoch == mediaEpoch {
+            if continuousVoiceEnabled { voiceStatus = .reconnecting(reason: reason) }
             await finishVoiceSession(session, api: api, mediaEpoch: mediaEpoch, lossReason: reason)
+            if continuousVoiceEnabled {
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(2))
+                    await self?.startVoiceIfEnabled()
+                }
+            }
             return
         }
         voiceStartMediaLoss = (mediaEpoch, reason)
