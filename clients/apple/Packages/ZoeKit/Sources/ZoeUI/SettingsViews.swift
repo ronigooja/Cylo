@@ -19,6 +19,12 @@ public struct ZoeSettingsView: View {
         ScopedExportFileDocument(fileURL: model.exportArtifact?.fileURL ?? FileManager.default.temporaryDirectory)
     }
 
+    private var voiceRecoveryHint: String? {
+        guard case .unavailable = model.voiceStatus,
+              model.voicePoolStatus?.blocked != true else { return nil }
+        return uiText("Check microphone permission and system audio settings, then reconnect.")
+    }
+
     public var body: some View {
         Group {
             if model.authentication.isConnected { settingsForm }
@@ -74,10 +80,9 @@ public struct ZoeSettingsView: View {
                 case .stopped: Label(uiText("Voice stopped"), systemImage: "stop.circle")
                 case .idle: EmptyView()
                 }
-                if case let .unavailable(reason) = model.voiceStatus {
-                    Text(uiText("Check microphone permission and system audio settings, then reconnect."))
+                if let hint = voiceRecoveryHint {
+                    Text(hint)
                         .font(.footnote).foregroundStyle(.secondary)
-                    Text(reason).font(.footnote).foregroundStyle(.secondary)
                 }
             }
             Section(uiText("Your data")) {
