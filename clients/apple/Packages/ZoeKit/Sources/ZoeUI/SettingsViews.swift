@@ -28,13 +28,7 @@ public struct ZoeSettingsView: View {
 
     private var connectionNotice: String? {
         guard let notice = model.notice else { return nil }
-        guard let reason = voiceStatusReason else { return notice }
-        if notice == reason || isVoiceServerError(reason) || isVoiceServerError(notice) { return nil }
-        return notice
-    }
-
-    private func isVoiceServerError(_ message: String) -> Bool {
-        message.hasPrefix("Server error:") || message.hasPrefix("服务器错误：") || message.hasPrefix("服务器错误:")
+        return notice == voiceStatusReason ? nil : notice
     }
 
     public var body: some View {

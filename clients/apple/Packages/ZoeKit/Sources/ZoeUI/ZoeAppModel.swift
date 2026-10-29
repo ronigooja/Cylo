@@ -546,7 +546,7 @@ public final class ZoeAppModel: ObservableObject {
                 notice = uiText("Push wakeups are enabled. Notification content remains in the Zoe inbox.")
             }
         } catch {
-            notice = uiFormat("System notification permission could not be requested: %@", userMessage(error))
+            notice = uiText("System notification permission could not be requested. Try again.")
         }
     }
 
@@ -576,7 +576,7 @@ public final class ZoeAppModel: ObservableObject {
             await refreshMemory()
         } catch {
             if snapshot == nil { setOffline(error) }
-            else { setStale(uiFormat("A push wakeup arrived, but the latest server state could not be loaded: %@", userMessage(error))) }
+            else { setStale(uiText("A push wakeup arrived, but the latest server state could not be loaded.")) }
         }
     }
 
@@ -596,7 +596,7 @@ public final class ZoeAppModel: ObservableObject {
             hasLoadedNotificationInbox = true
         } catch {
             guard generation == connectionGeneration.value else { return }
-            notice = uiFormat("The durable notification inbox could not be refreshed: %@", userMessage(error))
+            notice = uiText("The notification inbox could not be refreshed.")
         }
     }
 
@@ -649,7 +649,7 @@ public final class ZoeAppModel: ObservableObject {
                    case let .http(status, _, _, _) = failure, status == 401 || status == 403 {
                     clearMemoryAndPreparedExport(status: uiText("Memory access was denied; cached memory and the prepared export were cleared."))
                 } else {
-                    notice = uiFormat("Memory could not be refreshed: %@", userMessage(error))
+                    notice = uiText("Memory could not be refreshed.")
                 }
             }
             nextQuery = pendingMemoryRefreshQuery
@@ -669,7 +669,7 @@ public final class ZoeAppModel: ObservableObject {
             capabilityDeployments = nextDeployments.items
         } catch {
             guard generation == connectionGeneration.value else { return }
-            notice = uiFormat("Capability inventory could not be refreshed: %@", userMessage(error))
+            notice = uiText("Capability inventory could not be refreshed.")
         }
     }
 
@@ -804,7 +804,7 @@ public final class ZoeAppModel: ObservableObject {
             if voiceSession == nil { voiceStatus = .idle }
         } catch {
             guard generation == connectionGeneration.value else { return }
-            voiceStatus = .unavailable(reason: userMessage(error))
+            voiceStatus = .unavailable(reason: voiceUnavailableMessage())
         }
     }
 
@@ -820,7 +820,7 @@ public final class ZoeAppModel: ObservableObject {
             api = try configure()
             generation = connectionGeneration.value
         } catch {
-            voiceStatus = .unavailable(reason: userMessage(error))
+            voiceStatus = .unavailable(reason: voiceUnavailableMessage())
             return
         }
 
@@ -836,7 +836,7 @@ public final class ZoeAppModel: ObservableObject {
             guard generation == connectionGeneration.value, mediaEpoch == voiceMediaEpoch else { throw CancellationError() }
             voiceConfig = config
             voicePoolStatus = pool
-            guard !pool.blocked else { throw ZoeError.http(status: 409, code: pool.reasonCode, message: uiText("The voice account pool is quarantined until an operator confirms termination."), details: nil) }
+            guard !pool.blocked else { throw ZoeError.http(status: 409, code: pool.reasonCode, message: "voice_pool_quarantined", details: nil) }
 
             #if os(iOS)
             audio = AppleMobileAudioSessionAdapter()
@@ -916,7 +916,7 @@ public final class ZoeAppModel: ObservableObject {
                     voiceSessionMediaEpoch = mediaEpoch
                     voiceSessionMediaClosed = true
                     voiceAPI = api
-                    voiceStatus = .interrupted(reason: uiFormat("Local voice media is closed. Server hangup is unconfirmed or the account pool remains quarantined; no new session can start until the pool is cleared. %@", mediaLossReason ?? userMessage(error)))
+                    voiceStatus = .interrupted(reason: uiFormat("Local voice media is closed. Server hangup is unconfirmed or the account pool remains quarantined; no new session can start until the pool is cleared. %@", mediaLossReason ?? ""))
                 } else {
                     voiceSession = nil
                     voiceSessionMediaEpoch = nil
@@ -925,7 +925,7 @@ public final class ZoeAppModel: ObservableObject {
                     if let mediaLossReason {
                         voiceStatus = .interrupted(reason: uiFormat("%@ Local media is closed. The setup attempt was stopped; this does not prove upstream termination or cancel a task.", mediaLossReason))
                     } else {
-                        voiceStatus = .unavailable(reason: userMessage(error))
+                        voiceStatus = .unavailable(reason: voiceUnavailableMessage())
                     }
                 }
             }
@@ -1003,7 +1003,7 @@ public final class ZoeAppModel: ObservableObject {
             }
         } catch {
             guard voiceSession?.voiceSessionId == session.voiceSessionId, voiceSessionMediaEpoch == mediaEpoch else { return }
-            voiceStatus = .interrupted(reason: uiFormat("Local media is closed, but server hangup is unconfirmed; the session remains fenced. %@%@", lossReason.map { $0 + " " } ?? "", userMessage(error)))
+            voiceStatus = .interrupted(reason: uiFormat("Local media is closed, but server hangup is unconfirmed; the session remains fenced. %@%@", lossReason.map { $0 + " " } ?? "", ""))
         }
     }
 
@@ -1116,7 +1116,7 @@ public final class ZoeAppModel: ObservableObject {
                     commandStatusByKey[key] = .needsReview
                     try? await refreshSnapshot()
                 }
-                notice = uiFormat("The voice turn may be committed, but task creation needs attention: %@", userMessage(error))
+                notice = uiText("The voice turn may be committed, but task creation needs attention.")
                 await reloadPendingCommandSummaries()
             }
         }
@@ -1472,7 +1472,7 @@ public final class ZoeAppModel: ObservableObject {
         exportArtifact = nil
         exportArtifactConnectionEpoch = nil
         if saved { exportStatus = uiText("Export saved on this device.") }
-        else if let error, (error as NSError).code != NSUserCancelledError { exportStatus = uiFormat("The export could not be saved: %@", userMessage(error)) }
+        else if let error, (error as NSError).code != NSUserCancelledError { exportStatus = uiText("The export could not be saved.") }
         else { exportStatus = uiText("Saving was canceled. The prepared temporary file was removed.") }
     }
 
@@ -1592,7 +1592,7 @@ public final class ZoeAppModel: ObservableObject {
             do { try await refreshSnapshot() }
             catch {
                 guard isCurrentConnection(generation, sourceAPI: sourceAPI) else { return false }
-                setStale(uiFormat("The command was accepted, but the latest snapshot could not be loaded: %@", userMessage(error)))
+                setStale(uiText("The command was accepted, but the latest snapshot could not be loaded."))
             }
             guard isCurrentConnection(generation, sourceAPI: sourceAPI) else { return false }
             if kind == "task.stop" {
@@ -1639,7 +1639,7 @@ public final class ZoeAppModel: ObservableObject {
             do { try await refreshSnapshot() }
             catch {
                 guard isCurrentConnection(generation, sourceAPI: api) else { return }
-                setStale(uiFormat("The action was accepted, but the latest snapshot could not be loaded: %@", userMessage(error)))
+                setStale(uiText("The action was accepted, but the latest snapshot could not be loaded."))
             }
             if let taskID = selectedTaskID, outcome.receipt.kind.hasPrefix("task.") { await loadTaskEntries(taskID: taskID) }
             if outcome.receipt.kind.hasPrefix("memory.") {
@@ -1839,7 +1839,7 @@ public final class ZoeAppModel: ObservableObject {
                     defaults.set(true, forKey: pushRevocationPendingKey(for: registrationOrigin, identityFingerprint: identityFingerprint))
                 }
             } else if generation == connectionGeneration.value {
-                notice = uiFormat("The device could not register for push wakeups: %@", userMessage(error))
+                notice = uiText("The device could not register for push wakeups.")
             }
         }
     }
@@ -1875,7 +1875,7 @@ public final class ZoeAppModel: ObservableObject {
             }
         } catch {
             if configuredServerURL == origin, pushIdentityFingerprint == identityFingerprint {
-                notice = uiFormat("Push wakeups are disabled locally, but the server could not confirm token revocation: %@", userMessage(error))
+                notice = uiText("Push wakeups are disabled locally, but the server could not confirm token revocation.")
             }
         }
     }
@@ -2088,7 +2088,7 @@ public final class ZoeAppModel: ObservableObject {
                     setOffline(error)
                     return
                 }
-                if snapshot == nil { setOffline(error) } else { setStale(uiFormat("Connection interrupted: %@", userMessage(error))) }
+                if snapshot == nil { setOffline(error) } else { setStale(uiText("Connection interrupted.")) }
             }
             let delay = streamBackoff
             streamBackoff = min(streamBackoff * 2, 30)
@@ -2112,7 +2112,7 @@ public final class ZoeAppModel: ObservableObject {
             do { try await refreshSnapshot() }
             catch {
                 guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI), !Task.isCancelled else { return }
-                setStale(uiFormat("Snapshot refresh failed: %@", userMessage(error)))
+                setStale(uiText("Snapshot refresh failed."))
             }
             guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI), !Task.isCancelled else { return }
             if envelope.aggregateType == "task", envelope.aggregateId == selectedTaskID {
@@ -2126,7 +2126,7 @@ public final class ZoeAppModel: ObservableObject {
             do { try await refreshSnapshot() }
             catch {
                 guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI), !Task.isCancelled else { return }
-                setStale(uiFormat("Snapshot repair failed: %@", userMessage(error)))
+                setStale(uiText("Snapshot repair failed."))
             }
             guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI), !Task.isCancelled else { return }
             if let taskID = selectedTaskID { await loadTaskEntries(taskID: taskID) }
@@ -2172,7 +2172,7 @@ public final class ZoeAppModel: ObservableObject {
             do { try await refreshSnapshot() }
             catch {
                 guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
-                setStale(uiFormat("Recovered commands, but the latest snapshot could not be loaded: %@", userMessage(error)))
+                setStale(uiText("Recovered commands, but the latest snapshot could not be loaded."))
             }
             guard isCurrentConnection(expectedGeneration, sourceAPI: sourceAPI) else { return }
             if let taskID = selectedTaskID { await loadTaskEntries(taskID: taskID) }
@@ -2332,34 +2332,42 @@ public final class ZoeAppModel: ObservableObject {
     }
 
     private func userMessage(_ error: Error) -> String {
+        if let failure = error as? ZoeError, case let .http(status, code, _, _) = failure {
+            api?.recordDiagnostic(phase: "client_error", requestPath: "client", httpStatus: status, errorType: "http_error", errorSummary: String(code.prefix(128)))
+        }
         if Self.isAccessDenied(error) { return uiText("The instance key was rejected. Replace it with the current key from your server.") }
         if error is ConnectionInputError { return uiText(error.localizedDescription) }
         if let error = error as? ZoeError,
            case let .http(status, code, _, details) = error,
            status == 409, code == "version_conflict" {
-            let current: String
-            switch details?["current_version"] {
-            case .integer(let value): current = String(value)
-            case .string(let value): current = value
-            default: current = uiText("unknown")
-            }
-            return uiFormat("This item changed on another device. The latest server state is being loaded. Current version: %@.", current)
+            _ = details
+            return uiText("This item changed on another device. The latest server state is being loaded.")
         }
         if let failure = error as? ZoeError {
             switch failure {
             case .missingCredential:
                 return uiText("Enter your server address and instance key to connect.")
-            case .http(_, _, let message, _):
-                return uiFormat("Server error: %@", message)
+            case .http:
+                return uiText("The server could not complete this request. Try again later.")
             case .credentialAccessDenied(let storage):
                 return uiFormat("Allow Zoe to access %@, then try again.", uiText(storage))
-            case .persistence(let message):
-                return uiFormat("Local storage error: %@", message)
+            case .persistence:
+                reportClientError(error, code: "local_storage")
+                return uiText("Zoe could not save data on this device. Try again.")
             default:
                 return uiText(failure.localizedDescription)
             }
         }
-        return uiFormat("An error occurred: %@", error.localizedDescription)
+        reportClientError(error, code: "unclassified")
+        return uiText("Something went wrong. Try again.")
+    }
+
+    private func reportClientError(_ error: Error, code: String) {
+        api?.recordDiagnostic(phase: "client_error", requestPath: "client", errorType: String(String(describing: type(of: error)).prefix(64)), errorSummary: code)
+    }
+
+    private func voiceUnavailableMessage() -> String {
+        uiText("Voice is unavailable right now. Text chat still works.")
     }
 
     private func cursor(_ candidate: String, isAtLeast baseline: String) -> Bool {

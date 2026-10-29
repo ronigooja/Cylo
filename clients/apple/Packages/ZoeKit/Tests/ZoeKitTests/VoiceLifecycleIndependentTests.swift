@@ -61,4 +61,13 @@ final class VoiceLifecycleIndependentTests: XCTestCase {
         XCTAssertFalse(model.canEndVoiceSession)
         guard case .interrupted = model.voiceStatus else { return XCTFail("current failure must stop local media") }
     }
+
+    @MainActor
+    func testClientErrorPresentationHidesServerDetails() async {
+        let model = ZoeAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        await model.refreshVoiceReadiness()
+        let visible = String(describing: model.voiceStatus)
+        XCTAssertFalse(visible.contains("Server error"))
+        XCTAssertFalse(visible.contains("quarantined until an operator"))
+    }
 }
