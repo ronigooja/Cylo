@@ -34,6 +34,12 @@ type appendPayload struct {
 	TaskID  string `json:"task_id"`
 	Content string `json:"content"`
 }
+
+var explicitConfirmationPhrases = map[string]bool{
+	"confirm": true, "confirm and continue": true, "yes, proceed": true,
+	"确认": true, "确认并继续": true, "是，继续": true,
+}
+
 type approvePayload struct {
 	TaskID     string `json:"task_id"`
 	ApprovalID string `json:"approval_id"`
@@ -226,6 +232,25 @@ func (s *Server) commandTaskAppend(ctx context.Context, tx *sql.Tx, c CommandCon
 	if status == "complete" || status == "failed" || status == "canceled" {
 		return contracts.CommandResult{}, nil, apiError(409, "state_conflict", "terminal task cannot accept entries", map[string]any{"status": status})
 	}
+	var interaction, scope, interactionRun, actionDigest, expires string
+	var interactionVersion int64
+	if err = tx.QueryRowContext(ctx, `SELECT interaction_state,interaction_scope,interaction_run_id,interaction_action_digest,coalesce(interaction_expires_at,''),interaction_expected_version FROM tasks WHERE id=? AND workspace_id=?`, p.TaskID, c.Principal.WorkspaceID).Scan(&interaction, &scope, &interactionRun, &actionDigest, &expires, &interactionVersion); err != nil {
+		return contracts.CommandResult{}, nil, err
+	}
+	if (status == "waiting" || status == "awaiting_user") && interaction == "none" {
+		interaction = "awaiting_message"
+	}
+	confirmed := false
+	if interaction == "explicit_confirmation" {
+		if interactionVersion != version || scope == "" || interactionRun == "" || actionDigest == "" || expires == "" {
+			return contracts.CommandResult{}, nil, apiError(409, "confirmation_invalid", "confirmation context is incomplete or stale", nil)
+		}
+		deadline, parseErr := time.Parse(time.RFC3339Nano, expires)
+		if parseErr != nil || !c.AcceptedAt.Before(deadline) {
+			return contracts.CommandResult{}, nil, apiError(409, "confirmation_expired", "confirmation has expired", nil)
+		}
+		confirmed = explicitConfirmationPhrases[strings.ToLower(p.Content)]
+	}
 	id, err := randomID()
 	if err != nil {
 		return contracts.CommandResult{}, nil, err
@@ -236,14 +261,32 @@ func (s *Server) commandTaskAppend(ctx context.Context, tx *sql.Tx, c CommandCon
 		return contracts.CommandResult{}, nil, err
 	}
 	version++
-	if _, err = tx.ExecContext(ctx, `UPDATE tasks SET version=?,updated_at=? WHERE id=? AND workspace_id=?`, version, at, p.TaskID, c.Principal.WorkspaceID); err != nil {
+	nextStatus := status
+	if (status == "waiting" || status == "awaiting_user") && interaction == "awaiting_message" {
+		nextStatus = "queued"
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE tasks SET status=?,interaction_state=?,version=?,updated_at=? WHERE id=? AND workspace_id=?`, nextStatus, interaction, version, at, p.TaskID, c.Principal.WorkspaceID); err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE approvals SET status='canceled',version=version+1 WHERE task_id=? AND workspace_id=? AND status='pending'`, p.TaskID, c.Principal.WorkspaceID); err != nil {
 		return contracts.CommandResult{}, nil, err
 	}
 	entry := contracts.TaskEntry{ID: id, Kind: "user_message", Content: p.Content, AuthorDeviceID: c.Principal.DeviceID, CreatedAt: c.AcceptedAt}
-	return contracts.CommandResult{ResourceType: "task", ResourceID: p.TaskID, ResourceVersion: version}, []contracts.Event{event("task.entry_appended", "task", p.TaskID, version, map[string]any{"task_id": p.TaskID, "entry": entry})}, nil
+	events := []contracts.Event{event("task.entry_appended", "task", p.TaskID, version, map[string]any{"task_id": p.TaskID, "entry": entry, "interaction_state": interaction, "status": nextStatus})}
+	if interaction == "explicit_confirmation" && confirmed {
+		confirmationID, genErr := randomID()
+		if genErr != nil {
+			return contracts.CommandResult{}, nil, genErr
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO task_confirmations(id,workspace_id,task_id,run_id,action_digest,task_version,scope,confirmed_text,device_id,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, confirmationID, c.Principal.WorkspaceID, p.TaskID, interactionRun, actionDigest, version, scope, p.Content, c.Principal.DeviceID, at, expires); err != nil {
+			return contracts.CommandResult{}, nil, err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE tasks SET interaction_state='none',interaction_scope='',interaction_run_id='',interaction_action_digest='',interaction_expires_at=NULL,interaction_expected_version=0 WHERE id=? AND workspace_id=?`, p.TaskID, c.Principal.WorkspaceID); err != nil {
+			return contracts.CommandResult{}, nil, err
+		}
+		events = append(events, event("task.confirmation_recorded", "task", p.TaskID, version, map[string]any{"task_id": p.TaskID, "run_id": interactionRun, "action_digest": actionDigest, "scope": scope, "confirmed_text": p.Content, "device_id": c.Principal.DeviceID, "expires_at": expires}))
+	}
+	return contracts.CommandResult{ResourceType: "task", ResourceID: p.TaskID, ResourceVersion: version}, events, nil
 }
 
 func (s *Server) commandTaskStop(ctx context.Context, tx *sql.Tx, c CommandContext, req contracts.CommandRequest) (contracts.CommandResult, []contracts.Event, error) {

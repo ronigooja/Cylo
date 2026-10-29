@@ -370,6 +370,33 @@ CREATE INDEX client_diagnostic_events_request ON client_diagnostic_events(client
 	}}); err != nil {
 		return err
 	}
+	if err := s.RegisterMigration(Migration{Namespace: "core", Version: 10, Name: "server_owned_task_interaction", Up: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+ALTER TABLE tasks ADD COLUMN interaction_state TEXT NOT NULL DEFAULT 'none' CHECK(interaction_state IN ('none','awaiting_message','explicit_confirmation','approval_required'));
+ALTER TABLE tasks ADD COLUMN interaction_scope TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN interaction_run_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN interaction_action_digest TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN interaction_expires_at TEXT;
+ALTER TABLE tasks ADD COLUMN interaction_expected_version INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE task_confirmations (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+  task_id TEXT NOT NULL REFERENCES tasks(id),
+  run_id TEXT NOT NULL,
+  action_digest TEXT NOT NULL,
+  task_version INTEGER NOT NULL,
+  scope TEXT NOT NULL,
+  confirmed_text TEXT NOT NULL,
+  device_id TEXT NOT NULL REFERENCES actors(id),
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX task_confirmations_task ON task_confirmations(workspace_id,task_id,created_at);
+`)
+		return err
+	}}); err != nil {
+		return err
+	}
 	if err := RegisterInstanceAuthMigration(s); err != nil {
 		return err
 	}

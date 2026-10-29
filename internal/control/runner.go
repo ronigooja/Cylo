@@ -384,9 +384,9 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	var workspace, taskID, attempt, runnerID, status, desired, boundProject, boundSession, boundHarness string
+	var workspace, taskID, attempt, runnerID, status, desired, boundProject, boundSession, boundHarness, authorizedDevice string
 	var fence uint64
-	err = tx.QueryRowContext(r.Context(), `SELECT workspace_id,task_id,attempt_id,runner_id,status,desired_control,fence,ao_project_id,ao_session_id,harness FROM runs WHERE id=?`, runID).Scan(&workspace, &taskID, &attempt, &runnerID, &status, &desired, &fence, &boundProject, &boundSession, &boundHarness)
+	err = tx.QueryRowContext(r.Context(), `SELECT workspace_id,task_id,attempt_id,runner_id,status,desired_control,fence,ao_project_id,ao_session_id,harness,authorized_device_id FROM runs WHERE id=?`, runID).Scan(&workspace, &taskID, &attempt, &runnerID, &status, &desired, &fence, &boundProject, &boundSession, &boundHarness, &authorizedDevice)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, apiError(404, "not_found", "run not found", nil))
 		return
@@ -620,8 +620,8 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		// envelope as the chat reply.
 		taskResult = summary
 		var resultFields map[string]json.RawMessage
+		var assistantOutput string
 		if json.Unmarshal(observation.Result, &resultFields) == nil {
-			var assistantOutput string
 			if raw, ok := resultFields["assistant_output"]; ok && json.Unmarshal(raw, &assistantOutput) == nil && assistantOutput != "" {
 				taskResult = assistantOutput
 			}
@@ -636,12 +636,23 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 			writeError(w, e)
 			return
 		}
-		_, err = tx.ExecContext(r.Context(), `UPDATE tasks SET result=?,version=version+1,updated_at=? WHERE id=? AND workspace_id=?`, summary, now.Format(time.RFC3339Nano), taskID, workspace)
+		_, err = tx.ExecContext(r.Context(), `UPDATE tasks SET result=?,version=version+1,updated_at=? WHERE id=? AND workspace_id=?`, taskResult, now.Format(time.RFC3339Nano), taskID, workspace)
 		if err != nil {
 			writeError(w, err)
 			return
 		}
 		taskVersion++
+		if assistantOutput != "" {
+			entryID, entryErr := randomID()
+			if entryErr != nil {
+				writeError(w, entryErr)
+				return
+			}
+			if _, entryErr = tx.ExecContext(r.Context(), `INSERT INTO task_entries(id,task_id,workspace_id,kind,content,author_device_id,created_at) VALUES(?,?,?,'assistant_message',?,?,?)`, entryID, taskID, workspace, assistantOutput, authorizedDevice, now.Format(time.RFC3339Nano)); entryErr != nil {
+				writeError(w, entryErr)
+				return
+			}
+		}
 	}
 	if observation.Kind == "failure" {
 		_, err = tx.ExecContext(r.Context(), `UPDATE tasks SET error=?,version=version+1,updated_at=? WHERE id=? AND workspace_id=?`, observation.Error, now.Format(time.RFC3339Nano), taskID, workspace)
@@ -775,7 +786,10 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if observation.Kind == "runtime_terminated" && nextTaskStatus == "awaiting_user" {
-		if err = ensureAcceptanceApprovalPlaceholder(r.Context(), tx, workspace, taskID); err != nil {
+		// Ordinary assistant results require conversational follow-up, not result
+		// acceptance. Exceptional approvals use the explicit approval_required
+		// interaction state and are created by their owning policy handler.
+		if _, err = tx.ExecContext(r.Context(), `UPDATE tasks SET interaction_state='awaiting_message',interaction_scope='',interaction_run_id='',interaction_action_digest='',interaction_expires_at=NULL,interaction_expected_version=version WHERE id=? AND workspace_id=?`, taskID, workspace); err != nil {
 			writeError(w, err)
 			return
 		}

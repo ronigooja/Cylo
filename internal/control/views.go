@@ -71,15 +71,15 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (c
 		return out, err
 	}
 	projects.Close()
-	tasks, err := tx.QueryContext(ctx, `SELECT id,coalesce(project_id,''),title,goal,source,profile_id,status,version,created_at,updated_at,accepted_at,started_at,finished_at,result,error FROM tasks t WHERE workspace_id=? AND (owner_subject_id=?) ORDER BY created_at,id`, workspace, subject)
+	tasks, err := tx.QueryContext(ctx, `SELECT id,coalesce(project_id,''),title,goal,source,profile_id,status,version,created_at,updated_at,accepted_at,started_at,finished_at,result,error,interaction_state,interaction_scope,interaction_run_id,interaction_action_digest,interaction_expires_at FROM tasks t WHERE workspace_id=? AND (owner_subject_id=?) ORDER BY created_at,id`, workspace, subject)
 	if err != nil {
 		return out, err
 	}
 	for tasks.Next() {
 		var t contracts.Task
 		var created, updated string
-		var accepted, started, finished sql.NullString
-		if err = tasks.Scan(&t.ID, &t.ProjectID, &t.Title, &t.Goal, &t.Source, &t.ProfileID, &t.Status, &t.Version, &created, &updated, &accepted, &started, &finished, &t.Result, &t.Error); err != nil {
+		var accepted, started, finished, interactionExpires sql.NullString
+		if err = tasks.Scan(&t.ID, &t.ProjectID, &t.Title, &t.Goal, &t.Source, &t.ProfileID, &t.Status, &t.Version, &created, &updated, &accepted, &started, &finished, &t.Result, &t.Error, &t.InteractionState, &t.InteractionScope, &t.InteractionRunID, &t.InteractionActionDigest, &interactionExpires); err != nil {
 			tasks.Close()
 			return out, err
 		}
@@ -96,6 +96,15 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (c
 		if finished.Valid {
 			v := parseTime(finished.String)
 			t.FinishedAt = &v
+		}
+		if interactionExpires.Valid {
+			v := parseTime(interactionExpires.String)
+			t.InteractionExpiresAt = &v
+		}
+		t.Messages, err = loadTaskMessages(ctx, tx, workspace, t.ID)
+		if err != nil {
+			tasks.Close()
+			return out, err
 		}
 		if t.Status == "awaiting_user" {
 			var canAccept int
@@ -191,6 +200,25 @@ func loadSnapshot(ctx context.Context, tx *sql.Tx, workspace, subject string) (c
 	}
 	runs.Close()
 	return out, nil
+}
+
+func loadTaskMessages(ctx context.Context, tx *sql.Tx, workspace, taskID string) ([]contracts.TaskMessage, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id,task_id,kind,content,created_at FROM task_entries WHERE workspace_id=? AND task_id=? ORDER BY created_at,id`, workspace, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	messages := []contracts.TaskMessage{}
+	for rows.Next() {
+		var m contracts.TaskMessage
+		var created string
+		if err := rows.Scan(&m.ID, &m.TaskID, &m.Kind, &m.Content, &created); err != nil {
+			return nil, err
+		}
+		m.CreatedAt = parseTime(created)
+		messages = append(messages, m)
+	}
+	return messages, rows.Err()
 }
 
 func loadEvidence(ctx context.Context, tx *sql.Tx, workspace, task string) ([]contracts.Evidence, error) {

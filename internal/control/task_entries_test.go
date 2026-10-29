@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -11,6 +12,24 @@ import (
 	"github.com/ronigooja/Zoe/contracts"
 	"github.com/ronigooja/Zoe/internal/storage"
 )
+
+func appendTaskMessageForTest(t *testing.T, server *Server, taskID, content string, expected int64) (contracts.CommandResult, []contracts.Event, error) {
+	t.Helper()
+	tx, err := server.store.DB().BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	p := contracts.Principal{WorkspaceID: "default", SubjectID: "entries-owner", DeviceID: "entries-device", Scopes: []string{"client:command"}}
+	result, events, err := server.commandTaskAppend(context.Background(), tx, CommandContext{Principal: p, CommandID: "append-test", AcceptedAt: time.Date(2026, 10, 24, 13, 0, 0, 0, time.UTC)}, contracts.CommandRequest{ExpectedVersion: &expected, Payload: json.RawMessage(`{"task_id":"entries-task","content":"` + content + `"}`)})
+	if err != nil {
+		return result, events, err
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	return result, events, nil
+}
 
 func taskEntriesTestServer(t *testing.T) (*Server, func()) {
 	t.Helper()
@@ -215,5 +234,81 @@ func TestTaskEntriesHTTPRequiresDeviceReadScope(t *testing.T) {
 				t.Fatalf("status=%d want=%d body=%s", w.Code, test.want, w.Body.String())
 			}
 		})
+	}
+}
+
+func TestTaskAppendWaitingPersistsMessageAndTransitionsThroughServerPolicy(t *testing.T) {
+	server, closeStore := taskEntriesTestServer(t)
+	defer closeStore()
+	if _, err := server.store.DB().Exec(`UPDATE tasks SET status='waiting',interaction_state='awaiting_message' WHERE id='entries-task'`); err != nil {
+		t.Fatal(err)
+	}
+	result, events, err := appendTaskMessageForTest(t, server, "entries-task", "continue", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ResourceVersion != 2 || len(events) != 1 || events[0].Type != "task.entry_appended" {
+		t.Fatalf("unexpected append result=%+v events=%+v", result, events)
+	}
+	var status, interaction string
+	var count int
+	if err = server.store.DB().QueryRow(`SELECT status,interaction_state FROM tasks WHERE id='entries-task'`).Scan(&status, &interaction); err != nil {
+		t.Fatal(err)
+	}
+	if err = server.store.DB().QueryRow(`SELECT count(*) FROM task_entries WHERE task_id='entries-task' AND content='continue'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if status != "queued" || interaction != "awaiting_message" || count != 1 {
+		t.Fatalf("server policy not durable: status=%q interaction=%q count=%d", status, interaction, count)
+	}
+}
+
+func TestTaskAppendRejectsStaleVersionBeforeWriting(t *testing.T) {
+	server, closeStore := taskEntriesTestServer(t)
+	defer closeStore()
+	if _, _, err := appendTaskMessageForTest(t, server, "entries-task", "stale", 99); err == nil {
+		t.Fatal("stale append was accepted")
+	} else {
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.Code != "version_conflict" {
+			t.Fatalf("unexpected stale append error: %v", err)
+		}
+	}
+	var count int
+	if err := server.store.DB().QueryRow(`SELECT count(*) FROM task_entries WHERE task_id='entries-task' AND content='stale'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatal("stale append persisted a message")
+	}
+}
+
+func TestAmbiguousConfirmationIsRetainedButDoesNotAuthorize(t *testing.T) {
+	server, closeStore := taskEntriesTestServer(t)
+	defer closeStore()
+	expires := time.Date(2026, 10, 24, 14, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	if _, err := server.store.DB().Exec(`UPDATE tasks SET status='waiting',interaction_state='explicit_confirmation',interaction_scope='delete:project',interaction_run_id='run-1',interaction_action_digest='digest-1',interaction_expires_at=?,interaction_expected_version=1 WHERE id='entries-task'`, expires); err != nil {
+		t.Fatal(err)
+	}
+	result, events, err := appendTaskMessageForTest(t, server, "entries-task", "可以", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ResourceVersion != 2 || len(events) != 1 {
+		t.Fatalf("unexpected ambiguous result=%+v events=%+v", result, events)
+	}
+	var interaction string
+	if err = server.store.DB().QueryRow(`SELECT interaction_state FROM tasks WHERE id='entries-task'`).Scan(&interaction); err != nil {
+		t.Fatal(err)
+	}
+	if interaction != "explicit_confirmation" {
+		t.Fatalf("ambiguous language changed authorization state: %q", interaction)
+	}
+	var confirmations int
+	if err = server.store.DB().QueryRow(`SELECT count(*) FROM task_confirmations`).Scan(&confirmations); err != nil {
+		t.Fatal(err)
+	}
+	if confirmations != 0 {
+		t.Fatal("ambiguous language created an authorization audit record")
 	}
 }
