@@ -18,8 +18,8 @@ import (
 
 // Deployment records resolved host paths; discovery never changes services.
 type Deployment struct {
-	Mode                                                                                                              Mode
-	Root, AOEnv, RunnerEnv, StackEnv, DatabasePath, ComposeFile, ComposeProject, AOService, RunnerService, DropInPath string
+	Mode                                                                                            Mode
+	Root, RunnerEnv, StackEnv, DatabasePath, ComposeFile, ComposeProject, RunnerService, DropInPath string
 }
 
 func DiscoverDeployment(ctx context.Context, m Manager, root string) (Deployment, error) {
@@ -29,7 +29,7 @@ func DiscoverDeployment(ctx context.Context, m Manager, root string) (Deployment
 	if !filepath.IsAbs(root) {
 		return Deployment{}, errors.New("deployment root must be absolute")
 	}
-	d := Deployment{Root: root, Mode: ModeUnknown, AOEnv: filepath.Join(root, "ao.env"), RunnerEnv: filepath.Join(root, "zoe-runner.env"), StackEnv: filepath.Join(root, "zoe-stack.env"), RunnerService: "zoe-runner.service", ComposeProject: "zoe"}
+	d := Deployment{Root: root, Mode: ModeUnknown, RunnerEnv: filepath.Join(root, "zoe-runner.env"), StackEnv: filepath.Join(root, "zoe-stack.env"), RunnerService: "zoe-runner.service", ComposeProject: "zoe"}
 	if v := os.Getenv("ZOE_DEPLOYMENT_MODE"); v != "" {
 		d.Mode = Mode(v)
 	}
@@ -37,9 +37,8 @@ func DiscoverDeployment(ctx context.Context, m Manager, root string) (Deployment
 		m = NewManager(nil)
 	}
 	// Only fixed metadata properties are requested; Environment is deliberately excluded.
-	out, err := m.Run(ctx, "systemctl", "show", "zoe-ao.service", "--property=LoadState,EnvironmentFiles,FragmentPath", "--no-pager")
+	out, err := m.Run(ctx, "systemctl", "show", d.RunnerService, "--property=LoadState,EnvironmentFiles,FragmentPath", "--no-pager")
 	if err == nil && strings.Contains(string(out), "LoadState=loaded") {
-		d.AOService = "zoe-ao.service"
 		if d.Mode == ModeUnknown {
 			d.Mode = ModeSystemd
 		}
@@ -50,7 +49,7 @@ func DiscoverDeployment(ctx context.Context, m Manager, root string) (Deployment
 					v = v[:i]
 				}
 				if filepath.IsAbs(v) && !strings.ContainsAny(v, "\r\n\x00") {
-					d.AOEnv = v
+					d.RunnerEnv = v
 				}
 			}
 		}
@@ -81,9 +80,9 @@ func DiscoverDeployment(ctx context.Context, m Manager, root string) (Deployment
 	if d.DatabasePath == "" {
 		d.DatabasePath = "/var/lib/zoe/server/data/zoe.sqlite"
 	}
-	d.DropInPath = "/etc/systemd/system/zoe-ao.service.d/90-zoe-provider.conf"
+	d.DropInPath = "/etc/systemd/system/zoe-runner.service.d/90-zoe-provider.conf"
 	if root != "/etc/zoe" {
-		d.DropInPath = filepath.Join(root, "systemd", "zoe-ao.service.d", "90-zoe-provider.conf")
+		d.DropInPath = filepath.Join(root, "systemd", "zoe-runner.service.d", "90-zoe-provider.conf")
 	}
 	// Reload the non-secret managed deployment descriptor, if present.
 	if b, e := os.ReadFile(filepath.Join(root, "provider-deployment.json")); e == nil && len(b) < 16384 {
@@ -136,17 +135,20 @@ func readEnv(path string) (map[string]string, error) {
 }
 func (d Deployment) ProviderConfig() (ProviderConfig, error) {
 	c := ProviderConfig{SecretPath: DefaultSecretPath(d.Root)}
-	v, err := readEnv(d.AOEnv)
+	v, err := readEnv(d.RunnerEnv)
 	if os.IsNotExist(err) {
 		return c, nil
 	}
 	if err != nil {
 		return c, err
 	}
-	c.BaseURL = v["AO_CODEX_EXTERNAL_BASE_URL"]
-	c.Model = v["AO_CODEX_EXTERNAL_MODEL"]
-	if v["AO_CODEX_EXTERNAL_API_KEY_FILE"] != "" {
-		c.SecretPath = v["AO_CODEX_EXTERNAL_API_KEY_FILE"]
+	c.BaseURL = v["ZOE_OPENCODE_PROVIDER_BASE_URL"]
+	c.Model = v["ZOE_OPENCODE_MODEL"]
+	c.Image = v["ZOE_OPENCODE_IMAGE"]
+	c.ProviderSocket = v["ZOE_OPENCODE_PROVIDER_SOCKET"]
+	c.WorkspaceRoot = v["ZOE_OPENCODE_WORKSPACE_ROOT"]
+	if v["ZOE_OPENCODE_PROVIDER_KEY_FILE"] != "" {
+		c.SecretPath = v["ZOE_OPENCODE_PROVIDER_KEY_FILE"]
 	}
 	return c, nil
 }
@@ -155,16 +157,10 @@ func (d Deployment) InspectConfig() InspectConfig {
 	services := []string{}
 	if d.Mode == ModeCompose {
 		services = []string{"zoe-server", "zoe-memory-worker", "qdrant"}
-		if d.AOService != "" {
-			services = append(services, d.AOService)
-		}
 	} else {
 		services = []string{"zoe-compose.service", d.RunnerService}
-		if d.AOService != "" {
-			services = append(services, d.AOService)
-		}
 	}
-	return InspectConfig{Mode: d.Mode, Services: services, ComposeProject: d.ComposeProject, ComposeFile: d.ComposeFile, ComposeEnv: d.StackEnv, ComposeOverride: d.composeOverride(), SecretPath: c.SecretPath, ProviderBaseURL: c.BaseURL, ProviderModel: c.Model, ProviderConfigSource: d.AOEnv, ProviderLastCheck: LastProviderCheck(d)}
+	return InspectConfig{Mode: d.Mode, Services: services, ComposeProject: d.ComposeProject, ComposeFile: d.ComposeFile, ComposeEnv: d.StackEnv, SecretPath: c.SecretPath, ProviderBaseURL: c.BaseURL, ProviderModel: c.Model, ProviderConfigSource: d.RunnerEnv, ProviderLastCheck: LastProviderCheck(d)}
 }
 
 func lockDeployment(ctx context.Context, d Deployment) (func(), error) {
@@ -255,39 +251,22 @@ func (m Manager) ConfigureProvider(ctx context.Context, d Deployment, c Provider
 		return ProbeResult{}, err
 	}
 	defer unlock()
-	if !validService(d.AOService) {
-		return ProbeResult{}, errors.New("AO service is not discovered; select its deployment service before applying")
+	if d.RunnerService != "zoe-runner.service" {
+		return ProbeResult{}, errors.New("zoe-runner.service is not the configured provider consumer")
 	}
-	if d.Mode != ModeSystemd && d.Mode != ModeCompose {
-		return ProbeResult{}, errors.New("unknown deployment mode")
+	if d.Mode != ModeSystemd {
+		return ProbeResult{}, errors.New("provider configuration requires the systemd zoe-runner.service deployment")
 	}
 	result := Probe(ctx, c, client)
 	if !result.OK() {
 		_ = saveProviderCheck(d, result)
 		return result, fmt.Errorf("provider validation failed: %s", result.ErrorCategory)
 	}
-	if d.Mode == ModeSystemd && strings.HasSuffix(d.DropInPath, "/zoe-ao.service.d/90-zoe-provider.conf") && d.AOService != "zoe-ao.service" {
-		d.DropInPath = filepath.Join(filepath.Dir(filepath.Dir(d.DropInPath)), d.AOService+".d", "90-zoe-provider.conf")
+	paths := []string{d.RunnerEnv, c.SecretPath, filepath.Join(d.Root, "provider-deployment.json")}
+	if d.DropInPath == "" {
+		return result, errors.New("runner systemd drop-in path is required")
 	}
-	composeUID, composeGID := -1, -1
-	if d.Mode == ModeCompose {
-		composeUID, composeGID, err = m.composeCredentialOwner(ctx, d)
-		if err != nil {
-			return result, err
-		}
-	}
-	paths := []string{d.AOEnv, c.SecretPath, filepath.Join(d.Root, "provider-deployment.json")}
-	if d.Mode == ModeSystemd {
-		if d.DropInPath == "" {
-			return result, errors.New("AO systemd drop-in path is required")
-		}
-		paths = append(paths, d.DropInPath)
-	} else {
-		if !filepath.IsAbs(d.ComposeFile) || !regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`).MatchString(d.AOService) {
-			return result, errors.New("Compose AO service and absolute base file are required")
-		}
-		paths = append(paths, d.composeOverride())
-	}
+	paths = append(paths, d.DropInPath)
 	seen := map[string]bool{}
 	saved := []fileSnapshot{}
 	for _, path := range paths {
@@ -310,20 +289,18 @@ func (m Manager) ConfigureProvider(ctx context.Context, d Deployment, c Provider
 				errs = append(errs, fmt.Errorf("restore configuration: %w", e))
 			}
 		}
-		if d.Mode == ModeSystemd {
-			if parentErr == nil {
-				if st, ok := parentInfo.Sys().(*syscall.Stat_t); ok {
-					if e := os.Chown(parent, int(st.Uid), int(st.Gid)); e != nil {
-						errs = append(errs, e)
-					}
-				}
-				if e := os.Chmod(parent, parentInfo.Mode().Perm()); e != nil {
+		if parentErr == nil {
+			if st, ok := parentInfo.Sys().(*syscall.Stat_t); ok {
+				if e := os.Chown(parent, int(st.Uid), int(st.Gid)); e != nil {
 					errs = append(errs, e)
 				}
-			} else if os.IsNotExist(parentErr) {
-				if e := os.Remove(parent); e != nil && !os.IsNotExist(e) {
-					errs = append(errs, e)
-				}
+			}
+			if e := os.Chmod(parent, parentInfo.Mode().Perm()); e != nil {
+				errs = append(errs, e)
+			}
+		} else if os.IsNotExist(parentErr) {
+			if e := os.Remove(parent); e != nil && !os.IsNotExist(e) {
+				errs = append(errs, e)
 			}
 		}
 		fresh, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -365,28 +342,15 @@ func (m Manager) ConfigureProvider(ctx context.Context, d Deployment, c Provider
 		if err = writeFileAtomicOwned(c.SecretPath, []byte(c.Secret), 0600, uid, gid); err != nil {
 			return result, rollback(err)
 		}
-	} else {
-		if err = writeFileAtomicOwned(c.SecretPath, []byte(c.Secret), 0600, composeUID, composeGID); err != nil {
-			return result, rollback(err)
-		}
 	}
-	if err = WriteAOEnvAtomic(d.AOEnv, c); err != nil {
+	if err = WriteRunnerEnvAtomic(d.RunnerEnv, c); err != nil {
 		return result, rollback(err)
 	}
-	if d.Mode == ModeSystemd {
-		if strings.ContainsAny(d.AOEnv, "\r\n\x00%\"\\") {
-			return result, rollback(errors.New("unsupported systemd environment path"))
-		}
-		if err = writeFileAtomic(d.DropInPath, []byte("[Service]\nEnvironmentFile=\""+d.AOEnv+"\"\n"), 0644); err != nil {
-			return result, rollback(err)
-		}
+	if strings.ContainsAny(d.RunnerEnv, "\r\n\x00%\"\\") {
+		return result, rollback(errors.New("unsupported systemd environment path"))
 	}
-	if d.Mode == ModeCompose {
-		config := map[string]any{"services": map[string]any{d.AOService: map[string]any{"environment": map[string]string{"AO_CODEX_EXTERNAL_BASE_URL": c.BaseURL, "AO_CODEX_EXTERNAL_MODEL": c.Model, "AO_CODEX_EXTERNAL_API_KEY_FILE": c.SecretPath}, "volumes": []any{map[string]any{"type": "bind", "source": c.SecretPath, "target": c.SecretPath, "read_only": true, "bind": map[string]bool{"create_host_path": false}}}}}}
-		data, _ := json.MarshalIndent(config, "", "  ")
-		if err = writeFileAtomic(d.composeOverride(), data, 0600); err != nil {
-			return result, rollback(err)
-		}
+	if err = writeFileAtomic(d.DropInPath, []byte("[Service]\nEnvironmentFile=\""+d.RunnerEnv+"\"\n"), 0644); err != nil {
+		return result, rollback(err)
 	}
 	data, _ := json.Marshal(d)
 	if err = writeFileAtomic(filepath.Join(d.Root, "provider-deployment.json"), data, 0600); err != nil {
@@ -402,36 +366,14 @@ func (m Manager) ConfigureProvider(ctx context.Context, d Deployment, c Provider
 	}
 	return result, nil
 }
-func (d Deployment) composeOverride() string {
-	return filepath.Join(d.Root, "ao-provider.compose.json")
-}
-func (d Deployment) composeArgs() []string {
-	args := composeArgs(d.ComposeProject, d.ComposeFile)
-	if _, err := os.Stat(d.StackEnv); err == nil {
-		args = append(args, "--env-file", d.StackEnv)
-	}
-	if _, err := os.Stat(d.composeOverride()); err == nil {
-		args = append(args, "--file", d.composeOverride())
-	}
-	return args
-}
 func (m Manager) RefreshProvider(ctx context.Context, d Deployment) error {
 	if m.Run == nil {
 		m = NewManager(nil)
 	}
-	if !validService(d.AOService) {
-		return errors.New("AO service is not discovered")
+	if d.RunnerService != "zoe-runner.service" {
+		return errors.New("zoe-runner.service is not discovered")
 	}
-	if d.Mode == ModeCompose {
-		if _, err := m.Run(ctx, "docker", append(d.composeArgs(), "config", "--quiet")...); err != nil {
-			return commandError("docker compose config", err)
-		}
-		if _, err := m.Run(ctx, "docker", append(d.composeArgs(), "up", "-d", "--no-build", "--no-deps", "--force-recreate", d.AOService)...); err != nil {
-			return commandError("docker compose up", err)
-		}
-		return nil
-	}
-	return m.Reload(ctx, d.Mode, []string{d.AOService}, d.ComposeProject, d.ComposeFile)
+	return m.Reload(ctx, ModeSystemd, []string{d.RunnerService}, d.ComposeProject, d.ComposeFile)
 }
 func (m Manager) TestProvider(ctx context.Context, d Deployment, c ProviderConfig, client *http.Client) (ProbeResult, error) {
 	unlock, err := lockDeployment(ctx, d)
@@ -487,55 +429,3 @@ func validService(name string) bool {
 
 // LockDeployment serializes cooperating provider and instance-key operations.
 func LockDeployment(ctx context.Context, d Deployment) (func(), error) { return lockDeployment(ctx, d) }
-
-// composeCredentialOwner resolves only service identity metadata. Command output is
-// never included in errors because rendered Compose configuration may contain secrets.
-func (m Manager) composeCredentialOwner(ctx context.Context, d Deployment) (int, int, error) {
-	out, err := m.Run(ctx, "docker", append(d.composeArgs(), "config", "--format", "json")...)
-	if err != nil {
-		return 0, 0, errors.New("cannot inspect Compose AO service identity")
-	}
-	var cfg struct {
-		Services map[string]struct {
-			User  string `json:"user"`
-			Image string `json:"image"`
-		} `json:"services"`
-	}
-	if json.Unmarshal(out, &cfg) != nil {
-		return 0, 0, errors.New("invalid Compose identity metadata")
-	}
-	service, ok := cfg.Services[d.AOService]
-	if !ok {
-		return 0, 0, errors.New("AO service absent from Compose configuration")
-	}
-	identity := service.User
-	if identity == "" {
-		if service.Image == "" {
-			return 0, 0, errors.New("AO image identity unavailable")
-		}
-		out, err = m.Run(ctx, "docker", "image", "inspect", "--format", "{{.Config.User}}", service.Image)
-		if err != nil {
-			return 0, 0, errors.New("cannot inspect AO image user")
-		}
-		identity = strings.TrimSpace(string(out))
-	}
-	if identity == "" || identity == "root" {
-		return 0, 0, nil
-	}
-	parts := strings.Split(identity, ":")
-	if len(parts) > 2 {
-		return 0, 0, errors.New("unsupported AO container identity")
-	}
-	uid, err := strconv.Atoi(parts[0])
-	if err != nil || uid < 0 {
-		return 0, 0, errors.New("AO container user must have a numeric UID for credential ownership")
-	}
-	gid := uid
-	if len(parts) == 2 {
-		gid, err = strconv.Atoi(parts[1])
-		if err != nil || gid < 0 {
-			return 0, 0, errors.New("AO container group must have a numeric GID")
-		}
-	}
-	return uid, gid, nil
-}

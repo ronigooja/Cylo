@@ -22,7 +22,7 @@ Runtime contracts use neutral `Runtime*` names; AO-specific fields are compatibi
 - `no-effect`: no container with the expected run/attempt/fence labels exists;
 - `terminated`: the exact container has been removed and its absence verified.
 
-Forward migration maps `codex` and empty runtime values to `opencode`; unknown values are quarantined. Legacy `ao_*` columns remain until their data is backfilled. Before AO is uninstalled, stop new claims, reconcile the four uncertain runs and retained containers through the existing reconciliation process, and retain AO binaries and state for a rollback window. The [CY-05-* requirement rewrite](../../product.md) is follow-up work and is not part of this ADR change.
+Forward migration maps `codex` and empty runtime values to `opencode`; unknown values are quarantined. Legacy `ao_*` columns remain until their data is backfilled. The four uncertain historical runs and retained legacy containers were abandoned by operator decision; no reconciliation gate remains for them. The [CY-05-* requirement rewrite](../../product.md) is follow-up work and is not part of this ADR change.
 
 ## Open verification
 

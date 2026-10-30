@@ -7,6 +7,8 @@ This file is an evidence record, not an acceptance statement; category definitio
 
 ## Source/environment and observed checks
 
+The AO references in the retained observations below are historical only.
+
 Owner and independent AO/control/runner review reported passing targeted tests; the integrated Go suite and relevant race packages passed on the owner checkpoint. These checks cover local ledger and control behavior.
 
 ## Acceptance limits
