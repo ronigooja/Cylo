@@ -2,6 +2,14 @@
 
 These retained observations still support current implementation conclusions. Each record retains its source version, environment, result, and limitations; earlier author-reported checks are not newly rerun by this documentation change. The [pre-restructure source record](https://github.com/ronigooja/Zoe/blob/95ee55a5bbd8dccfb7f14af9f9703bb83727da6c/docs/master-plan.md) supplies provenance for local logs and review reports that have no public CI artifact.
 
+## Current OpenCode acceptance gates
+
+The Zoe-owned runtime remains unaccepted until evidence covers: streaming provider finish and token/usage propagation through the bridge; in-flight crash recovery without duplicate effects; runner-enforced tool-step/time/budget limits; and migration of the four uncertain historical AO runs through exact label lookup and fail-closed reconciliation. These are open gates, not claims established by the historical records below.
+
+## Historical superseded AO/Codex baseline
+
+The AO/Codex records in this register are retained as historical evidence only. They are superseded by the Zoe-owned OpenCode runtime and must not be used as current deployment, acceptance, or recovery evidence.
+
 ## Evidence categories and acceptance boundary
 
 This register is the authoritative source for the distinction between source review, fixtures, hosted CI, installation/startup, and end-to-end acceptance. A document, source review, fixture, CI result, installation result, health response, or component check is evidence of that activity only; it is not product acceptance or milestone acceptance unless the applicable acceptance gate is explicitly completed.
@@ -24,16 +32,16 @@ The concise-error/automatic-diagnostic rule is an approved product and architect
 
 | Area | Source/environment and observed checks | Acceptance limits |
 |---|---|---|
-| Control plane and runner | The integrated source, fixture, and independent capability checks passed at the recorded checkpoints; the live AO attempt remains uncertain and production deployment, migration fencing, and complete scenario acceptance remain open. See the [full evidence record](evidence/control-plane-and-runner.md). | A successful real AO task chain with provider/tool/artifact evidence and confirmed termination; recovery against a real AO deployment; provider-side usage/cost evidence; production deployment and cross-host migration fencing; complete scenario acceptance. |
+| Control plane and runner | The integrated source, fixture, and independent capability checks passed at the recorded checkpoints; the live historical runtime attempt remains uncertain and production deployment, migration fencing, and complete scenario acceptance remain open. See the [full evidence record](evidence/control-plane-and-runner.md). | A successful real OpenCode task chain with provider/tool/artifact evidence and confirmed termination; recovery against a real OpenCode deployment; provider-side usage/cost evidence; production deployment and cross-host migration fencing; complete scenario acceptance. |
 | Budget enforcement | Targeted owner and independent reviews passed local ledger/control checks, while provider-backed usage, tool-step, artifact, and hard-deadline enforcement remain unverified. See the [full evidence record](evidence/budget-enforcement.md). | Production per-provider-call usage, tool-step and artifact enforcement, hard-deadline fencing, and provider-backed cost accounting remain unverified; see the [full evidence record](evidence/budget-enforcement.md). |
-| Memory and export | Component composition, bounded export, restore-candidate, cache/temp, and backup-manifest checks passed on the recorded local revisions; live AO/provider behavior and physical external-store deletion were not established. See the [full evidence record](evidence/memory-and-export.md). | The maintenance user's current authority generation/head/hash remains the trust root; journal continuity does not prove every restore transition independently. Real Mem0/Qdrant cleanup and physical external-store deletion remain pending; unsupported resources stay `adapter_missing` and cannot be manually cleared. Production backup erasure, a measured retention guarantee, and restore rehearsal remain open. |
+| Memory and export | Component composition, bounded export, restore-candidate, cache/temp, and backup-manifest checks passed on the recorded local revisions; live OpenCode/provider behavior and physical external-store deletion were not established. See the [full evidence record](evidence/memory-and-export.md). | The maintenance user's current authority generation/head/hash remains the trust root; journal continuity does not prove every restore transition independently. Real Mem0/Qdrant cleanup and physical external-store deletion remain pending; unsupported resources stay `adapter_missing` and cannot be manually cleared. Production backup erasure, a measured retention guarantee, and restore rehearsal remain open. |
 | Voice | `PATH=/usr/local/go/bin:$PATH go test ./...` passed on the integrated source candidate after commit `c0380c7`, including voice, acceptance, and server packages. This verifies local code paths only. | The selected Space3044 response does not expose account-lease identity or trusted account-scoped termination evidence. The adapter remains fail-closed; safe pool account reuse, real gateway behavior, interruption, device, and voice-to-task acceptance remain unverified. |
 | Native Apple clients | Source review and the recorded 2026-10-24 macOS build/install/startup and reachability checks passed; APNs, current-key flows, iOS devices, and real-device voice/media acceptance remain open. See the [full evidence record](evidence/native-apple-clients.md). | Current-key authenticated macOS app flows, distribution signing/notarization, iPhone/iPad installation, APNs delivery, and real-device voice/media acceptance. |
 | Apple interface redesign | The recorded Linux/API checks, 67-test Swift suite, fresh macOS/iOS builds, syntax and documentation checks passed at the stated checkpoints; the checks do not type-check Swift or render the UI. See the [full evidence record](evidence/apple-interface-redesign.md). | The installation refresh establishes fresh Swift tests and macOS/iOS app-target builds, macOS local installation/startup, and Launchpad registration only. Screenshots across the native interface requirements, core UI flow tests, VoiceOver/Dynamic Type/keyboard checks, real iPhone/iPad devices, and real services remain open. No complete redesign UI or product acceptance is claimed. |
-| Capabilities | The integrated trigger→control/engine→fake AO HTTP fixture passed through authorized acceptance, terminal report, and slot release. Owner and independent reviewer both passed the lifecycle test; the independent command was `go test ./internal/capabilities -run TestCapabilityTriggerRunnerAOResultChain -count=1`. Isolated Docker recovery and revocation checks passed on synthetic workloads (76.52 s and 26.62 s respectively). These local tests do not exercise real AO or external business actions. | Real AO-backed trigger execution, real external actions, production service lifecycle/deployment and recovery. |
+| Capabilities | The integrated trigger→control/engine→historical fake runtime HTTP fixture passed through authorized acceptance, terminal report, and slot release. Owner and independent reviewer both passed the lifecycle test; the independent command was `go test ./internal/capabilities -run TestCapabilityTriggerRunnerAOResultChain -count=1`. Isolated Docker recovery and revocation checks passed on synthetic workloads (76.52 s and 26.62 s respectively). These local tests do not exercise real OpenCode or external business actions. | Real AO-backed trigger execution, real external actions, production service lifecycle/deployment and recovery. |
 | Backup and recovery | The recorded Go and Python backup/export/recovery checks passed on candidate `d9f97d7e21b81bf62b4f7132698761ac3703bf85` and related local revisions; fixtures remain local and do not prove production recovery or deletion. See the [full evidence record](evidence/backup-and-recovery.md). | Preserve the operator-maintained current generation/head/hash as the trust root; journal continuity does not prove every restore transition independently. Complete real external adapter checkpoints and physical deletion; physical host migration; production host/systemd isolation; measured RPO/RTO; production backup/restore and full data-erasure acceptance. |
-| Operator CLI and QR connection | Dependency version/checksums resolved without compilation. Shell syntax and whitespace checks passed for release/install changes. The later [hosted records](#hosted-runtime-and-installation-verification) establish integrated Go/race, staging, Swift, and app-build checks on their stated revisions. | Actual systemd/Compose change and rollback behavior, release installation, physical iPhone/iPad scanning, and real AO/provider execution. No service deployment or external CLIProxyAPI change is established by this candidate. |
-| Linux deployment | On 2026-10-24 the ARM64 images built and the final release started locally; runner authentication, Linux/Mac reachability, Qdrant readiness, and independent checks passed. See the [installation source record](https://github.com/ronigooja/Zoe/blob/95ee55a5bbd8dccfb7f14af9f9703bb83727da6c/docs/master-plan.md#historical-local-installation-evidence--2026-10-24). The pinned memory-model artifacts downloaded and hash verification passed; both Qdrant collections initialized. | Memory-job processing, real AO/model task execution, production security/isolation acceptance, operational recovery, and migration. |
+| Operator CLI and QR connection | Dependency version/checksums resolved without compilation. Shell syntax and whitespace checks passed for release/install changes. The later [hosted records](#hosted-runtime-and-installation-verification) establish integrated Go/race, staging, Swift, and app-build checks on their stated revisions. | Actual systemd/Compose change and rollback behavior, release installation, physical iPhone/iPad scanning, and real OpenCode/provider execution. No service deployment or external CLIProxyAPI change is established by this candidate. |
+| Linux deployment | On 2026-10-24 the ARM64 images built and the final release started locally; runner authentication, Linux/Mac reachability, Qdrant readiness, and independent checks passed. See the [installation source record](https://github.com/ronigooja/Zoe/blob/95ee55a5bbd8dccfb7f14af9f9703bb83727da6c/docs/master-plan.md#historical-local-installation-evidence--2026-10-24). The pinned memory-model artifacts downloaded and hash verification passed; both Qdrant collections initialized. | Memory-job processing, real OpenCode/model task execution, production security/isolation acceptance, operational recovery, and migration. |
 
 ## Client voice diagnostics — 2026-10-29
 
@@ -50,7 +58,7 @@ The earlier Settings repair at `042f289` passed 70 Swift tests, unsigned univers
 Hosted verification passed:
 
 - [Linux run 40371027074](https://github.com/ronigooja/Zoe/actions/runs/40371027074), source `c31d8d3d3b7d6643768af946521f3be04a198b50`, passed `go test ./...`, the expanded race check across control/runner/AO/server/operator packages, and release/CLI staging checks. The initial race run found an unsynchronized counter in the existing AO timeout test; the fixture was corrected before this passing run. The final tests cover `409 worker_boot_failed` failure/capacity release and exact receipt replay; the same code with HTTP 503 remains uncertain.
-- [AO run 40370123374](https://github.com/ronigooja/Zoe/actions/runs/40370123374), implementation source `5f99878b1ef684ea56c65f0342393fc67af0f703`, passed pinned patch application/tree fixtures, Codex/provider, session-manager, session-service, and HTTP-controller tests and built the ARM64 daemon. Runtime image sources were unchanged, so this run selected the binary-only artifact; the deployed `zoe-ao-codex:63cedecaedc2` image was retained.
+- [Historical superseded AO run 40370123374](https://github.com/ronigooja/Zoe/actions/runs/40370123374), implementation source `5f99878b1ef684ea56c65f0342393fc67af0f703`, passed pinned patch application/tree fixtures, Codex/provider, session-manager, session-service, and HTTP-controller tests and built the ARM64 daemon. Runtime image sources were unchanged, so this run selected the binary-only artifact; the deployed `zoe-ao-codex:63cedecaedc2` image was retained.
 - [Apple run 40370598915](https://github.com/ronigooja/Zoe/actions/runs/40370598915), the same implementation source, passed 82 Swift package tests, the unsigned macOS archive, and the unsigned iOS build. [Server run 40370133628](https://github.com/ronigooja/Zoe/actions/runs/40370133628) built the ARM64 server image and runner binary. Later source commits changed comments and tests only; deployed implementation matches this artifact source.
 
 Artifact SHA-256 checks passed before deployment. At this recorded checkpoint, the server ran
@@ -67,7 +75,7 @@ changed.
 
 With the runner stopped and AO restarted, all four explicit per-run
 reconciliation attempts on 2026-10-26 at 17:42:58 UTC correctly refused at Docker
-inventory. An existing AO-labeled container remained in `created` state, PID 0,
+inventory. An existing legacy AO-labeled container remained in `created` state, PID 0,
 with no recorded process start; the conservative check also refuses any
 uncorrelated managed runtime. Each refusal durably records the actor, run,
 attempt/fence/instance, check time, AO incarnation and complete empty inventory,
@@ -85,17 +93,17 @@ installed/staged executable comparison passed, and a new `ZoeMac` process was
 observed. The archive and signing logs are preserved in that task directory.
 No local compilation or automated test suite ran. Native UI interaction and a
 fresh minimum chat remain unverified; the user chose to perform chat verification.
-No new AO container/app-server/provider execution is claimed, and the retained
+No new legacy AO container/app-server/provider execution is claimed, and the retained
 uncertain slots at that checkpoint prevented a fresh queued task from dispatching.
 
 Controller CI logs and operational refusal outputs are retained under
 `/tmp/zoe-reconciliation-20261026/`; persistent refusal evidence is in the runner
-journal. See [deployment operations](../operations/deployment.md#unknown-ao-creation-reconciliation) for repeatable commands and acceptance boundaries.
+journal. See [deployment operations](../operations/deployment.md#zoe-runtime-uncertainty-reconciliation) for repeatable commands and acceptance boundaries.
 
 
 ## Chat recovery correction
 
-The subsequent correction permits exact operator-selected never-started AO records and historical capability containers only after two stable complete inspections. It also gives AO background tasks their own identity/role and random launch labels so cleanup targets an exact launch. Ambiguous runtime evidence still fails closed. Sources: [runner reconciliation](../../internal/runner/reconciliation.go), [AO patch](../../deploy/linux/patches/ao-supervised-codex.patch), and [original review record](https://github.com/ronigooja/Zoe/blob/95ee55a5bbd8dccfb7f14af9f9703bb83727da6c/docs/master-plan.md#chat-recovery-correction--2026-10-26).
+The subsequent correction permits exact operator-selected never-started AO records and historical capability containers only after two stable complete inspections. It also gives AO background tasks their own identity/role and random launch labels so cleanup targets an exact launch. Ambiguous runtime evidence still fails closed. Sources: [runner reconciliation](../../internal/runner/reconciliation.go), the historical AO patch record (source revision and external archived review), and [original review record](https://github.com/ronigooja/Zoe/blob/95ee55a5bbd8dccfb7f14af9f9703bb83727da6c/docs/master-plan.md#chat-recovery-correction--2026-10-26).
 
 **Source reviewed; remote recovery unverified.** The source review does not show these corrections deployed, the old queue reconciled, slots released, or a new live chat completed. The four previously refused runs must not be inferred recovered.
 
@@ -173,7 +181,7 @@ acceptance is claimed by this source-level validation.
 
 ## GHCR deployment image publication — 2026-10-29
 
-On source revision `d0f806b`, source review changed the server and AO release
+On source revision `d0f806b`, source review changed the server and legacy AO release
 workflows to push Linux images directly to GHCR and retain only image references
 and immutable digests beside the transferred daemon artifacts. The deployment
 examples and candidate validator now accept GHCR references and validate their
