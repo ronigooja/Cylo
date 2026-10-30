@@ -74,6 +74,9 @@ func (a *SpaceAccountMediaAdapter) ReleaseAccountLease(ctx context.Context, leas
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		if response.StatusCode == http.StatusServiceUnavailable {
+			return AccountTerminationObservation{}, errors.New("Space account lease release returned HTTP 503: upstream WebRTC termination evidence is unavailable")
+		}
 		return AccountTerminationObservation{}, fmt.Errorf("Space account lease release returned HTTP %d", response.StatusCode)
 	}
 	var wire struct {

@@ -15,12 +15,9 @@ import (
 	"time"
 
 	"github.com/ronigooja/Zoe/contracts"
-	"github.com/ronigooja/Zoe/internal/agents/ao"
 )
 
-type SessionInventoryReader interface {
-	ListSessions(context.Context) (ao.SessionInventory, error)
-}
+type SessionInventoryReader interface{}
 
 type ReconciliationOptions struct {
 	UnrelatedPreexistingCapabilityContainerIDs []string
@@ -28,15 +25,15 @@ type ReconciliationOptions struct {
 	DeploymentAuthority                        *DeploymentAuthority
 }
 
-// ReconcileNoEffect never creates, stops, or removes an AO or Docker runtime.
+// ReconcileNoEffect never creates, stops, or removes a runtime or Docker container.
 // The caller must hold the normal deployment-host and journal process locks.
 func (e *Engine) ReconcileNoEffect(ctx context.Context, runIDs []string, actor string, confirmed bool, inventory SessionInventoryReader, docker DockerCommand, options ...ReconciliationOptions) error {
 	actor = strings.TrimSpace(actor)
 	if len(runIDs) == 0 || actor == "" || len(actor) > 200 || strings.ContainsAny(actor, "\r\n") || !confirmed {
 		return errors.New("explicit run IDs, actor, and no-effect confirmation are required")
 	}
-	if e.Journal == nil || e.Control == nil || e.Instance == nil || inventory == nil || docker == nil {
-		return errors.New("reconciliation requires journal, control, instance fence, AO and Docker inventory")
+	if e.Journal == nil || e.Control == nil || e.Instance == nil || docker == nil {
+		return errors.New("reconciliation requires journal, control, instance fence, and Docker inventory")
 	}
 	opts := ReconciliationOptions{}
 	if len(options) > 1 {
@@ -76,7 +73,7 @@ func (e *Engine) ReconcileNoEffect(ctx context.Context, runIDs []string, actor s
 func (e *Engine) reconcileNoEffect(ctx context.Context, id, actor string, inventory SessionInventoryReader, docker DockerCommand, opts ReconciliationOptions) (resultErr error) {
 	checkedAt := time.Now().UTC()
 	auditID := observationID(id, actor, 0, "reconciliation_audit", checkedAt.Format(time.RFC3339Nano))
-	audit := map[string]any{"confirmed": true, "outcome": "started", "ao_query": "GET /api/v1/sessions/inventory", "ao_result": "not_checked", "docker_query": "docker ps -aq --no-trunc; docker inspect all IDs", "docker_result": "not_checked", "stage": "journal", "retain_never_started_container_ids": opts.RetainNeverStartedContainerIDs, "unrelated_preexisting_capability_container_ids": opts.UnrelatedPreexistingCapabilityContainerIDs}
+	audit := map[string]any{"confirmed": true, "outcome": "started", "runtime_query": "docker ps --filter io.zoe.run/attempt/fence", "runtime_result": "not_checked", "docker_query": "docker ps -aq --no-trunc; docker inspect all IDs", "docker_result": "not_checked", "stage": "journal", "retain_never_started_container_ids": opts.RetainNeverStartedContainerIDs, "unrelated_preexisting_capability_container_ids": opts.UnrelatedPreexistingCapabilityContainerIDs}
 	if err := e.Journal.SaveReconciliationAudit(ctx, auditID, id, actor, checkedAt, audit); err != nil {
 		return err
 	}
@@ -121,7 +118,7 @@ func (e *Engine) reconcileNoEffect(ctx context.Context, id, actor string, invent
 		}
 		return e.flush(ctx, id)
 	}
-	if entry.Phase != "effect_unknown" || entry.Session != "" || entry.Container != "" || entry.Claim.AOSessionID != "" || entry.Spec.ClientRequestID != id || entry.Spec.ProjectID != entry.Claim.AOProjectID {
+	if entry.Phase != "effect_unknown" || entry.Session != "" || entry.Container != "" || entry.Claim.RuntimeSessionID != "" || entry.Spec.RunID != id {
 		return errors.New("only an effect_unknown run with an exact create request and no session or container binding can be reconciled")
 	}
 	audit["stage"] = "server_claim"
@@ -141,28 +138,10 @@ func (e *Engine) reconcileNoEffect(ctx context.Context, id, actor string, invent
 	if matches != 1 {
 		return errors.New("run is not a current server-owned claim")
 	}
-	audit["stage"] = "ao_inventory"
-	audit["ao_result"] = "unavailable"
-	sessions, err := inventory.ListSessions(ctx)
-	if err != nil {
-		return err
-	}
-	audit["ao_result"] = map[string]any{"complete": sessions.Complete, "client_request_id_complete": sessions.ClientRequestIDComplete, "session_count": len(sessions.Sessions), "matches": 0, "server_started_at": sessions.ServerStartedAt}
+	audit["stage"] = "runtime_inventory"
+	audit["runtime_result"] = "label lookup"
 	// A process incarnation newer than the unknown journal write rules out an
 	// original HTTP request delayed before AO's handler or inventory gate.
-	_, startOffset := sessions.ServerStartedAt.Zone()
-	if sessions.ServerStartedAt.IsZero() || startOffset != 0 || sessions.ServerStartedAt.After(time.Now().UTC()) || !sessions.ServerStartedAt.After(entry.Updated) {
-		return errors.New("AO must restart after the journaled unknown create before absence reconciliation")
-	}
-	if !sessions.Complete || !sessions.ClientRequestIDComplete {
-		return errors.New("AO inventory cannot prove complete clientRequestId absence")
-	}
-	for _, session := range sessions.Sessions {
-		if session.ClientRequestID == "" || session.ClientRequestID == id {
-			audit["ao_result"] = "matching_or_uncorrelated_session"
-			return errors.New("AO inventory includes matching or uncorrelated session")
-		}
-	}
 	audit["stage"] = "docker_inventory"
 	audit["docker_result"] = "unavailable_or_runtime_present"
 	var originalDispatchAt time.Time
@@ -173,7 +152,7 @@ func (e *Engine) reconcileNoEffect(ctx context.Context, id, actor string, invent
 		}
 		audit["original_dispatch_at"] = originalDispatchAt
 	}
-	retained, unrelated, preexisting, unmanaged, err := e.verifyNoLaunchedAORuntime(ctx, docker, opts, sessions.ServerStartedAt, originalDispatchAt)
+	retained, unrelated, preexisting, unmanaged, err := e.verifyNoLaunchedAORuntime(ctx, docker, opts, entry.Updated, originalDispatchAt)
 	if err != nil {
 		audit["docker_result"] = err.Error()
 		return err
@@ -188,8 +167,8 @@ func (e *Engine) reconcileNoEffect(ctx context.Context, id, actor string, invent
 	}
 	audit["docker_result"] = "complete_no_launched_ao_runtime"
 	audit["stage"] = "terminal_receipt"
-	proof := &contracts.NoEffectProof{JournalPhase: "effect_unknown", AOCreateStarted: true, Outcome: "failed", Reconciliation: &contracts.NoEffectReconciliation{
-		AOServerStartedAt: sessions.ServerStartedAt, JournalUpdatedAt: entry.Updated, RunID: id, Actor: actor, Confirmed: true, VerifiedAt: time.Now().UTC(), AOQuery: "GET /api/v1/sessions/inventory", AOInventoryComplete: true, AOClientRequestIDComplete: true,
+	proof := &contracts.NoEffectProof{JournalPhase: "effect_unknown", RuntimeCreateStarted: true, Outcome: "failed", Reconciliation: &contracts.NoEffectReconciliation{
+		JournalUpdatedAt: entry.Updated, RunID: id, Actor: actor, Confirmed: true, VerifiedAt: time.Now().UTC(), RuntimeQuery: "docker ps --filter io.zoe.run/attempt/fence", RuntimeInventoryComplete: true, RuntimeMatches: 0,
 		DockerQuery: "docker ps -aq --no-trunc; docker inspect all IDs", DockerInventoryComplete: true, DockerInventoryChecks: 2, DockerInventoryContainerCount: len(retained) + len(unrelated) + len(preexisting) + len(unmanaged), UnmanagedContainerIDs: unmanaged, UnrelatedPreexistingCapabilityContainerIDs: opts.UnrelatedPreexistingCapabilityContainerIDs, PreexistingCapabilityContainers: preexisting, RetainNeverStartedContainerIDs: opts.RetainNeverStartedContainerIDs, RetainedNeverStartedContainers: retained, UnrelatedCapabilityContainerIDs: unrelated, InstanceID: entry.InstanceID, InstanceEpoch: entry.Epoch,
 	}}
 	// Persist the complete immutable receipt before changing phase or sending it.
@@ -327,13 +306,13 @@ func (e *Engine) reconciliationDockerSnapshot(ctx context.Context, docker Docker
 			continue
 		}
 		_, selected := retainedIDs[id]
-		_, hasRuntimeLabel := labels[aoContainerRuntimeLabel]
-		_, hasSessionLabel := labels[aoContainerSessionLabel]
-		aoRuntime := hasRuntimeLabel || hasSessionLabel || strings.Contains(legacy, "codex") || strings.Contains(legacy, "opencode") || strings.Contains(legacy, "ao-worker")
+		_, hasRuntimeLabel := labels[legacyAOContainerRuntimeLabel]
+		_, hasSessionLabel := labels[legacyAOContainerSessionLabel]
+		legacyAORuntime := hasRuntimeLabel || hasSessionLabel || strings.Contains(legacy, "codex") || strings.Contains(legacy, "opencode") || strings.Contains(legacy, "ao-worker")
 		if selected {
 			checkedAt := time.Now().UTC()
 
-			proof := contracts.RetainedNeverStartedContainer{ID: id, Managed: labels[aoContainerManagedLabel], Runtime: labels[aoContainerRuntimeLabel], SessionID: labels[aoContainerSessionLabel], Status: container.State.Status, Running: container.State.Running, Paused: container.State.Paused, Restarting: container.State.Restarting, Dead: container.State.Dead, OOMKilled: container.State.OOMKilled, ExitCode: container.State.ExitCode, Error: container.State.Error, PID: container.State.PID, StartedAt: container.State.StartedAt, FinishedAt: container.State.FinishedAt, CreatedAt: container.Created, RestartCount: container.RestartCount, RestartPolicy: container.HostConfig.RestartPolicy.Name, FirstCheckedAt: checkedAt, RecheckedAt: checkedAt, SnapshotSHA256: hex.EncodeToString(fullDigest[:])}
+			proof := contracts.RetainedNeverStartedContainer{ID: id, Managed: labels[legacyAOContainerManagedLabel], Runtime: labels[legacyAOContainerRuntimeLabel], SessionID: labels[legacyAOContainerSessionLabel], Status: container.State.Status, Running: container.State.Running, Paused: container.State.Paused, Restarting: container.State.Restarting, Dead: container.State.Dead, OOMKilled: container.State.OOMKilled, ExitCode: container.State.ExitCode, Error: container.State.Error, PID: container.State.PID, StartedAt: container.State.StartedAt, FinishedAt: container.State.FinishedAt, CreatedAt: container.Created, RestartCount: container.RestartCount, RestartPolicy: container.HostConfig.RestartPolicy.Name, FirstCheckedAt: checkedAt, RecheckedAt: checkedAt, SnapshotSHA256: hex.EncodeToString(fullDigest[:])}
 			if !proof.Valid(aoStartedAt, checkedAt) {
 				return snapshot, errors.New("explicitly retained AO container is not fully verified as never started")
 			}
@@ -341,22 +320,22 @@ func (e *Engine) reconciliationDockerSnapshot(ctx context.Context, docker Docker
 			snapshot.retained = append(snapshot.retained, proof)
 			continue
 		}
-		if aoRuntime {
+		if legacyAORuntime {
 			return snapshot, errors.New("AO or legacy uncorrelated runtime container exists; launched-runtime absence is unproven")
 		}
-		if labels[aoContainerManagedLabel] == "true" {
+		if labels[legacyAOContainerManagedLabel] == "true" {
 			if err := e.verifyUnrelatedCapabilityContainer(ctx, container, opts.DeploymentAuthority); err != nil {
 				return snapshot, err
 			}
 			snapshot.unrelated = append(snapshot.unrelated, id)
 		} else {
-			if _, exists := labels[aoContainerRuntimeLabel]; exists {
+			if _, exists := labels[legacyAOContainerRuntimeLabel]; exists {
 				return snapshot, errors.New("unmanaged container has an ambiguous AO runtime label")
 			}
-			if _, exists := labels[aoContainerSessionLabel]; exists {
+			if _, exists := labels[legacyAOContainerSessionLabel]; exists {
 				return snapshot, errors.New("unmanaged container has an ambiguous AO session label")
 			}
-			if labels[aoContainerManagedLabel] != "" && labels[aoContainerManagedLabel] != "false" {
+			if labels[legacyAOContainerManagedLabel] != "" && labels[legacyAOContainerManagedLabel] != "false" {
 				return snapshot, errors.New("container managed ownership is ambiguous")
 			}
 			snapshot.unmanaged = append(snapshot.unmanaged, id)

@@ -135,7 +135,7 @@ func (s *Server) handleChildProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	profile, profileExists := s.cfg.Profiles[req.ProfileID]
-	if !profileExists || profile.AOAgentKind != "worker" || profile.IsolationPolicy == "" || (profile.Harness != "codex" && profile.Harness != "opencode") || (profile.Harness == "opencode" && profile.IsolationPolicy != "ao-opencode-workspace-write-v1") || (profile.Harness == "codex" && profile.IsolationPolicy == "ao-opencode-workspace-write-v1") {
+	if !profileExists || profile.IsolationPolicy == "" || profile.Harness != "opencode" || (profile.IsolationPolicy != normalizeIsolationPolicy(profile.IsolationPolicy)) {
 		writeError(w, apiError(http.StatusConflict, "profile_unavailable", "requested child profile is not configured for worker execution", nil))
 		return
 	}
@@ -418,7 +418,7 @@ func (s *Server) commandChildDecision(ctx context.Context, tx *sql.Tx, c Command
 			return contracts.CommandResult{}, nil, fmt.Errorf("decode child proposal request: %w", err)
 		}
 		profile, exists := s.cfg.Profiles[reqBody.ProfileID]
-		if !exists || profile.AOAgentKind != "worker" || profile.IsolationPolicy == "" || !subset(reqBody.RequestedCapabilityIDs, profile.CapabilityIDs) {
+		if !exists || profile.IsolationPolicy == "" || !subset(reqBody.RequestedCapabilityIDs, profile.CapabilityIDs) {
 			return contracts.CommandResult{}, nil, apiError(409, "profile_unavailable", "child profile or requested capabilities are no longer authorized", nil)
 		}
 		var policy ChildPolicy

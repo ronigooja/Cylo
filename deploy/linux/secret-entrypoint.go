@@ -11,12 +11,11 @@ import (
 )
 
 var allowedNames = map[string]bool{
-	"ZOE_INSTANCE_KEY":       true,
-	"ZOE_RUNNER_TOKEN":         true,
-	"ZOE_AO_TOKEN":             true,
+	"ZOE_INSTANCE_KEY":          true,
+	"ZOE_RUNNER_TOKEN":          true,
 	"ZOE_VOICE_GATEWAY_API_KEY": true,
-	"ZOE_MEM0_LLM_API_KEY":     true,
-	"ZOE_QDRANT_API_KEY":       true,
+	"ZOE_MEM0_LLM_API_KEY":      true,
+	"ZOE_QDRANT_API_KEY":        true,
 }
 
 func main() {

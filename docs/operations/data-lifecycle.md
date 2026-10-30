@@ -37,7 +37,7 @@ The [retention registry](../../tools/data_lifecycle/retention.py) authenticates 
 ```sh
 python3 tools/zoe_migrate.py --maintenance ABSOLUTE_MAINTENANCE_BINARY \
   --database DATABASE --proof-key-file PRIVATE_PROOF_KEY --proof-output NEW_PROOF \
-  --unit zoe-compose.service --unit zoe-runner.service --unit zoe-ao.service \
+  --unit zoe-compose.service --unit zoe-runner.service \
   --stop-mask-and-fence
 ```
 
@@ -84,4 +84,4 @@ python3 tools/zoe_destroy.py --manifest PRIVATE_MANIFEST --receipt NEW_PRIVATE_R
 
 [Execution](../../tools/zoe_destroy.py) additionally requires `--execute --confirm-instance INSTANCE_ID`. The supported topology is one dedicated operator-owned directory with declared data/artifact/backup/config roots, enumerated systemd units, and exact external resources. The recorded split `/etc/zoe` and `/var/lib/zoe` installation does not automatically match this topology. Private receipt and cleanup executables must survive outside deletion roots. Mounted resources, including bind mounts, must be detached; mount identity is rechecked before actions/deletion.
 
-Execution stops/masks services and fences dispatch, then challenges a deployment-owned adapter to prove complete inventory, no active/unaccounted runtime, and exact external cleanup. Only then may owned roots be removed after repeated identity/path checks. No real AO/container/volume/Mem0/Qdrant destruction adapter is shipped. Missing proof retains owned files, but services may already be stopped/fenced; inspect the receipt and state before recovery. The existing external CLIProxyAPI is excluded. No command here claims an actual production migration or destruction was performed.
+Execution stops/masks services and fences dispatch, then challenges a deployment-owned adapter to prove complete inventory, no active/unaccounted runtime, and exact external cleanup. Only then may owned roots be removed after repeated identity/path checks. No real OpenCode/container/volume/Mem0/Qdrant destruction adapter is shipped. Missing proof retains owned files, but services may already be stopped/fenced; inspect the receipt and state before recovery. The existing external CLIProxyAPI is excluded. No command here claims an actual production migration or destruction was performed.

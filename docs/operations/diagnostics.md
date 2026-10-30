@@ -170,7 +170,7 @@ select `offer_answer` or any media payload:
 ```sql
 SELECT id, workspace_id, owner_id, device_id, request_id, generation,
        state, gateway_session_id, account_lease_id,
-       account_lease_generation, account_id_hash,
+       account_lease_generation, gateway_media_generation, account_id_hash,
        gateway_unbound, gateway_unbind_unknown,
        created_at, updated_at, heartbeat_at, ended_at, last_error_code
 FROM voice_sessions
@@ -179,6 +179,12 @@ WHERE workspace_id = 'WORKSPACE_ID'
   AND updated_at >= '2026-10-29T00:00:00Z'
 ORDER BY updated_at;
 ```
+
+The gateway media generation is tracked separately from Zoe's session generation.
+Termination evidence is a gateway-attested local observation of relay shutdown,
+not proof that the upstream account is free, and is available only for
+gateway-relayed media. Client-direct sessions have no such evidence and remain
+fail-closed for account reuse.
 
 Then inspect the single pool-state row:
 

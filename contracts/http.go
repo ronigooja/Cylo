@@ -235,8 +235,7 @@ type JobClaim struct {
 	ModelRouteID          string            `json:"model_route_id"`
 	IsolationPolicy       string            `json:"isolation_policy"`
 	Role                  string            `json:"role"`
-	AOProjectID           string            `json:"ao_project_id,omitempty"`
-	AOSessionID           string            `json:"ao_session_id,omitempty"`
+	RuntimeSessionID      string            `json:"runtime_session_id,omitempty"`
 	Authorization         JobAuthorization  `json:"authorization"`
 	Fence                 uint64            `json:"fence"`
 	LineageRootTaskID     string            `json:"lineage_root_task_id,omitempty"`
@@ -306,8 +305,8 @@ type RunnerObservation struct {
 	Fence               uint64                `json:"fence"`
 	Kind                string                `json:"kind"`
 	OccurredAt          time.Time             `json:"occurred_at"`
-	AOProjectID         string                `json:"ao_project_id,omitempty"`
-	AOSessionID         string                `json:"ao_session_id,omitempty"`
+	RuntimeSessionID    string                `json:"runtime_session_id,omitempty"`
+	RuntimeContainerID  string                `json:"runtime_container_id,omitempty"`
 	Evidence            []Evidence            `json:"evidence"`
 	Result              json.RawMessage       `json:"result,omitempty"`
 	Error               string                `json:"error,omitempty"`
@@ -318,24 +317,23 @@ type RunnerObservation struct {
 	BudgetReservationID string                `json:"budget_reservation_id,omitempty"`
 }
 
-// CreateRejectionProof is a sanitized AO response contract proving that AO
-// rejected creation before committing a session.
+// CreateRejectionProof proves a local deterministic failure before an external
+// runtime creation effect.
 type CreateRejectionProof struct {
-	HTTPStatus int    `json:"http_status"`
-	ErrorCode  string `json:"error_code"`
+	Code string `json:"code"`
 }
 
-// NoEffectProof is the runner journal receipt for a run with no AO runtime.
+// NoEffectProof is the runner journal receipt for a run with no runtime.
 // It proves either creation never began or explicit read-only reconciliation
 // established absence under a newer AO process. The control plane also checks
 // its own observation and effect history before accepting this receipt.
 type NoEffectProof struct {
-	JournalPhase    string                  `json:"journal_phase"`
-	AOCreateStarted bool                    `json:"ao_create_started"`
-	AOSessionID     string                  `json:"ao_session_id,omitempty"`
-	AOContainerID   string                  `json:"ao_container_id,omitempty"`
-	Outcome         string                  `json:"outcome"`
-	Reconciliation  *NoEffectReconciliation `json:"reconciliation,omitempty"`
+	JournalPhase         string                  `json:"journal_phase"`
+	RuntimeCreateStarted bool                    `json:"runtime_create_started"`
+	RuntimeSessionID     string                  `json:"runtime_session_id,omitempty"`
+	RuntimeContainerID   string                  `json:"runtime_container_id,omitempty"`
+	Outcome              string                  `json:"outcome"`
+	Reconciliation       *NoEffectReconciliation `json:"reconciliation,omitempty"`
 }
 
 // NoEffectReconciliation records explicit operator-authorized, read-only absence checks.
@@ -344,12 +342,10 @@ type NoEffectReconciliation struct {
 	Actor                                      string                           `json:"actor"`
 	Confirmed                                  bool                             `json:"confirmed"`
 	VerifiedAt                                 time.Time                        `json:"verified_at"`
-	AOServerStartedAt                          time.Time                        `json:"ao_server_started_at"`
 	JournalUpdatedAt                           time.Time                        `json:"journal_updated_at"`
-	AOQuery                                    string                           `json:"ao_query"`
-	AOInventoryComplete                        bool                             `json:"ao_inventory_complete"`
-	AOClientRequestIDComplete                  bool                             `json:"ao_client_request_id_complete"`
-	AOMatches                                  int                              `json:"ao_matches"`
+	RuntimeQuery                               string                           `json:"runtime_query"`
+	RuntimeInventoryComplete                   bool                             `json:"runtime_inventory_complete"`
+	RuntimeMatches                             int                              `json:"runtime_matches"`
 	DockerQuery                                string                           `json:"docker_query"`
 	DockerInventoryComplete                    bool                             `json:"docker_inventory_complete"`
 	DockerRuntimeCount                         int                              `json:"docker_runtime_count"`
@@ -402,8 +398,8 @@ func ValidFullContainerID(id string) bool {
 	return err == nil && len(decoded) == 32 && hex.EncodeToString(decoded) == id
 }
 
-func (p RetainedNeverStartedContainer) Valid(aoStartedAt, verifiedAt time.Time) bool {
-	if !ValidFullContainerID(p.ID) || p.Managed != "true" || (p.Runtime != "ao-codex-chat" && p.Runtime != "ao-opencode-acp") || p.SessionID == "" || len(p.SessionID) > 128 || p.Status != "created" || p.Running == nil || *p.Running || p.Paused == nil || *p.Paused || p.Restarting == nil || *p.Restarting || p.Dead == nil || *p.Dead || p.OOMKilled == nil || *p.OOMKilled || p.ExitCode == nil || *p.ExitCode != 0 || p.Error == nil || *p.Error != "" || p.PID == nil || *p.PID != 0 || p.StartedAt == nil || !p.StartedAt.IsZero() || p.FinishedAt == nil || !p.FinishedAt.IsZero() || p.RestartCount == nil || *p.RestartCount != 0 || p.RestartPolicy != "no" || !ValidFullContainerID(p.SnapshotSHA256) {
+func (p RetainedNeverStartedContainer) Valid(runtimeStartedAt, verifiedAt time.Time) bool {
+	if !ValidFullContainerID(p.ID) || p.Managed != "true" || (p.Runtime != LegacyAORuntimeCodexChat && p.Runtime != LegacyAORuntimeOpenCodeACP) || p.SessionID == "" || len(p.SessionID) > 128 || p.Status != "created" || p.Running == nil || *p.Running || p.Paused == nil || *p.Paused || p.Restarting == nil || *p.Restarting || p.Dead == nil || *p.Dead || p.OOMKilled == nil || *p.OOMKilled || p.ExitCode == nil || *p.ExitCode != 0 || p.Error == nil || *p.Error != "" || p.PID == nil || *p.PID != 0 || p.StartedAt == nil || !p.StartedAt.IsZero() || p.FinishedAt == nil || !p.FinishedAt.IsZero() || p.RestartCount == nil || *p.RestartCount != 0 || p.RestartPolicy != "no" || !ValidFullContainerID(p.SnapshotSHA256) {
 		return false
 	}
 	for _, r := range p.SessionID {
@@ -417,8 +413,13 @@ func (p RetainedNeverStartedContainer) Valid(aoStartedAt, verifiedAt time.Time) 
 			return false
 		}
 	}
-	return !p.CreatedAt.After(p.FirstCheckedAt) && !p.FirstCheckedAt.Before(aoStartedAt) && !p.RecheckedAt.Before(p.FirstCheckedAt)
+	return !p.CreatedAt.After(p.FirstCheckedAt) && !p.FirstCheckedAt.Before(runtimeStartedAt) && !p.RecheckedAt.Before(p.FirstCheckedAt)
 }
+
+const (
+	LegacyAORuntimeCodexChat   = "ao-codex-chat"
+	LegacyAORuntimeOpenCodeACP = "ao-opencode-acp"
+)
 
 // PreexistingCapabilityContainer is an operator-selected historical exclusion,
 // not a claim of ownership by the current deployment journal.
@@ -488,12 +489,13 @@ func (p PreexistingCapabilityContainer) Valid(runStartedAt, aoStartedAt, verifie
 	return !runStartedAt.IsZero() && p.CreatedAt.Before(runStartedAt) && !p.CreatedAt.After(*p.StartedAt) && !p.FirstCheckedAt.Before(aoStartedAt) && !p.RecheckedAt.Before(p.FirstCheckedAt)
 }
 
-// TerminationProof carries the independent AO process-stop evidence required
+// TerminationProof carries the independent runtime-stop evidence required
 // before the control plane releases a run's capacity slot.
 type TerminationProof struct {
-	Source          string    `json:"source"`
-	Method          string    `json:"method"`
-	SessionID       string    `json:"session_id"`
-	VerifiedAt      time.Time `json:"verified_at"`
-	CleanupComplete bool      `json:"cleanup_complete"`
+	Source             string    `json:"source"`
+	Method             string    `json:"method"`
+	RuntimeSessionID   string    `json:"runtime_session_id"`
+	RuntimeContainerID string    `json:"runtime_container_id"`
+	VerifiedAt         time.Time `json:"verified_at"`
+	CleanupComplete    bool      `json:"cleanup_complete"`
 }

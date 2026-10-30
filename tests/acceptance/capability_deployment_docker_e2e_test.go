@@ -313,7 +313,7 @@ func buildCapabilityRunner(t *testing.T, root string) string {
 
 func runCapabilityRunnerOnce(t *testing.T, binary, controlURL, runnerToken, journalPath string) error {
 	t.Helper()
-	routeConfig, err := json.Marshal(map[string]runner.Route{"worker": {ProfileID: "worker", RuntimeRouteID: "fixture-runtime", ModelRouteID: "fixture-model", IsolationPolicy: "strict", Harness: "codex", Model: "fixture-model"}})
+	routeConfig, err := json.Marshal(map[string]runner.Route{"worker": {ProfileID: "worker", RuntimeRouteID: "fixture-runtime", ModelRouteID: "fixture-model", IsolationPolicy: runner.OpenCodeWorkspaceWritePolicy, Harness: "opencode", Model: "fixture-model"}})
 	if err != nil {
 		return err
 	}
@@ -321,8 +321,10 @@ func runCapabilityRunnerOnce(t *testing.T, binary, controlURL, runnerToken, jour
 	command.Env = append(os.Environ(),
 		"ZOE_CONTROL_URL="+controlURL,
 		"ZOE_RUNNER_TOKEN="+runnerToken,
-		"ZOE_AO_URL=http://127.0.0.1:1",
-		"ZOE_AO_TOKEN="+reviewToken(t),
+		"ZOE_OPENCODE_IMAGE=fixture-opencode-image",
+		"ZOE_OPENCODE_MODEL=fixture-model",
+		"ZOE_OPENCODE_PROVIDER_SOCKET=/tmp/zoe-provider.sock",
+		"ZOE_OPENCODE_WORKSPACE_ROOT="+filepath.Dir(journalPath),
 		"ZOE_RUNNER_JOURNAL_PATH="+journalPath,
 		"ZOE_RUNNER_ROUTES="+string(routeConfig),
 		"ZOE_RUNNER_IDLE_POLL_INTERVAL=10ms",

@@ -2,7 +2,7 @@
 
 This is the current product requirements home. Requirements express required behavior, not implementation or acceptance claims. [The master plan](master-plan.md) owns delivery status and acceptance boundaries; [architecture](architecture.md) owns responsibilities and [decision records](architecture.md#decision-records).
 
-The complete scope retains all 22 chapters, all 75 stable IDs, scenarios A–E, and all fifteen quality dimensions. This document carries forward the valid details of the [original complete PRD](https://github.com/ronigooja/Zoe/blob/95ee55a5bbd8dccfb7f14af9f9703bb83727da6c/docs/archive/research/product-requirements.md) and its [stable-ID mapping](https://github.com/ronigooja/Zoe/blob/95ee55a5bbd8dccfb7f14af9f9703bb83727da6c/docs/archive/research/reports/01-requirements.md). Those immutable sources are provenance, not competing current plans. Current Linux/native-client, AO, optional CLI-handoff, instance-key, and assistant-UI decisions take precedence over superseded proposals.
+The complete scope retains all 22 chapters, all 75 stable IDs, scenarios A–E, and all fifteen quality dimensions. This document carries forward the valid details of the [original complete PRD](https://github.com/ronigooja/Zoe/blob/95ee55a5bbd8dccfb7f14af9f9703bb83727da6c/docs/archive/research/product-requirements.md) and its [stable-ID mapping](https://github.com/ronigooja/Zoe/blob/95ee55a5bbd8dccfb7f14af9f9703bb83727da6c/docs/archive/research/reports/01-requirements.md). Those immutable sources are provenance, not competing current plans. Current Linux/native-client, Zoe-owned OpenCode runtime, instance-key, and assistant-UI decisions take precedence over superseded proposals.
 
 ## 1. Product Positioning
 
@@ -222,10 +222,38 @@ The user approved the [native assistant reference](design/native-assistant-refer
 
 - **Simple appearance, useful density.** Use native typography, restrained semantic colors, compact rows, and clear grouping. Keep more useful conversation and task information visible by reducing oversized headings, excessive whitespace, decorative cards, and repeated metadata. Preserve readability, keyboard access, Dynamic Type, and platform touch targets; density does not mean uniformly smaller text or controls.
 - **Conversation leads.** Keep projects and recent conversations/tasks in a compact sidebar. Show task receipts and concise progress/results in context. A compact, collapsible task rail may surface ongoing work, pending decisions, and recent completion on wide windows; collapse secondary surfaces before constraining the conversation in narrow windows. Avoid statistics dashboards and compulsory workflow panels.
-- **Voice is Settings-controlled.** Do not place a microphone button in the composer. Continuous voice is off until the user opts in through Settings. When enabled, the client automatically attempts to establish and maintain an authorized voice session after connection and identity initialization, subject to OS microphone permission, audio-session policy, app lifecycle/background limits, network, account-pool capacity, and server availability. The client must report connecting, active, interrupted, reconnecting, unavailable, permission-denied, and stopped states truthfully; it must not claim active voice when any required system, device, network, account, or server condition is unavailable. Automatic reconnect is appropriate for temporary failures; permission or policy failures require a Settings/system-settings recovery path. Text chat remains usable whenever voice is unavailable. Continuous voice transports audio and spoken output only; transcript review/submission and business-command authorization remain explicit, and voice never silently submits or confirms business work. Do not add persistent labels, large waveforms, timers, voice cards, or separate persistent control strips. Settings controls and status messages need accessible names/state values, keyboard access, and help on demand; color alone must not carry state. Detailed voice, transport, account, and server errors are not a client presentation responsibility: the client shows only a concise actionable state and automatically submits the redacted diagnostic through the authenticated diagnostic channel when available.
-- **Automation reduces required interaction.** After the user expresses and authorizes the intent, work proceeds within its granted scope. Keep ordinary progress concise; emphasize decisions that require the user, actionable failures, and recorded results. Ordinary assistant replies and ordinary task results are server-authored content, not client-side Accept/Reject workflows. Users continue through chat by asking for changes, continuation, or missing information; ambiguous words do not authorize a business decision. High-impact or irreversible actions require scoped, explicit conversational confirmation tied to the task/run/action, expected version, and expiry. Continuous voice does not alter these boundaries.
+- **Voice is Settings-controlled.** Do not place a microphone button in the composer. Continuous voice is off
+until the user opts in through Settings. When enabled, the client automatically attempts to establish and
+maintain an authorized voice session after connection and identity initialization, subject to OS microphone
+permission, audio-session policy, app lifecycle/background limits, network, account-pool capacity, and server
+availability. The client must report connecting, active, interrupted, reconnecting, unavailable,
+permission-denied, and stopped states truthfully; it must not claim active voice when any required system,
+device, network, account, or server condition is unavailable. Automatic reconnect is appropriate for temporary
+ failures; permission or policy failures require a Settings/system-settings recovery path. Text chat remains
+usable whenever voice is unavailable. Continuous voice transports audio and spoken output only; transcript
+review/submission and business-command authorization remain explicit, and voice never silently submits or
+confirms business work. Do not add persistent labels, large waveforms, timers, voice cards, or separate
+persistent control strips. Settings controls and status messages need accessible names/state values, keyboard
+access, and help on demand; color alone must not carry state. Detailed voice, transport, account, and server
+errors are not a client presentation responsibility: the client shows only a concise actionable state and
+automatically submits the redacted diagnostic through the authenticated diagnostic channel when available.
+- **Automation reduces required interaction.** After the user expresses and authorizes the intent, work
+proceeds within its granted scope. Keep ordinary progress concise; emphasize decisions that require the user,
+actionable failures, and recorded results. Ordinary assistant replies and ordinary task results are
+server-authored content, not client-side Accept/Reject workflows. Users continue through chat by asking for
+changes, continuation, or missing information; ambiguous words do not authorize a business decision.
+High-impact or irreversible actions require scoped, explicit conversational confirmation tied to the
+task/run/action, expected version, and expiry. Continuous voice does not alter these boundaries.
 - **Focus on outcomes.** Summarize programming work using its goal, current stage, outcome, validation summary, and decisions that require the user. Users should be able to understand what was accomplished and what remains unresolved through these summaries, without reviewing source code. The same conversation and task surfaces must support research and other authorized work.
-- **Client errors are concise; diagnostics are automatic.** This applies to every native-client error surface, including connection, voice, task, notification, export, capability, storage, and transport failures. The client must not display detailed server, infrastructure, runtime, transport, account, or local exception text. It shows only a short state and an actionable recovery or retry instruction; detailed context is redacted, encrypted, queued, and automatically returned to the authenticated diagnostic endpoint when available. Diagnostic upload is best effort and must not block the user, alter command authority, or change receipt/retry semantics. Authentication failures and user-input validation may show the minimum information needed to recover, but must not expose credentials, headers, response bodies, transcripts, audio, SDP/ICE, or secret-bearing details.
+- **Client errors are concise; diagnostics are automatic.** This applies to every native-client error surface,
+ including connection, voice, task, notification, export, capability, storage, and transport failures. The
+client must not display detailed server, infrastructure, runtime, transport, account, or local exception text.
+ It shows only a short state and an actionable recovery or retry instruction; detailed context is redacted,
+encrypted, queued, and automatically returned to the authenticated diagnostic endpoint when available.
+Diagnostic upload is best effort and must not block the user, alter command authority, or change receipt/retry
+ semantics. Authentication failures and user-input validation may show the minimum information needed to
+recover, but must not expose credentials, headers, response bodies, transcripts, audio, SDP/ICE, or
+secret-bearing details.
 
 ### Native presentation and acceptance targets
 
@@ -233,15 +261,40 @@ AO startup failures, unresolved runtime diagnostics, execution-slot accounting, 
 
 The Apple redesign uses system typography, SF Symbols, semantic colors, system appearance, and English/Simplified Chinese localization. Spacing follows 4/8/12/16/24/32 pt steps; conversation text is limited to 760 pt. Blue emphasizes primary actions. Task outcomes and actionable exceptional states have concise text labels; routine voice state follows the compact icon treatment above. Normal connected state has no banner. Offline, stale, and failed operations remain visible with an action at the affected surface.
 
-macOS uses a resizable sidebar (240 pt default) and workspace. iPad uses the same split structure in regular width and collapses in narrow windows; iPhone has Conversation, Tasks, and Projects tabs, hidden in the task workspace. Notifications are a toolbar entrance with an unread count. Account menus expose Settings, Memory, and Capabilities. Home contains a composer and recent work, without statistics or tutorial cards. Coverage includes home, empty, loading, send failure, and task states with language, appearance, and text-size variants; design examples are not application acceptance evidence.
+macOS uses a resizable sidebar (240 pt default) and workspace. iPad uses the same split structure in regular
+width and collapses in narrow windows; iPhone has Conversation, Tasks, and Projects tabs, hidden in the task
+workspace. Notifications are a toolbar entrance with an unread count. Account menus expose Settings, Memory,
+and Capabilities. Home contains a composer and recent work, without statistics or tutorial cards. Coverage
+includes home, empty, loading, send failure, and task states with language, appearance, and text-size
+variants; design examples are not application acceptance evidence.
 
-Every task entrance leads to the same workspace. The workspace shows persisted messages, actual task status, approvals, and recorded results/evidence; runtime identifiers and cursors belong in Technical details. No simulated assistant answers, historical progress, or inactive download actions fill missing server capabilities. Tasks support search, status filters, and update ordering. Projects offer a contextual new conversation. Settings group current connection/key management, notifications, data, and advanced options, following [the instance-key decision](architecture/decisions/0004-instance-key-authentication.md).
+Every task entrance leads to the same workspace. The workspace shows persisted messages, actual task status,
+approvals, and recorded results/evidence; runtime identifiers and cursors belong in Technical details. No
+simulated assistant answers, historical progress, or inactive download actions fill missing server
+capabilities. Tasks support search, status filters, and update ordering. Projects offer a contextual new
+conversation. Settings group current connection/key management, notifications, data, and advanced options,
+following [the instance-key decision](architecture/decisions/0004-instance-key-authentication.md).
 
-Submission has accepted, failed, and unknown outcomes. Drafts clear only after durable acceptance. Unknown submissions reconcile the original journaled receipt rather than issuing a new command; the interface must retain the draft and show confirmation pending. Task drafts and selection survive navigation within the connected context and are cleared when the server or identity changes. There is no generic result-decision section or Accept result/Reject result control in ordinary task views. Ordinary results are displayed as server-authored content; follow-up messages are interpreted by the server in task context. A high-impact action may show a scoped conversational confirmation request, but confirmation authorizes execution and is not result acceptance. macOS keyboard targets are Command-Return to send, Command-N for a new conversation, and Command-F for task search.
+Submission has accepted, failed, and unknown outcomes. Drafts clear only after durable acceptance. Unknown
+submissions reconcile the original journaled receipt rather than issuing a new command; the interface must
+retain the draft and show confirmation pending. Task drafts and selection survive navigation within the
+connected context and are cleared when the server or identity changes. There is no generic result-decision
+section or Accept result/Reject result control in ordinary task views. Ordinary results are displayed as
+server-authored content; follow-up messages are interpreted by the server in task context. A high-impact
+action may show a scoped conversational confirmation request, but confirmation authorizes execution and is not
+ result acceptance. macOS keyboard targets are Command-Return to send, Command-N for a new conversation, and
+Command-F for task search.
 
 Authoritative task-history paging and reconnect contracts are defined in [the HTTP contract](../contracts/http.go) and [task-entry handlers](../internal/control/task_entries.go); clients must not fabricate messages or maintain a competing conversation authority. Dates and counts use the system region; server-authored content remains in its original language.
 
-Native application acceptance must cover Mac 840×620 and desktop sizes, iPad portrait/landscape/narrow windows, and small/large iPhones; both languages and appearances; long titles and Dynamic Type; keyboard avoidance; VoiceOver, keyboard focus, reduced motion, and 44×44 pt mobile targets. Core flows must verify one-tap continuation, contextual approvals/results, linked notifications, retained failed drafts, unknown receipts, duplicate events, reconnect history, terminal tasks, rejected/rotated instance keys, connection clearing, and identity changes. Record Go tests, Swift state/contract tests, Xcode app builds, simulator UI runs, real-device runs, and real-service checks separately. Linux source review and design references cannot establish Apple compilation, screenshots, interaction, or end-to-end acceptance.
+Native application acceptance must cover Mac 840×620 and desktop sizes, iPad portrait/landscape/narrow
+windows, and small/large iPhones; both languages and appearances; long titles and Dynamic Type; keyboard
+avoidance; VoiceOver, keyboard focus, reduced motion, and 44×44 pt mobile targets. Core flows must verify
+one-tap continuation, contextual approvals/results, linked notifications, retained failed drafts, unknown
+receipts, duplicate events, reconnect history, terminal tasks, rejected/rotated instance keys, connection
+clearing, and identity changes. Record Go tests, Swift state/contract tests, Xcode app builds, simulator UI
+runs, real-device runs, and real-service checks separately. Linux source review and design references cannot
+establish Apple compilation, screenshots, interaction, or end-to-end acceptance.
 
 ## 4. Server Requirements
 
@@ -315,138 +368,71 @@ When moving to a different Linux backend server or supported execution environme
 
 Native operating-system processes may not migrate directly, but the system should retain enough information to restart or resume the corresponding task or service in the target environment.
 
-## 5. Agent and native-tool integration requirements
+## 5. Agent and runtime integration requirements
 
-Codex is one development runtime, not the product authority or the only execution engine. AO owns runtime creation and lifecycle through the Zoe gateway. The detailed required, excluded, and optional integration boundaries are defined in [§§5.1–5.6](#51-zoe-invoking-codex). Official Codex desktop-app integration is excluded. Seamless manual takeover and two-way native CLI handoff are optional, must use supported native facilities, and cannot be simulated by exporting a summary. Zoe has no Codex-specific recovery subsystem.
+OpenCode is Zoe's only execution runtime. Zoe's trusted runner creates and owns one isolated OpenCode container and one session per run; the control plane remains the business-state authority. CLIProxyAPI is an external OpenAI-compatible provider and is not part of Zoe's deployment lifecycle. Runtime identity, completion, stop, recovery, and usage must be based on runtime APIs and durable Zoe evidence, never on chat text alone.
 
-**First-release Codex integration must support CLI execution, viewing real status and artifacts, stopping, and persistent recovery. Seamless human takeover within the same thread, live switching of input control, and a complete bidirectional handoff entry point are optional future enhancements; they are not hard requirements for first-release selection or delivery.**
-
-The first release prioritizes automatic Super planning, independent Workers, multiple worktrees, long-running tasks, and ordinary background services while preserving task recovery, artifacts, and cost records.
+The first release prioritizes automatic Super planning, independent Workers, multiple workspaces, long-running tasks, task recovery, artifacts, and cost records. Native CLI or desktop-tool handoff is not a required runtime path.
 
 <a id="cy-05-01"></a>
 
 **Disposition: Required.**
 
-### 5.1 Zoe Invoking Codex
+### 5.1 Zoe invoking OpenCode
 
-**CY-05-01.** Create and manage agent work with a real workspace, instructions, state/results, task links, supported continuation, and stop.
+**CY-05-01.** Create and manage OpenCode work with a real workspace, instructions, state/results, task links, supported continuation, and stop.
 
-Zoe should be able to assign software-development tasks to Codex.
-
-This includes:
-
-- Creating a development task
-- Specifying the project and execution environment
-- Sending instructions to Codex
-- Obtaining the real execution status
-- Obtaining output and results
-- Recording session associations
-- Appending requirements to a saved session
-- Resuming sessions that support recovery
-- Interrupting or canceling execution where supported
-- Including Codex tasks in Zoe's unified task system
-
-Zoe should not guess whether a task is complete based only on Codex chat content.
+Zoe must create a deterministic runtime boundary, send instructions through the OpenCode API, record the runtime session and container identities, observe status and assistant completion, collect artifacts and usage, and support abort plus verified container removal. A `prompt_async` acknowledgement is not completion. Unknown creation outcomes must be resolved by run/attempt/fence labels or remain `effect_unknown`; they must never be replayed blindly.
 
 <a id="cy-05-02"></a>
 
-**Disposition: Excluded.**
+**Disposition: Required.**
 
-### 5.2 Official Codex App (Out of Current Scope)
+### 5.2 OpenCode provider and model routing
 
-**CY-05-02.** Official Codex desktop-app integration is excluded; retain the stable ID for traceability.
+**CY-05-02.** Route each selected model through the configured OpenCode provider without exposing provider credentials to the runtime or changing the external CLIProxyAPI deployment.
 
-Under the user's latest scope decision, support for discovering, resuming, deep-linking, or handing off sessions from the official macOS Codex desktop app across hosts is not required. This section number is retained for historical traceability.
-
-The native macOS Zoe client and users' independent use of Codex CLI remain in scope; there is no browser/PWA client. First-release server and execution-host support is defined in §4.1; cross-environment data migration remains in scope.
+The runner supplies the provider through the reviewed bridge/socket boundary, keeps the provider key in a protected secret file, and records the selected provider/model route. Provider failure, unavailable credentials, and unsupported models fail closed before or during execution with truthful task evidence.
 
 <a id="cy-05-03"></a>
 
-**Disposition: Optional.**
+**Disposition: Required.**
 
-### 5.3 Codex CLI Continuation
+### 5.3 OpenCode completion and usage
 
-**CY-05-03.** Optional: hand Zoe-started work to the supported native CLI session.
+**CY-05-03.** Report OpenCode completion, failure, token usage, and cost from provider-backed evidence.
 
-The first-release Linux execution environment must preserve basic CLI invocation and a recoverable session association. Users can access that Linux environment over SSH. A macOS-hosted control server or runtime service is outside the current baseline. The following experience of manually continuing the original session through the official CLI is an optional future enhancement:
-
-A user can:
-
-1. Create a Codex development task through Zoe.
-2. Have Codex perform development work in the background.
-3. Later enter the same background execution environment directly; the remote environment can be accessed over SSH.
-4. Use the official Codex CLI's supported session-recovery mechanism.
-5. Find the relevant session and continue working.
-
-The project, code, and execution results should remain accessible. Human continuation of the same native session is subject to separate verification within the official support boundary and does not block the first-release automatic execution loop.
+Completion requires a non-busy session and a latest assistant message with a terminal completion, finish, or error fact. Streaming finish and usage propagation through the provider bridge remain acceptance gates; no result may claim metering from a request acknowledgement alone.
 
 <a id="cy-05-04"></a>
 
-**Disposition: Optional.**
+**Disposition: Required.**
 
-### 5.4 Bidirectional Continuation
+### 5.4 OpenCode recovery and concurrency
 
-**CY-05-04.** Optional: discover and continue authorized work created in the native CLI.
+**CY-05-04.** Recover or fail closed after runner, server, or runtime crashes without duplicate execution or concurrent writes.
 
-As an optional enhancement, in addition to continuing sessions created by Zoe through the official Codex CLI, the system may support the reverse direction.
-
-For example:
-
-A user first develops a project in the official Codex CLI.
-
-Later, the user opens Zoe and says:
-
-“Continue that project from earlier and finish the tests.”
-
-Zoe should identify the relevant project, existing session, and work state as far as possible, then continue the work when the required support and permissions are available.
-
-**Bidirectional native continuation is optional; basic CLI invocation and persistent task recovery remain required.**
+The runner must use deterministic names and labels, one session per container, durable journal identities, and label lookup for uncertain creation. In-flight crash recovery, session continuity, and exact stop evidence require live acceptance. A session title is not an idempotency key.
 
 <a id="cy-05-05"></a>
 
 **Disposition: Required.**
 
-### 5.5 Integrity of Native Continuation
+### 5.5 Runtime integrity and tool limits
 
-**CY-05-05.** Preserve project, workspace, code, history, tools, goals, outcomes, open items, and context; prevent uncoordinated concurrent writes.
+**CY-05-05.** Preserve workspace, task, runtime, artifact, and tool-step integrity while preventing uncoordinated concurrent writes.
 
-If the optional native-continuation capability above is implemented, it should preserve as much as possible of the following:
-
-- Project identity
-- Working directory
-- Code state
-- Conversation history
-- Record of tool operations already performed
-- Task objective
-- Work already completed
-- Unresolved issues
-- Necessary development context
-
-The system must also distinguish between two concepts:
-
-**Resuming a saved session** and **taking over a session that another client is currently running**.
-
-These are different capabilities.
-
-If a session is still running in another client, Zoe must not modify the same work state simultaneously without coordination.
-
-It must prevent duplicate execution, session conflicts, and code overwrites.
+The runner enforces time, budget, and tool-step limits through event observation and abort because OpenCode does not provide a per-run tool-step limit. It must verify exact container removal for termination and keep ambiguous runtime identity unresolved. Shared workspaces require explicit ownership and conflict protection.
 
 <a id="cy-05-06"></a>
 
 **Disposition: Required.**
 
-### 5.6 Codex Independence
+### 5.6 Runtime independence and migration
 
-**CY-05-06.** Keep project outputs usable without Zoe and optionally synchronize external native-tool changes.
+**CY-05-06.** Keep Zoe runtime outputs and migration records usable during provider/runtime maintenance and migration.
 
-Zoe coordinates development tasks; it is not the only way to access development tools.
-
-Even when Zoe is temporarily unavailable, users should be able to access existing projects and work products directly through the official Codex CLI as far as possible.
-
-Likewise, Zoe should be able to recognize and synchronize changes made by users in the official Codex CLI.
-
-**Clarification: CLI execution, viewing, stopping, and task recovery under §5.1, along with preservation of work products, remain required. Manual same-session continuation under §§5.3–5.5 and automatic synchronization of external changes under §5.6 are optional enhancements; their absence does not block first-release or full required-scope acceptance. Basic access to code and artifacts must not depend on the human-takeover feature. Session discovery and control are limited by what official interfaces support and what has been tested; recovery must never create uncoordinated concurrent writes.**
+Projects, code, artifacts, task history, runtime session identity, usage records, and unresolved recovery evidence must remain accessible without inventing unsupported native-tool handoff. The four historical uncertain AO runs must be migrated through the label-based Zoe runtime uncertainty procedure before legacy runtime removal; their records remain labeled as historical migration evidence.
 
 ## 6. Agent System Requirements
 
@@ -690,7 +676,14 @@ The system must update status based on actual execution.
 
 It must not mark work as complete without verification merely because an Agent said “done.”
 
-Task status is separate from server-owned interaction state. Interaction state may indicate `awaiting_message`, `explicit_confirmation`, or exceptional `approval_required`; ordinary completed results have no interaction requirement. The API name `awaiting_user` remains supported for compatibility and may be used as a legacy status/label, but it must not be treated as a client-owned workflow. When a waiting task accepts `task.append`, the server persists the user message, preserves prior result and evidence history, applies policy and optimistic-version checks, and emits the authoritative event; the client does not synthesize a task-history entry or decide whether the message is clarification, change, continuation, or confirmation.
+Task status is separate from server-owned interaction state. Interaction state may indicate
+`awaiting_message`, `explicit_confirmation`, or exceptional `approval_required`; ordinary completed results
+have no interaction requirement. The API name `awaiting_user` remains supported for compatibility and may be
+used as a legacy status/label, but it must not be treated as a client-owned workflow. When a waiting task
+accepts `task.append`, the server persists the user message, preserves prior result and evidence history,
+applies policy and optimistic-version checks, and emits the authoritative event; the client does not
+synthesize a task-history entry or decide whether the message is clarification, change, continuation, or
+confirmation.
 
 <a id="cy-08-03"></a>
 
@@ -1217,7 +1210,12 @@ Long-running services need to report runtime status, recover automatically or no
 
 ## 16. Data Management Requirements
 
-Persist important records beyond model context and process lifetime; the detailed requirements for migration, recovery, provenance, security, and data control are in [Sections 16.2–16.6](#162-data-migration). Acceptance follows durable commit. Data control includes permission-aware inspection, export, and deletion of authoritative and derived copies, client caches, exports, replicas, service volumes, and backups under a stated retention policy. Migration/recovery preserves sources, versions, effective times, configuration, artifacts, and required volumes; secrets use deployment references rather than values in source or evidence.
+Persist important records beyond model context and process lifetime; the detailed requirements for migration,
+recovery, provenance, security, and data control are in [Sections 16.2–16.6](#162-data-migration). Acceptance
+follows durable commit. Data control includes permission-aware inspection, export, and deletion of
+authoritative and derived copies, client caches, exports, replicas, service volumes, and backups under a
+stated retention policy. Migration/recovery preserves sources, versions, effective times, configuration,
+artifacts, and required volumes; secrets use deployment references rather than values in source or evidence.
 
 <a id="cy-16-01"></a>
 
@@ -1558,7 +1556,7 @@ Several distinctions need to remain clear to avoid future misunderstandings; the
 
 **Third, Zoe is more than an Agent orchestration tool.** It can create, deploy, and manage ordinary programs under authorization ([Chapter 7](#7-autonomous-capability-expansion)).
 
-**Fourth, Zoe is not a new code editor.** It uses native development tools such as Codex and preserves required CLI execution, stopping, viewing, task recovery, and code-artifact access; human takeover and bidirectional handoff remain optional ([Chapter 5](#5-agent-and-native-tool-integration-requirements)).
+**Fourth, Zoe is not a new code editor.** It uses native development tools such as Codex and preserves required CLI execution, stopping, viewing, task recovery, and code-artifact access; human takeover and bidirectional handoff remain optional ([Chapter 5](#5-agent-and-runtime-integration-requirements)).
 
 **Fifth, Zoe is not an operating system in the traditional sense.** It builds on existing operating systems rather than replacing macOS or Linux ([Section 1.3](#13-product-boundaries)).
 
@@ -1568,7 +1566,15 @@ Several distinctions need to remain clear to avoid future misunderstandings; the
 
 ## 22. Final Complete Product Definition
 
-The complete product is summarized by the authoritative requirements in [Chapter 3](#3-client-requirements), [Chapter 5](#5-agent-and-native-tool-integration-requirements), [Chapter 6](#6-agent-system-requirements), [Chapter 7](#7-autonomous-capability-expansion), [Chapter 8](#8-task-management-requirements), [Chapter 9](#9-long-running-background-services), [Chapter 10](#10-long-term-memory-requirements), [Chapter 11](#11-context-management), [Chapter 12](#12-unified-state-and-cross-device-continuity), [Chapter 13](#13-modular-ai-and-services), and [Chapters 14–18](#14-permission-and-security-requirements). The user sets a goal, Super coordinates when needed, Workers execute specialist work, and ordinary programs perform deterministic continuous work; results enter the unified task/state system and important knowledge enters controlled memory.
+The complete product is summarized by the authoritative requirements in [Chapter 3](#3-client-requirements),
+[Chapter 5](#5-agent-and-runtime-integration-requirements), [Chapter 6](#6-agent-system-requirements),
+[Chapter 7](#7-autonomous-capability-expansion), [Chapter 8](#8-task-management-requirements), [Chapter
+9](#9-long-running-background-services), [Chapter 10](#10-long-term-memory-requirements), [Chapter
+11](#11-context-management), [Chapter 12](#12-unified-state-and-cross-device-continuity), [Chapter
+13](#13-modular-ai-and-services), and [Chapters 14–18](#14-permission-and-security-requirements). The user
+sets a goal, Super coordinates when needed, Workers execute specialist work, and ordinary programs perform
+deterministic continuous work; results enter the unified task/state system and important knowledge enters
+controlled memory.
 
 <a id="cy-22-01"></a>
 

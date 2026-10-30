@@ -5,32 +5,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
-	"errors"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/ronigooja/Zoe/contracts"
-	"github.com/ronigooja/Zoe/internal/agents/ao"
 	"github.com/ronigooja/Zoe/internal/runner"
 	"github.com/ronigooja/Zoe/internal/storage"
 )
-
-type dispatchRecoveryAO struct{ creates int }
-
-func (a *dispatchRecoveryAO) CreateWorker(context.Context, ao.WorkerSpec) (ao.Session, error) {
-	a.creates++
-	return ao.Session{ID: "unexpected-session"}, nil
-}
-func (*dispatchRecoveryAO) GetSession(context.Context, string) (ao.Session, error) {
-	return ao.Session{}, errors.New("unexpected AO session lookup")
-}
-func (*dispatchRecoveryAO) GetConversation(context.Context, string) (ao.Conversation, error) {
-	return ao.Conversation{}, errors.New("unexpected AO conversation lookup")
-}
-func (*dispatchRecoveryAO) StopWorker(context.Context, string) (ao.Session, ao.KillResponse, error) {
-	return ao.Session{}, ao.KillResponse{}, errors.New("unexpected AO stop")
-}
 
 func TestUncertainTaskDispatchRemainsNonDispatchableWithoutMutation(t *testing.T) {
 	ctx := context.Background()
@@ -63,7 +44,7 @@ func TestUncertainTaskDispatchRemainsNonDispatchableWithoutMutation(t *testing.T
 	if _, err := store.DB().ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,title,goal,source,profile_id,status,version,created_at,updated_at,created_by_device_id,command_id) VALUES('task','default','test','test','service','profile','active',1,?,?, 'device','command')`, at, at); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.DB().ExecContext(ctx, `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,started_at) VALUES('run','default','task','attempt','uncertain','run',1,'runner','device','command','test','profile','runtime','model','worker',?)`, at); err != nil {
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,harness,started_at) VALUES('run','default','task','attempt','uncertain','run',1,'runner','device','command','test','profile','runtime','model','worker','opencode',?)`, at); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := store.DB().BeginTx(ctx, nil)
@@ -114,7 +95,7 @@ func TestProductionControlClientRechecksLiveTaskAuthorizationOverHTTP(t *testing
 	if _, err := store.DB().ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,title,goal,source,profile_id,status,version,created_at,updated_at,created_by_device_id,command_id) VALUES('task','default','test','test','user','profile','active',1,?,?, 'device','command')`, at, at); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.DB().ExecContext(ctx, `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,started_at) VALUES('run','default','task','attempt','active','run',1,'runner','device','command','test','profile','runtime','model','worker',?)`, at); err != nil {
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,harness,started_at) VALUES('run','default','task','attempt','active','run',1,'runner','device','command','test','profile','runtime','model','worker','opencode',?)`, at); err != nil {
 		t.Fatal(err)
 	}
 	server, err := NewServer(store, Config{RunnerToken: runnerToken, RunnerID: "runner", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim"}})
@@ -168,7 +149,7 @@ func TestProductionControlClientRechecksLiveTaskAuthorizationOverHTTP(t *testing
 	}
 }
 
-func TestProductionHTTPRecoveryDoesNotReplayPersistedAOCreateAttempt(t *testing.T) {
+func TestProductionHTTPRecoveryKeepsUncertainRunFenced(t *testing.T) {
 	ctx := context.Background()
 	runnerToken := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x43}, 32))
 	store, err := storage.Open(ctx, storage.Config{Path: ":memory:"})
@@ -189,7 +170,7 @@ func TestProductionHTTPRecoveryDoesNotReplayPersistedAOCreateAttempt(t *testing.
 	if _, err := store.DB().ExecContext(ctx, `INSERT INTO tasks(id,workspace_id,title,goal,source,profile_id,status,version,created_at,updated_at,created_by_device_id,command_id) VALUES('task','default','test','test','user','profile','active',1,?,?, 'device','command')`, at, at); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.DB().ExecContext(ctx, `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,started_at) VALUES('run','default','task','attempt','active','run',1,'runner','device','command','test','profile','runtime','model','worker',?)`, at); err != nil {
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,harness,started_at) VALUES('run','default','task','attempt','uncertain','run',1,'runner','device','command','test','profile','runtime','model','worker','opencode',?)`, at); err != nil {
 		t.Fatal(err)
 	}
 	server, err := NewServer(store, Config{RunnerToken: runnerToken, RunnerID: "runner", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim", "runner:observe", "runner:control:read"}})
@@ -205,29 +186,7 @@ func TestProductionHTTPRecoveryDoesNotReplayPersistedAOCreateAttempt(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim := contracts.JobClaim{RunID: "run", TaskID: "task", AttemptID: "attempt", WorkspaceID: "default", Fence: 1, Goal: "test", ProfileID: "profile", Harness: "codex", RuntimeRouteID: "runtime", ModelRouteID: "model", IsolationPolicy: "ao-codex-workspace-write-v1", Role: "worker", AOProjectID: "project"}
-	journal, err := runner.OpenJournal(ctx, t.TempDir()+"/runner.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer journal.Close()
-	spec := ao.WorkerSpec{ClientRequestID: claim.RunID, ProjectID: claim.AOProjectID, Harness: claim.Harness, DisplayName: "original", Prompt: "original request body"}
-	if _, err := journal.SaveClaim(ctx, claim, spec, "create_pending"); err != nil {
-		t.Fatal(err)
-	}
-	agent := &dispatchRecoveryAO{}
-	engine := runner.Engine{Control: control, AO: agent, Journal: journal}
-	if err := engine.Process(ctx, claim); !errors.Is(err, runner.ErrOutcomePending) {
-		t.Fatalf("recovery error=%v, want fenced uncertain result", err)
-	}
-	if agent.creates != 0 {
-		t.Fatalf("recovered create_pending journal made %d AO create POSTs", agent.creates)
-	}
-	var status string
-	if err := store.DB().QueryRowContext(ctx, `SELECT status FROM runs WHERE id='run'`).Scan(&status); err != nil || status != "uncertain" {
-		t.Fatalf("recovered run status=%q err=%v, want uncertain", status, err)
-	}
-	allowed, reason, err := control.CheckDispatchAuthorization(ctx, claim.RunID)
+	allowed, reason, err := control.CheckDispatchAuthorization(ctx, "run")
 	if err != nil || allowed || reason != "reconciliation_unavailable" {
 		t.Fatalf("uncertain run dispatch check = allowed:%v reason:%q err:%v", allowed, reason, err)
 	}

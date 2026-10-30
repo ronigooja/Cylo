@@ -120,8 +120,8 @@ jobs:
         run: |
           set +e
           set -uo pipefail
-          printf '%s\n' 'go test -race ./internal/control ./internal/runner ./internal/agents/ao ./cmd/zoe-server ./internal/ops ./cmd/zoe' > "$ZOE_OUTPUT/logs/auth-race.command"
-          go test -race ./internal/control ./internal/runner ./internal/agents/ao ./cmd/zoe-server ./internal/ops ./cmd/zoe > "$ZOE_OUTPUT/logs/auth-race.log" 2>&1
+          printf '%s\n' 'go test -race ./internal/control ./internal/runner ./internal/agents/opencode ./cmd/zoe-server ./internal/ops ./cmd/zoe' > "$ZOE_OUTPUT/logs/auth-race.command"
+          go test -race ./internal/control ./internal/runner ./internal/agents/opencode ./cmd/zoe-server ./internal/ops ./cmd/zoe > "$ZOE_OUTPUT/logs/auth-race.log" 2>&1
           status=$?
           echo "$status" > "$ZOE_OUTPUT/logs/auth-race.exit"
           if [[ "$status" -ne 0 ]]; then

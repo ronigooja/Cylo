@@ -1,6 +1,6 @@
 # ADR 0002: AO runtime ownership and external-service boundaries
 
-Status: accepted architecture baseline; implementation and acceptance evidence are tracked in [the acceptance evidence register](../../acceptance/evidence.md), while delivery status remains in [the master plan](../../master-plan.md).
+Status: superseded by [ADR 0007](0007-zoe-owned-opencode-runtime.md); implementation and acceptance evidence are tracked in [the acceptance evidence register](../../acceptance/evidence.md), while delivery status remains in [the master plan](../../master-plan.md).
 
 ## Context
 
