@@ -89,11 +89,11 @@ struct StandardComponentView: View {
     private var article: some View {
         VStack(alignment: .leading, spacing: ScreenStyle.spacing(density)) {
             if let title = string("title") { Text(title).font(.title2.bold()) }
-            if let body = string("body") { MarkdownText(body) }
+            if let body = string("body") { MarkdownText(value: body) }
             ForEach(Array(object("sections").enumerated()), id: \.offset) { _, section in
                 VStack(alignment: .leading) {
                     Text(section["title"]?.displayString ?? "").font(.headline)
-                    MarkdownText(section["body"]?.displayString ?? "")
+                    MarkdownText(value: section["body"]?.displayString ?? "")
                 }
             }
             if !array("sources").isEmpty {

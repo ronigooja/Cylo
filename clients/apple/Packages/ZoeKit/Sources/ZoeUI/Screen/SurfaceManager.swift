@@ -90,7 +90,10 @@ public final class SurfaceManager: NSObject, SurfaceHost, NSWindowDelegate {
     }
 
     @objc private func statusFloorClicked() {
-        if let popover = entries.values.compactMap(\.popover).first { popover.isShown ? popover.performClose(nil) : if let button = floorStatusItem.button { popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY) } }
+        if let popover = entries.values.compactMap(\.popover).first {
+            if popover.isShown { popover.performClose(nil) }
+            else if let button = floorStatusItem.button { popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
+        }
         NotificationCenter.default.post(name: .zoeWakeVoice, object: nil)
     }
 
