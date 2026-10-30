@@ -578,7 +578,19 @@ Capability expansion covers authorized creation, validated release, constrained 
 
 **CY-07-01.** Identify durable capability needs and create or configure the program only for authorized deployment.
 
-Zoe should recognize when a request requires a durable capability rather than a one-time task. It may arrange for a Worker to create a program or configure existing tools and services, then deploy the result only after the necessary authorization.
+Zoe should not only use existing features; it should also be able to create new system capabilities in response to user needs.
+
+For example, a user says:
+
+“Check my important email every day from now on, and tell me when something important arrives.”
+
+Zoe should understand that this is a request for a long-term capability, not a one-time email lookup.
+
+The system can arrange for a Worker to write a program or configure existing tools and services.
+
+After obtaining the necessary authorization, it can deploy the corresponding background service.
+
+The service can then run independently.
 
 <a id="cy-07-02"></a>
 
@@ -600,7 +612,17 @@ Users should be able to see which capabilities are installed and whether they ar
 
 **CY-07-03.** Keep long-running ordinary programs alive independently; call agents only where judgment is needed.
 
-An ordinary program that has been created should run without continuous Super participation. It should call an Agent only when content needs semantic understanding or complex decisions; AI can create a capability without necessarily executing it continuously.
+An ordinary program that has been created should not need Super to participate continuously in order to work.
+
+For example, an email-checking service can continuously monitor a mailbox.
+
+Most of the time it does not need to call any large language model.
+
+It calls the relevant Agent only when it encounters content that needs semantic understanding or complex decisions.
+
+This means:
+
+**AI can create a capability without necessarily being responsible for its ongoing execution.**
 
 <a id="cy-07-04"></a>
 
@@ -610,7 +632,11 @@ An ordinary program that has been created should run without continuous Super pa
 
 **CY-07-04.** Allow pluggable capabilities across mail, calendar, files, development, web, apps, system, schedules, and monitoring.
 
-Zoe should gain capabilities through modules, external services, or programs it creates autonomously, without requiring a change to the entire core architecture. Examples include email, calendars, file management, development tools, GitHub, browser automation, third-party apps, system operations, scheduled tasks, and information monitoring.
+Zoe should be able to gain a range of capabilities through modules, external services, or programs it creates autonomously.
+
+Examples include email, calendars, file management, development tools, GitHub, browser automation, third-party apps, system operations, scheduled tasks, information monitoring, and other software services that can be authorized.
+
+Adding a capability should not require changing the entire system's core architecture.
 
 ## 8. Task Management Requirements
 
@@ -624,7 +650,24 @@ Task management defines durable execution identity, lifecycle semantics, recover
 
 **CY-08-01.** Represent every execution subject with a unified task identity, goal, source, status, times, result, errors, recovery, and records.
 
-Every task, whether executed by Super, a Worker, Codex, an ordinary program, or another service, must have the unified identity and records listed in [CY-08-01](#cy-08-01).
+Zoe needs a unified system for managing all tasks.
+
+Every task, whether executed by Super, a Worker, Codex, an ordinary program, or another service, should have a clear identity and status.
+
+Task information must include at least:
+
+- Task identifier
+- Associated project
+- Task objective
+- Creation source
+- Executing entity
+- Current status
+- Start time
+- Most recent update time
+- Execution result
+- Error information
+- Necessary recovery information
+- Related execution records
 
 <a id="cy-08-02"></a>
 
@@ -634,7 +677,18 @@ Every task, whether executed by Super, a Worker, Codex, an ordinary program, or 
 
 **CY-08-02.** Define real semantics for queued, active, waiting, awaiting user, paused, complete, failed, and canceled states.
 
-The system must support the states and meanings defined in [CY-08-02](#cy-08-02), including pending, in progress, waiting, waiting for user, paused, completed, failed, and canceled.
+The system must support the following states or equivalent semantics:
+
+| Status | Meaning |
+|---|---|
+| Pending | The task has been created but has not started |
+| In progress | The task is executing |
+| Waiting | Waiting for a dependency, external event, or other condition |
+| Waiting for user | User authorization, confirmation, or additional information is needed |
+| Paused | Execution is temporarily stopped |
+| Completed | Completion criteria have been met |
+| Failed | Execution failed |
+| Canceled | The task was canceled |
 
 The system must update status based on actual execution.
 
@@ -713,7 +767,15 @@ A finite task and a durable service have different lifetimes; each service trigg
 
 **CY-09-01.** Separate finite task lifecycles from durable service lifecycles and give each service trigger a run record.
 
-Zoe must clearly distinguish a one-time task from a long-running service because they require different lifecycle management.
+Zoe must clearly distinguish between a **one-time task** and a **long-running service**.
+
+For example:
+
+“Check my email once” is a task.
+
+“Monitor my email from now on” is a service.
+
+They need different lifecycle management.
 
 <a id="cy-09-02"></a>
 
@@ -723,7 +785,20 @@ Zoe must clearly distinguish a one-time task from a long-running service because
 
 **CY-09-02.** Store service identity, purpose, scope, environment, trigger, permission, configuration, status, health, errors, and recovery details.
 
-A service needs its own record containing the identity, purpose, scope, environment, triggers, permissions, configuration, runtime status, execution record, health, errors, and stop/recovery methods defined by [CY-09-02](#cy-09-02).
+A service needs its own record, including:
+
+- Service identity
+- Service purpose
+- Project or scope
+- Runtime environment
+- Trigger conditions
+- Permissions
+- Configuration
+- Current runtime status
+- Most recent execution record
+- Health status
+- Error record
+- Stop and recovery methods
 
 <a id="cy-09-03"></a>
 
@@ -733,7 +808,19 @@ A service needs its own record containing the identity, purpose, scope, environm
 
 **CY-09-03.** Trigger programs or agents from mail, files, schedules, APIs, task outcomes, failures, and user events.
 
-Background services can react to mail, file, timer, API, task, abnormal-state, and user events by triggering an ordinary program, a Worker, or Super; they should not default to Super for every event.
+Background services can perform actions in response to different events, such as:
+
+- A new email arrives
+- A file changes
+- A timer fires
+- An external API returns an event
+- A task completes
+- The system encounters an abnormal state
+- A user issues a command
+
+An event can trigger an ordinary program, a Worker, or Super.
+
+It should not default to triggering Super for every event.
 
 <a id="cy-09-04"></a>
 
@@ -743,7 +830,11 @@ Background services can react to mail, file, timer, API, task, abnormal-state, a
 
 **CY-09-04.** Classify and deduplicate routine, completion, failure, and decision notices; prevent noisy repetition.
 
-Background-service notifications must distinguish ordinary information, completion, errors, and decisions, while avoiding duplicate or meaningless reminders.
+When a background service produces an event that deserves the user's attention, it should be able to send a notification.
+
+Notifications should distinguish ordinary information, task completion, runtime errors, and events requiring a user decision.
+
+The system should avoid duplicate notifications and frequent, meaningless reminders as far as possible.
 
 ## 10. Long-Term Memory Requirements
 
@@ -894,13 +985,23 @@ In particular, an automatic summary must not overwrite a confirmed user decision
 
 **CY-10-06.** Retrieve only relevant authorized history, cite sources, save context, and surface missing/conflicting evidence as uncertainty.
 
-Zoe should retrieve only information relevant to the current task, reducing token use, irrelevant context, cross-project confusion, and loss of traceability when continuing work.
+Zoe should not send the entire history to the model on every call.
+
+The system needs to retrieve only information relevant to the current task.
+
+Goals include:
+
+- Reducing token use
+- Avoiding irrelevant context
+- Preventing information from different projects from being confused
+- Improving traceability of historical facts
+- Improving accuracy when continuing work
 
 When retrieval is insufficient or results conflict, the system should state the uncertainty instead of inventing missing history.
 
 ## 11. Context Management
 
-Current execution context and long-term memory are separate; context assembly must follow task, runtime, project, and permission scope as specified in [CY-11-01](#cy-11-01).
+Current execution context and long-term memory are separate; the detailed requirement below governs task, runtime, project, and permission-scoped context assembly.
 
 <a id="cy-11-01"></a>
 
@@ -928,7 +1029,9 @@ Cross-device continuity uses durable identities and authoritative versions, mark
 
 **CY-12-01.** Use one versioned state authority across devices and expose stale cache/conflicts clearly.
 
-Different clients viewing the same task must use one authoritative source and must not show unexplained conflicting states.
+Different clients viewing the same task must not show unexplained conflicting states.
+
+For example, if a Mac shows a task as completed, an iPhone should not incorrectly continue to show that task as running.
 
 <a id="cy-12-02"></a>
 
@@ -938,7 +1041,25 @@ Different clients viewing the same task must use one authoritative source and mu
 
 **CY-12-02.** Continue one linked project/task across Mac and iPhone and return to the same work context.
 
-When a user resumes work on another device, Zoe should identify the original task, report its actual progress, and associate a follow-up correctly with that task or a new follow-up task.
+When a user resumes work on another device, the typical scenario is:
+
+A user tells Zoe on a Mac:
+
+“Develop a new user authentication module for me.”
+
+The user then leaves the computer.
+
+On an iPhone, the user asks:
+
+“How is the authentication module from earlier coming along?”
+
+Zoe should identify the original task and report its actual progress.
+
+The user then says:
+
+“When the code is done, check it for security issues too.”
+
+The system should associate this request correctly with the original task or a follow-up task.
 
 When the user returns to the Mac, they can continue interacting through Zoe and, where supported, continue development directly in the official Codex tool.
 
