@@ -3,9 +3,6 @@ name: OpenCode runtime image
 # Publishes the Zoe OpenCode runtime image. The tag is a hash of the build inputs, so an
 # unchanged image is never rebuilt: a matching tag in GHCR is reused and only its digest is printed.
 on:
-  push:
-    branches: [ci/opencode-image]
-    paths: ['.github/workflows/opencode-image.yml', 'deploy/linux/second-runtime/opencode/**']
   workflow_dispatch:
     inputs:
       force:
@@ -60,4 +57,3 @@ jobs:
           path: ${{ runner.temp }}/IMAGE_DIGEST
           retention-days: 30
           if-no-files-found: error
-# touch
