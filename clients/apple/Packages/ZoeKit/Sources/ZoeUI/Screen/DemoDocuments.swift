@@ -1,5 +1,4 @@
 #if os(macOS)
-#if DEBUG
 import ZoeKit
 
 public enum DemoDocuments {
@@ -23,5 +22,4 @@ public enum DemoDocuments {
         ScreenDocument(version: ComponentCatalog.version, revision: 1, root: ScreenNode(id: "canvas", type: "canvas", children: [ScreenNode(id: "one", type: "text", props: ["text": .string("Canvas")]), ScreenNode(id: "two", type: "statusDot", props: ["label": .string("Layer")])]))
     }
 }
-#endif
 #endif

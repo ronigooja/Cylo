@@ -23,11 +23,9 @@ struct ZoeMacApp: App {
         }
         .defaultSize(width: 1280, height: 820)
         Settings { MacSettingsView(model: model, coordinator: coordinator) }
-#if DEBUG
         CommandMenu("Demo") {
             Button("Canvas / Layer") { coordinator.surfaces.open(SurfaceSpec(id: "demo.canvas", kind: .window, document: DemoDocuments.canvas)) }
             ForEach(ComponentCatalog.descriptors, id: \.type) { descriptor in Button(descriptor.type) { coordinator.surfaces.open(SurfaceSpec(id: "demo.\(descriptor.type)", kind: .window, document: DemoDocuments.standard(descriptor.type))) } }
         }
-#endif
     }
 }
