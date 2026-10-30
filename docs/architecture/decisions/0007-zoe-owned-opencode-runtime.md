@@ -26,14 +26,33 @@ Forward migration maps `codex` and empty runtime values to `opencode`; unknown v
 
 ## Open verification
 
-The sufficiency of the OpenCode serve API is pending the separate probe report at `/tmp/opencode-probe-report.md`. Recovery still requires verification of session persistence. Usage and cost metering through the provider bridge remains open. Existing budget gaps are unchanged.
+A probe of the pinned `opencode-ai@1.18.33` (2026-10-30, local fake OpenAI-compatible provider, no real credentials) gave a conditional go.
+
+Confirmed:
+
+- `opencode serve` supports Basic Auth (`OPENCODE_SERVER_PASSWORD`) and `--hostname`/`--port` bind control.
+- `POST /session`, `POST /session/:id/prompt_async` (204), `GET /session/status`, `GET /session/:id/message`, `GET /event` (SSE), and `POST /session/:id/abort` exist.
+- A custom `@ai-sdk/openai-compatible` provider with a `provider/model` string routes through a single TCP endpoint, so the existing Zoe bridge pattern fits.
+- Session state is SQLite under the XDG data directory; a restarted server over the same directory lists and reads earlier sessions.
+
+Rules derived from the probe:
+
+- Session `title` is not unique; two creates with one title produce two sessions. The runner stores the run identity itself and uses container labels, not session titles, for idempotency.
+- Completion is not `prompt_async` returning 204. The terminal state combines `/session/status` no longer `busy` with the latest assistant message (`time.completed`, `finish`, error parts); events only reduce polling.
+- OpenCode has no per-run tool-step limit. The runner enforces tool-step, time, and budget limits externally through events and `abort`.
+
+Still open:
+
+- Final `finish` and token/cost propagation under a correct streaming provider and through the bridge.
+- Recovery of in-flight work after a crash; only persisted sessions are confirmed after a clean restart.
+- Existing budget gaps are unchanged.
 
 ## Consequences
 
 Zoe owns runtime creation, session lifecycle, reconciliation identity, and stop evidence; one container and one OpenCode session define each run's runtime boundary. Deterministic labels make unknown creation outcomes queryable without granting replay authority. Container removal gives a concrete termination boundary, while unresolved identity or absence remains fail-closed.
 
-The migration temporarily carries legacy AO schema and rollback state. Provider integration remains dependent on the unchanged CLIProxyAPI deployment. OpenCode serve, recovery persistence, bridge metering, and existing budget gaps require acceptance evidence before they become delivery claims.
+The migration temporarily carries legacy AO schema and rollback state. Provider integration remains dependent on the unchanged CLIProxyAPI deployment. Streaming completion and metering, in-flight crash recovery, and existing budget gaps require acceptance evidence before they become delivery claims.
 
 ## Sources
 
-[ADR 0002, superseded](0002-ao-runtime-ownership.md); [architecture runtime admission and model routing](../../architecture.md#runtime-admission-and-model-routing); [CLIProxyAPI deployment boundary](../../architecture.md#system-and-authority); [product requirements](../../product.md); pending [OpenCode serve probe report](/tmp/opencode-probe-report.md).
+[ADR 0002, superseded](0002-ao-runtime-ownership.md); [architecture runtime admission and model routing](../../architecture.md#runtime-admission-and-model-routing); [CLIProxyAPI deployment boundary](../../architecture.md#system-and-authority); [product requirements](../../product.md).
