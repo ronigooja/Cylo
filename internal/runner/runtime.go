@@ -37,7 +37,10 @@ type OpenCodeRuntime struct {
 
 func (r OpenCodeRuntime) Create(ctx context.Context, spec RuntimeSpec) (RuntimeBinding, error) {
 	cfg := r.Container
-	cfg.RunID, cfg.Attempt, cfg.Fence, cfg.Image = spec.RunID, spec.AttemptID, spec.Fence, spec.Image
+	cfg.RunID, cfg.Attempt, cfg.Fence = spec.RunID, spec.AttemptID, spec.Fence
+	if spec.Image != "" {
+		cfg.Image = spec.Image
+	}
 	if cfg.WorkspaceRoot != "" {
 		cfg.Workspace = cfg.WorkspaceRoot
 	} else {
