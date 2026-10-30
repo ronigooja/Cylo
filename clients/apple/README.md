@@ -1,6 +1,6 @@
 # Apple clients
 
-Native SwiftUI targets share [ZoeKit](Packages/ZoeKit/Package.swift) for API/domain state, synchronization, credentials, and voice protocols. Use the [product requirements](../../docs/product.md#3-client-requirements) for connection and interaction behavior, [architecture](../../docs/architecture.md#identity-clients-and-notices) for authority, and [evidence register](../../docs/acceptance/evidence.md) for build/install results and remaining device gates.
+Native SwiftUI targets share [ZoeKit](Packages/ZoeKit/Package.swift) for API/domain state, synchronization, credentials, and voice protocols. Use the [product requirements](../../docs/product.md#3-client-requirements) for connection and interaction behavior, [architecture](../../docs/architecture.md#identity-clients-and-notices) for authority, [deployment operations](../../docs/operations/deployment.md#native-client-installation-and-connection) for Mac staging/install paths, and [evidence register](../../docs/acceptance/evidence.md) for build/install results and remaining device gates.
 
 ## Build and platform tools
 

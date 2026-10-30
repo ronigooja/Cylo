@@ -1,6 +1,6 @@
 # ADR 0004: Shared instance-key authentication for a fresh deployment
 
-Status: accepted architecture baseline; implementation and acceptance status remain in [the master plan](../../master-plan.md). Recorded during the 2026-10-27 documentation consolidation from existing decisions; this record does not introduce a new delivery claim.
+Status: accepted architecture baseline; delivery status and evidence remain in [the master plan](../../master-plan.md) and [the evidence register](../../acceptance/evidence.md).
 
 ## Context
 

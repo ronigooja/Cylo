@@ -1,6 +1,6 @@
 # Zoe architecture
 
-This document records the current architecture and its boundaries. It describes responsibility and required behavior; it does not certify implementation or production readiness. [Product requirements](product.md) define the full scope. [The master plan](master-plan.md) owns delivery status, evidence, open gaps, and acceptance boundaries. Archived research is historical provenance rather than a competing current design.
+This document records the current architecture and its boundaries. It describes responsibility and required behavior; it is not an implementation or delivery claim—see the [acceptance evidence register](acceptance/evidence.md) and [master plan](master-plan.md). [Product requirements](product.md) define the full scope. Archived research is historical provenance rather than a competing current design.
 
 ## System and authority
 
@@ -51,9 +51,9 @@ For routes supplied by CLIProxyAPI, account selection and quota handling remain 
 
 ## Identity, clients, and notices
 
-A fresh deployment uses one canonical shared instance key for `owner` in workspace `default`. Runner and memory-worker credentials are separate. There is no password, pairing/bootstrap, approved-device session, saved-server list, or fixed client endpoint in this design. [ADR 0004](architecture/decisions/0004-instance-key-authentication.md) records the decision and its consequences.
+A fresh deployment uses the shared instance-key boundary defined by [ADR 0004](architecture/decisions/0004-instance-key-authentication.md); runner and memory-worker credentials remain separate.
 
-Apple clients ask for server URL and key, allow external installation links to populate a review form requiring Connect, and connect after explicit QR image import or camera scanning validates the address/key. HTTP targets require confirmation before transmitting the key. iPhone/iPad camera access is requested only when Scan QR code is chosen; image imports need no camera access. Frames are decoded locally without saving or uploading them. Keychain is the only credential store. An authenticated snapshot validates the connection; rejected credentials close workspace access, while ordinary transport failure preserves validated state with stale feedback. Replacing/clearing a connection discards its local queue, snapshot, exports, and drafts. Local clearing does not revoke the shared key or stop durable tasks. Key rotation blocks future use of the old key and requires redistribution.
+Clients authenticate with the server URL and shared key through the validation, Keychain, and rotation rules in [ADR 0004](architecture/decisions/0004-instance-key-authentication.md); local clearing is not server-side revocation.
 
 A stable random installation UUID identifies a push registration independently of the shared owner key. One installation cannot overwrite or revoke another installation's token. APNs is only a wake-up hint to reload durable inbox state. Payloads contain no task content or notice body. Delivery retry and invalid-token handling remain server responsibilities; real APNs delivery requires separate acceptance evidence.
 
@@ -63,22 +63,15 @@ The interface follows [product chapter 3](product.md#3-client-requirements). Inf
 
 ## Voice and business work
 
-Zoe-compatible `ronigooja/chatgpt-web-voice` fork is the selected gateway/account pool. The current baseline deliberately accepts client-direct media: the gateway handles authentication, account selection, and SDP signaling, while the native client owns the WebRTC media and DataChannel connection to the upstream service. Dependency pins and platform setup live with [the Apple clients](../clients/apple/README.md) and [voice deployment](../deploy/voice/README.md).
+Zoe-compatible `ronigooja/chatgpt-web-voice` fork is the selected gateway/account pool. The current voice topology and lease boundary are defined by [ADR 0005](architecture/decisions/0005-voice-task-and-lease-boundaries.md); deployment details live in [voice deployment](../deploy/voice/README.md).
 
-This media topology is the root reason for the optional `AccountMedia` lease adapter. A gateway `DELETE` can remove its own session binding, but the gateway cannot use that request to prove that the client's PeerConnection or the upstream media connection has ended. Reusing the account therefore requires trusted account identity, generations, and termination evidence; adding fields alone does not create that evidence.
-
-There are two possible architectures, and this baseline selects the first:
-
-- **Client-direct media (selected for the current baseline).** Keep WebRTC between the native client and the upstream service. The gateway owns sticky account selection and session bookkeeping. Account-level reuse remains fail-closed when termination is uncertain, and Zoe's separate `AccountMedia` integration stays disabled.
-- **Gateway-terminated or relayed media (future option).** Make the gateway a WebRTC endpoint for the client and establish a second upstream WebRTC leg, with a media and DataChannel bridge between them. The gateway could then observe both legs and build stronger release evidence, but this requires a separate media-server project covering ICE, codecs, interruption, failure recovery, privacy, latency, and scale.
-
-The second architecture is not required for the current voice baseline. `ZOE_VOICE_ACCOUNT_MEDIA_ENABLED=true` is therefore not a supported deployment mode for this baseline; enabling it does not change the direct-media topology and may only fail closed when release evidence is unavailable. It can become supported only after a separate architecture decision and end-to-end gateway/client acceptance.
+The selected client-direct media topology and unsupported `AccountMedia` mode are specified in [ADR 0005](architecture/decisions/0005-voice-task-and-lease-boundaries.md); this architecture retains only that boundary rather than duplicating its rationale.
 
 Continuous voice is an explicit Settings opt-in. After connection and identity initialization, the client automatically attempts to establish and maintain an authorized voice session while OS microphone permission, audio-session policy, app lifecycle/background limits, network, account-pool capacity, and server/account policy permit it. These constraints are independent: permission does not override audio policy, lifecycle limits, account availability, or server rejection. The client reports the actual lifecycle state and retains text fallback; temporary failures may reconnect, while permission/policy failures require truthful recovery guidance in Settings or system settings. Stable turn IDs, revisions, and deduplication bind voice turns to durable commands. Partial captions, spoken output, and transport continuity never authorize business work. Transcript review/submission remains explicit, and high-impact actions require scoped explicit conversational confirmation; continuous voice never establishes hands-free confirmation.
 
 Device, account, and media leases carry holder, generation, expiry, and termination evidence. A new account gets a new media session while preserving task associations. The old media session must end before account reuse; expiry alone is not evidence of termination. Unknown sessions/accounts remain quarantined. Muting capture, stopping playback, ending voice, and stopping a task are distinct operations. Natural conversation may continue while business work runs; only authoritative task events announce formal completion. Raw audio is not retained by default. See [ADR 0005](architecture/decisions/0005-voice-task-and-lease-boundaries.md).
 
-The selected gateway does not yet establish trusted account-scoped lease identity and termination evidence. Safe pool reuse and real-device voice-to-task behavior remain open acceptance work; the fail-closed boundary is part of the design, not proof of a working end-to-end voice path.
+The selected gateway's missing termination evidence and fail-closed account-reuse boundary are design constraints, not proof of a working end-to-end voice path; see [ADR 0005](architecture/decisions/0005-voice-task-and-lease-boundaries.md).
 
 The control plane owns interaction state separately from task execution status. It may expose `awaiting_message`, `explicit_confirmation`, or exceptional `approval_required`; ordinary completed results have no interaction requirement. `awaiting_user` remains an API compatibility name and is not a client authority. A `task.append` against a waiting task persists the user message, preserves result/evidence history, applies server policy and expected-version checks, and emits an authoritative event. Assistant output is persisted as an authoritative `assistant_message` task entry (or an equivalent server-result/message contract); clients render it and never fabricate conversation history. The server resolves whether a follow-up is clarification, requested change, continuation, or confirmation. Confirmation records scope, task/run/action identity, expiry, expected version, confirmed text, device, and audit metadata.
 
