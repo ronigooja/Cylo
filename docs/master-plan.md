@@ -1,6 +1,6 @@
 # Zoe delivery plan
 
-**Status:** implementation is underway; no product milestone is accepted. Source, fixtures, hosted CI, installation, and complete scenario acceptance have separate meanings. Detailed requirements live in [product](product.md), technical ownership in [architecture](architecture.md), and recorded choices in [ADRs](architecture/decisions/).
+**Status:** implementation is underway; no product milestone is accepted. See the [evidence register](acceptance/evidence.md#evidence-categories-and-acceptance-boundary) for evidence categories and the acceptance boundary. Detailed requirements live in [product](product.md), technical ownership in [architecture](architecture.md), and recorded choices in [ADRs](architecture/decisions/).
 
 ## Milestones and acceptance
 
@@ -35,7 +35,7 @@ and external repository/deployment migration remain pending.
 | Apple clients | Hosted Swift tests/macOS archive/iOS build and limited Mac installation evidence | No composer microphone or generic result Accept/Reject UI; server-authored result/message rendering; current-key authenticated flows, screenshots/accessibility/core interactions, real iPhone/iPad/APNs/voice, distribution signing and delivery |
 | Capabilities | Admission/revocation and synthetic lifecycle fixtures | Real AO-trigger execution and external service lifecycle/recovery |
 
-No fixture, health response, model catalog, or installation result accepts a complete milestone. The [matrix](acceptance/requirements.md) and [evidence register](acceptance/evidence.md) provide the detailed boundary for each claim. Operations belong in [deployment](operations/deployment.md) and [data lifecycle](operations/data-lifecycle.md).
+Evidence does not by itself accept a milestone; see the [evidence register](acceptance/evidence.md#evidence-categories-and-acceptance-boundary) and [acceptance matrix](acceptance/requirements.md).
 
 CI scope optimization is implemented and its full hosted selection passed:
 independent Apple/Go/race/script checks, routine builds without release packaging,
