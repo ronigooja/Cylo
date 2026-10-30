@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/ronigooja/Zoe/contracts"
 	"github.com/ronigooja/Zoe/internal/agents/opencode"
+	"strings"
 	"testing"
 	"time"
 )
@@ -69,14 +70,27 @@ func TestRuntimeProcessUsesNeutralBindingAndRemovalProof(t *testing.T) {
 	if err := e.Process(context.Background(), testClaim()); err != nil {
 		t.Fatal(err)
 	}
-	if f.creates != 1 || f.terminates != 1 || len(c.observations) != 1 || c.observations[0].TerminationProof.Method != "container_removed" {
-		t.Fatalf("runtime lifecycle=%+v observations=%+v", f, c.observations)
+	want := []string{"dispatch_started", "dispatch_bound", "result", "runtime_terminated"}
+	var got []string
+	for _, o := range c.observations {
+		got = append(got, o.Kind)
+	}
+	if f.creates != 1 || f.terminates != 1 || strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("runtime lifecycle=%+v observation kinds=%v, want %v", f, got, want)
+	}
+	last := c.observations[len(c.observations)-1]
+	bound := c.observations[1]
+	if last.TerminationProof == nil || last.TerminationProof.Method != "container_removed" || last.TerminationProof.Source != "runner_container_removal" || last.TerminationProof.RuntimeSessionID != "session" || last.TerminationProof.RuntimeContainerID != "container" {
+		t.Fatalf("termination proof=%+v", last.TerminationProof)
+	}
+	if bound.RuntimeSessionID != "session" || bound.RuntimeContainerID != "container" || len(bound.ExternalEffects) != 1 || bound.ExternalEffects[0].Kind != "runtime_create" || bound.ExternalEffects[0].Status != "created" {
+		t.Fatalf("dispatch_bound=%+v", bound)
 	}
 }
 func TestRuntimeAbortOnToolStepLimit(t *testing.T) {
 	f := &runtimeFake{events: make(chan opencode.Event, 2)}
-	f.events <- opencode.Event{Type: "tool"}
-	f.events <- opencode.Event{Type: "tool"}
+	f.events <- opencode.Event{Type: "message.part.updated"}
+	f.events <- opencode.Event{Type: "message.part.updated"}
 	c := &controlFake{}
 	j := openTestJournal(t)
 	e := &Engine{Control: c, Runtime: f, Journal: j, Routes: map[string]Route{"profile": {ProfileID: "profile", Harness: "opencode", IsolationPolicy: OpenCodeWorkspaceWritePolicy, Model: "model"}}, PollInterval: time.Millisecond}
@@ -87,13 +101,88 @@ func TestRuntimeAbortOnToolStepLimit(t *testing.T) {
 		t.Fatal("tool-step limit did not abort")
 	}
 }
-func TestRuntimeErrorsAreNotRetriedAsCreate(t *testing.T) {
-	f := &runtimeFake{events: make(chan opencode.Event), done: false}
-	_ = f
-	if !errors.Is(ErrOutcomePending, ErrOutcomePending) {
-		t.Fatal("sentinel")
+
+type failingCreateRuntime struct {
+	runtimeFake
+	err error
+}
+
+func (f *failingCreateRuntime) Create(context.Context, RuntimeSpec) (RuntimeBinding, error) {
+	f.creates++
+	return RuntimeBinding{}, f.err
+}
+
+func kinds(c *controlFake) string {
+	var out []string
+	for _, o := range c.observations {
+		out = append(out, o.Kind)
+	}
+	return strings.Join(out, ",")
+}
+
+func TestUnknownCreateOutcomeIsFencedAndNeverReplayed(t *testing.T) {
+	f := &failingCreateRuntime{err: errors.New("docker timeout")}
+	c := &controlFake{}
+	j := openTestJournal(t)
+	e := &Engine{Control: c, Runtime: f, Journal: j, Routes: map[string]Route{"profile": {ProfileID: "profile", Harness: "opencode", IsolationPolicy: OpenCodeWorkspaceWritePolicy, Model: "model"}}, PollInterval: time.Millisecond}
+	if err := e.Process(context.Background(), testClaim()); !errors.Is(err, ErrOutcomePending) {
+		t.Fatalf("first process error=%v, want ErrOutcomePending", err)
+	}
+	if got := kinds(c); got != "dispatch_started,effect_unknown" {
+		t.Fatalf("observation kinds=%s", got)
+	}
+	last := c.observations[len(c.observations)-1]
+	if len(last.ExternalEffects) != 1 || last.ExternalEffects[0].Kind != "runtime_create" || last.ExternalEffects[0].Status != "unknown" {
+		t.Fatalf("effect_unknown effects=%+v", last.ExternalEffects)
+	}
+	if err := e.Process(context.Background(), testClaim()); !errors.Is(err, ErrOutcomePending) {
+		t.Fatalf("restart process error=%v, want ErrOutcomePending", err)
+	}
+	if f.creates != 1 {
+		t.Fatalf("unknown create was replayed: Create called %d times", f.creates)
 	}
 }
+
+func TestAllowlistedCreateRejectionIsReportedAndNotReplayed(t *testing.T) {
+	f := &failingCreateRuntime{err: RuntimeCreateRejectedError{Code: "image_missing"}}
+	c := &controlFake{}
+	j := openTestJournal(t)
+	e := &Engine{Control: c, Runtime: f, Journal: j, Routes: map[string]Route{"profile": {ProfileID: "profile", Harness: "opencode", IsolationPolicy: OpenCodeWorkspaceWritePolicy, Model: "model"}}, PollInterval: time.Millisecond}
+	_ = e.Process(context.Background(), testClaim())
+	if got := kinds(c); got != "dispatch_started,create_rejected" {
+		t.Fatalf("observation kinds=%s", got)
+	}
+	if rej := c.observations[len(c.observations)-1].CreateRejection; rej == nil || rej.Code != "image_missing" {
+		t.Fatalf("create rejection=%+v", rej)
+	}
+	_ = e.Process(context.Background(), testClaim())
+	if f.creates != 1 {
+		t.Fatalf("rejected create was replayed: Create called %d times", f.creates)
+	}
+}
+
+func TestServerStopAbortsAndConfirmsAfterContainerRemoval(t *testing.T) {
+	f := &runtimeFake{events: make(chan opencode.Event)}
+	c := &stoppingControl{}
+	j := openTestJournal(t)
+	e := &Engine{Control: c, Runtime: f, Journal: j, Routes: map[string]Route{"profile": {ProfileID: "profile", Harness: "opencode", IsolationPolicy: OpenCodeWorkspaceWritePolicy, Model: "model"}}, PollInterval: time.Millisecond}
+	if err := e.Process(context.Background(), testClaim()); err != nil {
+		t.Fatal(err)
+	}
+	if got := kinds(&c.controlFake); got != "dispatch_started,dispatch_bound,stop_confirmed" {
+		t.Fatalf("observation kinds=%s", got)
+	}
+	if f.aborts != 1 || f.terminates != 1 {
+		t.Fatalf("aborts=%d terminates=%d", f.aborts, f.terminates)
+	}
+}
+
+type stoppingControl struct{ controlFake }
+
+func (*stoppingControl) Control(context.Context, string) (contracts.RunControl, error) {
+	return contracts.RunControl{RunID: "run", DesiredControl: "stop"}, nil
+}
+
 func openTestJournal(t *testing.T) *Journal {
 	t.Helper()
 	j, err := OpenJournal(context.Background(), t.TempDir()+"/journal.db")

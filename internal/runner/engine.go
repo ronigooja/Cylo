@@ -171,8 +171,14 @@ func (e *Engine) monitor(ctx context.Context, claim contracts.JobClaim, b Runtim
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-errs:
-			return e.markUnknown(ctx, claim)
+		case err, ok := <-errs:
+			if !ok {
+				errs = nil
+				continue
+			}
+			if err != nil {
+				return e.markUnknown(ctx, claim)
+			}
 		case ev, ok := <-events:
 			if !ok {
 				events = nil
