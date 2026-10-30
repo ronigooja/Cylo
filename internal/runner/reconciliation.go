@@ -51,7 +51,7 @@ func (e *Engine) ReconcileNoEffect(ctx context.Context, runIDs []string, actor s
 	}
 	for _, id := range opts.UnrelatedPreexistingCapabilityContainerIDs {
 		if !contracts.ValidFullContainerID(id) || retainedIDs[id] {
-			return errors.New("preexisting capability IDs must be unique full lowercase Docker IDs without retained AO overlap")
+			return errors.New("preexisting capability IDs must be unique full lowercase Docker IDs without retained runtime overlap")
 		}
 		retainedIDs[id] = true
 	}
@@ -141,7 +141,7 @@ func (e *Engine) reconcileNoEffect(ctx context.Context, id, actor string, invent
 	audit["stage"] = "runtime_inventory"
 	audit["runtime_result"] = "label lookup"
 	// A process incarnation newer than the unknown journal write rules out an
-	// original HTTP request delayed before AO's handler or inventory gate.
+	// original HTTP request delayed before the runtime handler or inventory gate.
 	audit["stage"] = "docker_inventory"
 	audit["docker_result"] = "unavailable_or_runtime_present"
 	var originalDispatchAt time.Time
@@ -152,7 +152,7 @@ func (e *Engine) reconcileNoEffect(ctx context.Context, id, actor string, invent
 		}
 		audit["original_dispatch_at"] = originalDispatchAt
 	}
-	retained, unrelated, preexisting, unmanaged, err := e.verifyNoLaunchedAORuntime(ctx, docker, opts, entry.Updated, originalDispatchAt)
+	retained, unrelated, preexisting, unmanaged, err := e.verifyNoLaunchedRuntime(ctx, docker, opts, entry.Updated, originalDispatchAt)
 	if err != nil {
 		audit["docker_result"] = err.Error()
 		return err
@@ -165,7 +165,7 @@ func (e *Engine) reconcileNoEffect(ctx context.Context, id, actor string, invent
 	if err := e.checkInstance(ctx, entry.Claim, false); err != nil {
 		return err
 	}
-	audit["docker_result"] = "complete_no_launched_ao_runtime"
+	audit["docker_result"] = "complete_no_launched_runtime"
 	audit["stage"] = "terminal_receipt"
 	proof := &contracts.NoEffectProof{JournalPhase: "effect_unknown", RuntimeCreateStarted: true, Outcome: "failed", Reconciliation: &contracts.NoEffectReconciliation{
 		JournalUpdatedAt: entry.Updated, RunID: id, Actor: actor, Confirmed: true, VerifiedAt: time.Now().UTC(), RuntimeQuery: "docker ps --filter io.zoe.run/attempt/fence", RuntimeInventoryComplete: true, RuntimeMatches: 0,
@@ -173,7 +173,7 @@ func (e *Engine) reconcileNoEffect(ctx context.Context, id, actor string, invent
 	}}
 	// Persist the complete immutable receipt before changing phase or sending it.
 	// emit queues before delivery; any crash is recovered by NoEffectReceipt.
-	err = e.emitNoEffectTerminal(ctx, entry.Claim, "operator_reconciled_absence", "Read-only inventories proved no launched AO runtime. Explicitly selected never-started Docker records were preserved; the operator reconciled the unknown create outcome.", proof)
+	err = e.emitNoEffectTerminal(ctx, entry.Claim, "operator_reconciled_absence", "Read-only inventories proved no launched runtime. Explicitly selected never-started Docker records were preserved; the operator reconciled the unknown create outcome.", proof)
 	durable, receiptErr := e.Journal.NoEffectReceipt(ctx, id)
 	if receiptErr != nil {
 		return receiptErr
@@ -225,12 +225,12 @@ type reconciliationDockerSnapshot struct {
 	preexisting []contracts.PreexistingCapabilityContainer
 }
 
-func (e *Engine) verifyNoLaunchedAORuntime(ctx context.Context, docker DockerCommand, opts ReconciliationOptions, aoStartedAt, runStartedAt time.Time) ([]contracts.RetainedNeverStartedContainer, []string, []contracts.PreexistingCapabilityContainer, []string, error) {
-	first, err := e.reconciliationDockerSnapshot(ctx, docker, opts, aoStartedAt, runStartedAt)
+func (e *Engine) verifyNoLaunchedRuntime(ctx context.Context, docker DockerCommand, opts ReconciliationOptions, runtimeStartedAt, runStartedAt time.Time) ([]contracts.RetainedNeverStartedContainer, []string, []contracts.PreexistingCapabilityContainer, []string, error) {
+	first, err := e.reconciliationDockerSnapshot(ctx, docker, opts, runtimeStartedAt, runStartedAt)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	second, err := e.reconciliationDockerSnapshot(ctx, docker, opts, aoStartedAt, runStartedAt)
+	second, err := e.reconciliationDockerSnapshot(ctx, docker, opts, runtimeStartedAt, runStartedAt)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -252,7 +252,7 @@ func (e *Engine) verifyNoLaunchedAORuntime(ctx context.Context, docker DockerCom
 	return first.retained, first.unrelated, first.preexisting, first.unmanaged, nil
 }
 
-func (e *Engine) reconciliationDockerSnapshot(ctx context.Context, docker DockerCommand, opts ReconciliationOptions, aoStartedAt, runStartedAt time.Time) (reconciliationDockerSnapshot, error) {
+func (e *Engine) reconciliationDockerSnapshot(ctx context.Context, docker DockerCommand, opts ReconciliationOptions, runtimeStartedAt, runStartedAt time.Time) (reconciliationDockerSnapshot, error) {
 	snapshot := reconciliationDockerSnapshot{hashes: map[string]string{}}
 	output, err := docker.Run(ctx, "ps", "-aq", "--no-trunc")
 	if err != nil {
@@ -288,12 +288,11 @@ func (e *Engine) reconciliationDockerSnapshot(ctx context.Context, docker Docker
 		fullDigest := sha256.Sum256(canonicalBody)
 		snapshot.hashes[id] = hex.EncodeToString(fullDigest[:])
 		labels := container.Config.Labels
-		legacy := strings.ToLower(container.Name + " " + container.Config.Image)
 		if _, selected := preexistingIDs[id]; selected {
 			checkedAt := time.Now().UTC()
 
 			proof := contracts.PreexistingCapabilityContainer{ID: id, Name: container.Name, Image: container.Config.Image, Labels: labels, CreatedAt: container.Created, Status: container.State.Status, Running: container.State.Running, Paused: container.State.Paused, Restarting: container.State.Restarting, Dead: container.State.Dead, PID: container.State.PID, StartedAt: container.State.StartedAt, FirstCheckedAt: checkedAt, RecheckedAt: checkedAt, SnapshotSHA256: hex.EncodeToString(fullDigest[:])}
-			if !proof.Valid(runStartedAt, aoStartedAt, checkedAt) {
+			if !proof.Valid(runStartedAt, runtimeStartedAt, checkedAt) {
 				return snapshot, errors.New("explicit preexisting capability container identity, state or creation boundary is unproven")
 			}
 			// Persist only the public ownership labels, never arbitrary Docker labels.
@@ -306,36 +305,29 @@ func (e *Engine) reconciliationDockerSnapshot(ctx context.Context, docker Docker
 			continue
 		}
 		_, selected := retainedIDs[id]
-		_, hasRuntimeLabel := labels[legacyAOContainerRuntimeLabel]
-		_, hasSessionLabel := labels[legacyAOContainerSessionLabel]
-		legacyAORuntime := hasRuntimeLabel || hasSessionLabel || strings.Contains(legacy, "codex") || strings.Contains(legacy, "opencode") || strings.Contains(legacy, "ao-worker")
+		_, hasRuntimeLabel := labels[runtimeLabel]
+		runtimeContainer := hasRuntimeLabel
 		if selected {
 			checkedAt := time.Now().UTC()
 
-			proof := contracts.RetainedNeverStartedContainer{ID: id, Managed: labels[legacyAOContainerManagedLabel], Runtime: labels[legacyAOContainerRuntimeLabel], SessionID: labels[legacyAOContainerSessionLabel], Status: container.State.Status, Running: container.State.Running, Paused: container.State.Paused, Restarting: container.State.Restarting, Dead: container.State.Dead, OOMKilled: container.State.OOMKilled, ExitCode: container.State.ExitCode, Error: container.State.Error, PID: container.State.PID, StartedAt: container.State.StartedAt, FinishedAt: container.State.FinishedAt, CreatedAt: container.Created, RestartCount: container.RestartCount, RestartPolicy: container.HostConfig.RestartPolicy.Name, FirstCheckedAt: checkedAt, RecheckedAt: checkedAt, SnapshotSHA256: hex.EncodeToString(fullDigest[:])}
-			if !proof.Valid(aoStartedAt, checkedAt) {
-				return snapshot, errors.New("explicitly retained AO container is not fully verified as never started")
+			proof := contracts.RetainedNeverStartedContainer{ID: id, Managed: labels[runtimeManagedLabel], Runtime: labels[runtimeLabel], Status: container.State.Status, Running: container.State.Running, Paused: container.State.Paused, Restarting: container.State.Restarting, Dead: container.State.Dead, OOMKilled: container.State.OOMKilled, ExitCode: container.State.ExitCode, Error: container.State.Error, PID: container.State.PID, StartedAt: container.State.StartedAt, FinishedAt: container.State.FinishedAt, CreatedAt: container.Created, RestartCount: container.RestartCount, RestartPolicy: container.HostConfig.RestartPolicy.Name, FirstCheckedAt: checkedAt, RecheckedAt: checkedAt, SnapshotSHA256: hex.EncodeToString(fullDigest[:])}
+			if !proof.Valid(runtimeStartedAt, checkedAt) {
+				return snapshot, errors.New("explicitly retained runtime container is not fully verified as never started")
 			}
 			retainedIDs[id] = true
 			snapshot.retained = append(snapshot.retained, proof)
 			continue
 		}
-		if legacyAORuntime {
-			return snapshot, errors.New("AO or legacy uncorrelated runtime container exists; launched-runtime absence is unproven")
+		if runtimeContainer {
+			return snapshot, errors.New("uncorrelated runtime container exists; launched-runtime absence is unproven")
 		}
-		if labels[legacyAOContainerManagedLabel] == "true" {
+		if labels[runtimeManagedLabel] == "true" {
 			if err := e.verifyUnrelatedCapabilityContainer(ctx, container, opts.DeploymentAuthority); err != nil {
 				return snapshot, err
 			}
 			snapshot.unrelated = append(snapshot.unrelated, id)
 		} else {
-			if _, exists := labels[legacyAOContainerRuntimeLabel]; exists {
-				return snapshot, errors.New("unmanaged container has an ambiguous AO runtime label")
-			}
-			if _, exists := labels[legacyAOContainerSessionLabel]; exists {
-				return snapshot, errors.New("unmanaged container has an ambiguous AO session label")
-			}
-			if labels[legacyAOContainerManagedLabel] != "" && labels[legacyAOContainerManagedLabel] != "false" {
+			if labels[runtimeManagedLabel] != "" && labels[runtimeManagedLabel] != "false" {
 				return snapshot, errors.New("container managed ownership is ambiguous")
 			}
 			snapshot.unmanaged = append(snapshot.unmanaged, id)

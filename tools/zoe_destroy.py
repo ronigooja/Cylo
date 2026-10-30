@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Plan or execute complete destruction of a manifest-owned Linux Zoe instance.
 
-Execution requires a deployment-owned cleanup adapter through AO's authorized
-API. No generic Docker, AO, Qdrant, or external proxy cleanup is inferred.
+Execution requires a deployment-owned cleanup adapter through the authorized
+runtime API. No generic Docker, runtime, Qdrant, or external proxy cleanup is inferred.
 """
 from __future__ import annotations
 import argparse
@@ -20,7 +20,7 @@ import subprocess
 
 ALLOWED_UNITS = {"zoe-compose.service", "zoe-runner.service", "zoe-backup.service", "zoe-backup.timer"}
 REQUIRED_CATEGORIES = {"data", "artifacts", "backups", "config"}
-RESOURCE_KINDS = {"ao_runtime", "capability_container", "managed_volume", "qdrant_index", "mem0_store"}
+RESOURCE_KINDS = {"opencode_runtime", "capability_container", "managed_volume", "qdrant_index", "mem0_store"}
 
 def canonical(path: str) -> Path:
     value = Path(path)
@@ -150,7 +150,7 @@ def destroy(manifest: dict, receipt: Path, execute: bool, confirm_instance: str,
             challenge = secrets.token_hex(32)
             proof = json.loads(runner([manifest["cleanup_adapter"], "verify-and-cleanup"], input=json.dumps({"challenge": challenge, "manifest": manifest})))
             if set(proof) != {"instance_id", "challenge", "inventory_complete", "unaccounted_resources", "active_runtimes", "removed_resources"} or proof["instance_id"] != confirm_instance or proof["challenge"] != challenge or proof["inventory_complete"] is not True or proof["unaccounted_resources"] != [] or proof["active_runtimes"] != []:
-                raise ValueError("AO/runtime/service cleanup proof is incomplete; owned files retained")
+                raise ValueError("runtime/service cleanup proof is incomplete; owned files retained")
             removed = {(item["kind"], item["id"]) for item in proof["removed_resources"] if set(item) == {"kind", "id"}}
             if removed != checked["resources"] or len(proof["removed_resources"]) != len(removed):
                 raise ValueError("cleanup proof does not cover the exact resource inventory; owned files retained")

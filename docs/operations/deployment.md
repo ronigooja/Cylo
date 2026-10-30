@@ -72,8 +72,8 @@ the host being deployed.
    binary `SHA256SUMS` file before transferring the small daemon/CLI binaries;
    do not export or re-upload image tarballs.
 2. Run `prepare-host-layout.sh`. It creates the Docker network, service user,
-   persistent roots, and protected secret directories. It does not create AO
-   state or an AO unit.
+   persistent roots, and protected secret directories. It does not create
+   runtime state beyond the configured runner roots.
 3. Authenticate the deployment host to `ghcr.io` with a deployment-managed
    GitHub token that has read-only package access, then set the server and
    worker image variables to the GHCR references from the reviewed server
@@ -95,7 +95,7 @@ the host being deployed.
    directory's private JSON exports.
 6. Configure and start `zoe-compose.service`, then start `zoe-runner.service`.
    Run `docker compose pull` from the reviewed Compose directory so Docker
-   fetches the pinned GHCR images directly, then start AO first so runner
+   fetches the pinned GHCR images directly, then start the runner so
    the runner can reach the configured control-plane URL.
 7. Verify service state and health/readiness endpoints. These checks establish
    installation and process readiness; model execution, memory processing, and
@@ -156,9 +156,9 @@ container records.
 
 Use a runner built from the same reviewed source as the control server. Stop `zoe-runner` to hold the deployment and journal locks, then inspect Docker by the exact labels `io.zoe.managed=true`, `io.zoe.runtime=opencode`, `io.zoe.run`, `io.zoe.attempt`, and `io.zoe.fence`. Compare two complete, stable inventories. A matching container ID is preserved and reconciled; no match is a no-effect proof only when the complete inventory is authoritative. Any ambiguity, started container, missing identity, or incomplete inventory remains `effect_unknown`; never replay the create.
 
-Run each historical uncertain run separately through the runner's reconciliation command under its service account. Record operator identity, labels, container ID, session identity, inventory timestamps, and outcome in the journal. The four uncertain AO runs are migration work and must not be declared recovered from source review or a healthy service alone. Restart the runner only after the inspection is recorded.
+Historical uncertain runs were abandoned by operator decision; no reconciliation or migration is required. Do not infer recovery from old records. Restart the runner only after any current inspection is recorded.
 
-Before uninstalling legacy AO components, stop new claims, complete this migration, retain legacy binaries/state for the rollback window, and remove them only after the coordinator records the rollback-window expiry.
+For the authorized host-removal procedure for retired AO components, see [AO host removal](ao-host-removal.md). It is a separate runbook and has not been executed.
 
 ## Voice gateway
 

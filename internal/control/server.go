@@ -47,9 +47,6 @@ type RuntimeProfile struct {
 // receives a serialized snapshot at admission, so later config changes cannot
 // enlarge an existing lineage.
 func normalizeIsolationPolicy(policy string) string {
-	if policy == "ao-opencode-workspace-write-v1" {
-		return "opencode-workspace-write-v1"
-	}
 	return policy
 }
 
@@ -147,7 +144,7 @@ func (s *Server) AppendEventsTx(ctx context.Context, tx *sql.Tx, p contracts.Pri
 type TaskSourceAdmissionHandler func(context.Context, *sql.Tx, contracts.Principal, string, *TaskSourceRequest, json.RawMessage, time.Time) ([]contracts.Event, error)
 
 // TaskDispatchGuard decides whether a trusted non-user task source remains
-// authorized immediately before a runner creates an AO runtime. A non-empty
+// authorized immediately before a runner creates a runtime. A non-empty
 // reason code denies dispatch. Implementations may update their source-owned
 // records inside tx so cancellation and the task transition commit together.
 type TaskDispatchGuard func(context.Context, *sql.Tx, string, string, time.Time) (reasonCode string, err error)
@@ -274,7 +271,7 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 		if profile.Harness != "opencode" {
 			return nil, fmt.Errorf("runtime profile %q selects unsupported harness %q", id, profile.Harness)
 		}
-		if profile.IsolationPolicy != "opencode-workspace-write-v1" && profile.IsolationPolicy != "ao-opencode-workspace-write-v1" {
+		if profile.IsolationPolicy != "opencode-workspace-write-v1" {
 			return nil, fmt.Errorf("runtime profile %q selects OpenCode with an incompatible isolation policy", id)
 		}
 		if id == "" || profile.ID != id || profile.RuntimeRouteID == "" || profile.ModelRouteID == "" || profile.Role == "" || profile.IsolationPolicy == "" {

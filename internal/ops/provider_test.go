@@ -31,15 +31,15 @@ func TestWriteSecretAtomicPrivateAndReplace(t *testing.T) {
 	}
 }
 
-func TestWriteAOEnvAtomicDoesNotIncludeSecret(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "ao.env")
+func TestWriteRunnerEnvAtomicDoesNotIncludeSecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "zoe-runner.env")
 	c := ProviderConfig{BaseURL: "http://127.0.0.1:18080/v1", Model: "gpt-test", SecretPath: "/tmp/secret"}
-	if err := WriteAOEnvAtomic(path, c); err != nil {
+	if err := WriteRunnerEnvAtomic(path, c); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(path)
 	s := string(got)
-	for _, want := range []string{"AO_CODEX_EXTERNAL_BASE_URL=", "AO_CODEX_EXTERNAL_API_KEY_FILE=", "AO_CODEX_EXTERNAL_MODEL="} {
+	for _, want := range []string{"ZOE_OPENCODE_PROVIDER_BASE_URL=", "ZOE_OPENCODE_PROVIDER_KEY_FILE=", "ZOE_OPENCODE_MODEL="} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %s", want)
 		}

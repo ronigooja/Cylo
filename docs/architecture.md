@@ -20,7 +20,7 @@ Zoe is a private, self-hosted Linux Go control server with an independent Linux 
 
 The durable association is `Project → Task → Run → Runtime Session`. Each run records its runtime, model route, execution host, workspace, authorization, artifacts, and result evidence. Role, runtime implementation, and model route are separate choices. The six product responsibilities map onto these components; they do not require six separately deployed services. The runtime baseline is defined by [ADR 0007](architecture/decisions/0007-zoe-owned-opencode-runtime.md).
 
-There is no PWA, CAO implementation, macOS server, official Codex desktop-app integration, or Codex runtime. Native CLI handoff is optional and bounded by supported native runtime facilities. See [ADR 0001](architecture/decisions/0001-linux-and-native-apple-clients.md) and the current runtime baseline in [ADR 0007](architecture/decisions/0007-zoe-owned-opencode-runtime.md).
+There is no PWA, CAO implementation, macOS server, or official Codex desktop-app integration. Native CLI handoff is optional and bounded by supported native runtime facilities. See [ADR 0001](architecture/decisions/0001-linux-and-native-apple-clients.md) and the current runtime baseline in [ADR 0007](architecture/decisions/0007-zoe-owned-opencode-runtime.md).
 
 ## Commands, receipts, and events
 
@@ -108,7 +108,7 @@ Backup inventory and retention include applicable service data and deletion mani
 These records capture selected decisions, not new scope or acceptance claims:
 
 - [0001 — Linux/native Apple platform and durable persistence](architecture/decisions/0001-linux-and-native-apple-clients.md)
-- [0002 — AO runtime ownership and external-service boundaries (superseded)](architecture/decisions/0002-ao-runtime-ownership.md)
+- [0002 — superseded runtime ownership and external-service boundaries](architecture/decisions/0002-ao-runtime-ownership.md)
 - [0003 — Native assistant UI direction](architecture/decisions/0003-native-assistant-ui-direction.md)
 - [0004 — Shared instance-key authentication](architecture/decisions/0004-instance-key-authentication.md)
 - [0005 — Voice turns, tasks, and lease termination](architecture/decisions/0005-voice-task-and-lease-boundaries.md)

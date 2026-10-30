@@ -141,7 +141,6 @@ CREATE TABLE runs (
   runtime_route_id TEXT NOT NULL,
   model_route_id TEXT NOT NULL,
   role TEXT NOT NULL,
-  ao_project_id TEXT NOT NULL DEFAULT '',
   ao_session_id TEXT NOT NULL DEFAULT '',
   started_at TEXT NOT NULL,
   stopped_at TEXT,

@@ -37,7 +37,7 @@ class LifecycleCLI(unittest.TestCase):
         maintenance = self.root / "zoe-maintenance"
         maintenance.write_text("#!/bin/sh\nexit 1\n")
         maintenance.chmod(0o700)
-        return {"schema_version": 1, "topology": "linux-systemd-compose", "instance_id": "instance-fixture", "deployment_root": str(deployment), "database": str(database), "roots": roots, "service_units": sorted(zoe_destroy.ALLOWED_UNITS), "external_resources": [{"kind": "ao_runtime", "id": "owned-runtime"}, {"kind": "qdrant_index", "id": "owned-index"}], "cleanup_adapter": str(adapter), "maintenance_binary": str(maintenance)}
+        return {"schema_version": 1, "topology": "linux-systemd-compose", "instance_id": "instance-fixture", "deployment_root": str(deployment), "database": str(database), "roots": roots, "service_units": sorted(zoe_destroy.ALLOWED_UNITS), "external_resources": [{"kind": "opencode_runtime", "id": "owned-runtime"}, {"kind": "qdrant_index", "id": "owned-index"}], "cleanup_adapter": str(adapter), "maintenance_binary": str(maintenance)}
 
     def executor(self, manifest, *, incomplete=False, active=False):
         calls = []

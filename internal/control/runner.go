@@ -239,17 +239,15 @@ func loadClaim(ctx context.Context, tx *sql.Tx, runID string, cfg Config) (contr
 	_ = cfg
 	var c contracts.JobClaim
 	var fence uint64
-	var aoSession string
 	var authJSON []byte
 	var budgetJSON []byte
-	err := tx.QueryRowContext(ctx, `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.harness,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.runtime_session_id,r.fence,r.authorization_json,coalesce(r.lineage_root_task_id,''),coalesce(r.lineage_parent_task_id,''),r.lineage_depth,r.budget_snapshot_json FROM runs r WHERE r.id=?`, runID).Scan(&c.RunID, &c.TaskID, &c.AttemptID, &c.WorkspaceID, &c.TaskVersion, &c.Goal, &c.ProfileID, &c.Harness, &c.RuntimeRouteID, &c.ModelRouteID, &c.Role, &c.IsolationPolicy, &aoSession, &fence, &authJSON, &c.LineageRootTaskID, &c.LineageParentTaskID, &c.LineageDepth, &budgetJSON)
+	err := tx.QueryRowContext(ctx, `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.harness,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.runtime_session_id,r.fence,r.authorization_json,coalesce(r.lineage_root_task_id,''),coalesce(r.lineage_parent_task_id,''),r.lineage_depth,r.budget_snapshot_json FROM runs r WHERE r.id=?`, runID).Scan(&c.RunID, &c.TaskID, &c.AttemptID, &c.WorkspaceID, &c.TaskVersion, &c.Goal, &c.ProfileID, &c.Harness, &c.RuntimeRouteID, &c.ModelRouteID, &c.Role, &c.IsolationPolicy, &c.RuntimeSessionID, &fence, &authJSON, &c.LineageRootTaskID, &c.LineageParentTaskID, &c.LineageDepth, &budgetJSON)
 	if err != nil {
 		return c, err
 	}
 	if c.Harness == "" || c.Harness != "opencode" {
 		return c, errors.New("persisted run has unsupported harness")
 	}
-	c.RuntimeSessionID = aoSession
 	c.Fence = fence
 	if err := json.Unmarshal(authJSON, &c.Authorization); err != nil {
 		return c, fmt.Errorf("decode persisted run authorization: %w", err)
@@ -507,7 +505,7 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 				writeError(w, err)
 				return
 			}
-			if err = tx.QueryRowContext(r.Context(), `SELECT count(*) FROM external_effects WHERE run_id=? AND (kind NOT IN ('runtime_create','ao_worker_create') OR status!='unknown' OR external_reference!='')`, runID).Scan(&unsafeEffects); err != nil {
+			if err = tx.QueryRowContext(r.Context(), `SELECT count(*) FROM external_effects WHERE run_id=? AND (kind != 'runtime_create' OR status!='unknown' OR external_reference!='')`, runID).Scan(&unsafeEffects); err != nil {
 				writeError(w, err)
 				return
 			}
@@ -520,7 +518,7 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 				writeError(w, marshalErr)
 				return
 			}
-			if _, err = tx.ExecContext(r.Context(), `UPDATE external_effects SET status=?,last_observed_at=?,details=? WHERE run_id=? AND kind IN ('runtime_create','ao_worker_create') AND status='unknown' AND external_reference=''`, reconciliationEffectStatus(evidence), time.Now().UTC().Format(time.RFC3339Nano), details, runID); err != nil {
+			if _, err = tx.ExecContext(r.Context(), `UPDATE external_effects SET status=?,last_observed_at=?,details=? WHERE run_id=? AND kind='runtime_create' AND status='unknown' AND external_reference=''`, reconciliationEffectStatus(evidence), time.Now().UTC().Format(time.RFC3339Nano), details, runID); err != nil {
 				writeError(w, err)
 				return
 			}
@@ -555,10 +553,10 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// This trusted, same-fence rejection is proof that the initial prompt
-		// never reached AO. Release only its reserved call; unknown session work
+		// never reached the runtime. Release only its reserved call; unknown session work
 		// and every other usage reservation remain charged conservatively.
 		if observation.BudgetReservationID != "" {
-			_, err = tx.ExecContext(r.Context(), `UPDATE run_budget_reservations SET status='settled',actual_json='{}',settlement_id=?,settlement_hash=?,updated_at=? WHERE run_id=? AND reservation_id=? AND attempt_id=? AND fence=? AND status IN ('reserved','unknown')`, "ao-create-rejected:"+observation.ObservationID, bodyHash[:], time.Now().UTC().Format(time.RFC3339Nano), runID, observation.BudgetReservationID, attempt, fence)
+			_, err = tx.ExecContext(r.Context(), `UPDATE run_budget_reservations SET status='settled',actual_json='{}',settlement_id=?,settlement_hash=?,updated_at=? WHERE run_id=? AND reservation_id=? AND attempt_id=? AND fence=? AND status IN ('reserved','unknown')`, "runtime-create-rejected:"+observation.ObservationID, bodyHash[:], time.Now().UTC().Format(time.RFC3339Nano), runID, observation.BudgetReservationID, attempt, fence)
 			if err != nil {
 				writeError(w, err)
 				return
@@ -697,7 +695,7 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 			writeError(w, apiError(400, "invalid_request", "dispatch_bound requires runtime session ID", nil))
 			return
 		}
-		_, err = tx.ExecContext(r.Context(), `UPDATE runs SET ao_session_id=?,runtime_session_id=?,runtime_container_id=? WHERE id=?`, observation.RuntimeSessionID, observation.RuntimeSessionID, observation.RuntimeContainerID, runID)
+		_, err = tx.ExecContext(r.Context(), `UPDATE runs SET runtime_session_id=?,runtime_container_id=? WHERE id=?`, observation.RuntimeSessionID, observation.RuntimeContainerID, runID)
 		if err != nil {
 			writeError(w, err)
 			return

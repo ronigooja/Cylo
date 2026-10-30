@@ -15,10 +15,10 @@ func TestRuntimeMigrationBackfillsAndNormalizesHarnesses(t *testing.T) {
 	if err := RegisterCoreMigrations(store); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.DB().ExecContext(ctx, `CREATE TABLE tasks(id TEXT PRIMARY KEY, harness TEXT NOT NULL DEFAULT 'codex'); CREATE TABLE runs(id TEXT PRIMARY KEY, harness TEXT NOT NULL DEFAULT 'codex', isolation_policy TEXT NOT NULL DEFAULT '', ao_session_id TEXT NOT NULL DEFAULT '')`); err != nil {
+	if _, err := store.DB().ExecContext(ctx, `CREATE TABLE tasks(id TEXT PRIMARY KEY, harness TEXT NOT NULL DEFAULT 'codex'); CREATE TABLE runs(id TEXT PRIMARY KEY, harness TEXT NOT NULL DEFAULT 'codex', isolation_policy TEXT NOT NULL DEFAULT '')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.DB().ExecContext(ctx, `INSERT INTO tasks(id,harness) VALUES('empty',''),('codex','codex'),('unknown','aider'); INSERT INTO runs(id,harness,ao_session_id) VALUES('empty','', 'session-empty'),('codex','codex','session-codex'),('unknown','aider','session-unknown')`); err != nil {
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO tasks(id,harness) VALUES('empty',''),('codex','codex'),('unknown','aider'); INSERT INTO runs(id,harness) VALUES('empty',''),('codex','codex'),('unknown','aider')`); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := store.DB().BeginTx(ctx, nil)
@@ -37,7 +37,7 @@ func TestRuntimeMigrationBackfillsAndNormalizesHarnesses(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	want := [][3]string{{"opencode", "opencode", "session-codex"}, {"opencode", "opencode", "session-empty"}, {"aider", "aider", "session-unknown"}}
+	want := [][3]string{{"opencode", "opencode", ""}, {"opencode", "opencode", ""}, {"aider", "aider", ""}}
 	for _, expected := range want {
 		var got [3]string
 		if !rows.Next() || rows.Scan(&got[0], &got[1], &got[2]) != nil || got != expected {

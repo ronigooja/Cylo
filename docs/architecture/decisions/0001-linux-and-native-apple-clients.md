@@ -18,7 +18,7 @@ The first release is single-instance and multi-project with reserved user/worksp
 
 For every business command, the Go authority validates authorization and applicable optimistic versions, then atomically commits the receipt, work record, and transactional outbox entry in SQLite before returning acceptance. Use stable command keys and event identities for replay/deduplication; clients reconcile the original receipt after an unknown response.
 
-Treat AO callbacks and runner reports as observations until the control plane validates ownership, fence, version, and evidence. Keep acceptance, admission, running work, agent output, actual effect success, achieved goal, and confirmed stop distinct.
+Treat runtime callbacks and runner reports as observations until the control plane validates ownership, fence, version, and evidence. Keep acceptance, admission, running work, agent output, actual effect success, achieved goal, and confirmed stop distinct.
 
 When an external effect is unknown, query/reconcile it if possible or escalate for human resolution. Never blindly retry an uncertain effect or free its execution resources on lease expiry alone. During migration or restore, fence the old server so no two active instances operate on copied authority.
 

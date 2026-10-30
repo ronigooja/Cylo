@@ -14,7 +14,7 @@ import (
 )
 
 func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
-	for _, scenario := range []string{"complete", "incomplete-ao", "container", "wrong-epoch", "unconfirmed", "session-bound", "unsafe-effect", "ordinary-proof", "retained-complete", "preexisting-complete", "retained-running", "retained-missing-state", "retained-no-selection", "retained-restart-policy", "retained-one-inspection", "retained-count", "preexisting-too-new", "preexisting-no-selection", "preexisting-unpinned-image", "preexisting-ao-tag", "overlapping-artifacts"} {
+	for _, scenario := range []string{"complete", "incomplete-runtime", "container", "wrong-epoch", "unconfirmed", "session-bound", "unsafe-effect", "ordinary-proof", "retained-complete", "preexisting-complete", "retained-running", "retained-missing-state", "retained-no-selection", "retained-restart-policy", "retained-one-inspection", "retained-count", "preexisting-too-new", "preexisting-no-selection", "preexisting-unpinned-image", "preexisting-runtime-tag", "overlapping-artifacts"} {
 		t.Run(scenario, func(t *testing.T) {
 			server, closeStore := budgetTestServer(t, contracts.RunBudgetSnapshot{})
 			defer closeStore()
@@ -80,10 +80,10 @@ func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
 				proof.Reconciliation.UnrelatedPreexistingCapabilityContainerIDs = nil
 			case "preexisting-unpinned-image":
 				proof.Reconciliation.PreexistingCapabilityContainers[0].Image = "python:latest"
-			case "preexisting-ao-tag":
+			case "preexisting-runtime-tag":
 				proof.Reconciliation.PreexistingCapabilityContainers[0].Labels["io.zoe.runtime"] = ""
 
-			case "incomplete-ao":
+			case "incomplete-runtime":
 				proof.Reconciliation.RuntimeInventoryComplete = false
 			case "container":
 				proof.Reconciliation.DockerRuntimeCount = 1
@@ -217,7 +217,7 @@ func retainedProofFixture() contracts.RetainedNeverStartedContainer {
 	empty := ""
 	zeroTime := time.Time{}
 	now := time.Now().UTC()
-	return contracts.RetainedNeverStartedContainer{ID: strings.Repeat("a", 64), Managed: "true", Runtime: "ao-codex-chat", SessionID: "legacy-session", Status: "created", Running: &falseValue, Paused: &falseValue, Restarting: &falseValue, Dead: &falseValue, OOMKilled: &falseValue, ExitCode: &zero, Error: &empty, PID: &zero, StartedAt: &zeroTime, FinishedAt: &zeroTime, CreatedAt: now.Add(-time.Hour), RestartCount: &zero, RestartPolicy: "no", FirstCheckedAt: now.Add(-500 * time.Millisecond), RecheckedAt: now.Add(-100 * time.Millisecond), SnapshotSHA256: strings.Repeat("c", 64)}
+	return contracts.RetainedNeverStartedContainer{ID: strings.Repeat("a", 64), Managed: "true", Runtime: "opencode", Status: "created", Running: &falseValue, Paused: &falseValue, Restarting: &falseValue, Dead: &falseValue, OOMKilled: &falseValue, ExitCode: &zero, Error: &empty, PID: &zero, StartedAt: &zeroTime, FinishedAt: &zeroTime, CreatedAt: now.Add(-time.Hour), RestartCount: &zero, RestartPolicy: "no", FirstCheckedAt: now.Add(-500 * time.Millisecond), RecheckedAt: now.Add(-100 * time.Millisecond), SnapshotSHA256: strings.Repeat("c", 64)}
 }
 func preexistingProofFixture() contracts.PreexistingCapabilityContainer {
 	falseValue := false

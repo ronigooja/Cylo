@@ -36,11 +36,11 @@ final class TaskActivityTests: XCTestCase {
 
     func testRuntimeProofsAndUnknownEffectsStayOutOfTaskEvidenceAndFailureText() {
         let kinds = ["dispatch_started", "dispatch_bound", "effect_unknown", "no_effect_terminal", "create_rejected", "runtime_terminated", "stop_confirmed"]
-        let internalEvidence = kinds.map { evidence($0, summary: "Internal AO proof and session diagnostic") }
+        let internalEvidence = kinds.map { evidence($0, summary: "Internal runtime proof and session diagnostic") }
         XCTAssertTrue(visibleTaskEvidence(internalEvidence).isEmpty)
         for kind in ["effect_unknown", "no_effect_terminal", "create_rejected"] {
             var failed = task("failed", .failed)
-            failed.error = "Internal AO proof and session diagnostic"
+            failed.error = "Internal runtime proof and session diagnostic"
             failed.evidence = [evidence(kind, summary: failed.error!)]
             XCTAssertEqual(taskFailureMessage(failed), uiText("This request could not be completed."))
             XCTAssertEqual(failed.status, .failed)

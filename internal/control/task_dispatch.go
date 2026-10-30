@@ -56,7 +56,7 @@ func (s *Server) TaskDispatchAuthorizationTx(ctx context.Context, tx *sql.Tx, ru
 		return contracts.DispatchAuthorization{}, err
 	}
 	if status == "uncertain" {
-		// There is no AO read-only lookup contract yet. Preserve this effect as
+		// There is no read-only runtime lookup contract yet. Preserve this effect as
 		// uncertain so the runner cannot mistake a failed recheck for proof
 		// that no external session was created.
 		return contracts.DispatchAuthorization{Allowed: false, ReasonCode: "reconciliation_unavailable"}, nil

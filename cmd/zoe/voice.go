@@ -101,8 +101,8 @@ func voiceConfigureOperation(args []string, in io.Reader, out, errOut io.Writer)
 	}
 	fmt.Fprintf(out, "Voice gateway configuration saved. URL: %s\nAPI key file: %s\nAccount media: %t\n", *base, *secretFile, *enableMedia)
 	if d.Mode == ops.ModeCompose {
-		// The Compose service is zoe-server; zoe-ao.service and
-		// zoe-runner.service are systemd units and are not valid Compose targets.
+		// The Compose service is zoe-server; zoe-runner.service is a systemd
+		// unit and is not a valid Compose target.
 		if err = opsManager().ReloadCompose(ctx, []string{"zoe-server"}, d.ComposeProject, d.ComposeFile, d.StackEnv); err != nil {
 			return fmt.Errorf("voice configuration saved but service reload failed: %w", err)
 		}

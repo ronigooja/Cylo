@@ -34,12 +34,10 @@ func setupOperation(args []string, in io.Reader, out, errOut io.Writer) error {
 // deployment is used by interactive and scripted operations.
 type providerFlags struct {
 	root, base, model, secret, token *string
-	aoEnv, aoService                 *string
 }
 
 func addProviderFlags(fs *flag.FlagSet, token bool) providerFlags {
-	f := providerFlags{root: fs.String("root", "", "deployment configuration root (default /etc/zoe)"), base: fs.String("url", "", "override provider URL"), model: fs.String("model", "", "override model"), secret: fs.String("secret-file", "", "override private token file"), aoEnv: fs.String("ao-env", "", "override AO environment file")}
-	f.aoService = fs.String("ao-service", "", "AO service name when discovery cannot determine it")
+	f := providerFlags{root: fs.String("root", "", "deployment configuration root (default /etc/zoe)"), base: fs.String("url", "", "override provider URL"), model: fs.String("model", "", "override model"), secret: fs.String("secret-file", "", "override private token file")}
 	if token {
 		f.token = fs.String("token", "", "compatibility token input; shell history and process arguments may retain it (prefer prompt)")
 	}
@@ -52,12 +50,6 @@ func providerDeployment(ctx context.Context, f providerFlags) (ops.Deployment, o
 	d, err := ops.DiscoverDeployment(ctx, opsManager(), *f.root)
 	if err != nil {
 		return d, ops.ProviderConfig{}, err
-	}
-	if *f.aoEnv != "" {
-		d.AOEnv = *f.aoEnv
-	}
-	if *f.aoService != "" {
-		d.AOService = *f.aoService
 	}
 	cfg, err := d.ProviderConfig()
 	if err != nil {
@@ -92,7 +84,7 @@ func providerConfigureOperation(args []string, in io.Reader, out, errOut io.Writ
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Deployment: %s\nDatabase: %s\nAO config: %s\nAO service: %s\n", d.Mode, d.DatabasePath, d.AOEnv, d.AOService)
+	fmt.Fprintf(out, "Deployment: %s\nDatabase: %s\nRunner config: %s\nRunner service: %s\n", d.Mode, d.DatabasePath, d.RunnerEnv, d.RunnerService)
 	in = sharedInput(in)
 	prompt := func(label string, value *string) error {
 		if strings.TrimSpace(*value) != "" {
@@ -355,7 +347,7 @@ func checkDeploymentKeySources(root string) error {
 			return fmt.Errorf("%s is set; remove the legacy startup credential source before key maintenance; the server uses its database credential", name)
 		}
 	}
-	for _, file := range []string{"zoe-stack.env", "zoe-server.env", "zoe-runner.env", "ao.env", ".env"} {
+	for _, file := range []string{"zoe-stack.env", "zoe-server.env", "zoe-runner.env", ".env"} {
 		data, err := os.ReadFile(filepath.Join(root, file))
 		if os.IsNotExist(err) {
 			continue

@@ -116,7 +116,7 @@ func (c *ControlClient) Control(ctx context.Context, runID string) (contracts.Ru
 }
 
 // CheckDispatchAuthorization refreshes the source grant immediately before an
-// AO create or exact-request recovery. A denied check after dispatch_started
+// Runtime create or exact-request recovery. A denied check after dispatch_started
 // must remain uncertain; it does not prove that the earlier request had no
 // effect.
 func (c *ControlClient) CheckDispatchAuthorization(ctx context.Context, runID string) (bool, string, error) {

@@ -28,7 +28,7 @@ and external repository/deployment migration remain pending.
 
 | Area | Available evidence | Required next evidence |
 |---|---|---|
-| Control and Zoe OpenCode runtime | Hosted Go/race and historical AO checks; deployed health/readiness observations | Real authorized OpenCode/provider/tool/artifact chain and stop; deployed chat recovery is source-reviewed, remote-unverified; the four historical uncertain runs must be migrated before legacy uninstall |
+| Control and Zoe OpenCode runtime | Hosted Go/race and historical runtime checks; deployed health/readiness observations | Real authorized OpenCode/provider/tool/artifact chain and stop; deployed chat recovery is source-reviewed, remote-unverified; four uncertain historical runs were abandoned by operator decision |
 | Budget enforcement | Reservation/settlement and unknown-usage ledger source checks | Actual OpenCode per-provider-call and cost reporting; production pre-call tool-step and bounded artifact enforcement; online deadline fencing |
 | Memory and data lifecycle | Go/Python/component fixtures, export validation, deletion manifests and gated restore checks | Real Mem0/Qdrant and external-store cleanup; measured production backup erasure and restore; unsupported adapters remain closed |
 | Voice | Turn identity/dedupe and generation-fenced cleanup source checks | Settings opt-in startup/reconnect and truthful OS permission/audio policy/lifecycle/network/account/server states; text fallback; trusted gateway account identity and account-scoped termination evidence; safe reuse, interruption, and real-device voice-to-task acceptance |

@@ -325,7 +325,7 @@ type CreateRejectionProof struct {
 
 // NoEffectProof is the runner journal receipt for a run with no runtime.
 // It proves either creation never began or explicit read-only reconciliation
-// established absence under a newer AO process. The control plane also checks
+// established absence under a newer runtime process. The control plane also checks
 // its own observation and effect history before accepting this receipt.
 type NoEffectProof struct {
 	JournalPhase         string                  `json:"journal_phase"`
@@ -366,27 +366,27 @@ type NoEffectReconciliation struct {
 // while proving that it has never launched a process. Pointer fields make absent
 // or null inspect data invalid, rather than treating it as a zero value.
 type RetainedNeverStartedContainer struct {
-	ID             string     `json:"id"`
-	Managed        string     `json:"managed"`
-	Runtime        string     `json:"runtime"`
-	SessionID      string     `json:"session_id"`
-	Status         string     `json:"status"`
-	Running        *bool      `json:"running"`
-	Paused         *bool      `json:"paused"`
-	Restarting     *bool      `json:"restarting"`
-	Dead           *bool      `json:"dead"`
-	OOMKilled      *bool      `json:"oom_killed"`
-	ExitCode       *int       `json:"exit_code"`
-	Error          *string    `json:"error"`
-	PID            *int       `json:"pid"`
-	StartedAt      *time.Time `json:"started_at"`
-	FinishedAt     *time.Time `json:"finished_at"`
-	CreatedAt      time.Time  `json:"created_at"`
-	RestartCount   *int       `json:"restart_count"`
-	RestartPolicy  string     `json:"restart_policy"`
-	FirstCheckedAt time.Time  `json:"first_checked_at"`
-	RecheckedAt    time.Time  `json:"rechecked_at"`
-	SnapshotSHA256 string     `json:"snapshot_sha256"`
+	ID               string     `json:"id"`
+	Managed          string     `json:"managed"`
+	Runtime          string     `json:"runtime"`
+	RuntimeSessionID string     `json:"runtime_session_id"`
+	Status           string     `json:"status"`
+	Running          *bool      `json:"running"`
+	Paused           *bool      `json:"paused"`
+	Restarting       *bool      `json:"restarting"`
+	Dead             *bool      `json:"dead"`
+	OOMKilled        *bool      `json:"oom_killed"`
+	ExitCode         *int       `json:"exit_code"`
+	Error            *string    `json:"error"`
+	PID              *int       `json:"pid"`
+	StartedAt        *time.Time `json:"started_at"`
+	FinishedAt       *time.Time `json:"finished_at"`
+	CreatedAt        time.Time  `json:"created_at"`
+	RestartCount     *int       `json:"restart_count"`
+	RestartPolicy    string     `json:"restart_policy"`
+	FirstCheckedAt   time.Time  `json:"first_checked_at"`
+	RecheckedAt      time.Time  `json:"rechecked_at"`
+	SnapshotSHA256   string     `json:"snapshot_sha256"`
 }
 
 // ValidFullContainerID accepts only Docker's complete lowercase SHA256 IDs.
@@ -399,10 +399,10 @@ func ValidFullContainerID(id string) bool {
 }
 
 func (p RetainedNeverStartedContainer) Valid(runtimeStartedAt, verifiedAt time.Time) bool {
-	if !ValidFullContainerID(p.ID) || p.Managed != "true" || (p.Runtime != LegacyAORuntimeCodexChat && p.Runtime != LegacyAORuntimeOpenCodeACP) || p.SessionID == "" || len(p.SessionID) > 128 || p.Status != "created" || p.Running == nil || *p.Running || p.Paused == nil || *p.Paused || p.Restarting == nil || *p.Restarting || p.Dead == nil || *p.Dead || p.OOMKilled == nil || *p.OOMKilled || p.ExitCode == nil || *p.ExitCode != 0 || p.Error == nil || *p.Error != "" || p.PID == nil || *p.PID != 0 || p.StartedAt == nil || !p.StartedAt.IsZero() || p.FinishedAt == nil || !p.FinishedAt.IsZero() || p.RestartCount == nil || *p.RestartCount != 0 || p.RestartPolicy != "no" || !ValidFullContainerID(p.SnapshotSHA256) {
+	if !ValidFullContainerID(p.ID) || p.Managed != "true" || p.Runtime != "opencode" || p.Status != "created" || p.Running == nil || *p.Running || p.Paused == nil || *p.Paused || p.Restarting == nil || *p.Restarting || p.Dead == nil || *p.Dead || p.OOMKilled == nil || *p.OOMKilled || p.ExitCode == nil || *p.ExitCode != 0 || p.Error == nil || *p.Error != "" || p.PID == nil || *p.PID != 0 || p.StartedAt == nil || !p.StartedAt.IsZero() || p.FinishedAt == nil || !p.FinishedAt.IsZero() || p.RestartCount == nil || *p.RestartCount != 0 || p.RestartPolicy != "no" || !ValidFullContainerID(p.SnapshotSHA256) {
 		return false
 	}
-	for _, r := range p.SessionID {
+	for _, r := range p.RuntimeSessionID {
 		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
 			return false
 		}
@@ -415,11 +415,6 @@ func (p RetainedNeverStartedContainer) Valid(runtimeStartedAt, verifiedAt time.T
 	}
 	return !p.CreatedAt.After(p.FirstCheckedAt) && !p.FirstCheckedAt.Before(runtimeStartedAt) && !p.RecheckedAt.Before(p.FirstCheckedAt)
 }
-
-const (
-	LegacyAORuntimeCodexChat   = "ao-codex-chat"
-	LegacyAORuntimeOpenCodeACP = "ao-opencode-acp"
-)
 
 // PreexistingCapabilityContainer is an operator-selected historical exclusion,
 // not a claim of ownership by the current deployment journal.
@@ -441,14 +436,11 @@ type PreexistingCapabilityContainer struct {
 	SnapshotSHA256 string            `json:"snapshot_sha256"`
 }
 
-func (p PreexistingCapabilityContainer) Valid(runStartedAt, aoStartedAt, verifiedAt time.Time) bool {
+func (p PreexistingCapabilityContainer) Valid(runStartedAt, runtimeStartedAt, verifiedAt time.Time) bool {
 	if !ValidFullContainerID(p.ID) || p.Labels["io.zoe.managed"] != "true" || p.Name != "/zoe-cap-"+p.Labels["io.zoe.deployment"] || p.Image == "" || p.Status != "running" || p.Running == nil || !*p.Running || p.Paused == nil || *p.Paused || p.Restarting == nil || *p.Restarting || p.Dead == nil || *p.Dead || p.PID == nil || *p.PID < 1 || p.StartedAt == nil || p.StartedAt.IsZero() || p.StartedAt.After(p.FirstCheckedAt) || !ValidFullContainerID(p.SnapshotSHA256) {
 		return false
 	}
 	if _, exists := p.Labels["io.zoe.runtime"]; exists {
-		return false
-	}
-	if _, exists := p.Labels["io.zoe.ao.session"]; exists {
 		return false
 	}
 	imageParts := strings.Split(p.Image, "@sha256:")
@@ -457,12 +449,6 @@ func (p PreexistingCapabilityContainer) Valid(runStartedAt, aoStartedAt, verifie
 	}
 	for _, r := range imageParts[0] {
 		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("./:_-", r)) {
-			return false
-		}
-	}
-	identity := strings.ToLower(p.Name + " " + p.Image)
-	for _, marker := range []string{"codex", "opencode", "ao-worker", "agent-orchestrator"} {
-		if strings.Contains(identity, marker) {
 			return false
 		}
 	}
@@ -486,7 +472,7 @@ func (p PreexistingCapabilityContainer) Valid(runStartedAt, aoStartedAt, verifie
 			return false
 		}
 	}
-	return !runStartedAt.IsZero() && p.CreatedAt.Before(runStartedAt) && !p.CreatedAt.After(*p.StartedAt) && !p.FirstCheckedAt.Before(aoStartedAt) && !p.RecheckedAt.Before(p.FirstCheckedAt)
+	return !runStartedAt.IsZero() && p.CreatedAt.Before(runStartedAt) && !p.CreatedAt.After(*p.StartedAt) && !p.FirstCheckedAt.Before(runtimeStartedAt) && !p.RecheckedAt.Before(p.FirstCheckedAt)
 }
 
 // TerminationProof carries the independent runtime-stop evidence required
