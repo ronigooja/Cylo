@@ -47,6 +47,11 @@ type LifecycleOptions struct {
 	Out                                              io.Writer
 }
 
+type UninstallPlan struct {
+	Units, ComposeContainers, RuntimeContainers, ImageIDs, KeepFiles, RemoveFiles []string
+	ComposeFile, Network, OptRoot, DataRoot                                       string
+}
+
 var revisionRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
 var imageRefRE = regexp.MustCompile(`^ghcr\.io/[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*:[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 var digestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -133,6 +138,9 @@ func (m Manager) Install(ctx context.Context, o LifecycleOptions) (ReleaseManife
 	if err = m.stageRelease(o, manifest); err != nil {
 		return manifest, err
 	}
+	if err = m.switchCurrent(o, manifest.SourceRevision); err != nil {
+		return manifest, err
+	}
 	if err = m.writeDeploymentFiles(o, manifest); err != nil {
 		return manifest, err
 	}
@@ -171,37 +179,63 @@ func (m Manager) Update(ctx context.Context, o LifecycleOptions) error {
 	}
 	current := filepath.Join(o.OptRoot, "releases", "current")
 	previous, _ := os.Readlink(current)
-	oldStack, _ := os.ReadFile(filepath.Join(o.Root, "zoe-stack.env"))
-	oldRunner, _ := os.ReadFile(filepath.Join(o.Root, "zoe-runner.env"))
 	if err = m.stageRelease(o, manifest); err != nil {
 		return err
 	}
 	if err = m.pull(ctx, manifest); err != nil {
 		return err
 	}
+	stackSnapshot, stackErr := snapshot(filepath.Join(o.Root, "zoe-stack.env"))
+	if stackErr != nil {
+		return stackErr
+	}
+	runnerSnapshot, runnerErr := snapshot(filepath.Join(o.Root, "zoe-runner.env"))
+	if runnerErr != nil {
+		return runnerErr
+	}
 	if err = m.writeDeploymentFiles(o, manifest); err != nil {
-		return err
+		return restoreUpdate(ctx, m, o, current, previous, stackSnapshot, runnerSnapshot, err)
+	}
+	rollback := func(cause error) error {
+		return restoreUpdate(ctx, m, o, current, previous, stackSnapshot, runnerSnapshot, cause)
 	}
 	if err = m.switchCurrent(o, manifest.SourceRevision); err != nil {
-		return err
+		return rollback(err)
 	}
 	if err = m.start(ctx); err != nil {
-		return m.rollback(ctx, o, current, previous, oldStack, oldRunner, err)
+		return rollback(err)
 	}
-	if err = waitHealth(ctx, o.HealthURL, o.HealthTimeout); err != nil {
-		return m.rollback(ctx, o, current, previous, oldStack, oldRunner, err)
+	if err = waitHealth(ctx, m, o.HealthURL, o.HealthTimeout); err != nil {
+		return rollback(err)
 	}
-	return pruneReleases(filepath.Join(o.OptRoot, "releases"), previous, manifest.SourceRevision)
+	if err = pruneReleases(filepath.Join(o.OptRoot, "releases"), previous, manifest.SourceRevision); err != nil {
+		return rollback(err)
+	}
+	return nil
 }
 
-func (m Manager) rollback(ctx context.Context, o LifecycleOptions, selector, previous string, stack, runner []byte, cause error) error {
+func restoreUpdate(ctx context.Context, m Manager, o LifecycleOptions, selector, previous string, stack, runner fileSnapshot, cause error) error {
+	var rollbackErrs []error
 	if previous != "" {
-		_ = os.Remove(selector)
-		_ = os.Symlink(previous, selector)
+		if err := os.Remove(selector); err != nil && !os.IsNotExist(err) {
+			rollbackErrs = append(rollbackErrs, err)
+		}
+		if err := os.Symlink(previous, selector); err != nil {
+			rollbackErrs = append(rollbackErrs, err)
+		}
 	}
-	_ = os.WriteFile(filepath.Join(o.Root, "zoe-stack.env"), stack, 0600)
-	_ = os.WriteFile(filepath.Join(o.Root, "zoe-runner.env"), runner, 0600)
-	_ = m.start(ctx)
+	if err := stack.restore(); err != nil {
+		rollbackErrs = append(rollbackErrs, err)
+	}
+	if err := runner.restore(); err != nil {
+		rollbackErrs = append(rollbackErrs, err)
+	}
+	if err := m.start(ctx); err != nil {
+		rollbackErrs = append(rollbackErrs, fmt.Errorf("restart previous release: %w", err))
+	}
+	if len(rollbackErrs) > 0 {
+		return errors.Join(fmt.Errorf("update failed: %w", cause), fmt.Errorf("rollback failed: %w", errors.Join(rollbackErrs...)))
+	}
 	return fmt.Errorf("update rolled back: %w", cause)
 }
 
@@ -269,7 +303,7 @@ func (m Manager) stageRelease(o LifecycleOptions, manifest ReleaseManifest) erro
 			return e
 		}
 	}
-	return m.switchCurrent(o, manifest.SourceRevision)
+	return nil
 }
 func copyDeployFiles(src, dst string) error {
 	for _, name := range []string{"docker-compose.yml", "zoe-compose.service", "zoe-runner.service", "zoe-runner-tmpfiles.conf"} {
@@ -364,17 +398,18 @@ func (m Manager) start(ctx context.Context) error {
 	_, e = m.Run(ctx, "systemctl", "restart", "zoe-runner.service")
 	return e
 }
-func waitHealth(ctx context.Context, url string, timeout time.Duration) error {
+func waitHealth(ctx context.Context, m Manager, url string, timeout time.Duration) error {
 	if url == "" {
 		url = "http://127.0.0.1:8787/healthz"
 	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		active, activeErr := m.Run(ctx, "systemctl", "is-active", "zoe-runner.service")
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		r, e := http.DefaultClient.Do(req)
 		if e == nil {
 			r.Body.Close()
-			if r.StatusCode >= 200 && r.StatusCode < 300 {
+			if activeErr == nil && strings.TrimSpace(string(active)) == "active" && r.StatusCode >= 200 && r.StatusCode < 300 {
 				return nil
 			}
 		}
@@ -409,45 +444,150 @@ func printNextSteps(w io.Writer) {
 	fmt.Fprintln(w, "  systemctl start zoe-compose zoe-runner")
 }
 
-func (m Manager) Uninstall(ctx context.Context, o LifecycleOptions) error {
+func (m Manager) UninstallPlan(ctx context.Context, o LifecycleOptions) (UninstallPlan, error) {
 	if o.Root == "" {
 		o.Root = "/etc/zoe"
 	}
 	if o.OptRoot == "" {
 		o.OptRoot = "/opt/zoe"
 	}
-	if _, e := m.Run(ctx, "systemctl", "stop", "zoe-runner.service", "zoe-compose.service"); e != nil {
-		return e
+	if o.DataRoot == "" {
+		o.DataRoot = "/var/lib/zoe"
 	}
-	_, _ = m.Run(ctx, "systemctl", "disable", "zoe-runner.service", "zoe-compose.service")
-	_, _ = m.Run(ctx, "docker", "rm", "-f", "zoe-server", "zoe-memory-worker", "qdrant")
-	_, _ = m.Run(ctx, "docker", "image", "rm", "ghcr.io/ronigooja/zoe-server", "ghcr.io/ronigooja/zoe-memory-worker", "ghcr.io/ronigooja/zoe-runner")
-	_, _ = m.Run(ctx, "docker", "network", "rm", "zoe")
-	if e := os.RemoveAll(o.OptRoot); e != nil {
-		return e
+	plan := UninstallPlan{Units: []string{"zoe-compose.service", "zoe-runner.service", "zoe-compose.service.d/*", "zoe-runner.service.d/*", "zoe-runner.conf"}, Network: "zoe", OptRoot: o.OptRoot, DataRoot: o.DataRoot}
+	composeFile := filepath.Join(o.OptRoot, "releases", "current", "docker-compose.yml")
+	if env, err := readEnv(filepath.Join(o.Root, "zoe-stack.env")); err == nil && filepath.IsAbs(env["ZOE_COMPOSE_FILE"]) {
+		composeFile = env["ZOE_COMPOSE_FILE"]
 	}
-	for _, p := range []string{
-		filepath.Join(o.Root, "systemd", "zoe-compose.service"),
-		filepath.Join(o.Root, "systemd", "zoe-runner.service"),
-		filepath.Join(o.Root, "systemd", "zoe-runner-tmpfiles.conf"),
-		"/etc/systemd/system/zoe-compose.service",
-		"/etc/systemd/system/zoe-runner.service",
-		"/etc/tmpfiles.d/zoe-runner.conf",
-	} {
-		_ = os.Remove(p)
+	if _, err := os.Stat(composeFile); err == nil {
+		plan.ComposeFile = composeFile
 	}
-	_, _ = m.Run(ctx, "systemctl", "daemon-reload")
+	out, err := m.Run(ctx, "docker", "ps", "-aq", "--filter", "label=com.docker.compose.project=zoe")
+	if err != nil {
+		return plan, fmt.Errorf("find Compose containers: %w", err)
+	}
+	plan.ComposeContainers = lines(out)
+	out, err = m.Run(ctx, "docker", "ps", "-aq", "--filter", "label=io.zoe.managed=true")
+	if err != nil {
+		return plan, fmt.Errorf("find OpenCode containers: %w", err)
+	}
+	plan.RuntimeContainers = lines(out)
+	for _, repo := range []string{"ghcr.io/ronigooja/zoe-server", "ghcr.io/ronigooja/zoe-memory-worker", "ghcr.io/ronigooja/zoe-runner", "ghcr.io/ronigooja/zoe-opencode"} {
+		out, err = m.Run(ctx, "docker", "images", "-q", "--filter", "reference="+repo)
+		if err != nil {
+			return plan, fmt.Errorf("find images for %s: %w", repo, err)
+		}
+		plan.ImageIDs = append(plan.ImageIDs, lines(out)...)
+	}
+	plan.KeepFiles = []string{filepath.Join(o.Root, "secrets", "cliproxyapi-api-key"), filepath.Join(o.Root, "secrets", "voice-gateway-api-key"), filepath.Join(o.Root, "secrets", "mem0-llm-api-key")}
 	if o.PurgeData {
-		if e := os.RemoveAll(o.DataRoot); e != nil {
-			return e
+		plan.RemoveFiles = []string{o.DataRoot, filepath.Join(o.Root, "zoe-stack.env"), filepath.Join(o.Root, "zoe-runner.env"), filepath.Join(o.Root, "secrets", "runner-token"), filepath.Join(o.Root, "secrets", "memory-runner-token")}
+	}
+	return plan, nil
+}
+
+func (m Manager) Uninstall(ctx context.Context, o LifecycleOptions) error {
+	plan, err := m.UninstallPlan(ctx, o)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	if _, err = m.Run(ctx, "systemctl", "stop", "zoe-runner.service", "zoe-compose.service"); err != nil {
+		errs = append(errs, fmt.Errorf("stop units: %w", err))
+	}
+	if _, err = m.Run(ctx, "systemctl", "disable", "zoe-runner.service", "zoe-compose.service"); err != nil {
+		errs = append(errs, fmt.Errorf("disable units: %w", err))
+	}
+	if plan.ComposeFile != "" {
+		args := []string{"compose", "--project-name", "zoe", "--env-file", filepath.Join(o.Root, "zoe-stack.env"), "--file", plan.ComposeFile, "down", "--remove-orphans"}
+		if _, err = m.Run(ctx, "docker", args...); err != nil {
+			errs = append(errs, fmt.Errorf("remove Compose stack: %w", err))
 		}
-		for _, n := range []string{"zoe-stack.env", "zoe-runner.env"} {
-			_ = os.Remove(filepath.Join(o.Root, n))
+	} else if len(plan.ComposeContainers) > 0 {
+		if _, err = m.Run(ctx, "docker", append([]string{"rm", "-f"}, plan.ComposeContainers...)...); err != nil {
+			errs = append(errs, fmt.Errorf("remove Compose containers: %w", err))
 		}
-		if o.PurgeCredentials {
-			for _, n := range []string{"cliproxyapi-api-key", "voice-gateway-api-key", "mem0-llm-api-key"} {
-				_ = os.Remove(filepath.Join(o.Root, "secrets", n))
-				_ = os.Remove(filepath.Join(o.Root, "runner-secrets", n))
+	}
+	if len(plan.RuntimeContainers) > 0 {
+		if _, err = m.Run(ctx, "docker", append([]string{"rm", "-f"}, plan.RuntimeContainers...)...); err != nil {
+			errs = append(errs, fmt.Errorf("remove OpenCode containers: %w", err))
+		}
+	}
+	if len(plan.ImageIDs) > 0 {
+		if _, err = m.Run(ctx, "docker", append([]string{"image", "rm"}, plan.ImageIDs...)...); err != nil {
+			errs = append(errs, fmt.Errorf("remove Zoe images: %w", err))
+		}
+	}
+	if _, err = m.Run(ctx, "docker", "network", "rm", "zoe"); err != nil {
+		errs = append(errs, fmt.Errorf("remove Zoe network: %w", err))
+	}
+	if err = os.RemoveAll(o.OptRoot); err != nil {
+		errs = append(errs, fmt.Errorf("remove release root: %w", err))
+	}
+	for _, p := range []string{filepath.Join(o.Root, "systemd", "zoe-compose.service"), filepath.Join(o.Root, "systemd", "zoe-runner.service"), filepath.Join(o.Root, "systemd", "zoe-runner-tmpfiles.conf"), "/etc/systemd/system/zoe-compose.service", "/etc/systemd/system/zoe-runner.service", "/etc/tmpfiles.d/zoe-runner.conf"} {
+		if err = os.Remove(p); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, fmt.Errorf("remove %s: %w", p, err))
+		}
+	}
+	if _, err = m.Run(ctx, "systemctl", "daemon-reload"); err != nil {
+		errs = append(errs, fmt.Errorf("reload systemd: %w", err))
+	}
+	if o.PurgeData {
+		if err = purgeData(o, o.PurgeCredentials); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	// Verify that exact Zoe-owned labels/images are gone; never use prune.
+	if out, e := m.Run(ctx, "docker", "ps", "-aq", "--filter", "label=io.zoe.managed=true"); e == nil && len(lines(out)) > 0 {
+		errs = append(errs, errors.New("OpenCode containers remain"))
+	}
+	if out, e := m.Run(ctx, "docker", "ps", "-aq", "--filter", "label=com.docker.compose.project=zoe"); e == nil && len(lines(out)) > 0 {
+		errs = append(errs, errors.New("Compose containers remain"))
+	}
+	for _, repo := range []string{"ghcr.io/ronigooja/zoe-server", "ghcr.io/ronigooja/zoe-memory-worker", "ghcr.io/ronigooja/zoe-runner", "ghcr.io/ronigooja/zoe-opencode"} {
+		if out, e := m.Run(ctx, "docker", "images", "-q", "--filter", "reference="+repo); e == nil && len(lines(out)) > 0 {
+			errs = append(errs, fmt.Errorf("Zoe images remain for %s", repo))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func lines(b []byte) []string {
+	var result []string
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if strings.TrimSpace(line) != "" {
+			result = append(result, strings.TrimSpace(line))
+		}
+	}
+	return result
+}
+func purgeData(o LifecycleOptions, purgeCredentials bool) error {
+	if err := os.RemoveAll(o.DataRoot); err != nil {
+		return fmt.Errorf("remove data root: %w", err)
+	}
+	entries, err := os.ReadDir(o.Root)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, entry := range entries {
+		p := filepath.Join(o.Root, entry.Name())
+		if entry.Name() == "secrets" || entry.Name() == "runner-secrets" {
+			continue
+		}
+		if err := os.RemoveAll(p); err != nil {
+			return err
+		}
+	}
+	for _, dir := range []string{"secrets", "runner-secrets"} {
+		d := filepath.Join(o.Root, dir)
+		entries, _ := os.ReadDir(d)
+		for _, entry := range entries {
+			keep := entry.Name() == "cliproxyapi-api-key" || entry.Name() == "voice-gateway-api-key" || entry.Name() == "mem0-llm-api-key"
+			if keep && !purgeCredentials {
+				continue
+			}
+			if err := os.RemoveAll(filepath.Join(d, entry.Name())); err != nil {
+				return err
 			}
 		}
 	}

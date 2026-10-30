@@ -121,10 +121,14 @@ Use `zoe update --release /path/to/release --opencode-image ...` to stage and pu
 the new release, switch `current`, restart Compose and the runner, and verify
 health. A failed health check restores the prior selector and image settings;
 data and secrets are not touched. Use `zoe uninstall` for reviewed removal. It
-lists and removes only the Zoe units, exact Zoe containers/images, network, and
-`/opt/zoe`; by default it keeps `/var/lib/zoe` and all `/etc/zoe`. Add
-`--purge-data` to remove data and non-credential configuration, and additionally
-`--purge-credentials` to remove the named model/voice gateway credentials.
+first prints the exact Compose-project containers, `io.zoe.managed=true` runtime
+containers, and local IDs for the four Zoe image repositories. It removes the
+Compose project with `docker compose down --remove-orphans`, removes only those
+queried IDs, keeps the shared Qdrant image, and never runs Docker prune. It
+requires typing `yes` unless `--yes` is supplied; non-interactive use must supply
+`--yes`. By default it keeps `/var/lib/zoe` and all `/etc/zoe`. Add `--purge-data`
+to remove data and Zoe-generated configuration/tokens while explicitly keeping
+the three gateway credentials; add `--purge-credentials` to remove those too.
 
 ## Server and worker settings
 

@@ -42,6 +42,7 @@ func lifecycleFlags(name string, args []string, errOut io.Writer) (ops.Lifecycle
 	fs.StringVar(&o.OpenCodeImage, "opencode-image", "", "pinned GHCR OpenCode image")
 	fs.BoolVar(&o.NonInteractive, "non-interactive", false, "do not prompt")
 	fs.BoolVar(&o.Yes, "yes", false, "confirm destructive operation")
+	fs.BoolVar(&o.Yes, "non-interactive-with-yes", false, "confirm destructive operation without prompts")
 	fs.BoolVar(&o.PurgeData, "purge-data", false, "remove Zoe data")
 	fs.BoolVar(&o.PurgeCredentials, "purge-credentials", false, "remove protected gateway credentials")
 	if err := fs.Parse(args); err != nil {
@@ -95,9 +96,23 @@ func uninstallOperation(args []string, in io.Reader, out, errOut io.Writer) erro
 	if e != nil {
 		return e
 	}
-	fmt.Fprintln(out, "This will remove Zoe units, exact-name Zoe containers/images, the Zoe network, and /opt/zoe.")
+	if o.NonInteractive && !o.Yes {
+		return errors.New("uninstall requires --yes in non-interactive mode")
+	}
+	plan, err := opsManager().UninstallPlan(context.Background(), o)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "Uninstall plan:")
+	fmt.Fprintf(out, "  units: %s\n", strings.Join(plan.Units, ", "))
+	fmt.Fprintf(out, "  Compose file: %s\n", safeLabel(plan.ComposeFile))
+	fmt.Fprintf(out, "  Compose containers: %s\n", strings.Join(plan.ComposeContainers, ", "))
+	fmt.Fprintf(out, "  OpenCode containers: %s\n", strings.Join(plan.RuntimeContainers, ", "))
+	fmt.Fprintf(out, "  Zoe image IDs: %s\n", strings.Join(plan.ImageIDs, ", "))
+	fmt.Fprintf(out, "  network: %s\n  release root: %s\n", plan.Network, plan.OptRoot)
 	if o.PurgeData {
-		fmt.Fprintln(out, "It will also remove /var/lib/zoe and non-credential files under /etc/zoe.")
+		fmt.Fprintf(out, "  purge data: %s\n  purge non-credential /etc/zoe files\n", plan.DataRoot)
+		fmt.Fprintf(out, "  keep credentials: %s\n", strings.Join(plan.KeepFiles, ", "))
 	}
 	if !o.Yes {
 		fmt.Fprint(out, "Type yes to continue: ")
@@ -109,6 +124,7 @@ func uninstallOperation(args []string, in io.Reader, out, errOut io.Writer) erro
 			return errors.New("confirmation required")
 		}
 	}
+	fmt.Fprintln(out, "Removing the listed Zoe host resources.")
 	return opsManager().Uninstall(context.Background(), o)
 }
 
