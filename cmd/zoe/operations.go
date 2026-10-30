@@ -9,8 +9,10 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ronigooja/Zoe/internal/ops"
@@ -794,9 +796,37 @@ func safeLabel(value string) string {
 	return value
 }
 
+// terminalEcho is replaced in tests; production uses the platform terminal control.
+var terminalEcho = disableTerminalEcho
+
 func readToken(in io.Reader, out io.Writer) ([]byte, error) {
 	in = sharedInput(in)
 	fmt.Fprint(out, "API token: ")
+	if file := terminalFile(in); file != nil {
+		restore, isTerminal, err := terminalEcho(file)
+		if err != nil {
+			return nil, errors.New("cannot hide terminal input; use --token-file")
+		}
+		if isTerminal {
+			stop := make(chan struct{})
+			signals := make(chan os.Signal, 1)
+			signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+			go func() {
+				select {
+				case <-signals:
+					restore()
+					os.Exit(130)
+				case <-stop:
+				}
+			}()
+			defer func() {
+				signal.Stop(signals)
+				close(stop)
+				restore()
+				fmt.Fprintln(out)
+			}()
+		}
+	}
 	value, err := inputLine(in)
 	if err != nil {
 		return nil, err

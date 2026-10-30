@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 )
@@ -92,5 +94,51 @@ func TestMenuUsesGroupedTwoDigitLabels(t *testing.T) {
 	}
 	if !called || errOut.Len() != 0 {
 		t.Fatalf("two-digit dispatch failed: called=%v err=%q", called, errOut.String())
+	}
+}
+
+func TestReadTokenHidesTerminalEchoAndRestoresIt(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "tty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("secret-value\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	var hidden, restored int
+	old := terminalEcho
+	terminalEcho = func(*os.File) (func(), bool, error) {
+		hidden++
+		return func() { restored++ }, true, nil
+	}
+	t.Cleanup(func() { terminalEcho = old })
+	var out bytes.Buffer
+	token, err := readToken(file, &out)
+	if err != nil || string(token) != "secret-value" {
+		t.Fatalf("token=%q err=%v", token, err)
+	}
+	if hidden != 1 || restored != 1 {
+		t.Fatalf("echo hidden=%d restored=%d", hidden, restored)
+	}
+	if strings.Contains(out.String(), "secret-value") {
+		t.Fatal("token was echoed")
+	}
+}
+
+func TestReadTokenRefusesWhenEchoCannotBeDisabled(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "tty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	old := terminalEcho
+	terminalEcho = func(*os.File) (func(), bool, error) { return nil, true, errors.New("no tty") }
+	t.Cleanup(func() { terminalEcho = old })
+	if _, err := readToken(file, io.Discard); err == nil {
+		t.Fatal("readToken must fail instead of echoing the token")
 	}
 }
