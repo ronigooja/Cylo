@@ -11,7 +11,7 @@ import (
 )
 
 func reviewRuntimeConfig(code, runnerToken string) control.Config {
-	return control.Config{RunnerToken: runnerToken, RunnerID: "review", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim", "runner:control:read"}, DefaultProfileID: "review", Profiles: map[string]control.RuntimeProfile{"review": {ID: "review", AOProjectID: "review-project", RuntimeRouteID: "review", ModelRouteID: "review", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "review-policy"}}}
+	return control.Config{RunnerToken: runnerToken, RunnerID: "review", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim", "runner:control:read"}, DefaultProfileID: "review", Profiles: map[string]control.RuntimeProfile{"review": {ID: "review", RuntimeRouteID: "review", ModelRouteID: "review", Role: "worker", IsolationPolicy: "review-policy"}}}
 }
 
 func TestReviewExplicitEmptyInstanceScopesRemainEmpty(t *testing.T) {
@@ -51,7 +51,6 @@ func TestReviewClaimAuthorizationSurvivesServerReconfiguration(t *testing.T) {
 	p = cfg2.Profiles["review"]
 	p.Scopes = []string{"*"}
 	p.CapabilityIDs = []string{"admin"}
-	p.AOProjectID = "changed"
 	p.IsolationPolicy = "changed-policy"
 	cfg2.Profiles["review"] = p
 	server, err := control.NewServer(store, cfg2)

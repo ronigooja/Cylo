@@ -328,12 +328,12 @@ type CreateRejectionProof struct {
 // established absence under a newer AO process. The control plane also checks
 // its own observation and effect history before accepting this receipt.
 type NoEffectProof struct {
-	JournalPhase    string                  `json:"journal_phase"`
+	JournalPhase         string                  `json:"journal_phase"`
 	RuntimeCreateStarted bool                    `json:"runtime_create_started"`
 	RuntimeSessionID     string                  `json:"runtime_session_id,omitempty"`
 	RuntimeContainerID   string                  `json:"runtime_container_id,omitempty"`
-	Outcome         string                  `json:"outcome"`
-	Reconciliation  *NoEffectReconciliation `json:"reconciliation,omitempty"`
+	Outcome              string                  `json:"outcome"`
+	Reconciliation       *NoEffectReconciliation `json:"reconciliation,omitempty"`
 }
 
 // NoEffectReconciliation records explicit operator-authorized, read-only absence checks.
@@ -487,10 +487,10 @@ func (p PreexistingCapabilityContainer) Valid(runStartedAt, aoStartedAt, verifie
 // TerminationProof carries the independent runtime-stop evidence required
 // before the control plane releases a run's capacity slot.
 type TerminationProof struct {
-	Source          string    `json:"source"`
-	Method          string    `json:"method"`
-	RuntimeSessionID string    `json:"runtime_session_id"`
-	RuntimeContainerID string `json:"runtime_container_id"`
-	VerifiedAt      time.Time `json:"verified_at"`
-	CleanupComplete bool      `json:"cleanup_complete"`
+	Source             string    `json:"source"`
+	Method             string    `json:"method"`
+	RuntimeSessionID   string    `json:"runtime_session_id"`
+	RuntimeContainerID string    `json:"runtime_container_id"`
+	VerifiedAt         time.Time `json:"verified_at"`
+	CleanupComplete    bool      `json:"cleanup_complete"`
 }

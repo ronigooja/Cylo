@@ -205,13 +205,13 @@ func TestProductionHTTPRecoveryDoesNotReplayPersistedAOCreateAttempt(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim := contracts.JobClaim{RunID: "run", TaskID: "task", AttemptID: "attempt", WorkspaceID: "default", Fence: 1, Goal: "test", ProfileID: "profile", Harness: "codex", RuntimeRouteID: "runtime", ModelRouteID: "model", IsolationPolicy: "ao-codex-workspace-write-v1", Role: "worker", AOProjectID: "project"}
+	claim := contracts.JobClaim{RunID: "run", TaskID: "task", AttemptID: "attempt", WorkspaceID: "default", Fence: 1, Goal: "test", ProfileID: "profile", Harness: "codex", RuntimeRouteID: "runtime", ModelRouteID: "model", IsolationPolicy: "ao-codex-workspace-write-v1", Role: "worker"}
 	journal, err := runner.OpenJournal(ctx, t.TempDir()+"/runner.db")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer journal.Close()
-	spec := ao.WorkerSpec{ClientRequestID: claim.RunID, ProjectID: claim.AOProjectID, Harness: claim.Harness, DisplayName: "original", Prompt: "original request body"}
+	spec := ao.WorkerSpec{ClientRequestID: claim.RunID, ProjectID: claim.RuntimeSessionID, Harness: claim.Harness, DisplayName: "original", Prompt: "original request body"}
 	if _, err := journal.SaveClaim(ctx, claim, spec, "create_pending"); err != nil {
 		t.Fatal(err)
 	}

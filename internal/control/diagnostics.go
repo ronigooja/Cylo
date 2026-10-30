@@ -29,7 +29,7 @@ type clientDiagnosticEvent struct {
 	DeviceIDHash    string `json:"device_id_hash"`
 	Phase           string `json:"phase"`
 	RequestPath     string `json:"request_path"`
-	HTTPStatus      int    `json:"http_status"`
+	Status          int    `json:"http_status"`
 	ResponseBytes   int64  `json:"response_bytes"`
 	ErrorType       string `json:"error_type"`
 	ErrorSummary    string `json:"error_summary"`
@@ -108,12 +108,12 @@ func (s *Server) handleClientDiagnostics(w http.ResponseWriter, r *http.Request)
 			writeError(w, apiError(http.StatusBadRequest, "invalid_diagnostic", "occurred_at must be RFC3339", nil))
 			return
 		}
-		if _, err = tx.ExecContext(r.Context(), `INSERT INTO client_diagnostic_events(id,workspace_id,subject_id,device_hash,client_request_id,occurred_at,received_at,app_version,os_version,phase,request_path,http_status,response_bytes,error_type,error_summary) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, p.WorkspaceID, p.SubjectID, deviceHashText, strings.TrimSpace(event.ClientRequestID), occurred, now.Format(time.RFC3339Nano), bounded(event.AppVersion, 128), bounded(event.OSVersion, 128), bounded(event.Phase, 64), bounded(event.RequestPath, 256), event.HTTPStatus, event.ResponseBytes, bounded(event.ErrorType, 64), bounded(event.ErrorSummary, 512)); err != nil {
+		if _, err = tx.ExecContext(r.Context(), `INSERT INTO client_diagnostic_events(id,workspace_id,subject_id,device_hash,client_request_id,occurred_at,received_at,app_version,os_version,phase,request_path,http_status,response_bytes,error_type,error_summary) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, p.WorkspaceID, p.SubjectID, deviceHashText, strings.TrimSpace(event.ClientRequestID), occurred, now.Format(time.RFC3339Nano), bounded(event.AppVersion, 128), bounded(event.OSVersion, 128), bounded(event.Phase, 64), bounded(event.RequestPath, 256), event.Status, event.ResponseBytes, bounded(event.ErrorType, 64), bounded(event.ErrorSummary, 512)); err != nil {
 			writeError(w, err)
 			return
 		}
 		ids = append(ids, id)
-		log.Printf("client diagnostic id=%s device_hash=%s phase=%s status=%d error_type=%s", id, deviceHashText, logSafe(event.Phase, 64), event.HTTPStatus, logSafe(event.ErrorType, 64))
+		log.Printf("client diagnostic id=%s device_hash=%s phase=%s status=%d error_type=%s", id, deviceHashText, logSafe(event.Phase, 64), event.Status, logSafe(event.ErrorType, 64))
 	}
 	// Keep this table short-lived and independent from the business event stream.
 	_, _ = tx.ExecContext(r.Context(), `DELETE FROM client_diagnostic_events WHERE received_at < ?`, now.Add(-diagnosticRetention).Format(time.RFC3339Nano))
@@ -125,7 +125,7 @@ func (s *Server) handleClientDiagnostics(w http.ResponseWriter, r *http.Request)
 }
 
 func validDiagnosticEvent(e clientDiagnosticEvent) bool {
-	return strings.TrimSpace(e.ClientRequestID) != "" && strings.TrimSpace(e.DeviceIDHash) != "" && len(e.DeviceIDHash) <= 128 && strings.TrimSpace(e.Phase) != "" && len(e.Phase) <= 64 && e.HTTPStatus >= 0 && e.HTTPStatus <= 599 && e.ResponseBytes >= 0 && e.ResponseBytes <= 1<<30 && !containsSensitiveValue(e.ErrorSummary) && !containsSensitiveValue(e.RequestPath)
+	return strings.TrimSpace(e.ClientRequestID) != "" && strings.TrimSpace(e.DeviceIDHash) != "" && len(e.DeviceIDHash) <= 128 && strings.TrimSpace(e.Phase) != "" && len(e.Phase) <= 64 && e.Status >= 0 && e.Status <= 599 && e.ResponseBytes >= 0 && e.ResponseBytes <= 1<<30 && !containsSensitiveValue(e.ErrorSummary) && !containsSensitiveValue(e.RequestPath)
 }
 
 func bounded(value string, max int) string {
