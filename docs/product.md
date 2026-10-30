@@ -564,9 +564,7 @@ Agent execution must follow unified permission, task, and state rules rather tha
 
 ## 7. Autonomous Capability Expansion
 
-A generated program is not permission to deploy it. Authorized capability work must produce a validated release and constrained deployment manifest before a runner applies it. Installed capabilities retain their own lifecycle, health, configuration, permissions, immutable release artifact, and persistent-data policy. Pluggable domain examples describe extensibility, not a claim that every connector exists.
-
-This is one of Zoe's most distinctive requirements.
+Capability expansion covers authorized creation, validated release, constrained deployment manifests, and independently managed installed capabilities with health, configuration, permissions, immutable release artifacts, and persistent-data policy; see [Sections 7.1–7.3](#71-creating-new-capabilities) for the governing lifecycle and execution rules. A generated program is not permission to deploy it. Pluggable domain examples describe extensibility, not a claim that every connector exists.
 
 <a id="cy-07-01"></a>
 
@@ -598,20 +596,7 @@ The service can then run independently.
 
 **CY-07-02.** Manage capability install, configuration, authorization, run, pause, resume, update, stop, removal, health, and errors.
 
-Zoe must be able to manage the complete lifecycle of an added capability, including:
-
-- Creation
-- Installation
-- Configuration
-- Authorization
-- Startup
-- Pause
-- Resume
-- Update
-- Stop
-- Uninstall
-- Runtime status checks
-- Exception handling
+Zoe must be able to manage the complete lifecycle of an added capability: creation, installation, configuration, authorization, startup, pause, resume, update, stop, uninstall, runtime status checks, and exception handling.
 
 Users should be able to see which capabilities are installed and whether they are currently running.
 
@@ -651,7 +636,7 @@ Adding a capability should not require changing the entire system's core archite
 
 ## 8. Task Management Requirements
 
-Task state represents observed reality rather than a conversation or UI animation. Preserve goal, source, identity, timestamps, result, error, recovery information, dependencies, and project/workspace associations. State semantics cover queued, active, waiting, awaiting user, paused, complete, failed, and canceled work. A stop request or agent answer alone does not prove termination or goal completion.
+Task management defines durable execution identity, lifecycle semantics, recovery, and project associations; see [Sections 8.1–8.5](#81-unified-task-system) for the requirements. State represents observed reality rather than conversation or UI animation, and a stop request or agent answer alone does not prove termination or goal completion.
 
 <a id="cy-08-01"></a>
 
@@ -768,7 +753,7 @@ If several objects are possible, it must not choose one arbitrarily.
 
 ## 9. Long-Running Background Services
 
-A finite task and a durable service have different lifetimes. Each service trigger creates an execution record. Ordinary schedules, listeners, and rule evaluation continue independently of Super and clients; intelligent work enters the same authorized admission path as other runtime work. Notices distinguish routine information, completion, failure, and decisions and link back to source records.
+A finite task and a durable service have different lifetimes; each service trigger creates an execution record. Schedules, listeners, and rule evaluation continue independently of Super and clients, while intelligent work enters the same authorized admission path as other runtime work. Source-linked notices are defined in [Sections 9.1–9.4](#91-a-service-is-not-a-task).
 
 <a id="cy-09-01"></a>
 
@@ -849,7 +834,7 @@ The system should avoid duplicate notifications and frequent, meaningless remind
 
 ## 10. Long-Term Memory Requirements
 
-Memory has global, project, task, and raw-history layers, each respecting its access scope. Confirmed user decisions, execution evidence, and model inference remain distinguishable. Record sources, versions, dates, validity, correction history, and tombstones. An automatic summary cannot overwrite a confirmed decision. Curator judgment is on demand, not required on every turn; missing or conflicting history must remain visible as uncertainty.
+Long-term memory is layered, source-linked, authority-aware, and scoped; confirmed decisions, execution evidence, and model inference remain distinguishable. Record sources, versions, dates, validity, correction history, and tombstones; automatic summaries cannot overwrite confirmed decisions, curator judgment is on demand, and missing or conflicting history remains uncertainty. Detailed requirements are in [Sections 10.1–10.6](#101-persistent-memory).
 
 <a id="cy-10-01"></a>
 
@@ -859,11 +844,7 @@ Memory has global, project, task, and raw-history layers, each respecting its ac
 
 **CY-10-01.** Retain source-linked memory across conversations, tasks, projects, devices, and restarts.
 
-Zoe needs long-term memory that works across conversations, tasks, projects, and devices.
-
-Memory must not depend on the context window of a single model call.
-
-Important information must remain recoverable after a client closes, a session ends, or the service restarts.
+Zoe needs long-term memory across conversations, tasks, projects, and devices, independent of a single model context window and recoverable after client closure, session end, or service restart.
 
 <a id="cy-10-02"></a>
 
@@ -873,7 +854,7 @@ Important information must remain recoverable after a client closes, a session e
 
 **CY-10-02.** Separate global, project, task, and raw-history memory while preserving project access boundaries.
 
-At minimum, memory includes the following categories.
+At minimum, memory includes the categories and boundaries defined below.
 
 #### Global Memory
 
@@ -956,8 +937,6 @@ The system should allow memory organization to run on background events or suita
 
 **CY-10-04.** Distinguish confirmed facts, execution evidence, and AI inference; track decision timing and validity.
 
-This is a core requirement.
-
 Zoe must distinguish between:
 
 **Facts explicitly confirmed by the user, results actually produced by the system, and content inferred by AI.**
@@ -1018,7 +997,7 @@ When retrieval is insufficient or results conflict, the system should state the 
 
 ## 11. Context Management
 
-Current execution context and long-term memory are separate. Assemble the context relevant to each task, agent/runtime, project, and permission scope. Balance completeness, relevance, token cost, and accuracy without loading all history or crossing project boundaries. Super's coordination role does not imply unconditional access to all data.
+Current execution context and long-term memory are separate; the detailed requirement below governs task, runtime, project, and permission-scoped context assembly.
 
 <a id="cy-11-01"></a>
 
@@ -1026,29 +1005,17 @@ Current execution context and long-term memory are separate. Assemble the contex
 
 **CY-11-01.** Assemble current context separately from long-term memory according to task, agent, and permissions.
 
-Long-term memory and the current execution context need to be managed separately.
-
 Zoe should be able to provide each Agent with context relevant to its task.
 
 For example, a development Worker needs the project structure, technical requirements, and current task.
 
 An email Worker needs the email content, relevant handling rules, and necessary context.
 
-They do not need every past conversation.
-
-Super can access cross-task information when coordinating complex work, but it should not load all system data unconditionally either.
-
-Context management must balance:
-
-- Information completeness
-- Relevance
-- Token cost
-- Permission boundaries
-- Memory accuracy
+Agents do not need every past conversation. Super may access cross-task information when coordinating complex work, but not all system data unconditionally; context must balance completeness, relevance, token cost, permission boundaries, and memory accuracy.
 
 ## 12. Unified State and Cross-Device Continuity
 
-Clients show the same durable project/task identities and authoritative versions. Mark stale or offline views and reconcile after reconnect. A follow-up on another device attaches to the original work when unambiguous; ask for disambiguation when records do not identify one task. Cross-device continuation preserves durable context; it does not promise live-audio transfer.
+Cross-device continuity uses durable identities and authoritative versions, marks stale/offline views and reconciles after reconnect, handles ambiguous follow-ups, and preserves durable context without promising live-audio transfer; see [Sections 12.1–12.3](#121-unified-source-of-data).
 
 <a id="cy-12-01"></a>
 
@@ -1057,8 +1024,6 @@ Clients show the same durable project/task identities and authoritative versions
 ### 12.1 Unified Source of Data
 
 **CY-12-01.** Use one versioned state authority across devices and expose stale cache/conflicts clearly.
-
-Zoe should have one authoritative source of state.
 
 Different clients viewing the same task must not show unexplained conflicting states.
 
@@ -1072,7 +1037,7 @@ For example, if a Mac shows a task as completed, an iPhone should not incorrectl
 
 **CY-12-02.** Continue one linked project/task across Mac and iPhone and return to the same work context.
 
-A typical scenario:
+When a user resumes work on another device, the typical scenario is:
 
 A user tells Zoe on a Mac:
 
@@ -1102,15 +1067,11 @@ When the user returns to the Mac, they can continue interacting through Zoe and,
 
 **CY-12-03.** Keep task existence and status independent of any conversation window.
 
-A task's existence should not depend on a particular conversation window.
-
-Existing tasks remain present even when the user starts a new conversation.
-
-A conversation is only one way to access and control tasks.
+A task remains present when the user starts a new conversation; conversation is only one way to access and control it.
 
 ## 13. Modular AI and Services
 
-Model, agent, voice, and external-service implementations remain replaceable through explicit contracts. Dependency failure should isolate affected work and preserve unrelated state and functionality. The existing remote CLIProxyAPI deployment is reused unchanged; it is an external dependency, not a Zoe deployment target.
+Model, agent, voice, and external-service implementations are replaceable through explicit contracts; the detailed independence requirements are in [Sections 13.1–13.4](#131-independence-from-ai-models). The existing remote CLIProxyAPI deployment is reused unchanged.
 
 <a id="cy-13-01"></a>
 
@@ -1120,11 +1081,7 @@ Model, agent, voice, and external-service implementations remain replaceable thr
 
 **CY-13-01.** Replace models without rewriting task, memory, and service records.
 
-Zoe must not bind its core capabilities to a single model.
-
-The system should support different kinds of AI models and services.
-
-Replacing a model in the future should not require rewriting the entire task-management, long-term-memory, and background-service system.
+Zoe must support different AI models and services without rewriting task management, long-term memory, or background services.
 
 <a id="cy-13-02"></a>
 
@@ -1134,13 +1091,7 @@ Replacing a model in the future should not require rewriting the entire task-man
 
 **CY-13-02.** Integrate heterogeneous agents through shared capability, execution, result, and permission contracts.
 
-Codex can serve as a development Worker.
-
-Other Agents can handle other work.
-
-Different Agents do not need to share the same internal implementation.
-
-Zoe needs to know what capabilities they provide, how they execute, how they return results, and how permissions constrain them.
+Codex can serve as a development Worker while other Agents handle other work. They need not share an implementation, but Zoe must know their capabilities, execution, result, and permission contracts.
 
 <a id="cy-13-03"></a>
 
@@ -1150,15 +1101,7 @@ Zoe needs to know what capabilities they provide, how they execute, how they ret
 
 **CY-13-03.** Replace speech recognition, synthesis, or live voice without changing core task and project data.
 
-The voice system should be independently replaceable.
-
-Changing speech recognition, speech synthesis, or a real-time voice service should not affect:
-
-- Long-term memory
-- Task state
-- Agent coordination
-- Background services
-- Project data
+The voice system should be independently replaceable: changing speech recognition, synthesis, or real-time voice must not affect long-term memory, task state, agent coordination, background services, or project data.
 
 <a id="cy-13-04"></a>
 
@@ -1168,9 +1111,7 @@ Changing speech recognition, speech synthesis, or a real-time voice service shou
 
 **CY-13-04.** Isolate external service integration failures from unrelated modules.
 
-Email, calendars, GitHub, file systems, and other third-party services should be independently integrated, updated, or removed.
-
-When an external service is unavailable, it should not cause unrelated modules to fail as a whole.
+Email, calendars, GitHub, file systems, and other third-party services should be independently integrated, updated, or removed; an unavailable service must not make unrelated modules fail as a whole.
 
 ## 14. Permission and Security Requirements
 
