@@ -28,7 +28,9 @@ func TestRuntimeRemovalUsesExactFullIDAndVerifiesAbsence(t *testing.T) {
 type createArgsDocker struct{ args []string }
 
 func (d *createArgsDocker) Run(_ context.Context, args ...string) ([]byte, error) {
-	d.args = append([]string(nil), args...)
+	if len(args) > 0 && args[0] == "create" {
+		d.args = append([]string(nil), args...)
+	}
 	return []byte(strings.Repeat("a", 64)), nil
 }
 func TestRuntimeCreateMountsScopedWorkspaceReadWrite(t *testing.T) {
