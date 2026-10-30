@@ -736,7 +736,7 @@ func (s *Service) observeDeployment(w http.ResponseWriter, r *http.Request) {
 		if _, err = tx.ExecContext(r.Context(), `UPDATE capability_deployment_jobs SET status=?,updated_at=? WHERE attempt_id=? AND fence=?`, status, obs.ObservedAt.UTC().Format(time.RFC3339Nano), obs.AttemptID, obs.Fence); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(r.Context(), `UPDATE capability_deployments SET observed_state=?,last_error_code=?,updated_at=? WHERE deployment_id=? AND latest_fence=? AND (revoked_at IS NULL OR ?=1)`, state, obs.Code, obs.ObservedAt.UTC().Format(time.RFC3339Nano), obs.DeploymentID, obs.Fence, cleanupOnly)
+		_, err = tx.ExecContext(r.Context(), `UPDATE capability_deployments SET observed_state=?,last_error_code=?,updated_at=? WHERE deployment_id=? AND latest_fence=? AND (revoked_at IS NULL OR ?=1)`, state, obs.ErrorCode, obs.ObservedAt.UTC().Format(time.RFC3339Nano), obs.DeploymentID, obs.Fence, cleanupOnly)
 		if err != nil {
 			return err
 		}

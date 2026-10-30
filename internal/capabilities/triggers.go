@@ -860,7 +860,7 @@ func (s *Service) observeTrigger(w http.ResponseWriter, r *http.Request) {
 				return control.NewAPIError(409, "observation_conflict", "observation ID was reused with different content", nil)
 			}
 		}
-		_, err := tx.ExecContext(r.Context(), `UPDATE capability_trigger_runs SET state=?,task_id=?,run_id=?,observation_id=?,observation_json=?,last_error_code=?,updated_at=? WHERE trigger_run_id=? AND attempt_id=? AND fence=?`, obs.State, obs.TaskID, obs.RunID, obs.ObservationID, body, obs.Code, obs.ObservedAt.UTC().Format(time.RFC3339Nano), obs.TriggerRunID, obs.AttemptID, obs.Fence)
+		_, err := tx.ExecContext(r.Context(), `UPDATE capability_trigger_runs SET state=?,task_id=?,run_id=?,observation_id=?,observation_json=?,last_error_code=?,updated_at=? WHERE trigger_run_id=? AND attempt_id=? AND fence=?`, obs.State, obs.TaskID, obs.RunID, obs.ObservationID, body, obs.ErrorCode, obs.ObservedAt.UTC().Format(time.RFC3339Nano), obs.TriggerRunID, obs.AttemptID, obs.Fence)
 		return err
 	})
 	if err != nil {

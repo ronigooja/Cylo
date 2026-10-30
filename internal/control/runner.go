@@ -669,7 +669,7 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		taskVersion++
 	}
 	if observation.Kind == "create_rejected" {
-		_, err = tx.ExecContext(r.Context(), `UPDATE tasks SET error=?,version=version+1,updated_at=? WHERE id=? AND workspace_id=?`, "ao_worker_create_rejected", now.Format(time.RFC3339Nano), taskID, workspace)
+		_, err = tx.ExecContext(r.Context(), `UPDATE tasks SET error=?,version=version+1,updated_at=? WHERE id=? AND workspace_id=?`, "runtime_create_rejected", now.Format(time.RFC3339Nano), taskID, workspace)
 		if err != nil {
 			writeError(w, err)
 			return
