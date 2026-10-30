@@ -129,9 +129,9 @@ public final class SurfaceManager: NSObject, SurfaceHost, NSWindowDelegate {
         if spec.window.fullscreen == true { window.toggleFullScreen(nil) }
         if spec.window.showInDock == true { NSApp.setActivationPolicy(.regular) }
         if spec.window.showInDock == false { NSApp.setActivationPolicy(.accessory) }
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        if spec.window.material != nil { window.contentView?.wantsLayer = true; window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor }
+        let transparent = spec.window.material != nil
+        window.isOpaque = !transparent
+        window.backgroundColor = transparent ? .clear : .windowBackgroundColor
         if spec.window.visible != false { window.makeKeyAndOrderFront(nil) } else { window.orderOut(nil) }
     }
 
@@ -174,7 +174,7 @@ public final class SurfaceManager: NSObject, SurfaceHost, NSWindowDelegate {
 
     private func hostingController(for spec: SurfaceSpec, store: ScreenDataStore) -> NSViewController {
         let base = ScreenRenderer(document: spec.document, store: store, perform: actionHandler)
-        let view = Group { if let material = spec.window.material { base.background(MaterialView(material: material, opacity: spec.window.opacity ?? 1)) } else { base.background(.clear) } }
+        let view = Group { if let material = spec.window.material { base.background(MaterialView(material: material, opacity: spec.window.opacity ?? 1)) } else { base } }
         return NSHostingController(rootView: view)
     }
 

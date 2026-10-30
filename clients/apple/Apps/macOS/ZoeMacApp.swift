@@ -24,6 +24,10 @@ struct ZoeMacApp: App {
         .defaultSize(width: 1280, height: 820)
         .commands {
             CommandMenu("Demo") {
+                Button("All components (one window)") { coordinator.surfaces.open(SurfaceSpec(id: "demo.gallery", kind: .window, document: DemoDocuments.gallery)) }
+                Divider()
+                Button("All components (one window)") { coordinator.surfaces.open(SurfaceSpec(id: "demo.gallery", kind: .window, document: DemoDocuments.gallery)) }
+                Divider()
                 Button("Canvas / Layer") { coordinator.surfaces.open(SurfaceSpec(id: "demo.canvas", kind: .window, document: DemoDocuments.canvas)) }
                 ForEach(ComponentCatalog.descriptors, id: \.type) { descriptor in Button(descriptor.type) { coordinator.surfaces.open(SurfaceSpec(id: "demo.\(descriptor.type)", kind: .window, document: DemoDocuments.standard(descriptor.type))) } }
             }
