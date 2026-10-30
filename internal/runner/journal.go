@@ -74,6 +74,7 @@ type JournalEntry struct {
 	Spec       RuntimeSpec
 	Session    string
 	Container  string
+	Password   string
 	InstanceID string
 	Epoch      int64
 	Phase      string
@@ -156,7 +157,8 @@ CREATE TABLE IF NOT EXISTS journal_runs (
 		  ao_session_id TEXT NOT NULL DEFAULT '',
 		  ao_container_id TEXT NOT NULL DEFAULT '',
 		  runtime_session_id TEXT NOT NULL DEFAULT '',
-		  runtime_container_id TEXT NOT NULL DEFAULT '',
+		runtime_container_id TEXT NOT NULL DEFAULT '',
+		runtime_password TEXT NOT NULL DEFAULT '',
   instance_id TEXT NOT NULL DEFAULT '',
   instance_epoch INTEGER NOT NULL DEFAULT 0,
   phase TEXT NOT NULL,
@@ -195,6 +197,7 @@ CREATE TABLE IF NOT EXISTS journal_deployments (
 		{"runtime_spec_json", "BLOB NOT NULL DEFAULT '{}'"},
 		{"runtime_session_id", "TEXT NOT NULL DEFAULT ''"},
 		{"runtime_container_id", "TEXT NOT NULL DEFAULT ''"},
+		{"runtime_password", "TEXT NOT NULL DEFAULT ''"},
 		{"ao_container_id", "TEXT NOT NULL DEFAULT ''"},
 		{"instance_id", "TEXT NOT NULL DEFAULT ''"},
 		{"instance_epoch", "INTEGER NOT NULL DEFAULT 0"},
@@ -445,7 +448,7 @@ func (j *Journal) Entry(ctx context.Context, runID string) (JournalEntry, bool, 
 	var claimJSON, specJSON []byte
 	var entry JournalEntry
 	var updated string
-	err := j.db.QueryRowContext(ctx, `SELECT claim_json,CASE WHEN runtime_spec_json IS NULL OR runtime_spec_json='' OR runtime_spec_json='{}' THEN ao_spec_json ELSE runtime_spec_json END,coalesce(nullif(runtime_session_id,''),ao_session_id),coalesce(nullif(runtime_container_id,''),ao_container_id),instance_id,instance_epoch,phase,updated_at FROM journal_runs WHERE run_id=?`, runID).Scan(&claimJSON, &specJSON, &entry.Session, &entry.Container, &entry.InstanceID, &entry.Epoch, &entry.Phase, &updated)
+	err := j.db.QueryRowContext(ctx, `SELECT claim_json,CASE WHEN runtime_spec_json IS NULL OR runtime_spec_json='' OR runtime_spec_json='{}' THEN ao_spec_json ELSE runtime_spec_json END,coalesce(nullif(runtime_session_id,''),ao_session_id),coalesce(nullif(runtime_container_id,''),ao_container_id),runtime_password,instance_id,instance_epoch,phase,updated_at FROM journal_runs WHERE run_id=?`, runID).Scan(&claimJSON, &specJSON, &entry.Session, &entry.Container, &entry.Password, &entry.InstanceID, &entry.Epoch, &entry.Phase, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return JournalEntry{}, false, nil
 	}
@@ -509,6 +512,24 @@ func (j *Journal) SetSession(ctx context.Context, runID, attemptID string, fence
 	}
 	if count != 1 {
 		return errors.New("runner journal fence mismatch")
+	}
+	return nil
+}
+
+func (j *Journal) SetRuntimePassword(ctx context.Context, runID, attemptID string, fence uint64, password string) error {
+	if strings.TrimSpace(password) == "" {
+		return errors.New("runtime password is required")
+	}
+	result, err := j.db.ExecContext(ctx, `UPDATE journal_runs SET runtime_password=?,updated_at=? WHERE run_id=? AND attempt_id=? AND fence=? AND (runtime_password='' OR runtime_password=?)`, password, time.Now().UTC().Format(time.RFC3339Nano), runID, attemptID, fence, password)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return errors.New("runtime password identity or fence mismatch")
 	}
 	return nil
 }

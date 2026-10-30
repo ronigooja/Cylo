@@ -1,12 +1,16 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -48,8 +52,8 @@ type RuntimeContainerSpec struct {
 }
 
 type RuntimeContainer struct {
-	ID, Name, Password string
-	Labels             map[string]string
+	ID, Name, Password, Workspace string
+	Labels                        map[string]string
 }
 
 // DockerRuntimeSupervisor owns creation and removal of exactly one OpenCode
@@ -95,7 +99,7 @@ func (s DockerRuntimeSupervisor) Create(ctx context.Context, spec RuntimeContain
 			return RuntimeContainer{}, err
 		}
 	}
-	args := []string{"create", "--name", name, "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", fmt.Sprint(max(1, spec.PidsLimit)), "--mount", "type=bind,src=" + spec.Workspace + ",dst=" + spec.ContainerWorkspace + ",readonly"}
+	args := []string{"create", "--name", name, "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", fmt.Sprint(max(1, spec.PidsLimit)), "--mount", "type=bind,src=" + spec.Workspace + ",dst=" + spec.ContainerWorkspace}
 	for k, v := range labels {
 		args = append(args, "--label", k+"="+v)
 	}
@@ -106,7 +110,7 @@ func (s DockerRuntimeSupervisor) Create(ctx context.Context, spec RuntimeContain
 	if spec.ProviderSocket != "" {
 		args = append(args, "--mount", "type=bind,src="+spec.ProviderSocket+",dst=/run/zoe/provider.sock,readonly")
 	}
-	args = append(args, spec.Image)
+	args = append(args, spec.Image, "--", "opencode", "serve", "--hostname", "127.0.0.1", "--port", "4096")
 	out, err := s.Docker.Run(ctx, args...)
 	if err != nil {
 		if found, lookupErr := s.findByLabels(ctx, labels); lookupErr == nil && found.ID != "" {
@@ -121,7 +125,7 @@ func (s DockerRuntimeSupervisor) Create(ctx context.Context, spec RuntimeContain
 	if _, err := s.Docker.Run(ctx, "start", id); err != nil {
 		return RuntimeContainer{}, fmt.Errorf("%w: container start outcome unresolved: %v", ErrRuntimeOutcomeUnknown, err)
 	}
-	return RuntimeContainer{ID: id, Name: name, Password: password, Labels: labels}, nil
+	return RuntimeContainer{ID: id, Name: name, Password: password, Workspace: spec.Workspace, Labels: labels}, nil
 }
 
 func (s DockerRuntimeSupervisor) Find(ctx context.Context, runID, attempt, fence string) (RuntimeContainer, bool, error) {
@@ -175,6 +179,48 @@ func (s DockerRuntimeSupervisor) findByLabels(ctx context.Context, labels map[st
 		return RuntimeContainer{}, errors.New("runtime inventory returned a non-full id")
 	}
 	return RuntimeContainer{ID: ids[0], Labels: labels}, nil
+}
+
+type DockerExecTransport struct {
+	Docker      DockerCommand
+	ContainerID string
+	Port        int
+}
+
+func (t DockerExecTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.Docker == nil || !validDockerID(t.ContainerID) {
+		return nil, errors.New("OpenCode exec transport is not configured")
+	}
+	var body []byte
+	var err error
+	if req.Body != nil {
+		body, err = io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+	}
+	user, password, ok := req.BasicAuth()
+	if !ok || password == "" {
+		return nil, errors.New("OpenCode exec transport requires Basic Auth")
+	}
+	args := []string{"exec", t.ContainerID, "curl", "--silent", "--show-error", "--fail-with-body", "--max-time", "30", "--user", user + ":" + password, "--request", req.Method, "--write-out", "\nZOE_STATUS:%{http_code}", req.URL.String()}
+	if len(body) > 0 {
+		args = append(args, "--data-binary", string(body))
+	}
+	out, err := t.Docker.Run(req.Context(), args...)
+	if err != nil {
+		return nil, err
+	}
+	marker := []byte("\nZOE_STATUS:")
+	idx := bytes.LastIndex(out, marker)
+	if idx < 0 {
+		return nil, errors.New("OpenCode exec response has no status")
+	}
+	code, err := strconv.Atoi(strings.TrimSpace(string(out[idx+len(marker):])))
+	if err != nil {
+		return nil, err
+	}
+	return &http.Response{StatusCode: code, Status: strconv.Itoa(code), Body: io.NopCloser(bytes.NewReader(out[:idx])), Header: make(http.Header), Request: req}, nil
 }
 
 func randomRuntimePassword() (string, error) {

@@ -36,11 +36,19 @@ func (e *HTTPError) Error() string {
 type Config struct {
 	BaseURL, Username, Password string
 	Client                      *http.Client
+	Transport                   http.RoundTripper
 }
 type Client struct {
 	base               *url.URL
 	username, password string
 	client             *http.Client
+}
+
+func (c *Client) HTTPClient() *http.Client {
+	if c == nil {
+		return nil
+	}
+	return c.client
 }
 
 type Session struct {
@@ -86,7 +94,7 @@ func New(cfg Config) (*Client, error) {
 	}
 	hc := cfg.Client
 	if hc == nil {
-		hc = &http.Client{Timeout: 20 * time.Second}
+		hc = &http.Client{Timeout: 20 * time.Second, Transport: cfg.Transport}
 	}
 	if cfg.Username == "" {
 		cfg.Username = "opencode"
