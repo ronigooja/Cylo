@@ -31,7 +31,7 @@ func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
 			if _, err = server.store.DB().Exec(`UPDATE runs SET status='uncertain' WHERE id='budget-run'`); err != nil {
 				t.Fatal(err)
 			}
-			proof := &contracts.NoEffectProof{JournalPhase: "effect_unknown", RuntimeCreateStarted: true, Outcome: "failed", Reconciliation: &contracts.NoEffectReconciliation{JournalUpdatedAt: time.Now().UTC().Add(-2 * time.Second), RunID: "budget-run", Actor: "operator", Confirmed: true, VerifiedAt: time.Now().UTC(), RuntimeQuery: "GET /api/v1/sessions/inventory", RuntimeInventoryComplete: true, DockerQuery: "docker ps -aq --no-trunc; docker inspect all IDs", DockerInventoryComplete: true, DockerInventoryChecks: 2, InstanceID: state.InstanceID, InstanceEpoch: state.Epoch}}
+			proof := &contracts.NoEffectProof{JournalPhase: "effect_unknown", RuntimeCreateStarted: true, Outcome: "failed", Reconciliation: &contracts.NoEffectReconciliation{JournalUpdatedAt: time.Now().UTC().Add(-2 * time.Second), RunID: "budget-run", Actor: "operator", Confirmed: true, VerifiedAt: time.Now().UTC(), RuntimeQuery: "docker ps --filter io.zoe.run/attempt/fence", RuntimeInventoryComplete: true, DockerQuery: "docker ps -aq --no-trunc; docker inspect all IDs", DockerInventoryComplete: true, DockerInventoryChecks: 2, InstanceID: state.InstanceID, InstanceEpoch: state.Epoch}}
 			if strings.HasPrefix(scenario, "retained-") || scenario == "overlapping-artifacts" {
 				retained := retainedProofFixture()
 				proof.Reconciliation.RetainedNeverStartedContainers = []contracts.RetainedNeverStartedContainer{retained}

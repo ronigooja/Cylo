@@ -360,7 +360,7 @@ func TestReviewProtectedRoutesAndReceiptIsolation(t *testing.T) {
 
 func TestReviewApprovalCannotResurrectStoppedTask(t *testing.T) {
 	code, token := reviewToken(t), reviewToken(t)
-	cfg := control.Config{DefaultProfileID: "review", Profiles: map[string]control.RuntimeProfile{"review": {ID: "review", RuntimeRouteID: "review", ModelRouteID: "review", Role: "worker", IsolationPolicy: "review-policy"}}}
+	cfg := control.Config{DefaultProfileID: "review", Profiles: map[string]control.RuntimeProfile{"review": {ID: "review", RuntimeRouteID: "review", ModelRouteID: "review", Role: "worker", IsolationPolicy: "opencode-workspace-write-v1"}}}
 	s, h := reviewServer(t, cfg, nil)
 	reviewInitializeInstance(t, h, code, token)
 	w := reviewRequest(h, "POST", "/v1/commands", token, "create-task", contracts.CommandRequest{Kind: "task.create", Payload: json.RawMessage(`{"title":"review","goal":"review","source":"user"}`)})

@@ -673,7 +673,7 @@ type capabilityIntegrationRuntime struct {
 
 func (r *capabilityIntegrationRuntime) Create(context.Context, runner.RuntimeSpec) (runner.RuntimeBinding, error) {
 	r.created++
-	return runner.RuntimeBinding{SessionID: "runtime-session", ContainerID: "runtime-container"}, nil
+	return runner.RuntimeBinding{SessionID: "runtime-session", ContainerID: "runtime-container", Password: "runtime-password"}, nil
 }
 func (*capabilityIntegrationRuntime) Prompt(context.Context, runner.RuntimeBinding, string) error {
 	return nil

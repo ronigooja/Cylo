@@ -101,7 +101,7 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		if c.harness == "" || c.harness != "opencode" {
 			continue
 		}
-		if profile.Role != "worker" || profile.IsolationPolicy == "" || profile.Harness != c.harness {
+		if profile.IsolationPolicy == "" || profile.Harness != c.harness {
 			continue
 		}
 		chosen = &c
@@ -485,7 +485,7 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 				writeError(w, instanceErr)
 				return
 			}
-			if evidence.JournalUpdatedAt.IsZero() || startOffset != 0 || evidence.JournalUpdatedAt.IsZero() || journalOffset != 0 || !evidence.JournalUpdatedAt.After(evidence.JournalUpdatedAt) || evidence.JournalUpdatedAt.After(evidence.VerifiedAt) || evidence.JournalUpdatedAt.After(time.Now().UTC()) || status != "uncertain" || proof.JournalPhase != "effect_unknown" || !proof.RuntimeCreateStarted || proof.Outcome != "failed" || evidence.RunID != runID || strings.TrimSpace(evidence.Actor) == "" || len(evidence.Actor) > 200 || strings.ContainsAny(evidence.Actor, "\r\n") || !evidence.Confirmed || evidence.VerifiedAt.IsZero() || offset != 0 || evidence.VerifiedAt.After(time.Now().UTC().Add(5*time.Minute)) || evidence.RuntimeQuery != "GET /api/v1/sessions/inventory" || !evidence.RuntimeInventoryComplete || !evidence.RuntimeInventoryComplete || evidence.RuntimeMatches != 0 || evidence.DockerQuery != "docker ps -aq --no-trunc; docker inspect all IDs" || !evidence.DockerInventoryComplete || evidence.DockerRuntimeCount != 0 || evidence.InstanceID != instance.InstanceID || evidence.InstanceEpoch != instance.Epoch {
+			if evidence.JournalUpdatedAt.IsZero() || startOffset != 0 || evidence.JournalUpdatedAt.IsZero() || journalOffset != 0 || !evidence.JournalUpdatedAt.After(evidence.JournalUpdatedAt) || evidence.JournalUpdatedAt.After(evidence.VerifiedAt) || evidence.JournalUpdatedAt.After(time.Now().UTC()) || status != "uncertain" || proof.JournalPhase != "effect_unknown" || !proof.RuntimeCreateStarted || proof.Outcome != "failed" || evidence.RunID != runID || strings.TrimSpace(evidence.Actor) == "" || len(evidence.Actor) > 200 || strings.ContainsAny(evidence.Actor, "\r\n") || !evidence.Confirmed || evidence.VerifiedAt.IsZero() || offset != 0 || evidence.VerifiedAt.After(time.Now().UTC().Add(5*time.Minute)) || evidence.RuntimeQuery != "docker ps --filter io.zoe.run/attempt/fence" || !evidence.RuntimeInventoryComplete || evidence.RuntimeMatches != 0 || evidence.DockerQuery != "docker ps -aq --no-trunc; docker inspect all IDs" || !evidence.DockerInventoryComplete || evidence.DockerRuntimeCount != 0 || evidence.InstanceID != instance.InstanceID || evidence.InstanceEpoch != instance.Epoch {
 				writeError(w, apiError(409, "no_effect_unproven", "explicit reconciliation requires complete AO and Docker absence proof under the current instance fence", nil))
 				return
 			}

@@ -8,8 +8,8 @@ import (
 
 func TestReviewRoleMappingRejectsConflictingNormalizedRoles(t *testing.T) {
 	profiles := map[string]control.RuntimeProfile{
-		"a": {ID: "a", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", IsolationPolicy: "native-sandbox"},
-		"b": {ID: "b", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", IsolationPolicy: "native-sandbox"},
+		"a": {ID: "a", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", IsolationPolicy: "opencode-workspace-write-v1"},
+		"b": {ID: "b", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", IsolationPolicy: "opencode-workspace-write-v1"},
 	}
 	store := openStore(t, t.TempDir()+"/control.db")
 	_, err := control.NewServer(store, control.Config{Profiles: profiles, RoleProfiles: map[string]string{"worker": "a", " worker ": "b"}})

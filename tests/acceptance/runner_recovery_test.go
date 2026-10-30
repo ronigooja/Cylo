@@ -14,7 +14,7 @@ import (
 
 func TestCurrentClaimRecoveryDoesNotDeadlockOrChangeSnapshot(t *testing.T) {
 	bootstrapCode, deviceToken, runnerToken := reviewToken(t), reviewToken(t), reviewToken(t)
-	profile := control.RuntimeProfile{ID: "worker", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", IsolationPolicy: "native-sandbox", CapabilityIDs: []string{"task.read"}, Scopes: []string{"task:read"}}
+	profile := control.RuntimeProfile{ID: "worker", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", IsolationPolicy: "opencode-workspace-write-v1", CapabilityIDs: []string{"task.read"}, Scopes: []string{"task:read"}}
 	profiles := map[string]control.RuntimeProfile{"worker": profile}
 	store, handler := reviewServer(t, control.Config{RunnerToken: runnerToken, RunnerID: "runner", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim", "runner:control:read"}, DefaultProfileID: "worker", Profiles: profiles}, nil)
 	reviewInitializeInstance(t, handler, bootstrapCode, deviceToken)
@@ -51,7 +51,7 @@ func TestCurrentClaimRecoveryDoesNotDeadlockOrChangeSnapshot(t *testing.T) {
 	if _, err = store.DB().Exec(`UPDATE tasks SET title='changed',goal='changed',version=version+1 WHERE id=?`, claim.TaskID); err != nil {
 		t.Fatal(err)
 	}
-	profiles["worker"] = control.RuntimeProfile{ID: "worker", RuntimeRouteID: "changed-route", ModelRouteID: "changed-model", Role: "worker", IsolationPolicy: "changed-policy", CapabilityIDs: []string{"admin"}, Scopes: []string{"*"}}
+	profiles["worker"] = control.RuntimeProfile{ID: "worker", RuntimeRouteID: "changed-route", ModelRouteID: "changed-model", Role: "worker", IsolationPolicy: "opencode-workspace-write-v1-changed", CapabilityIDs: []string{"admin"}, Scopes: []string{"*"}}
 	recovered, err := request(http.MethodGet, "/runner/v1/claims/current", runnerToken)
 	if err != nil {
 		t.Fatalf("current claim recovery blocked on its own query rows: %v", err)
@@ -77,7 +77,7 @@ func TestRuntimeProfileRejectsUnknownOrMismatchedHarness(t *testing.T) {
 		profile control.RuntimeProfile
 	}{
 		{name: "unknown harness", profile: control.RuntimeProfile{ID: "worker", Harness: "aider", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "worker", IsolationPolicy: "policy"}},
-		{name: "OpenCode mismatch", profile: control.RuntimeProfile{ID: "worker", Harness: "opencode", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "worker", IsolationPolicy: "native-sandbox"}},
+		{name: "OpenCode mismatch", profile: control.RuntimeProfile{ID: "worker", Harness: "opencode", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "worker", IsolationPolicy: "other-policy"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := control.NewServer(store, control.Config{Profiles: map[string]control.RuntimeProfile{"worker": tc.profile}})
@@ -97,14 +97,16 @@ func TestQueuedHarnessSnapshotSurvivesConfigurationChange(t *testing.T) {
 	if created.Code != http.StatusOK {
 		t.Fatalf("task creation=%d %s", created.Code, created.Body.String())
 	}
-	changed := control.RuntimeProfile{ID: "worker", Harness: "opencode", RuntimeRouteID: "changed", ModelRouteID: "model", Role: "worker", IsolationPolicy: "opencode-workspace-write-v1"}
-	restarted, err := control.NewServer(store, control.Config{RunnerToken: runnerToken, RunnerID: "runner", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim"}, DefaultProfileID: "worker", Profiles: map[string]control.RuntimeProfile{"worker": changed}})
+	if _, err := store.DB().Exec(`UPDATE tasks SET harness='third-party' WHERE source='user'`); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := control.NewServer(store, control.Config{RunnerToken: runnerToken, RunnerID: "runner", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim"}, DefaultProfileID: "worker", Profiles: map[string]control.RuntimeProfile{"worker": profile}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	claimed := reviewRequest(restarted.Handler(), http.MethodPost, "/runner/v1/claims", runnerToken, "", nil)
 	if claimed.Code != http.StatusNoContent {
-		t.Fatalf("changed profile claimed queued OpenCode task: %d %s", claimed.Code, claimed.Body.String())
+		t.Fatalf("task with an unsupported stored harness was claimed: %d %s", claimed.Code, claimed.Body.String())
 	}
 	var status string
 	if err = store.DB().QueryRow(`SELECT status FROM tasks WHERE source='user'`).Scan(&status); err != nil {

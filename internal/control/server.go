@@ -251,7 +251,7 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 	for role, profileID := range cfg.RoleProfiles {
 		role, profileID = strings.TrimSpace(role), strings.TrimSpace(profileID)
 		profile, ok := cfg.Profiles[profileID]
-		if role == "" || !ok || profile.Role != role || profile.Role != "worker" {
+		if role == "" || !ok || profile.Role != role {
 			return nil, fmt.Errorf("role profile mapping %q -> %q must reference a configured worker profile with the same role", role, profileID)
 		}
 		if _, exists := roleProfiles[role]; exists {
@@ -277,7 +277,7 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 		if profile.IsolationPolicy != "opencode-workspace-write-v1" && profile.IsolationPolicy != "ao-opencode-workspace-write-v1" {
 			return nil, fmt.Errorf("runtime profile %q selects OpenCode with an incompatible isolation policy", id)
 		}
-		if id == "" || profile.ID != id || profile.RuntimeRouteID == "" || profile.ModelRouteID == "" || profile.Role != "worker" || profile.IsolationPolicy == "" {
+		if id == "" || profile.ID != id || profile.RuntimeRouteID == "" || profile.ModelRouteID == "" || profile.Role == "" || profile.IsolationPolicy == "" {
 			return nil, fmt.Errorf("runtime profile %q is incomplete or does not select worker execution", id)
 		}
 		policy := profile.ChildPolicy
@@ -326,7 +326,7 @@ func (s *Server) ProfileForRole(role string) (string, bool) {
 	}
 	profileID := ""
 	for id, profile := range s.cfg.Profiles {
-		if profile.Role != role || role != "worker" {
+		if profile.Role != role {
 			continue
 		}
 		if profileID != "" {
