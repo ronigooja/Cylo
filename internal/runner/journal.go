@@ -416,8 +416,7 @@ func (j *Journal) SaveClaim(ctx context.Context, claim contracts.JobClaim, spec 
 }
 
 // compatibleJournalClaimUpdate allows only two narrowly bounded updates to a
-// journal claim: filling the legacy empty harness with Codex when the exact AO
-// spec already pins Codex, and filling an initially empty session ID with the
+// journal claim: filling an initially empty session ID with the
 // identical session ID recorded in this journal row.
 func compatibleJournalClaimUpdate(existingClaim, existingSpec []byte, claim contracts.JobClaim, spec RuntimeSpec, journalSession string, currentClaimJSON []byte) bool {
 	var oldClaim contracts.JobClaim
