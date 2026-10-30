@@ -6,7 +6,7 @@ import (
 )
 
 func RegisterRuntimeMigration(s *Store) error {
-	return s.RegisterMigration(Migration{Namespace: "core", Version: 12, Name: "opencode_runtime_identity", Up: func(ctx context.Context, tx *sql.Tx) error {
+	if err := s.RegisterMigration(Migration{Namespace: "core", Version: 12, Name: "opencode_runtime_identity", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 ALTER TABLE runs ADD COLUMN runtime_session_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE runs ADD COLUMN runtime_container_id TEXT NOT NULL DEFAULT '';
@@ -27,7 +27,9 @@ SELECT 'run',id,harness,strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM runs WHERE har
 ON CONFLICT(entity_type,entity_id) DO UPDATE SET harness=excluded.harness;
 `)
 		return err
-	}})
+	}}); err != nil {
+		return err
+	}
 	return s.RegisterMigration(Migration{Namespace: "core", Version: 13, Name: "drop_ao_run_identity", Up: func(ctx context.Context, tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `PRAGMA table_info(runs)`)
 		if err != nil {

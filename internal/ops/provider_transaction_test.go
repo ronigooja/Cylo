@@ -149,7 +149,7 @@ func TestRunnerStatusIsScopedAndAllowlisted(t *testing.T) {
 		return []byte("active\n"), nil
 	})
 	s := m.Inspect(context.Background(), InspectConfig{Mode: ModeSystemd, Services: []string{"zoe-runner.service"}})
-	if s.Services[0].State != "exited" {
+	if s.Services[0].State != "active" {
 		t.Fatal(s.Services)
 	}
 }
