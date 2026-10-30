@@ -3,9 +3,6 @@
 When validating a change, select checks by affected behavior and risk. The
 [scope selector](../../tools/ci_scope.py) is the executable source of truth;
 [scope regressions](../../tools/test_ci_scope.py) protect omission boundaries.
-Linux checks use GitHub-hosted Linux runners and Apple checks use GitHub-hosted
-macOS runners. Environment files and installed tools live under
-`$HOME/environment` on the runner.
 
 ## Automatic checks
 
