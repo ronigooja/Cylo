@@ -18,6 +18,15 @@ const (
 	runtimeRunLabel     = "io.zoe.run"
 	runtimeAttemptLabel = "io.zoe.attempt"
 	runtimeFenceLabel   = "io.zoe.fence"
+	legacyRuntimeLabel  = "io.zoe.runtime"
+	legacySessionLabel  = "io.zoe.ao.session"
+	legacyManagedLabel  = "io.zoe.managed"
+)
+
+const (
+	aoContainerManagedLabel = legacyManagedLabel
+	aoContainerRuntimeLabel = legacyRuntimeLabel
+	aoContainerSessionLabel = legacySessionLabel
 )
 
 var runtimePart = regexp.MustCompile(`[^a-zA-Z0-9_.-]+`)
@@ -181,6 +190,15 @@ func validDockerID(s string) bool {
 	}
 	_, err := hex.DecodeString(s)
 	return err == nil
+}
+func splitContainerIDs(output string) []string {
+	var ids []string
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if strings.TrimSpace(line) != "" {
+			ids = append(ids, strings.TrimSpace(line))
+		}
+	}
+	return ids
 }
 func max(a, b int) int {
 	if a > b {
