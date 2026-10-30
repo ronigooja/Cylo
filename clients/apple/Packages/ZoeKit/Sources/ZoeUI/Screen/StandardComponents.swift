@@ -87,11 +87,37 @@ struct StandardComponentView: View {
     }
 
     private var article: some View {
-        VStack(alignment: .leading, spacing: ScreenStyle.spacing(density)) { if let title = string("title") { Text(title).font(.title2.bold()) }; if let body = string("body") { MarkdownText(body) }; ForEach(Array(object("sections").enumerated()), id: \.offset) { _, section in VStack(alignment: .leading) { Text(section["title"]?.displayString ?? "").font(.headline); MarkdownText(section["body"]?.displayString ?? "") } }; if !array("sources").isEmpty { Text("Sources").font(.caption.bold()); ForEach(array("sources"), id: \.displayString) { Text($0.displayString).font(.caption).foregroundStyle(.secondary) } } }
+        VStack(alignment: .leading, spacing: ScreenStyle.spacing(density)) {
+            if let title = string("title") { Text(title).font(.title2.bold()) }
+            if let body = string("body") { MarkdownText(body) }
+            ForEach(Array(object("sections").enumerated()), id: \.offset) { _, section in
+                VStack(alignment: .leading) {
+                    Text(section["title"]?.displayString ?? "").font(.headline)
+                    MarkdownText(section["body"]?.displayString ?? "")
+                }
+            }
+            if !array("sources").isEmpty {
+                Text("Sources").font(.caption.bold())
+                ForEach(array("sources"), id: \.displayString) { source in
+                    Text(source.displayString).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 
     private var chart: some View {
-        Chart { ForEach(Array(object("series").enumerated()), id: \.offset) { _, series in ForEach(Array((series["points"]?.arrayValue ?? []).enumerated()), id: \.offset) { _, point in LineMark(x: .value("x", point["x"]?.displayString ?? point["label"]?.displayString ?? ""), y: .value("y", point["y"]?.numberValue ?? point["value"]?.numberValue ?? 0)).foregroundStyle(by: .value("series", series["name"]?.displayString ?? "Series")) } } }.frame(minHeight: density == .minimal ? 90 : 180)
+        Chart {
+            ForEach(Array(object("series").enumerated()), id: \.offset) { _, series in
+                let name: String = series["name"]?.displayString ?? "Series"
+                ForEach(Array((series["points"]?.arrayValue ?? []).enumerated()), id: \.offset) { _, point in
+                    let x: String = point["x"]?.displayString ?? point["label"]?.displayString ?? ""
+                    let y: Double = point["y"]?.numberValue ?? point["value"]?.numberValue ?? 0
+                    LineMark(x: .value("x", x), y: .value("y", y))
+                        .foregroundStyle(by: .value("series", name))
+                }
+            }
+        }
+        .frame(minHeight: density == .minimal ? 90 : 180)
     }
 
     private var place: some View {

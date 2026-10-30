@@ -1,5 +1,6 @@
 #if os(macOS)
 import SwiftUI
+import ZoeKit
 
 public enum SurfaceDensity: String, Sendable {
     case minimal, compact, regular

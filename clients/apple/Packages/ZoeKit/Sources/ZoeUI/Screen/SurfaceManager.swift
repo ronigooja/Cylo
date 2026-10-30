@@ -90,7 +90,7 @@ public final class SurfaceManager: NSObject, SurfaceHost, NSWindowDelegate {
     }
 
     @objc private func statusFloorClicked() {
-        if let popover = entries.values.compactMap(\.popover).first { popover.isShown ? popover.performClose(nil) : popover.show(relativeTo: floorStatusItem.button?.bounds ?? .zero, of: floorStatusItem.button, preferredEdge: .minY) }
+        if let popover = entries.values.compactMap(\.popover).first { popover.isShown ? popover.performClose(nil) : if let button = floorStatusItem.button { popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY) } }
         NotificationCenter.default.post(name: .zoeWakeVoice, object: nil)
     }
 
@@ -161,7 +161,7 @@ public final class SurfaceManager: NSObject, SurfaceHost, NSWindowDelegate {
     }
 
     private func renderDockBadge(_ spec: SurfaceSpec) {
-        let image = NSImage(size: NSSize(width: 128, height: 128)) { rect in
+        let image = NSImage(size: NSSize(width: 128, height: 128), flipped: false) { rect in
             NSColor.controlAccentColor.setFill(); NSBezierPath(roundedRect: rect.insetBy(dx: 8, dy: 8), xRadius: 20, yRadius: 20).fill(); return true
         }
         NSApp.dockTile.contentView = NSImageView(image: image)

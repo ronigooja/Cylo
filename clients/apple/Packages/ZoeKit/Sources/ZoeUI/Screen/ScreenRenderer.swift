@@ -223,7 +223,7 @@ struct ScreenNodeView: View {
     private func value(_ key: String) -> JSONValue? { props[key] }
     private func string(_ key: String) -> String? { value(key)?.stringValue }
     private func number(_ key: String) -> Double? { value(key)?.numberValue }
-    private func dimension(_ key: String) -> CGFloat? { number(key).map(CGFloat.init) }
+    private func dimension(_ key: String) -> CGFloat? { number(key).map { CGFloat($0) } }
     private func int(_ key: String) -> Int? { number(key).map(Int.init) }
     private func array(_ key: String) -> [JSONValue] { value(key)?.arrayValue ?? [] }
     private func date(_ key: String) -> Date? { value(key)?.stringValue.flatMap { ISO8601DateFormatter().date(from: $0) } }
