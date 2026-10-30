@@ -72,18 +72,26 @@ the host being deployed.
    server release records its immutable digests in the release manifest. Verify the
    binary `SHA256SUMS` file before transferring the small daemon/CLI binaries;
    do not export or re-upload image tarballs.
-2. Run `prepare-host-layout.sh`. It creates the Docker network, service user,
-   persistent roots, and protected secret directories. It does not create
-   runtime state beyond the configured runner roots.
-3. Authenticate the deployment host to `ghcr.io` with a deployment-managed
-   GitHub token that has read-only package access, then set the server and
-   worker image variables to the GHCR references from the reviewed server
-   manifest. Use `@sha256:<digest>` references for the running Compose
-   configuration. Set `ZOE_OPENCODE_IMAGE` to the reviewed GHCR OpenCode reference and digest. Configure `ZOE_OPENCODE_MODEL`, `ZOE_OPENCODE_PROVIDER_SOCKET`, and `ZOE_OPENCODE_WORKSPACE_ROOT` (the runner mounts only `<root>/<run-id>`); the runner creates and labels each runtime container.
-4. Install the immutable server/runner release under
-   `/opt/zoe/releases/<revision>` and update the `current` selector. Create
-   the runner and memory-worker secret files with the documented owner and
-   mode. Do not generate or inject an instance key during installation.
+2. Authenticate the host to `ghcr.io` with a deployment-managed read-only token,
+   then run the supported lifecycle command from the extracted release:
+
+   ```sh
+   sudo zoe install --release /path/to/release \
+     --opencode-image ghcr.io/OWNER/zoe-opencode:TAG@sha256:DIGEST
+   ```
+
+   `zoe install` validates the manifest and artifact hashes, calls the host-layout
+   preparation script when supplied by the release, installs the immutable release
+   and systemd units, pins images by digest, pulls them, and creates deployment-owned
+   runner tokens only when absent. It does not create an instance key or a model
+   gateway key, and it does not start services until `/etc/zoe/secrets/mem0-llm-api-key`
+   exists. It prints the next steps (`zoe memory configure`, `zoe provider configure`,
+   `zoe key init`, then start the two services). Provider and memory keys come from
+   the model gateway and are entered through `zoe`; they are never generated here.
+3. Configure the provider, memory model, profiles, and optional voice gateway with
+   the corresponding `zoe` commands. Set `ZOE_OPENCODE_MODEL`, provider socket, and
+   workspace settings through the operator configuration; the runner mounts only
+   the per-run workspace.
 5. With the server stopped and no startup instance-key source configured, the
    operator runs `zoe key init --database PATH --server HTTPS_URL
    --output PRIVATE_JSON` (or `zoe key rotate` for an existing instance).
@@ -94,11 +102,8 @@ the host being deployed.
    of the database and any existing `-wal` and `-shm` sidecars to `65532:65532`
    before first startup, retaining mode `0600`. Do not recursively change the
    directory's private JSON exports.
-6. Configure and start `zoe-compose.service`, then start `zoe-runner.service`.
-   Run `docker compose pull` from the reviewed Compose directory so Docker
-   fetches the pinned GHCR images directly, then start the runner so
-   the runner can reach the configured control-plane URL.
-7. Verify service state and health/readiness endpoints. These checks establish
+4. Configure and start `zoe-compose.service`, then start `zoe-runner.service`.
+5. Verify service state and health/readiness endpoints. These checks establish
    installation and process readiness; model execution, memory processing, and
    end-to-end task completion require a separate acceptance run.
 
@@ -109,6 +114,17 @@ by this procedure. Its URL, selected model, and API-key file are deployment
 configuration applied to the OpenCode runtime and memory worker after the host components
 are installed; leaving them unset keeps the daemons available but prevents
 model-backed task execution.
+
+### Upgrade and removal
+
+Use `zoe update --release /path/to/release --opencode-image ...` to stage and pull
+the new release, switch `current`, restart Compose and the runner, and verify
+health. A failed health check restores the prior selector and image settings;
+data and secrets are not touched. Use `zoe uninstall` for reviewed removal. It
+lists and removes only the Zoe units, exact Zoe containers/images, network, and
+`/opt/zoe`; by default it keeps `/var/lib/zoe` and all `/etc/zoe`. Add
+`--purge-data` to remove data and non-credential configuration, and additionally
+`--purge-credentials` to remove the named model/voice gateway credentials.
 
 ## Server and worker settings
 

@@ -26,6 +26,90 @@ func init() {
 	_ = RegisterOperation("key init", keyInitOperation)
 	_ = RegisterOperation("key rotate", keyRotateOperation)
 	_ = RegisterOperation("status", statusOperation)
+	_ = RegisterOperation("install", installOperation)
+	_ = RegisterOperation("update", updateOperation)
+	_ = RegisterOperation("uninstall", uninstallOperation)
+}
+
+func lifecycleFlags(name string, args []string, errOut io.Writer) (ops.LifecycleOptions, *flag.FlagSet, error) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	o := ops.LifecycleOptions{Out: errOut}
+	fs.StringVar(&o.Release, "release", "", "absolute extracted release directory")
+	fs.StringVar(&o.Root, "root", "/etc/zoe", "deployment configuration root")
+	fs.StringVar(&o.OptRoot, "opt-root", "/opt/zoe", "release installation root")
+	fs.StringVar(&o.DataRoot, "data-root", "/var/lib/zoe", "persistent data root")
+	fs.StringVar(&o.OpenCodeImage, "opencode-image", "", "pinned GHCR OpenCode image")
+	fs.BoolVar(&o.NonInteractive, "non-interactive", false, "do not prompt")
+	fs.BoolVar(&o.Yes, "yes", false, "confirm destructive operation")
+	fs.BoolVar(&o.PurgeData, "purge-data", false, "remove Zoe data")
+	fs.BoolVar(&o.PurgeCredentials, "purge-credentials", false, "remove protected gateway credentials")
+	if err := fs.Parse(args); err != nil {
+		return o, fs, err
+	}
+	if fs.NArg() != 0 {
+		return o, fs, errors.New("unexpected arguments")
+	}
+	return o, fs, nil
+}
+func releasePrompt(o *ops.LifecycleOptions, in io.Reader, out io.Writer) error {
+	if o.Release != "" {
+		return nil
+	}
+	if o.NonInteractive {
+		return errors.New("--release is required")
+	}
+	fmt.Fprint(out, "Release directory: ")
+	v, e := inputLine(in)
+	if e != nil {
+		return e
+	}
+	o.Release = strings.TrimSpace(v)
+	return nil
+}
+func installOperation(args []string, in io.Reader, out, errOut io.Writer) error {
+	o, _, e := lifecycleFlags("install", args, errOut)
+	if e != nil {
+		return e
+	}
+	if e = releasePrompt(&o, in, out); e != nil {
+		return e
+	}
+	fmt.Fprintln(out, "Installing the reviewed Zoe host release; services start only after the memory key exists.")
+	_, e = opsManager().Install(context.Background(), o)
+	return e
+}
+func updateOperation(args []string, in io.Reader, out, errOut io.Writer) error {
+	o, _, e := lifecycleFlags("update", args, errOut)
+	if e != nil {
+		return e
+	}
+	if e = releasePrompt(&o, in, out); e != nil {
+		return e
+	}
+	fmt.Fprintln(out, "Updating Zoe atomically; the previous release is retained until health checks pass.")
+	return opsManager().Update(context.Background(), o)
+}
+func uninstallOperation(args []string, in io.Reader, out, errOut io.Writer) error {
+	o, _, e := lifecycleFlags("uninstall", args, errOut)
+	if e != nil {
+		return e
+	}
+	fmt.Fprintln(out, "This will remove Zoe units, exact-name Zoe containers/images, the Zoe network, and /opt/zoe.")
+	if o.PurgeData {
+		fmt.Fprintln(out, "It will also remove /var/lib/zoe and non-credential files under /etc/zoe.")
+	}
+	if !o.Yes {
+		fmt.Fprint(out, "Type yes to continue: ")
+		v, x := inputLine(in)
+		if x != nil {
+			return x
+		}
+		if strings.TrimSpace(v) != "yes" {
+			return errors.New("confirmation required")
+		}
+	}
+	return opsManager().Uninstall(context.Background(), o)
 }
 
 func setupOperation(args []string, in io.Reader, out, errOut io.Writer) error {
@@ -623,6 +707,7 @@ func statusOperation(args []string, _ io.Reader, out, errOut io.Writer) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	f := addProviderFlags(fs, false)
+	optRoot := fs.String("opt-root", "/opt/zoe", "release installation root")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -658,6 +743,17 @@ func statusOperation(args []string, _ io.Reader, out, errOut io.Writer) error {
 		memoryHost = u.Hostname()
 	}
 	fmt.Fprintf(out, "Memory: host=%s model=%s secret-file=%s mode-0600=%t last-check=%s\n", safeLabel(memoryHost), safeLabel(status.Memory.Model), safeLabel(status.Memory.Secret.Path), status.Memory.Secret.Exists && status.Memory.Secret.Mode == "0600", safeLabel(status.Memory.LastCheck))
+	current := filepath.Join(*optRoot, "releases", "current")
+	if revision, readErr := os.ReadFile(filepath.Join(current, "SOURCE_REVISION")); readErr == nil {
+		fmt.Fprintf(out, "Release: source-revision=%s\n", safeLabel(strings.TrimSpace(string(revision))))
+	}
+	if stack, readErr := os.ReadFile(filepath.Join(d.Root, "zoe-stack.env")); readErr == nil {
+		for _, line := range strings.Split(string(stack), "\n") {
+			if strings.HasPrefix(line, "ZOE_SERVER_IMAGE=") || strings.HasPrefix(line, "ZOE_MEMORY_WORKER_IMAGE=") {
+				fmt.Fprintf(out, "Image: %s\n", safeLabel(line))
+			}
+		}
+	}
 	return nil
 }
 

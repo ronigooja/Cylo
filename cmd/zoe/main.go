@@ -28,6 +28,9 @@ var operations = map[string]operation{
 	"voice configure":    unavailable("voice configure"),
 	"voice test":         unavailable("voice test"),
 	"voice status":       unavailable("voice status"),
+	"install":            unavailable("install"),
+	"update":             unavailable("update"),
+	"uninstall":          unavailable("uninstall"),
 }
 
 func unavailable(name string) operation {
@@ -96,7 +99,7 @@ func normalizeCommand(value string) string {
 }
 
 func usageError() error {
-	return errors.New("usage: zoe [setup|provider configure|provider test|memory configure|memory test|key init|key rotate|status|voice configure|voice test|voice status]")
+	return errors.New("usage: zoe [setup|install|update|uninstall|provider configure|provider test|memory configure|memory test|key init|key rotate|status|voice configure|voice test|voice status]")
 }
 
 func menu(in io.Reader, out, errOut io.Writer) error {
@@ -107,18 +110,22 @@ func menu(in io.Reader, out, errOut io.Writer) error {
 		fmt.Fprintln(out, "Overview:")
 		fmt.Fprintln(out, "  1) Show status")
 		fmt.Fprintln(out, "  2) First-time setup")
+		fmt.Fprintln(out, "System:")
+		fmt.Fprintln(out, "  3) Install host")
+		fmt.Fprintln(out, "  4) Update host")
+		fmt.Fprintln(out, "  5) Uninstall host")
 		fmt.Fprintln(out, "Models:")
-		fmt.Fprintln(out, "  3) Configure task model")
-		fmt.Fprintln(out, "  4) Test task model")
-		fmt.Fprintln(out, "  5) Configure memory model")
-		fmt.Fprintln(out, "  6) Test memory model")
+		fmt.Fprintln(out, "  6) Configure task model")
+		fmt.Fprintln(out, "  7) Test task model")
+		fmt.Fprintln(out, "  8) Configure memory model")
+		fmt.Fprintln(out, "  9) Test memory model")
 		fmt.Fprintln(out, "Voice:")
-		fmt.Fprintln(out, "  7) Configure voice gateway")
-		fmt.Fprintln(out, "  8) Test voice gateway")
-		fmt.Fprintln(out, "  9) Show voice gateway status")
+		fmt.Fprintln(out, "  10) Configure voice gateway")
+		fmt.Fprintln(out, "  11) Test voice gateway")
+		fmt.Fprintln(out, "  12) Show voice gateway status")
 		fmt.Fprintln(out, "Access:")
-		fmt.Fprintln(out, "  10) Create instance key")
-		fmt.Fprintln(out, "  11) Rotate instance key")
+		fmt.Fprintln(out, "  13) Create instance key")
+		fmt.Fprintln(out, "  14) Rotate instance key")
 		fmt.Fprintln(out, "  0) Exit")
 		fmt.Fprint(out, "Select an option: ")
 		line, err := inputLine(in)
@@ -132,9 +139,9 @@ func menu(in io.Reader, out, errOut io.Writer) error {
 		if choice == "0" || strings.EqualFold(choice, "q") || strings.EqualFold(choice, "quit") || strings.EqualFold(choice, "exit") {
 			return nil
 		}
-		name, ok := map[string]string{"1": "status", "2": "setup", "3": "provider configure", "4": "provider test", "5": "memory configure", "6": "memory test", "7": "voice configure", "8": "voice test", "9": "voice status", "10": "key init", "11": "key rotate"}[choice]
+		name, ok := map[string]string{"1": "status", "2": "setup", "3": "install", "4": "update", "5": "uninstall", "6": "provider configure", "7": "provider test", "8": "memory configure", "9": "memory test", "10": "voice configure", "11": "voice test", "12": "voice status", "13": "key init", "14": "key rotate"}[choice]
 		if !ok {
-			fmt.Fprintln(errOut, "Please choose a number from 0 to 11.")
+			fmt.Fprintln(errOut, "Please choose a number from 0 to 14.")
 			continue
 		}
 		if err := operations[name](nil, in, out, errOut); err != nil {
