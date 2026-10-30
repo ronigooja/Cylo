@@ -33,7 +33,6 @@ type runBudgetControl interface {
 type dispatchAuthorizationControl interface {
 	CheckDispatchAuthorization(context.Context, string) (bool, string, error)
 }
-
 type Route struct {
 	ProfileID       string `json:"profile_id"`
 	RuntimeRouteID  string `json:"runtime_route_id"`
@@ -67,101 +66,135 @@ func (e *Engine) RunOnce(ctx context.Context) error {
 	}
 	return e.Process(ctx, *c)
 }
+
 func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 	if err := validateClaim(claim); err != nil {
 		return err
 	}
-	if e.Runtime == nil {
-		return errors.New("OpenCode runtime is required")
+	if e.Runtime == nil || e.Journal == nil {
+		return errors.New("runner runtime and journal are required")
 	}
 	entry, ok, err := e.Journal.Entry(ctx, claim.RunID)
 	if err != nil {
 		return err
 	}
-	if ok && entry.Session != "" {
-		if entry.Password == "" {
-			return fmt.Errorf("%w: runtime password is unavailable for recovery", ErrOutcomePending)
+	if ok {
+		switch entry.Phase {
+		case "create_attempted", "effect_unknown":
+			return e.reportUnknownCreate(ctx, claim)
+		case "create_rejected", "no_effect_terminal":
+			return e.flush(ctx, claim.RunID)
+		case "bound":
+			if entry.Session == "" || entry.Container == "" || entry.Password == "" {
+				return fmt.Errorf("%w: bound runtime recovery identity incomplete", ErrOutcomePending)
+			}
+			return e.monitor(ctx, claim, RuntimeBinding{SessionID: entry.Session, ContainerID: entry.Container, Password: entry.Password})
 		}
-		return e.monitor(ctx, claim, RuntimeBinding{SessionID: entry.Session, ContainerID: entry.Container, Password: entry.Password})
 	}
 	route, exists := e.Routes[claim.ProfileID]
 	if !exists || route.Harness != "opencode" || route.IsolationPolicy != OpenCodeWorkspaceWritePolicy {
-		return e.terminal(ctx, claim, "runtime_unavailable", "OpenCode route unavailable")
+		return e.reportNoEffect(ctx, claim, "runtime_unavailable", "OpenCode route unavailable")
 	}
 	if e.Isolation != nil {
 		if err := e.Isolation.Check(ctx, claim); err != nil {
-			return e.terminal(ctx, claim, "isolation_denied", err.Error())
+			return e.reportNoEffect(ctx, claim, "isolation_denied", err.Error())
+		}
+	}
+	if c, ok := e.Control.(dispatchAuthorizationControl); ok {
+		allowed, reason, err := c.CheckDispatchAuthorization(ctx, claim.RunID)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return e.reportNoEffect(ctx, claim, reason, "dispatch authorization denied")
 		}
 	}
 	spec := RuntimeSpec{RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: fmt.Sprint(claim.Fence), Model: route.Model, Prompt: buildPrompt(claim), Workspace: claim.WorkspaceID}
-	entry, err = e.Journal.SaveClaim(ctx, claim, spec, "create_attempted")
+	entry, err = e.Journal.SaveClaim(ctx, claim, spec, "claimed")
 	if err != nil {
+		return err
+	}
+	if err := e.checkInstance(ctx, claim, true); err != nil {
+		return err
+	}
+	if bc, ok := e.Control.(runBudgetControl); ok && claim.Budget.MaxModelCalls > 0 {
+		_, err = bc.ReserveBudget(ctx, claim.RunID, contracts.RunBudgetReserveRequest{AttemptID: claim.AttemptID, Fence: claim.Fence, ReservationID: "runtime-initial-prompt", Usage: contracts.RunBudgetUsage{ModelCalls: 1}})
+		if err != nil {
+			return err
+		}
+	}
+	if err = e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "dispatch_pending"); err != nil {
+		return err
+	}
+	if err = e.emit(ctx, claim, "dispatch_started", "runtime", "runtime dispatch started", nil, nil); err != nil {
+		return err
+	}
+	if err = e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "create_ready"); err != nil {
+		return err
+	}
+	if err = e.checkInstance(ctx, claim, true); err != nil {
+		return err
+	}
+	if err = e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "create_attempted"); err != nil {
 		return err
 	}
 	binding, err := e.Runtime.Create(ctx, spec)
 	if err != nil {
-		return err
+		var rejected RuntimeCreateRejectedError
+		if errors.As(err, &rejected) && rejected.Valid() {
+			return e.reportRejected(ctx, claim, rejected.Code)
+		}
+		return e.markUnknown(ctx, claim)
 	}
-	if binding.SessionID == "" || binding.ContainerID == "" {
-		return fmt.Errorf("%w: incomplete runtime binding", ErrRuntimeOutcomeUnknown)
+	if binding.SessionID == "" || binding.ContainerID == "" || binding.Password == "" {
+		return e.markUnknown(ctx, claim)
 	}
 	if err = e.Journal.SetSession(ctx, claim.RunID, claim.AttemptID, claim.Fence, binding.SessionID, "bound"); err != nil {
-		return err
-	}
-	if err = e.Journal.SetRuntimePassword(ctx, claim.RunID, claim.AttemptID, claim.Fence, binding.Password); err != nil {
 		return err
 	}
 	if err = e.Journal.SetContainer(ctx, claim.RunID, claim.AttemptID, claim.Fence, binding.ContainerID); err != nil {
 		return err
 	}
-	_ = entry
-	if err = e.Runtime.Prompt(ctx, binding, spec.Prompt); err != nil {
+	if err = e.Journal.SetRuntimePassword(ctx, claim.RunID, claim.AttemptID, claim.Fence, binding.Password); err != nil {
+		return err
+	}
+	if err = e.emit(ctx, claim, "dispatch_bound", "runtime", "runtime binding established", nil, []contracts.ExternalEffect{{ID: claim.RunID, Kind: "runtime_create", Status: "created", Reference: binding.SessionID}}); err != nil {
 		return err
 	}
 	return e.monitor(ctx, claim, binding)
 }
+
 func (e *Engine) monitor(ctx context.Context, claim contracts.JobClaim, b RuntimeBinding) error {
 	steps := int64(0)
-	maxSteps := claim.Budget.MaxToolSteps
 	events, errs := e.Runtime.Events(ctx, b)
-	stepEvents := make(chan opencode.Event, 16)
-	go func() {
-		defer close(stepEvents)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case event, ok := <-events:
-				if !ok {
-					return
-				}
-				select {
-				case stepEvents <- event:
-				case <-ctx.Done():
-					return
-				}
-			case err, ok := <-errs:
-				if ok && err != nil {
-					return
-				}
-			}
-		}
-	}()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case _, ok := <-stepEvents:
+		case <-errs:
+			return e.markUnknown(ctx, claim)
+		case ev, ok := <-events:
 			if !ok {
-				stepEvents = nil
+				events = nil
 				continue
 			}
-			steps++
-			if maxSteps > 0 && steps > maxSteps {
+			if ev.Type == "message.part.updated" || ev.Type == "message.updated" {
+				steps++
+			}
+			if claim.Budget.MaxToolSteps > 0 && steps > claim.Budget.MaxToolSteps {
 				_ = e.Runtime.Abort(ctx, b)
-				return e.stop(ctx, claim, b, "tool_step_limit")
+				return e.terminate(ctx, claim, b, "tool_step_limit", false)
 			}
 		default:
+		}
+		control, err := e.Control.Control(ctx, claim.RunID)
+		if err == nil && control.DesiredControl == "stop" {
+			_ = e.Runtime.Abort(ctx, b)
+			return e.terminate(ctx, claim, b, "stop_confirmed", true)
+		}
+		if !claim.Budget.HardDeadline.IsZero() && time.Now().UTC().After(claim.Budget.HardDeadline) {
+			_ = e.Runtime.Abort(ctx, b)
+			return e.terminate(ctx, claim, b, "run_deadline_exceeded", false)
 		}
 		status, err := e.Runtime.Status(ctx, b)
 		if err != nil {
@@ -174,59 +207,103 @@ func (e *Engine) monitor(ctx context.Context, claim contracts.JobClaim, b Runtim
 			continue
 		}
 		m, done, term := opencode.Completion(status[b.SessionID], msgs)
-		if done {
-			if term != nil {
-				_ = e.Runtime.Abort(ctx, b)
-				return e.stop(ctx, claim, b, "runtime_error")
-			}
-			return e.stopWithResult(ctx, claim, b, "completed", m)
+		if !done {
+			time.Sleep(e.interval())
+			continue
 		}
-		if !claim.Budget.HardDeadline.IsZero() && time.Now().After(claim.Budget.HardDeadline) {
-			_ = e.Runtime.Abort(ctx, b)
-			return e.stop(ctx, claim, b, "run_deadline_exceeded")
+		if term != nil {
+			_ = e.emit(ctx, claim, "failure", "runtime", "runtime reported failure", term, nil)
+			return e.terminate(ctx, claim, b, "runtime_error", false)
 		}
-		time.Sleep(e.interval())
+		if err := e.emitMessage(ctx, claim, "result", "runtime", "runtime result", m); err != nil {
+			return err
+		}
+		return e.terminate(ctx, claim, b, "completed", false)
 	}
 }
-func (e *Engine) stop(ctx context.Context, claim contracts.JobClaim, b RuntimeBinding, reason string) error {
-	return e.stopWithResult(ctx, claim, b, reason, opencode.Message{})
-}
-func (e *Engine) stopWithResult(ctx context.Context, claim contracts.JobClaim, b RuntimeBinding, reason string, message opencode.Message) error {
+
+func (e *Engine) terminate(ctx context.Context, c contracts.JobClaim, b RuntimeBinding, reason string, stopped bool) error {
+	if bc, ok := e.Control.(runBudgetControl); ok {
+		_, _ = bc.SettleBudget(ctx, c.RunID, "runtime-initial-prompt", contracts.RunBudgetSettleRequest{AttemptID: c.AttemptID, Fence: c.Fence, SettlementID: "runtime-initial-prompt-settled", Outcome: "settled", Actual: contracts.RunBudgetUsage{ModelCalls: 1}})
+	}
 	id, err := e.Runtime.Terminate(ctx, b)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrOutcomePending, err)
 	}
+	kind := "runtime_terminated"
+	if stopped {
+		kind = "stop_confirmed"
+	}
 	proof := &contracts.TerminationProof{Source: "runner_container_removal", Method: "container_removed", RuntimeSessionID: b.SessionID, RuntimeContainerID: id, VerifiedAt: time.Now().UTC(), CleanupComplete: true}
-	return e.emitResult(ctx, claim, "runtime_terminated", "runtime", reason, proof, message)
+	return e.emit(ctx, c, kind, "runtime", reason, proof, nil)
 }
-func (e *Engine) terminal(ctx context.Context, c contracts.JobClaim, code, msg string) error {
-	return e.emit(ctx, c, "failure", "runner", code, nil)
-}
-func (e *Engine) emit(ctx context.Context, c contracts.JobClaim, kind, source, summary string, proof *contracts.TerminationProof) error {
-	return e.emitResult(ctx, c, kind, source, summary, proof, opencode.Message{})
-}
-func (e *Engine) emitResult(ctx context.Context, c contracts.JobClaim, kind, source, summary string, proof *contracts.TerminationProof, message opencode.Message) error {
-	raw, _ := json.Marshal(map[string]string{"summary": summary})
-	if message.Info.ID != "" {
-		raw, _ = json.Marshal(map[string]any{"summary": summary, "assistant_message": message})
+func (e *Engine) markUnknown(ctx context.Context, c contracts.JobClaim) error {
+	if bc, ok := e.Control.(runBudgetControl); ok {
+		_, _ = bc.SettleBudget(ctx, c.RunID, "runtime-initial-prompt", contracts.RunBudgetSettleRequest{AttemptID: c.AttemptID, Fence: c.Fence, SettlementID: "runtime-initial-prompt-unknown", Outcome: "unknown"})
 	}
-	sum := sha256.Sum256(raw)
-	obs := contracts.RunnerObservation{ObservationID: hex.EncodeToString(sum[:16]), RunID: c.RunID, AttemptID: c.AttemptID, Fence: c.Fence, Kind: kind, OccurredAt: time.Now().UTC(), RuntimeSessionID: c.RuntimeSessionID, TerminationProof: proof, Result: raw}
-	if e.Journal != nil {
-		_ = e.Journal.QueueObservation(ctx, c.RunID, obs)
-	}
-	if e.Control != nil {
-		return e.Control.Observe(ctx, c.RunID, obs)
-	}
-	return nil
+	_ = e.Journal.SetPhase(ctx, c.RunID, c.AttemptID, c.Fence, "effect_unknown")
+	_ = e.emit(ctx, c, "effect_unknown", "runtime", "runtime create outcome is unknown", nil, []contracts.ExternalEffect{{ID: c.RunID, Kind: "runtime_create", Status: "unknown"}})
+	return ErrOutcomePending
 }
-func (e *Engine) flush(ctx context.Context, runID string) error {
-	pending, err := e.Journal.PendingObservations(ctx, runID)
+func (e *Engine) reportUnknownCreate(ctx context.Context, c contracts.JobClaim) error {
+	return e.markUnknown(ctx, c)
+}
+func (e *Engine) reportRejected(ctx context.Context, c contracts.JobClaim, code string) error {
+	_ = e.Journal.SetPhase(ctx, c.RunID, c.AttemptID, c.Fence, "create_rejected")
+	return e.emit(ctx, c, "create_rejected", "runtime", code, &contracts.CreateRejectionProof{Code: code}, nil)
+}
+func (e *Engine) reportNoEffect(ctx context.Context, c contracts.JobClaim, code, msg string) error {
+	_ = e.Journal.SetPhase(ctx, c.RunID, c.AttemptID, c.Fence, "no_effect_terminal")
+	return e.emit(ctx, c, "no_effect_terminal", "runner", msg, &contracts.NoEffectProof{JournalPhase: "claimed", Outcome: "failed"}, nil)
+}
+func (e *Engine) emit(ctx context.Context, c contracts.JobClaim, kind, source, summary string, proof any, effects []contracts.ExternalEffect) error {
+	var result json.RawMessage
+	if proof != nil {
+		result, _ = json.Marshal(proof)
+	}
+	entry, _ := e.Journal.Entry(ctx, c.RunID)
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s", c.RunID, c.AttemptID, kind, summary)))
+	o := contracts.RunnerObservation{ObservationID: hex.EncodeToString(sum[:16]), RunID: c.RunID, AttemptID: c.AttemptID, Fence: c.Fence, Kind: kind, OccurredAt: time.Now().UTC(), RuntimeSessionID: entry.Session, RuntimeContainerID: entry.Container, Result: result, ExternalEffects: effects}
+	if p, ok := proof.(*contracts.TerminationProof); ok {
+		o.TerminationProof = p
+	}
+	if p, ok := proof.(*contracts.CreateRejectionProof); ok {
+		o.CreateRejection = p
+	}
+	if p, ok := proof.(*contracts.NoEffectProof); ok {
+		o.NoEffectProof = p
+	}
+	if err := e.Journal.QueueObservation(ctx, c.RunID, o); err != nil {
+		return err
+	}
+	if e.Control == nil {
+		return nil
+	}
+	return e.Control.Observe(ctx, c.RunID, o)
+}
+func (e *Engine) emitMessage(ctx context.Context, c contracts.JobClaim, kind, source, summary string, m opencode.Message) error {
+	out := ""
+	for _, part := range m.Parts {
+		if text, ok := part["text"].(string); ok {
+			out += text
+		}
+	}
+	raw, _ := json.Marshal(map[string]any{"assistant_output": out, "assistant_message": m})
+	entry, _ := e.Journal.Entry(ctx, c.RunID)
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s", c.RunID, c.AttemptID, kind, summary)))
+	o := contracts.RunnerObservation{ObservationID: hex.EncodeToString(sum[:16]), RunID: c.RunID, AttemptID: c.AttemptID, Fence: c.Fence, Kind: kind, OccurredAt: time.Now().UTC(), RuntimeSessionID: entry.Session, RuntimeContainerID: entry.Container, Result: raw, ExternalEffects: []contracts.ExternalEffect{}}
+	if err := e.Journal.QueueObservation(ctx, c.RunID, o); err != nil {
+		return err
+	}
+	return e.Control.Observe(ctx, c.RunID, o)
+}
+func (e *Engine) flush(ctx context.Context, run string) error {
+	pending, err := e.Journal.PendingObservations(ctx, run)
 	if err != nil {
 		return err
 	}
 	for _, q := range pending {
-		if err := e.Control.Observe(ctx, runID, q.Body); err != nil {
+		if err := e.Control.Observe(ctx, run, q.Body); err != nil {
 			return err
 		}
 		if err := e.Journal.AcknowledgeObservation(ctx, q.Body.ObservationID); err != nil {
@@ -234,14 +311,6 @@ func (e *Engine) flush(ctx context.Context, runID string) error {
 		}
 	}
 	return nil
-}
-func (e *Engine) emitNoEffectTerminal(ctx context.Context, c contracts.JobClaim, reason, message string, p *contracts.NoEffectProof) error {
-	return e.emit(ctx, c, "no_effect_terminal", reason, message, nil)
-}
-func sameRecoveredClaim(a, b contracts.JobClaim, _ string) bool {
-	a.RuntimeSessionID = ""
-	b.RuntimeSessionID = ""
-	return a.RunID == b.RunID && a.AttemptID == b.AttemptID && a.Fence == b.Fence && a.Harness == b.Harness
 }
 func (e *Engine) interval() time.Duration {
 	if e.PollInterval > 0 {

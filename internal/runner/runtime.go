@@ -22,6 +22,13 @@ type RuntimeSpec struct {
 
 type RuntimeBinding struct{ SessionID, ContainerID, Password string }
 
+type RuntimeCreateRejectedError struct{ Code string }
+
+func (e RuntimeCreateRejectedError) Error() string { return "runtime create rejected: " + e.Code }
+func (e RuntimeCreateRejectedError) Valid() bool {
+	return e.Code == "invalid_request" || e.Code == "image_missing" || e.Code == "container_create_rejected"
+}
+
 type Runtime interface {
 	Create(context.Context, RuntimeSpec) (RuntimeBinding, error)
 	Prompt(context.Context, RuntimeBinding, string) error
