@@ -400,5 +400,8 @@ CREATE INDEX task_confirmations_task ON task_confirmations(workspace_id,task_id,
 	if err := RegisterInstanceAuthMigration(s); err != nil {
 		return err
 	}
+	if err := RegisterRuntimeMigration(s); err != nil {
+		return err
+	}
 	return RegisterRunBudgetMigrations(s)
 }

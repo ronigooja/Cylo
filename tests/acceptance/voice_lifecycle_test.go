@@ -71,13 +71,13 @@ func (r *retryAccountMedia) Capabilities() voice.AccountMediaCapabilities {
 }
 
 func (r *retryAccountMedia) ReleaseAccountLease(_ context.Context, lease voice.AccountLeaseReference, _ string) (voice.AccountTerminationObservation, error) {
-	if lease.LeaseID != "test-lease" || lease.Generation != 8 || lease.SessionID != "gateway-session" || lease.SessionGeneration != 1 {
+	if lease.LeaseID != "test-lease" || lease.Generation != 8 || lease.RuntimeSessionID != "gateway-session" || lease.SessionGeneration != 1 {
 		return voice.AccountTerminationObservation{}, fmt.Errorf("unexpected account lease release reference")
 	}
 	if r.releases.Add(1) == 1 {
 		return voice.AccountTerminationObservation{}, fmt.Errorf("temporary release uncertainty")
 	}
-	return voice.AccountTerminationObservation{AccountID: "test-account", LeaseID: lease.LeaseID, LeaseGeneration: lease.Generation, SessionID: lease.SessionID, SessionGeneration: lease.SessionGeneration, Terminated: true, EvidenceID: "retry-evidence", ObservedAt: time.Now().UTC()}, nil
+	return voice.AccountTerminationObservation{AccountID: "test-account", LeaseID: lease.LeaseID, LeaseGeneration: lease.Generation, RuntimeSessionID: lease.RuntimeSessionID, SessionGeneration: lease.SessionGeneration, Terminated: true, EvidenceID: "retry-evidence", ObservedAt: time.Now().UTC()}, nil
 }
 
 func hangupRequest(handler http.Handler, token string) *httptest.ResponseRecorder {
@@ -94,7 +94,7 @@ func (g gatedAccountMedia) Capabilities() voice.AccountMediaCapabilities {
 }
 
 func (g gatedAccountMedia) ReleaseAccountLease(ctx context.Context, lease voice.AccountLeaseReference, idempotencyKey string) (voice.AccountTerminationObservation, error) {
-	if lease.LeaseID != "test-lease" || lease.Generation != 8 || lease.SessionID != "gateway-session" || lease.SessionGeneration != 3 || idempotencyKey == "" {
+	if lease.LeaseID != "test-lease" || lease.Generation != 8 || lease.RuntimeSessionID != "gateway-session" || lease.SessionGeneration != 3 || idempotencyKey == "" {
 		return voice.AccountTerminationObservation{}, fmt.Errorf("unexpected account lease release reference")
 	}
 	close(g.entered)
@@ -103,7 +103,7 @@ func (g gatedAccountMedia) ReleaseAccountLease(ctx context.Context, lease voice.
 	case <-ctx.Done():
 		return voice.AccountTerminationObservation{}, ctx.Err()
 	}
-	return voice.AccountTerminationObservation{AccountID: "test-account", LeaseID: lease.LeaseID, LeaseGeneration: lease.Generation, SessionID: lease.SessionID, SessionGeneration: lease.SessionGeneration, Terminated: true, EvidenceID: "test-evidence", ObservedAt: time.Now().UTC()}, nil
+	return voice.AccountTerminationObservation{AccountID: "test-account", LeaseID: lease.LeaseID, LeaseGeneration: lease.Generation, RuntimeSessionID: lease.RuntimeSessionID, SessionGeneration: lease.SessionGeneration, Terminated: true, EvidenceID: "test-evidence", ObservedAt: time.Now().UTC()}, nil
 }
 
 func TestVoiceReconciliationCannotRaceInFlightTrustedHangup(t *testing.T) {

@@ -31,7 +31,7 @@ func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
 			if _, err = server.store.DB().Exec(`UPDATE runs SET status='uncertain' WHERE id='budget-run'`); err != nil {
 				t.Fatal(err)
 			}
-			proof := &contracts.NoEffectProof{JournalPhase: "effect_unknown", AOCreateStarted: true, Outcome: "failed", Reconciliation: &contracts.NoEffectReconciliation{AOServerStartedAt: time.Now().UTC().Add(-time.Second), JournalUpdatedAt: time.Now().UTC().Add(-2 * time.Second), RunID: "budget-run", Actor: "operator", Confirmed: true, VerifiedAt: time.Now().UTC(), AOQuery: "GET /api/v1/sessions/inventory", AOInventoryComplete: true, AOClientRequestIDComplete: true, DockerQuery: "docker ps -aq --no-trunc; docker inspect all IDs", DockerInventoryComplete: true, DockerInventoryChecks: 2, InstanceID: state.InstanceID, InstanceEpoch: state.Epoch}}
+			proof := &contracts.NoEffectProof{JournalPhase: "effect_unknown", RuntimeCreateStarted: true, Outcome: "failed", Reconciliation: &contracts.NoEffectReconciliation{AOServerStartedAt: time.Now().UTC().Add(-time.Second), JournalUpdatedAt: time.Now().UTC().Add(-2 * time.Second), RunID: "budget-run", Actor: "operator", Confirmed: true, VerifiedAt: time.Now().UTC(), RuntimeQuery: "GET /api/v1/sessions/inventory", RuntimeInventoryComplete: true, AOClientRequestIDComplete: true, DockerQuery: "docker ps -aq --no-trunc; docker inspect all IDs", DockerInventoryComplete: true, DockerInventoryChecks: 2, InstanceID: state.InstanceID, InstanceEpoch: state.Epoch}}
 			if strings.HasPrefix(scenario, "retained-") || scenario == "overlapping-artifacts" {
 				retained := retainedProofFixture()
 				proof.Reconciliation.RetainedNeverStartedContainers = []contracts.RetainedNeverStartedContainer{retained}
@@ -90,7 +90,7 @@ func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
 			case "future-incarnation":
 				proof.Reconciliation.AOServerStartedAt = proof.Reconciliation.VerifiedAt.Add(time.Second)
 			case "incomplete-ao":
-				proof.Reconciliation.AOInventoryComplete = false
+				proof.Reconciliation.RuntimeInventoryComplete = false
 			case "container":
 				proof.Reconciliation.DockerRuntimeCount = 1
 			case "wrong-epoch":
@@ -100,7 +100,7 @@ func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
 			case "ordinary-proof":
 				proof.Reconciliation = nil
 				proof.JournalPhase = "claimed"
-				proof.AOCreateStarted = false
+				proof.RuntimeCreateStarted = false
 			case "session-bound":
 				if _, err = server.store.DB().Exec(`UPDATE runs SET ao_session_id='session' WHERE id='budget-run'`); err != nil {
 					t.Fatal(err)
@@ -164,11 +164,11 @@ func TestWorkerBootRejectionReleasesCapacityOnlyForStable409Proof(t *testing.T) 
 				server.handleObservation(w, req)
 				return w
 			}
-			started := contracts.RunnerObservation{ObservationID: "started", RunID: "budget-run", AttemptID: "budget-attempt", Fence: 91, Kind: "dispatch_started", AOProjectID: "project"}
+			started := contracts.RunnerObservation{ObservationID: "started", RunID: "budget-run", AttemptID: "budget-attempt", Fence: 91, Kind: "dispatch_started"}
 			if w := observe(started); w.Code != 200 {
 				t.Fatalf("dispatch_started: %d %s", w.Code, w.Body.String())
 			}
-			rejected := contracts.RunnerObservation{ObservationID: "rejected", RunID: "budget-run", AttemptID: "budget-attempt", Fence: 91, Kind: "create_rejected", AOProjectID: "project", CreateRejection: &contracts.CreateRejectionProof{HTTPStatus: status, ErrorCode: "worker_boot_failed"}}
+			rejected := contracts.RunnerObservation{ObservationID: "rejected", RunID: "budget-run", AttemptID: "budget-attempt", Fence: 91, Kind: "create_rejected", CreateRejection: &contracts.CreateRejectionProof{Code: "worker_boot_failed"}}
 			w := observe(rejected)
 			var runStatus, taskStatus string
 			if err := server.store.DB().QueryRow(`SELECT runs.status,tasks.status FROM runs JOIN tasks ON tasks.id=runs.task_id WHERE runs.id='budget-run'`).Scan(&runStatus, &taskStatus); err != nil {
@@ -218,7 +218,7 @@ func retainedProofFixture() contracts.RetainedNeverStartedContainer {
 	empty := ""
 	zeroTime := time.Time{}
 	now := time.Now().UTC()
-	return contracts.RetainedNeverStartedContainer{ID: strings.Repeat("a", 64), Managed: "true", Runtime: "ao-codex-chat", SessionID: "legacy-session", Status: "created", Running: &falseValue, Paused: &falseValue, Restarting: &falseValue, Dead: &falseValue, OOMKilled: &falseValue, ExitCode: &zero, Error: &empty, PID: &zero, StartedAt: &zeroTime, FinishedAt: &zeroTime, CreatedAt: now.Add(-time.Hour), RestartCount: &zero, RestartPolicy: "no", FirstCheckedAt: now.Add(-500 * time.Millisecond), RecheckedAt: now.Add(-100 * time.Millisecond), SnapshotSHA256: strings.Repeat("c", 64)}
+	return contracts.RetainedNeverStartedContainer{ID: strings.Repeat("a", 64), Managed: "true", Runtime: "ao-codex-chat", RuntimeSessionID: "legacy-session", Status: "created", Running: &falseValue, Paused: &falseValue, Restarting: &falseValue, Dead: &falseValue, OOMKilled: &falseValue, ExitCode: &zero, Error: &empty, PID: &zero, StartedAt: &zeroTime, FinishedAt: &zeroTime, CreatedAt: now.Add(-time.Hour), RestartCount: &zero, RestartPolicy: "no", FirstCheckedAt: now.Add(-500 * time.Millisecond), RecheckedAt: now.Add(-100 * time.Millisecond), SnapshotSHA256: strings.Repeat("c", 64)}
 }
 func preexistingProofFixture() contracts.PreexistingCapabilityContainer {
 	falseValue := false

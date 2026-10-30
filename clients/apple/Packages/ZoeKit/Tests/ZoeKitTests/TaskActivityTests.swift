@@ -46,7 +46,7 @@ final class TaskActivityTests: XCTestCase {
             XCTAssertEqual(failed.status, .failed)
         }
         var rejected = task("rejected", .failed)
-        rejected.error = "ao_worker_create_rejected"
+        rejected.error = "runtime_create_rejected"
         XCTAssertEqual(taskFailureMessage(rejected), uiText("This request could not be completed."))
     }
 

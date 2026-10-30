@@ -174,8 +174,8 @@ func TestRunnerDeploymentClaimAndFencedObservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	server, err := control.NewServer(store, control.Config{RunnerToken: runnerToken, RunnerID: "runner-test", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"capability:deploy", "runner:observe", "runner:claim", "runner:control:read"}, Profiles: map[string]control.RuntimeProfile{
-		"worker-profile": {ID: "worker-profile", Harness: "codex", AOProjectID: "ao-project", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: runner.CodexWorkspaceWritePolicy},
-		"super-profile":  {ID: "super-profile", Harness: "codex", AOProjectID: "ao-project", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "super", AOAgentKind: "worker", IsolationPolicy: runner.CodexWorkspaceWritePolicy},
+		"worker-profile": {ID: "worker-profile", Harness: "codex", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "worker", IsolationPolicy: runner.CodexWorkspaceWritePolicy},
+		"super-profile":  {ID: "super-profile", Harness: "codex", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "super", IsolationPolicy: runner.CodexWorkspaceWritePolicy},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -620,7 +620,7 @@ func postCapabilityRunTerminalObservation(t *testing.T, handler http.Handler, to
 			t.Fatalf("runner observation %s status=%d body=%s", obs.Kind, resp.Code, resp.Body.String())
 		}
 	}
-	base := contracts.RunnerObservation{RunID: runID, AttemptID: "attempt-" + runID, Fence: fence, OccurredAt: time.Now().UTC(), AOProjectID: "ao-project", Evidence: []contracts.Evidence{}, ExternalEffects: []contracts.ExternalEffect{}}
+	base := contracts.RunnerObservation{RunID: runID, AttemptID: "attempt-" + runID, Fence: fence, OccurredAt: time.Now().UTC(), Evidence: []contracts.Evidence{}, ExternalEffects: []contracts.ExternalEffect{}}
 	started := base
 	started.ObservationID = "obs-start-" + runID
 	started.Kind = "dispatch_started"
@@ -629,37 +629,37 @@ func postCapabilityRunTerminalObservation(t *testing.T, handler http.Handler, to
 		terminal := base
 		terminal.ObservationID = "obs-terminal-" + runID
 		terminal.Kind = "create_rejected"
-		terminal.CreateRejection = &contracts.CreateRejectionProof{HTTPStatus: 400, ErrorCode: "INVALID_REQUEST"}
+		terminal.CreateRejection = &contracts.CreateRejectionProof{Status: 400, Code: "INVALID_REQUEST"}
 		post(terminal)
 		return
 	}
 	bound := base
 	bound.ObservationID = "obs-bound-" + runID
 	bound.Kind = "dispatch_bound"
-	bound.AOSessionID = "ao-session-" + runID
+	bound.RuntimeRuntimeSessionID = "ao-session-" + runID
 	post(bound)
 	if eventKind == "run.runtime_terminated" {
 		if strings.Contains(runID, "awaiting-user") {
 			result := base
 			result.ObservationID = "obs-result-" + runID
 			result.Kind = "result"
-			result.AOSessionID = bound.AOSessionID
+			result.RuntimeRuntimeSessionID = bound.RuntimeRuntimeSessionID
 			result.Result = json.RawMessage(`{"answer":"ready for review"}`)
 			post(result)
 		}
 		terminal := base
 		terminal.ObservationID = "obs-terminal-" + runID
 		terminal.Kind = "runtime_terminated"
-		terminal.AOSessionID = bound.AOSessionID
-		terminal.TerminationProof = &contracts.TerminationProof{Source: "ao_chat_stop", Method: "native_process_exit_waited", SessionID: bound.AOSessionID, VerifiedAt: time.Now().UTC(), CleanupComplete: true}
+		terminal.RuntimeRuntimeSessionID = bound.RuntimeRuntimeSessionID
+		terminal.TerminationProof = &contracts.TerminationProof{Source: "ao_chat_stop", Method: "native_process_exit_waited", RuntimeSessionID: bound.RuntimeRuntimeSessionID, VerifiedAt: time.Now().UTC(), CleanupComplete: true}
 		post(terminal)
 		return
 	}
 	terminal := base
 	terminal.ObservationID = "obs-terminal-" + runID
 	terminal.Kind = "stop_confirmed"
-	terminal.AOSessionID = bound.AOSessionID
-	terminal.TerminationProof = &contracts.TerminationProof{Source: "ao_chat_stop", Method: "native_process_exit_waited", SessionID: bound.AOSessionID, VerifiedAt: time.Now().UTC(), CleanupComplete: true}
+	terminal.RuntimeRuntimeSessionID = bound.RuntimeRuntimeSessionID
+	terminal.TerminationProof = &contracts.TerminationProof{Source: "ao_chat_stop", Method: "native_process_exit_waited", RuntimeSessionID: bound.RuntimeRuntimeSessionID, VerifiedAt: time.Now().UTC(), CleanupComplete: true}
 	post(terminal)
 }
 
@@ -682,7 +682,7 @@ func TestCapabilityTriggerRunnerAOResultChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	server, err := control.NewServer(store, control.Config{RunnerToken: runnerToken, RunnerID: "runner-chain", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim", "runner:observe", "runner:control:read", "capability:deploy"}, Profiles: map[string]control.RuntimeProfile{
-		"worker-profile": {ID: "worker-profile", Harness: "codex", AOProjectID: "ao-project", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: runner.CodexWorkspaceWritePolicy},
+		"worker-profile": {ID: "worker-profile", Harness: "codex", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "worker", IsolationPolicy: runner.CodexWorkspaceWritePolicy},
 	}})
 	if err != nil {
 		t.Fatal(err)
