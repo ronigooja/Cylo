@@ -1,6 +1,6 @@
 # ADR 0002: AO runtime ownership and external-service boundaries
 
-Status: accepted architecture baseline; implementation and acceptance status remain in [the master plan](../../master-plan.md). Recorded during the 2026-10-27 documentation consolidation from existing decisions; this record does not introduce a new delivery claim.
+Status: accepted architecture baseline; implementation and acceptance evidence are tracked in [the acceptance evidence register](../../acceptance/evidence.md), while delivery status remains in [the master plan](../../master-plan.md).
 
 ## Context
 
@@ -15,7 +15,7 @@ Keep role, runtime, and model/provider route separate. Count all active runtime 
 For model routes supplied by the existing remote CLIProxyAPI deployment, keep account selection, quota handling, and proxying there and reuse the deployment unchanged.
 
 
-When integrating external services, isolate their failures and lifecycle from unrelated Zoe modules. The existing remote CLIProxyAPI remains an external dependency, not a Zoe deployment target. The Zoe-compatible voice fork supplies the selected real-time voice gateway/account pool; Zoe owns the voice-to-command/task bridge and safe lease policy. Mem0 is a controlled memory worker and Qdrant a rebuildable index, with authority retained in Go. Secrets are deployment-provided references; never copy their values into source, documentation, logs, or fixtures. Do not change external services or the existing proxy deployment during repository work without explicit authorization.
+When integrating external services, isolate their failures and lifecycle from unrelated Zoe modules. The existing remote CLIProxyAPI remains an external dependency, not a Zoe deployment target. The Zoe-compatible voice fork supplies the selected real-time voice gateway/account pool; Zoe owns the voice-to-command/task bridge and safe lease policy. Mem0 is a controlled memory worker and Qdrant a rebuildable index, with authority retained in Go. Follow the repository's [credential-handling rule](../../../AGENTS.md) for deployment-provided secret references and values. Do not change external services or the existing proxy deployment during repository work without explicit authorization.
 
 ## Consequences
 

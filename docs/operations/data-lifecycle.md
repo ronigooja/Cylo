@@ -1,6 +1,6 @@
 # Data lifecycle operations
 
-This runbook applies when exporting, backing up, restoring, migrating, or deleting a Zoe instance. [Architecture](../architecture.md#backup-deletion-and-recovery) defines authority and fencing; [acceptance evidence](../acceptance/evidence.md) records what has actually been checked. No production all-store restore or erasure is accepted.
+This runbook applies when exporting, backing up, restoring, migrating, or deleting a Zoe instance. [Architecture](../architecture.md#backup-deletion-and-recovery) defines authority and fencing, and [acceptance evidence](../acceptance/evidence.md) records what has actually been checked; this document is operational guidance, not an acceptance or delivery claim.
 
 ## Logical export
 
@@ -74,7 +74,7 @@ Keep the old instance fenced. Validate permissions, task/run identities, memory 
 
 ## Deletion and destruction
 
-Authoritative deletion immediately excludes content through a version/tombstone change, then propagates idempotent cleanup through Mem0 history, Qdrant vectors/payloads, caches, export temporaries, replicas, and registered backups. Preserve deletion metadata across restore; stale derived copies cannot resurrect records. Conversations, formal memory, and task evidence are retained until user deletion by default, with configurable retention. Raw audio retention is off by default. Actual erasure requires target-specific evidence; unsupported cleanup stays closed.
+Follow the authority and deletion semantics in [ADR 0006](../architecture/decisions/0006-memory-authority-and-derived-stores.md) and the [backup/deletion architecture](../architecture.md#backup-deletion-and-recovery): authoritative deletion must block stale retrieval before cleanup, preserve deletion metadata across restore, and keep unsupported cleanup closed. This runbook supplies the operational commands and checks; actual erasure requires target-specific evidence. Conversations, formal memory, and task evidence are retained until user deletion by default, with configurable retention; raw audio retention is off by default.
 
 For complete instance destruction, start with the [inventory example](../../deploy/linux/destroy-inventory.example.json) and inspect a read-only plan:
 

@@ -1,6 +1,6 @@
 # ADR 0001: Linux/native Apple platform and durable persistence
 
-Status: accepted architecture baseline; implementation and acceptance status remain in [the master plan](../../master-plan.md). Recorded during the 2026-10-27 documentation consolidation from existing decisions; this record does not introduce a new delivery claim.
+Status: accepted architecture baseline; implementation and acceptance evidence are tracked in [the acceptance evidence register](../../acceptance/evidence.md), while delivery status remains in [the master plan](../../master-plan.md).
 
 ## Context
 
@@ -24,10 +24,10 @@ When an external effect is unknown, query/reconcile it if possible or escalate f
 
 ## Consequences
 
-Server work can continue when clients close, and client replacement does not move authority. Separate runner supervision avoids making a client or control process the execution lifetime. Linux operational recovery and Apple client delivery require distinct evidence. This choice requires native platform builds/device checks and does not establish that deployment, UI, or end-to-end behavior is accepted.
+Server work can continue when clients close, and client replacement does not move authority. Separate runner supervision avoids making a client or control process the execution lifetime. Linux operational recovery and Apple client delivery require distinct evidence; see the [acceptance evidence register](../../acceptance/evidence.md) rather than treating this ADR as a delivery claim.
 
 
-Delivery can retry safely without creating a second business command, while external effects require their own identity/reconciliation state. Unknown work can retain capacity until evidence resolves it; that is a truthful safety boundary rather than proof of a stopped process. Tests must exercise crashes/lost receipts at actual effect boundaries. WAL/FULL and local fixtures do not establish host durability, production migration fencing, or complete recovery acceptance.
+Delivery can retry safely without creating a second business command, while external effects require their own identity/reconciliation state. Unknown work can retain capacity until evidence resolves it; that is a truthful safety boundary rather than proof of a stopped process. Tests must exercise crashes/lost receipts at actual effect boundaries. WAL/FULL and local fixtures do not establish host durability or production migration fencing; those claims require the evidence described in the [acceptance evidence register](../../acceptance/evidence.md).
 
 ## Sources
 

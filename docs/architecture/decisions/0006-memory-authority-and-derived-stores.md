@@ -1,6 +1,6 @@
 # ADR 0006: Memory authority with controlled workers and rebuildable retrieval
 
-Status: accepted architecture baseline; implementation and acceptance status remain in [the master plan](../../master-plan.md). Recorded during the 2026-10-27 documentation consolidation from existing decisions; this record does not introduce a new delivery claim.
+Status: accepted architecture baseline; implementation and acceptance evidence are tracked in [the acceptance evidence register](../../acceptance/evidence.md), while delivery status remains in [the master plan](../../master-plan.md).
 
 ## Context
 
@@ -12,13 +12,11 @@ For memory changes, the Go control plane owns sources, versions, and tombstones;
 
 Use the pipeline source event → authority → transactional outbox → extraction/indexing → scoped retrieval → permission/version recheck → context assembly. Keep facts, outcomes, and model inference distinct. Explicit decisions register through policy; inferred claims remain candidates. Build context by task/runtime/project/permission scope and surface missing/conflicting evidence as uncertainty. Run curator judgment on demand within the runtime cap.
 
-Use a pinned local multilingual embedding revision/dimension/encoding; codec changes get a new collection rebuilt from authority. Preserve structured and Chinese full-text lookup when embedding/vector services fail.
-
-Deletion immediately blocks retrieval/new context through a versioned tombstone, then queues idempotent version-checked cleanup for authority, worker history, vectors/payloads, caches, exports, replicas, service data, and backups under the configured retention/erasure policy. Do not assume a cross-store transaction. Unsupported targets remain `adapter_missing`. Restore must compare against the operator-maintained current deletion generation/head/hash and keep its gate closed until reconciliation succeeds.
+Implementation parameters for embeddings, collections, and worker storage are maintained in the [memory worker documentation](../../../services/memory/README.md). The authority boundary and deletion safety model are the decision: deletion immediately blocks retrieval/new context through a versioned tombstone, then requires idempotent, version-checked cleanup across applicable derived stores and backups under the configured retention/erasure policy. Do not assume a cross-store transaction; unsupported targets remain `adapter_missing`, and restore remains gated until it reconciles against the current deletion generation/head/hash.
 
 ## Consequences
 
-Mem0 and Qdrant can evolve without replacing Zoe's task/memory authority. Rebuild and cleanup lag require explicit reconciliation and stale-version rejection. A backup's embedded journal head cannot establish freshness or prove later deletions were applied. Physical erasure and production retention require each applicable store/backup checkpoint, not a design or local cleanup fixture. Model versions, artifact hashes, and storage configuration remain in the worker's primary documentation rather than duplicated in the ADR.
+Mem0 and Qdrant can evolve without replacing Zoe's task/memory authority. Rebuild and cleanup lag require explicit reconciliation and stale-version rejection. A backup's embedded journal head cannot establish freshness or prove later deletions were applied. Physical erasure and production retention require each applicable store/backup checkpoint; the applicable checks are recorded in the [acceptance evidence register](../../acceptance/evidence.md). Model versions, artifact hashes, and storage configuration remain in the worker's primary documentation rather than duplicated in the ADR.
 
 ## Sources
 

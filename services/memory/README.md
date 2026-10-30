@@ -1,6 +1,6 @@
 # Zoe memory worker
 
-The worker maintains derived Mem0/Qdrant state under the [Go authority](../../docs/architecture.md#memory-retrieval-and-context). See [deployment operations](../../docs/operations/deployment.md#server-and-worker-settings), [data lifecycle](../../docs/operations/data-lifecycle.md), and [acceptance evidence](../../docs/acceptance/evidence.md) for their respective boundaries.
+The authority and derived-store boundary is defined by [ADR 0006](../../docs/architecture/decisions/0006-memory-authority-and-derived-stores.md). This document records the memory worker's implementation parameters; see [deployment operations](../../docs/operations/deployment.md#server-and-worker-settings) and [data lifecycle](../../docs/operations/data-lifecycle.md) for operational procedures.
 
 Dependency versions are locked in [pyproject.toml](pyproject.toml) and [uv.lock](uv.lock). [config.py](config.py) pins the multilingual embedding revision, dimension, and codec; [embedding.py](embedding.py) checks model artifacts. A codec change requires a new collection rebuilt from Go authority. [Compose](docker-compose.yml) uses disposable Qdrant tmpfs and persists Mem0 history, ownership metadata, and model cache in `memory-worker-state` at `/var/lib/zoe/memory`; include that volume in the applicable backup/deletion inventory.
 
