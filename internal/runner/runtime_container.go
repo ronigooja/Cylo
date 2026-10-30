@@ -24,9 +24,12 @@ const (
 )
 
 const (
-	aoContainerManagedLabel = legacyManagedLabel
-	aoContainerRuntimeLabel = legacyRuntimeLabel
-	aoContainerSessionLabel = legacySessionLabel
+	legacyAOContainerManagedLabel = legacyManagedLabel
+	legacyAOContainerRuntimeLabel = legacyRuntimeLabel
+	legacyAOContainerSessionLabel = legacySessionLabel
+	aoContainerManagedLabel       = legacyAOContainerManagedLabel
+	aoContainerRuntimeLabel       = legacyAOContainerRuntimeLabel
+	aoContainerSessionLabel       = legacyAOContainerSessionLabel
 )
 
 var runtimePart = regexp.MustCompile(`[^a-zA-Z0-9_.-]+`)
@@ -36,6 +39,8 @@ type RuntimeContainerSpec struct {
 	Image                 string
 	Workspace             string
 	ContainerWorkspace    string
+	WorkspaceRoot         string
+	Model                 string
 	ServerPassword        string
 	ServerUsername        string
 	ProviderSocket        string

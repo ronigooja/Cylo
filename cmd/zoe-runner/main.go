@@ -1,4 +1,4 @@
-// zoe-runner executes server-authorized runs through AO. Credentials and
+// zoe-runner executes server-authorized runs through OpenCode. Credentials and
 // route configuration are deployment-provided environment values.
 package main
 
@@ -48,7 +48,7 @@ func run(args []string) error {
 	})
 	reconcileRuns := flags.String("reconcile-runs", "", "explicit comma-separated effect_unknown run IDs for read-only no-effect reconciliation")
 	actor := flags.String("actor", "", "operator identity recorded in reconciliation proof")
-	confirm := flags.Bool("confirm-no-effect", false, "confirm explicit no-effect reconciliation after complete AO and Docker absence checks")
+	confirm := flags.Bool("confirm-no-effect", false, "confirm explicit no-effect reconciliation after complete runtime and Docker absence checks")
 	once := flags.Bool("once", false, "reconcile current runs and perform one claim poll")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -61,6 +61,7 @@ func run(args []string) error {
 	opencodeImage := requiredEnv("ZOE_OPENCODE_IMAGE")
 	opencodeModel := requiredEnv("ZOE_OPENCODE_MODEL")
 	providerSocket := requiredEnv("ZOE_OPENCODE_PROVIDER_SOCKET")
+	workspaceRoot := requiredEnv("ZOE_OPENCODE_WORKSPACE_ROOT")
 	journalPath := requiredEnv("ZOE_RUNNER_JOURNAL_PATH")
 	routes, err := loadRoutes(os.Getenv("ZOE_RUNNER_ROUTES"))
 	if err != nil {
@@ -95,10 +96,10 @@ func run(args []string) error {
 	defer journal.Close()
 	docker := runner.ExecDockerCommand{Binary: optionalEnv("ZOE_DOCKER_BINARY", "docker")}
 	openCodeImage := strings.TrimSpace(opencodeImage)
-	if openCodeImage == "" || opencodeModel == "" || providerSocket == "" {
-		return errors.New("ZOE_OPENCODE_IMAGE, ZOE_OPENCODE_MODEL, and ZOE_OPENCODE_PROVIDER_SOCKET are required")
+	if openCodeImage == "" || opencodeModel == "" || providerSocket == "" || workspaceRoot == "" {
+		return errors.New("ZOE_OPENCODE_IMAGE, ZOE_OPENCODE_MODEL, ZOE_OPENCODE_PROVIDER_SOCKET, and ZOE_OPENCODE_WORKSPACE_ROOT are required")
 	}
-	openCode := runner.OpenCodeRuntime{Client: agent, Supervisor: runner.DockerRuntimeSupervisor{Docker: docker}, Container: runner.RuntimeContainerSpec{Image: openCodeImage, ProviderSocket: providerSocket, ContainerWorkspace: "/workspace", PidsLimit: 256}}
+	openCode := runner.OpenCodeRuntime{Client: agent, Supervisor: runner.DockerRuntimeSupervisor{Docker: docker}, Container: runner.RuntimeContainerSpec{Image: openCodeImage, Model: opencodeModel, WorkspaceRoot: workspaceRoot, ProviderSocket: providerSocket, ContainerWorkspace: "/workspace", PidsLimit: 256}}
 	engine := &runner.Engine{
 		Control:  control,
 		Instance: control,

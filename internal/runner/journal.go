@@ -206,6 +206,9 @@ CREATE TABLE IF NOT EXISTS journal_deployments (
 			return nil, err
 		}
 	}
+	if _, err := db.ExecContext(ctx, `UPDATE journal_runs SET runtime_spec_json=ao_spec_json WHERE runtime_spec_json IS NULL OR runtime_spec_json='' OR runtime_spec_json='{}'; UPDATE journal_runs SET runtime_session_id=ao_session_id WHERE runtime_session_id=''; UPDATE journal_runs SET runtime_container_id=ao_container_id WHERE runtime_container_id=''`); err != nil {
+		return fmt.Errorf("backfill neutral runner journal columns: %w", err)
+	}
 	if err := protectSQLiteFiles(filename); err != nil {
 		_ = db.Close()
 		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
@@ -368,7 +371,7 @@ func (j *Journal) Close() error {
 	return err
 }
 
-// SaveClaim commits the exact AO request before any AO effect can occur.
+// SaveClaim commits the exact runtime request before any runtime effect can occur.
 func (j *Journal) SaveClaim(ctx context.Context, claim contracts.JobClaim, spec RuntimeSpec, phase string) (JournalEntry, error) {
 	claimJSON, err := json.Marshal(claim)
 	if err != nil {
@@ -390,7 +393,7 @@ func (j *Journal) SaveClaim(ctx context.Context, claim contracts.JobClaim, spec 
 	var session, persistedPhase, updated string
 	var container, runtimeSession, runtimeContainer, instanceID string
 	var epoch int64
-	err = tx.QueryRowContext(ctx, `SELECT attempt_id,fence,claim_json,ao_spec_json,ao_session_id,ao_container_id,instance_id,instance_epoch,phase,updated_at FROM journal_runs WHERE run_id=?`, claim.RunID).Scan(&existingAttempt, &existingFence, &existingClaim, &existingSpec, &session, &container, &instanceID, &epoch, &persistedPhase, &updated)
+	err = tx.QueryRowContext(ctx, `SELECT attempt_id,fence,claim_json,CASE WHEN runtime_spec_json IS NULL OR runtime_spec_json='' OR runtime_spec_json='{}' THEN ao_spec_json ELSE runtime_spec_json END,coalesce(nullif(runtime_session_id,''),ao_session_id),coalesce(nullif(runtime_container_id,''),ao_container_id),instance_id,instance_epoch,phase,updated_at FROM journal_runs WHERE run_id=?`, claim.RunID).Scan(&existingAttempt, &existingFence, &existingClaim, &existingSpec, &session, &container, &instanceID, &epoch, &persistedPhase, &updated)
 	if err == nil {
 		claimMatches := bytes.Equal(existingClaim, claimJSON) || compatibleJournalClaimUpdate(existingClaim, existingSpec, claim, spec, session, claimJSON)
 		if existingAttempt != claim.AttemptID || uint64(existingFence) != claim.Fence || !claimMatches || !bytes.Equal(existingSpec, specJSON) {
@@ -403,15 +406,19 @@ func (j *Journal) SaveClaim(ctx context.Context, claim contracts.JobClaim, spec 
 		if phase == "" {
 			phase = "claimed"
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO journal_runs(run_id,attempt_id,fence,claim_json,ao_spec_json,phase,updated_at) VALUES(?,?,?,?,?,?,?)`, claim.RunID, claim.AttemptID, claim.Fence, claimJSON, specJSON, phase, now.Format(time.RFC3339Nano)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO journal_runs(run_id,attempt_id,fence,claim_json,ao_spec_json,runtime_spec_json,phase,updated_at) VALUES(?,?,?,?,?,?,?,?)`, claim.RunID, claim.AttemptID, claim.Fence, claimJSON, specJSON, specJSON, phase, now.Format(time.RFC3339Nano)); err != nil {
 			return JournalEntry{}, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return JournalEntry{}, err
 	}
-	_ = runtimeSession
-	_ = runtimeContainer
+	if session == "" {
+		session = runtimeSession
+	}
+	if container == "" {
+		container = runtimeContainer
+	}
 	return JournalEntry{Claim: claim, Spec: spec, Session: session, Container: container, InstanceID: instanceID, Epoch: epoch, Phase: phase, Updated: now}, nil
 }
 
@@ -438,7 +445,7 @@ func (j *Journal) Entry(ctx context.Context, runID string) (JournalEntry, bool, 
 	var claimJSON, specJSON []byte
 	var entry JournalEntry
 	var updated string
-	err := j.db.QueryRowContext(ctx, `SELECT claim_json,ao_spec_json,ao_session_id,ao_container_id,instance_id,instance_epoch,phase,updated_at FROM journal_runs WHERE run_id=?`, runID).Scan(&claimJSON, &specJSON, &entry.Session, &entry.Container, &entry.InstanceID, &entry.Epoch, &entry.Phase, &updated)
+	err := j.db.QueryRowContext(ctx, `SELECT claim_json,CASE WHEN runtime_spec_json IS NULL OR runtime_spec_json='' OR runtime_spec_json='{}' THEN ao_spec_json ELSE runtime_spec_json END,coalesce(nullif(runtime_session_id,''),ao_session_id),coalesce(nullif(runtime_container_id,''),ao_container_id),instance_id,instance_epoch,phase,updated_at FROM journal_runs WHERE run_id=?`, runID).Scan(&claimJSON, &specJSON, &entry.Session, &entry.Container, &entry.InstanceID, &entry.Epoch, &entry.Phase, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return JournalEntry{}, false, nil
 	}
@@ -457,9 +464,9 @@ func (j *Journal) Entry(ctx context.Context, runID string) (JournalEntry, bool, 
 
 func (j *Journal) SetContainer(ctx context.Context, runID, attemptID string, fence uint64, container string) error {
 	if strings.TrimSpace(container) == "" {
-		return errors.New("AO container identity is required")
+		return errors.New("runtime container identity is required")
 	}
-	result, err := j.db.ExecContext(ctx, `UPDATE journal_runs SET ao_container_id=?,updated_at=? WHERE run_id=? AND attempt_id=? AND fence=? AND (ao_container_id='' OR ao_container_id=?)`, container, time.Now().UTC().Format(time.RFC3339Nano), runID, attemptID, fence, container)
+	result, err := j.db.ExecContext(ctx, `UPDATE journal_runs SET runtime_container_id=?,ao_container_id=?,updated_at=? WHERE run_id=? AND attempt_id=? AND fence=? AND (coalesce(nullif(runtime_container_id,''),ao_container_id)='' OR coalesce(nullif(runtime_container_id,''),ao_container_id)=?)`, container, container, time.Now().UTC().Format(time.RFC3339Nano), runID, attemptID, fence, container)
 	if err != nil {
 		return err
 	}
@@ -492,7 +499,7 @@ func (j *Journal) SetInstance(ctx context.Context, runID, attemptID string, fenc
 }
 
 func (j *Journal) SetSession(ctx context.Context, runID, attemptID string, fence uint64, session, phase string) error {
-	result, err := j.db.ExecContext(ctx, `UPDATE journal_runs SET ao_session_id=?,phase=?,updated_at=? WHERE run_id=? AND attempt_id=? AND fence=?`, session, phase, time.Now().UTC().Format(time.RFC3339Nano), runID, attemptID, fence)
+	result, err := j.db.ExecContext(ctx, `UPDATE journal_runs SET runtime_session_id=?,ao_session_id=?,phase=?,updated_at=? WHERE run_id=? AND attempt_id=? AND fence=?`, session, session, phase, time.Now().UTC().Format(time.RFC3339Nano), runID, attemptID, fence)
 	if err != nil {
 		return err
 	}

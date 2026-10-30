@@ -90,7 +90,7 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 			return e.terminal(ctx, claim, "isolation_denied", err.Error())
 		}
 	}
-	spec := RuntimeSpec{RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: fmt.Sprint(claim.Fence), Model: route.Model, Prompt: buildPrompt(claim), Workspace: claim.WorkspaceID, Image: route.Model}
+	spec := RuntimeSpec{RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: fmt.Sprint(claim.Fence), Model: route.Model, Prompt: buildPrompt(claim), Workspace: claim.WorkspaceID}
 	entry, err = e.Journal.SaveClaim(ctx, claim, spec, "create_attempted")
 	if err != nil {
 		return err
@@ -118,12 +118,38 @@ func (e *Engine) monitor(ctx context.Context, claim contracts.JobClaim, b Runtim
 	steps := int64(0)
 	maxSteps := claim.Budget.MaxToolSteps
 	events, errs := e.Runtime.Events(ctx)
-	_ = errs
+	stepEvents := make(chan opencode.Event, 16)
+	go func() {
+		defer close(stepEvents)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event, ok := <-events:
+				if !ok {
+					return
+				}
+				select {
+				case stepEvents <- event:
+				case <-ctx.Done():
+					return
+				}
+			case err, ok := <-errs:
+				if ok && err != nil {
+					return
+				}
+			}
+		}
+	}()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-events:
+		case _, ok := <-stepEvents:
+			if !ok {
+				stepEvents = nil
+				continue
+			}
 			steps++
 			if maxSteps > 0 && steps > maxSteps {
 				_ = e.Runtime.Abort(ctx, b.SessionID)
@@ -147,8 +173,7 @@ func (e *Engine) monitor(ctx context.Context, claim contracts.JobClaim, b Runtim
 				_ = e.Runtime.Abort(ctx, b.SessionID)
 				return e.stop(ctx, claim, b, "runtime_error")
 			}
-			_ = m
-			return e.stop(ctx, claim, b, "completed")
+			return e.stopWithResult(ctx, claim, b, "completed", m)
 		}
 		if !claim.Budget.HardDeadline.IsZero() && time.Now().After(claim.Budget.HardDeadline) {
 			_ = e.Runtime.Abort(ctx, b.SessionID)
@@ -158,18 +183,27 @@ func (e *Engine) monitor(ctx context.Context, claim contracts.JobClaim, b Runtim
 	}
 }
 func (e *Engine) stop(ctx context.Context, claim contracts.JobClaim, b RuntimeBinding, reason string) error {
+	return e.stopWithResult(ctx, claim, b, reason, opencode.Message{})
+}
+func (e *Engine) stopWithResult(ctx context.Context, claim contracts.JobClaim, b RuntimeBinding, reason string, message opencode.Message) error {
 	id, err := e.Runtime.Terminate(ctx, b)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrOutcomePending, err)
 	}
 	proof := &contracts.TerminationProof{Source: "runner_container_removal", Method: "container_removed", RuntimeSessionID: b.SessionID, RuntimeContainerID: id, VerifiedAt: time.Now().UTC(), CleanupComplete: true}
-	return e.emit(ctx, claim, "terminated", "runtime", reason, proof)
+	return e.emitResult(ctx, claim, "runtime_terminated", "runtime", reason, proof, message)
 }
 func (e *Engine) terminal(ctx context.Context, c contracts.JobClaim, code, msg string) error {
 	return e.emit(ctx, c, "failure", "runner", code, nil)
 }
 func (e *Engine) emit(ctx context.Context, c contracts.JobClaim, kind, source, summary string, proof *contracts.TerminationProof) error {
+	return e.emitResult(ctx, c, kind, source, summary, proof, opencode.Message{})
+}
+func (e *Engine) emitResult(ctx context.Context, c contracts.JobClaim, kind, source, summary string, proof *contracts.TerminationProof, message opencode.Message) error {
 	raw, _ := json.Marshal(map[string]string{"summary": summary})
+	if message.Info.ID != "" {
+		raw, _ = json.Marshal(map[string]any{"summary": summary, "assistant_message": message})
+	}
 	sum := sha256.Sum256(raw)
 	obs := contracts.RunnerObservation{ObservationID: hex.EncodeToString(sum[:16]), RunID: c.RunID, AttemptID: c.AttemptID, Fence: c.Fence, Kind: kind, OccurredAt: time.Now().UTC(), RuntimeSessionID: c.RuntimeSessionID, TerminationProof: proof, Result: raw}
 	if e.Journal != nil {

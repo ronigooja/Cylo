@@ -13,6 +13,8 @@ type RuntimeSpec struct {
 	RunID, AttemptID, Fence  string
 	Model, Prompt, Workspace string
 	Image, ProviderSocket    string
+	// Legacy request fields are retained only for decoding old runner journals.
+	ClientRequestID, ProjectID, Harness, DisplayName, ApprovalMode, Effort string
 }
 
 type RuntimeBinding struct{ SessionID, ContainerID string }
@@ -35,7 +37,13 @@ type OpenCodeRuntime struct {
 
 func (r OpenCodeRuntime) Create(ctx context.Context, spec RuntimeSpec) (RuntimeBinding, error) {
 	cfg := r.Container
-	cfg.RunID, cfg.Attempt, cfg.Fence, cfg.Image, cfg.Workspace = spec.RunID, spec.AttemptID, spec.Fence, spec.Image, spec.Workspace
+	cfg.RunID, cfg.Attempt, cfg.Fence, cfg.Image = spec.RunID, spec.AttemptID, spec.Fence, spec.Image
+	if cfg.WorkspaceRoot != "" {
+		cfg.Workspace = cfg.WorkspaceRoot
+	} else {
+		cfg.Workspace = spec.Workspace
+	}
+	cfg.Model = spec.Model
 	container, err := r.Supervisor.Create(ctx, cfg)
 	if err != nil {
 		return RuntimeBinding{}, err
@@ -47,7 +55,7 @@ func (r OpenCodeRuntime) Create(ctx context.Context, spec RuntimeSpec) (RuntimeB
 	return RuntimeBinding{SessionID: session.ID, ContainerID: container.ID}, nil
 }
 func (r OpenCodeRuntime) Prompt(ctx context.Context, id, prompt string) error {
-	return r.Client.PromptAsync(ctx, id, map[string]string{"model": "", "parts": prompt})
+	return r.Client.PromptAsync(ctx, id, map[string]any{"model": r.Container.Model, "parts": []map[string]string{{"type": "text", "text": prompt}}})
 }
 func (r OpenCodeRuntime) Status(ctx context.Context) (map[string]opencode.Status, error) {
 	return r.Client.Status(ctx)
