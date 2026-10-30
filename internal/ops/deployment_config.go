@@ -259,7 +259,7 @@ func (m Manager) ConfigureProvider(ctx context.Context, d Deployment, c Provider
 	}
 	c, err := c.Normalized()
 	if err != nil {
-		return ProbeResult{}, err
+		return ProbeResult{Model: c.Model, ErrorCategory: "invalid_configuration", ErrorReason: err.Error()}, fmt.Errorf("invalid_configuration: %w", err)
 	}
 	if !validToken(c.Secret) {
 		return ProbeResult{}, errors.New("provider token is empty or contains whitespace/control characters")
@@ -278,7 +278,7 @@ func (m Manager) ConfigureProvider(ctx context.Context, d Deployment, c Provider
 	result := Probe(ctx, c, client)
 	if !result.OK() {
 		_ = saveProviderCheck(d, result)
-		return result, fmt.Errorf("provider validation failed: %s", result.ErrorCategory)
+		return result, probeError("provider", result)
 	}
 	paths := []string{d.RunnerEnv, c.SecretPath, filepath.Join(d.Root, "provider-deployment.json")}
 	if d.DropInPath == "" {
@@ -404,7 +404,7 @@ func (m Manager) TestProvider(ctx context.Context, d Deployment, c ProviderConfi
 		return r, err
 	}
 	if !r.OK() {
-		return r, fmt.Errorf("provider validation failed: %s", r.ErrorCategory)
+		return r, probeError("provider", r)
 	}
 	return r, nil
 }
@@ -454,7 +454,7 @@ func (m Manager) ConfigureMemory(ctx context.Context, d Deployment, c MemoryConf
 	}
 	c, err := c.Normalized()
 	if err != nil {
-		return ProbeResult{}, err
+		return ProbeResult{Model: c.Model, ErrorCategory: "invalid_configuration", ErrorReason: err.Error()}, fmt.Errorf("invalid_configuration: %w", err)
 	}
 	if filepath.Clean(c.SecretPath) == filepath.Clean(providerSecretPath) {
 		return ProbeResult{}, errors.New("memory secret path must be distinct from the task-model secret path")
@@ -471,7 +471,7 @@ func (m Manager) ConfigureMemory(ctx context.Context, d Deployment, c MemoryConf
 	result := Probe(ctx, ProviderConfig{BaseURL: c.BaseURL, Model: c.Model, Secret: c.Secret}, client)
 	if !result.OK() {
 		_ = saveMemoryCheck(d, result)
-		return result, fmt.Errorf("memory validation failed: %s", result.ErrorCategory)
+		return result, probeError("memory", result)
 	}
 	unlock, err := lockDeployment(ctx, d)
 	if err != nil {
@@ -548,7 +548,7 @@ func (m Manager) TestMemory(ctx context.Context, d Deployment, c MemoryConfig, c
 		return r, err
 	}
 	if !r.OK() {
-		return r, fmt.Errorf("memory validation failed: %s", r.ErrorCategory)
+		return r, probeError("memory", r)
 	}
 	return r, nil
 }
@@ -556,6 +556,13 @@ func (m Manager) TestMemory(ctx context.Context, d Deployment, c MemoryConfig, c
 type checkMetadata struct {
 	CheckedAt string `json:"checked_at"`
 	Outcome   string `json:"outcome"`
+}
+
+func probeError(kind string, result ProbeResult) error {
+	if result.ErrorReason != "" {
+		return fmt.Errorf("%s validation failed: %s: %s", kind, result.ErrorCategory, result.ErrorReason)
+	}
+	return fmt.Errorf("%s validation failed: %s", kind, result.ErrorCategory)
 }
 
 func saveProviderCheck(d Deployment, r ProbeResult) error {

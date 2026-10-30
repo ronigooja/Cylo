@@ -237,13 +237,14 @@ type ProbeResult struct {
 	Model          string
 	ModelAvailable bool
 	ErrorCategory  string
+	ErrorReason    string
 }
 
 // Probe checks the provider's models endpoint and reports coarse outcomes.
 func Probe(ctx context.Context, c ProviderConfig, client *http.Client) ProbeResult {
 	normalized, err := c.Normalized()
 	if err != nil {
-		return ProbeResult{Model: c.Model, ErrorCategory: "invalid_configuration"}
+		return ProbeResult{Model: c.Model, ErrorCategory: "invalid_configuration", ErrorReason: err.Error()}
 	}
 	secret := []byte(normalized.Secret)
 	if len(secret) == 0 {
@@ -296,13 +297,23 @@ func Probe(ctx context.Context, c ProviderConfig, client *http.Client) ProbeResu
 		return result
 	}
 	for _, model := range catalog.Data {
-		if subtle.ConstantTimeCompare([]byte(model.ID), []byte(normalized.Model)) == 1 {
+		if modelIDMatches(model.ID, normalized.Model) {
 			result.ModelAvailable = true
 			return result
 		}
 	}
 	result.ErrorCategory = "model_unavailable"
 	return result
+}
+
+func modelIDMatches(id, configured string) bool {
+	if subtle.ConstantTimeCompare([]byte(id), []byte(configured)) == 1 {
+		return true
+	}
+	if slash := strings.IndexByte(configured, '/'); slash >= 0 {
+		return subtle.ConstantTimeCompare([]byte(id), []byte(configured[slash+1:])) == 1
+	}
+	return false
 }
 
 func (r ProbeResult) OK() bool {

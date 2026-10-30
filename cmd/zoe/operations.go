@@ -254,6 +254,7 @@ func providerConfigureOperation(args []string, in io.Reader, out, errOut io.Writ
 	}
 	cfg.Secret = strings.TrimSpace(string(secret))
 	if _, err := opsManager().ConfigureProvider(ctx, d, cfg, nil); err != nil {
+		fmt.Fprintf(errOut, "Provider configuration failed: %s\n", safeLabel(err.Error()))
 		return err
 	}
 	fmt.Fprintln(out, "Provider configured, checked and services reloaded.")
@@ -277,6 +278,9 @@ func providerTestOperation(args []string, _ io.Reader, out, errOut io.Writer) er
 	}
 	result, err := opsManager().TestProvider(ctx, d, cfg, nil)
 	fmt.Fprintf(out, "HTTP status: %d\nModel available: %t\nResult: %s\n", result.HTTPStatus, result.ModelAvailable, safeLabel(result.ErrorCategory))
+	if err != nil {
+		fmt.Fprintf(errOut, "Provider test failed: %s\n", safeLabel(err.Error()))
+	}
 	return err
 }
 
@@ -393,6 +397,7 @@ func memoryConfigureOperationWithSkip(args []string, in io.Reader, out, errOut i
 	result, err := opsManager().ConfigureMemory(ctx, d, cfg, provider.SecretPath, nil)
 	fmt.Fprintf(out, "HTTP status: %d\nModel available: %t\nResult: %s\n", result.HTTPStatus, result.ModelAvailable, safeLabel(result.ErrorCategory))
 	if err != nil {
+		fmt.Fprintf(errOut, "Memory configuration failed: %s\n", safeLabel(err.Error()))
 		return err
 	}
 	fmt.Fprintln(out, "Memory model configured, checked and memory worker reloaded.")
@@ -421,6 +426,9 @@ func memoryTestOperation(args []string, _ io.Reader, out, errOut io.Writer) erro
 	}
 	result, err := opsManager().TestMemory(ctx, d, cfg, nil)
 	fmt.Fprintf(out, "HTTP status: %d\nModel available: %t\nResult: %s\n", result.HTTPStatus, result.ModelAvailable, safeLabel(result.ErrorCategory))
+	if err != nil {
+		fmt.Fprintf(errOut, "Memory test failed: %s\n", safeLabel(err.Error()))
+	}
 	return err
 }
 
