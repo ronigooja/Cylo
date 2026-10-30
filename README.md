@@ -14,3 +14,17 @@ Choose a starting point:
 - [Acceptance matrix](docs/acceptance/requirements.md) and [evidence](docs/acceptance/evidence.md): coverage, verification boundaries, and remaining gaps.
 - [Approved native assistant reference](docs/design/native-assistant-reference.png): current visual direction.
 - [CI verification](docs/development/verification.md): change scope, hosted checks, and manual artifact generation.
+
+## Where to write what
+
+| If you are documenting... | Write the complete definition in... |
+|---|---|
+| A new or changed product constraint | [Product requirements](docs/product.md) (the sole definition home for stable CY-IDs) |
+| Architecture boundaries and authoritative ownership | [Architecture](docs/architecture.md) |
+| Technical trade-offs and their reasons | [Architecture decision records](docs/architecture/decisions/) |
+| Acceptance thresholds and stable-ID mappings | [Acceptance requirements](docs/acceptance/requirements.md) |
+| Test, CI, and installation facts and evidence-category definitions | [Evidence register](docs/acceptance/evidence.md) |
+| Milestones and delivery status | [Master plan](docs/master-plan.md) |
+| Operations commands and procedures | [Operations](docs/operations/) |
+| CI scope and manual artifacts | [Verification](docs/development/verification.md) |
+| Module implementation parameters | The corresponding module README |
