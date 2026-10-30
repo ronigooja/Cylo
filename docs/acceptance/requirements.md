@@ -1,6 +1,6 @@
 # Acceptance requirements and gaps
 
-This matrix maps each stable definition in [product](../product.md) to delivery gates. It references requirements rather than redefining them. Milestone numbers refer to [the delivery plan](../master-plan.md#milestones-and-acceptance). **All product acceptance remains open**, including required scope with source/component evidence. Optional requirements have no mandatory release gate; excluded requirements remain traceable without implying delivery.
+This matrix maps each stable definition in [product](../product.md) to its owner, milestone, and acceptance gate. Milestone numbers refer to [the delivery plan](../master-plan.md#milestones-and-acceptance); evidence categories and the distinction between evidence and acceptance are defined in the [evidence register](evidence.md#evidence-categories-and-acceptance-boundary). **All product acceptance remains open**, including required scope with source/component evidence. Optional requirements have no mandatory release gate; excluded requirements remain traceable without implying delivery.
 
 ## Stable requirement matrix
 
@@ -81,19 +81,3 @@ This matrix maps each stable definition in [product](../product.md) to delivery 
 | [CY-20-01](../product.md#cy-20-01) | All components | 5 | Evidence for each dimension in [product quality dimensions](../product.md#20-overall-quality-requirements); thresholds remain to be set [Evidence](evidence.md#component-verification); acceptance open. |
 | [CY-21-01](../product.md#cy-21-01) | Control plane and architecture | 1 and 5 | Scope review and A–E evidence demonstrate the product remains within the stated boundaries [Evidence](evidence.md#component-verification); acceptance open. |
 | [CY-22-01](../product.md#cy-22-01) | All components | 5 | A–E complete and every in-scope stable ID has evidence or a recorded open gap [Evidence](evidence.md#component-verification); acceptance open. |
-
-## Native interface coverage
-
-The [approved PNG](../design/native-assistant-reference.png) defines visual direction, not completed UI acceptance. For each supported form factor (macOS, regular/narrow iPad, and iPhone), capture current native screenshots and exercise home, empty/loading states, pending submission, send failure, task progress, results, waiting decisions, failed/canceled tasks, and safe stop. Cover light/dark appearance, English/Chinese localization, Dynamic Type, VoiceOver, keyboard/focus behavior, window resizing, and draft preservation/reconciliation. A rendered HTML reference, syntax pass, or build does not establish those outcomes.
-
-Real-device voice acceptance records device/OS, 30-minute mixed Mandarin–English locked-device sessions on both iPhone and iPad, Settings opt-in and automatic startup attempts, route changes, interruptions, reconnects, permission denial, lifecycle/policy interruptions, account/server unavailability, truthful status, text fallback, turn/command identities, explicit transcript/submission, task continuity, and confirmed capture/playback termination. Measure actual outcomes without retaining raw audio. Account/media safe reuse and trusted transport remain open. Ordinary results must not display Accept/Reject workflow; high-impact actions must reject ambiguous text and accept only scoped explicit confirmation.
-
-## Quality evidence
-
-For every dimension in [product chapter 20](../product.md#20-overall-quality-requirements), record the tested environment, procedure, threshold where approved, observed measurement, evidence, and gap. Numeric targets not yet approved remain unresolved; no dimension is accepted from a design claim. Production restore targets require measured RPO/RTO and separately measured index rebuild time.
-
-## Authentication and recovery gates
-
-Use the current instance-key model for fresh deployments: credential denial, rotation, stale deployment-key failure, Keychain-only storage, QR/link import, HTTP confirmation, local clearing, and installation-isolated push registrations. Local clearing must not stop durable tasks or revoke another installation. Historical authentication procedures are not current acceptance conditions.
-
-[Chat recovery](evidence.md#chat-recovery-correction) is source-reviewed, remote-unverified. Acceptance requires a live authorized continuation/recovery chain with actual runtime, provider, artifact, stop, and capacity evidence. Do not infer old uncertain runs recovered from a source correction or healthy service.

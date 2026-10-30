@@ -30,8 +30,7 @@ Selections are combined for mixed changes. Source comments are not inferred from
 diff text: a comment-only source change follows its source component's checks.
 The current Go suite remains whole; the race package set also remains unchanged
 until dependency evidence supports a safe reduction. Python services and external
-AO runtime checks retain their existing coverage limitations; full selection is
-not complete product or external-service acceptance.
+AO runtime checks retain their existing coverage limitations.
 
 Each selected Apple build, Swift suite, Go suite, race suite, and script suite is
 an independent job. Routine Apple checks build apps without producing an archive;
@@ -64,13 +63,12 @@ gh workflow run linux.yml --ref main -f release=true
 
 Without `release=true`, those manual workflows perform full platform checks
 without release packages. Apple artifacts remain unsigned; artifact creation does
-not install, deploy, or establish end-to-end acceptance. Server and AO artifact
-workflows remain separate; see [deployment operations](../operations/deployment.md).
+not install or deploy. Server and AO artifact workflows remain separate; see
+[deployment operations](../operations/deployment.md).
 
-When reporting verification, link the immutable workflow run, state the source
-revision and selected checks, and distinguish fixtures, builds, installation, and
-end-to-end acceptance. Use the [evidence register](../acceptance/evidence.md) for
-retained observations and limitations.
+When reporting verification, link the immutable workflow run and state the source
+revision and selected checks; use the [evidence register](../acceptance/evidence.md#evidence-categories-and-acceptance-boundary)
+for the authoritative evidence categories and acceptance boundary.
 
 ## Release and deployment-candidate verification
 
