@@ -143,7 +143,7 @@ func TestTerminationProofMethodIsBoundToRunHarness(t *testing.T) {
 			if storedHarness == "" {
 				storedHarness = tc.harness
 			}
-			if _, err := store.DB().Exec(`UPDATE runs SET desired_control='stop',harness=?,ao_session_id='session-1' WHERE id=?`, storedHarness, claim.RunID); err != nil {
+			if _, err := store.DB().Exec(`UPDATE runs SET desired_control='stop',harness=?,runtime_session_id='session-1' WHERE id=?`, storedHarness, claim.RunID); err != nil {
 				t.Fatal(err)
 			}
 			observation := contracts.RunnerObservation{ObservationID: "wrong-proof", RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence, Kind: "stop_confirmed", RuntimeSessionID: "session-1", TerminationProof: &contracts.TerminationProof{Source: "runner_container_removal", Method: tc.wrongMethod, RuntimeSessionID: "session-1", RuntimeContainerID: "container-1", VerifiedAt: time.Now().UTC(), CleanupComplete: true}}

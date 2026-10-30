@@ -96,7 +96,7 @@ func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
 				proof.JournalPhase = "claimed"
 				proof.RuntimeCreateStarted = false
 			case "session-bound":
-				if _, err = server.store.DB().Exec(`UPDATE runs SET ao_session_id='session' WHERE id='budget-run'`); err != nil {
+				if _, err = server.store.DB().Exec(`UPDATE runs SET runtime_session_id='session' WHERE id='budget-run'`); err != nil {
 					t.Fatal(err)
 				}
 			case "unsafe-effect":
