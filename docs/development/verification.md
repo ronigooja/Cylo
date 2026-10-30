@@ -60,7 +60,7 @@ gh workflow run linux.yml --ref main -f release=true
 
 Without `release=true`, those manual workflows perform full platform checks
 without release packages. Apple artifacts remain unsigned; artifact creation does
-not install or deploy. Server and AO artifact workflows remain separate; see
+not install or deploy. Server and OpenCode runtime artifact workflows remain separate; see
 [deployment operations](../operations/deployment.md).
 
 When reporting verification, link the immutable workflow run and state the source
@@ -72,7 +72,7 @@ for the authoritative evidence categories and acceptance boundary.
 Pull requests and ordinary pushes validate the affected scope; they do not publish
 release artifacts. A release tag on `main` is the only formal artifact entry point.
 After required verification succeeds, the release workflow records one manifest for
-the server, runner, operator CLI, memory worker, AO, and unsigned Apple artifacts.
+the server, runner, operator CLI, memory worker, OpenCode runtime, and unsigned Apple artifacts.
 The manifest includes the source revision, target architecture, image digests, and
 SHA-256 values. A failed job must not be treated as a complete release.
 

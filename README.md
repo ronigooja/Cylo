@@ -9,7 +9,7 @@ Choose a starting point:
 - [Product requirements](docs/product.md): scope, user journeys, interaction rules, and exclusions.
 - [Architecture](docs/architecture.md): components, authority, data flows, and [decisions](docs/architecture/decisions/).
 - [Delivery plan](docs/master-plan.md): milestones, current status, blockers, and acceptance gates.
-- [Deployment operations](docs/operations/deployment.md): installation, configuration, maintenance, and AO reconciliation.
+- [Deployment operations](docs/operations/deployment.md): installation, configuration, maintenance, and Zoe OpenCode runtime uncertainty reconciliation.
 - [Data lifecycle](docs/operations/data-lifecycle.md): export, backup, restore, migration, and deletion.
 - [Acceptance matrix](docs/acceptance/requirements.md) and [evidence](docs/acceptance/evidence.md): coverage, verification boundaries, and remaining gaps.
 - [Approved native assistant reference](docs/design/native-assistant-reference.png): current visual direction.

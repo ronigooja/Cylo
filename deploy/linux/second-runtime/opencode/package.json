@@ -1,8 +1,8 @@
 {
-  "name": "zoe-ao-opencode-runtime",
+  "name": "zoe-opencode-runtime",
   "private": true,
   "version": "1.18.33",
-  "description": "Pinned OpenCode runtime for the AO supervised container profile",
+  "description": "Zoe-owned OpenCode runtime image",
   "dependencies": {
     "@ai-sdk/openai-compatible": "2.0.41",
     "opencode-ai": "1.18.33"
