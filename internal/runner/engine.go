@@ -223,6 +223,9 @@ func (e *Engine) monitor(ctx context.Context, claim contracts.JobClaim, b Runtim
 }
 
 func (e *Engine) terminate(ctx context.Context, c contracts.JobClaim, b RuntimeBinding, reason string, stopped bool) error {
+	if bc, ok := e.Control.(runBudgetControl); ok {
+		_, _ = bc.SettleBudget(ctx, c.RunID, "runtime-initial-prompt", contracts.RunBudgetSettleRequest{AttemptID: c.AttemptID, Fence: c.Fence, SettlementID: "runtime-initial-prompt-settled", Outcome: "settled", Actual: contracts.RunBudgetUsage{ModelCalls: 1}})
+	}
 	id, err := e.Runtime.Terminate(ctx, b)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrOutcomePending, err)
@@ -235,6 +238,9 @@ func (e *Engine) terminate(ctx context.Context, c contracts.JobClaim, b RuntimeB
 	return e.emit(ctx, c, kind, "runtime", reason, proof, nil)
 }
 func (e *Engine) markUnknown(ctx context.Context, c contracts.JobClaim) error {
+	if bc, ok := e.Control.(runBudgetControl); ok {
+		_, _ = bc.SettleBudget(ctx, c.RunID, "runtime-initial-prompt", contracts.RunBudgetSettleRequest{AttemptID: c.AttemptID, Fence: c.Fence, SettlementID: "runtime-initial-prompt-unknown", Outcome: "unknown"})
+	}
 	_ = e.Journal.SetPhase(ctx, c.RunID, c.AttemptID, c.Fence, "effect_unknown")
 	_ = e.emit(ctx, c, "effect_unknown", "runtime", "runtime create outcome is unknown", nil, []contracts.ExternalEffect{{ID: c.RunID, Kind: "runtime_create", Status: "unknown"}})
 	return ErrOutcomePending
