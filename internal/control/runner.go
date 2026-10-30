@@ -695,7 +695,7 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		nextRunStatus = "active"
 	case "dispatch_bound":
 		if observation.RuntimeSessionID == "" {
-			writeError(w, apiError(400, "invalid_request", "dispatch_bound requires AO project and session IDs", nil))
+			writeError(w, apiError(400, "invalid_request", "dispatch_bound requires runtime session ID", nil))
 			return
 		}
 		_, err = tx.ExecContext(r.Context(), `UPDATE runs SET ao_session_id=?,runtime_session_id=?,runtime_container_id=? WHERE id=?`, observation.RuntimeSessionID, observation.RuntimeSessionID, observation.RuntimeContainerID, runID)

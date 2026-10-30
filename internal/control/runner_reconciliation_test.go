@@ -31,7 +31,7 @@ func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
 			if _, err = server.store.DB().Exec(`UPDATE runs SET status='uncertain' WHERE id='budget-run'`); err != nil {
 				t.Fatal(err)
 			}
-			proof := &contracts.NoEffectProof{JournalPhase: "effect_unknown", RuntimeCreateStarted: true, Outcome: "failed", Reconciliation: &contracts.NoEffectReconciliation{JournalUpdatedAt: time.Now().UTC().Add(-2 * time.Second), RunID: "budget-run", Actor: "operator", Confirmed: true, VerifiedAt: time.Now().UTC(), RuntimeQuery: "GET /api/v1/sessions/inventory", RuntimeInventoryComplete: true, AOClientRequestIDComplete: true, DockerQuery: "docker ps -aq --no-trunc; docker inspect all IDs", DockerInventoryComplete: true, DockerInventoryChecks: 2, InstanceID: state.InstanceID, InstanceEpoch: state.Epoch}}
+			proof := &contracts.NoEffectProof{JournalPhase: "effect_unknown", RuntimeCreateStarted: true, Outcome: "failed", Reconciliation: &contracts.NoEffectReconciliation{JournalUpdatedAt: time.Now().UTC().Add(-2 * time.Second), RunID: "budget-run", Actor: "operator", Confirmed: true, VerifiedAt: time.Now().UTC(), RuntimeQuery: "GET /api/v1/sessions/inventory", RuntimeInventoryComplete: true, DockerQuery: "docker ps -aq --no-trunc; docker inspect all IDs", DockerInventoryComplete: true, DockerInventoryChecks: 2, InstanceID: state.InstanceID, InstanceEpoch: state.Epoch}}
 			if strings.HasPrefix(scenario, "retained-") || scenario == "overlapping-artifacts" {
 				retained := retainedProofFixture()
 				proof.Reconciliation.RetainedNeverStartedContainers = []contracts.RetainedNeverStartedContainer{retained}
@@ -57,7 +57,7 @@ func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
 				server.handleObservation(w, req)
 				return w
 			}
-			unknown := contracts.RunnerObservation{ObservationID: "unknown", RunID: "budget-run", AttemptID: "budget-attempt", Fence: 91, Kind: "effect_unknown", ExternalEffects: []contracts.ExternalEffect{{ID: "create", Kind: "ao_worker_create", Status: "unknown"}}}
+			unknown := contracts.RunnerObservation{ObservationID: "unknown", RunID: "budget-run", AttemptID: "budget-attempt", Fence: 91, Kind: "effect_unknown", ExternalEffects: []contracts.ExternalEffect{{ID: "create", Kind: "runtime_create", Status: "unknown"}}}
 			if w := observe(unknown); w.Code != 200 {
 				t.Fatalf("unknown: %d %s", w.Code, w.Body.String())
 			}
@@ -137,12 +137,17 @@ func TestReconciliationObservationValidatesAbsenceAndReleasesRun(t *testing.T) {
 	}
 }
 
-func TestWorkerBootRejectionReleasesCapacityOnlyForStable409Proof(t *testing.T) {
+func TestRuntimeCreateRejectionReleasesCapacityOnlyForAllowlistedLocalCode(t *testing.T) {
 	for _, status := range []int{409, 503} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			// 409 models an allowlisted local rejection code; 503 models a code outside the allowlist.
+			code := "container_create_rejected"
+			if status == 503 {
+				code = "docker_unreachable"
+			}
 			server, closeStore := budgetTestServer(t, contracts.RunBudgetSnapshot{})
 			defer closeStore()
-			if _, err := server.store.DB().Exec(`UPDATE runs SET status='dispatching',ao_project_id='project' WHERE id='budget-run'`); err != nil {
+			if _, err := server.store.DB().Exec(`UPDATE runs SET status='dispatching' WHERE id='budget-run'`); err != nil {
 				t.Fatal(err)
 			}
 			observe := func(obs contracts.RunnerObservation) *httptest.ResponseRecorder {
@@ -162,7 +167,7 @@ func TestWorkerBootRejectionReleasesCapacityOnlyForStable409Proof(t *testing.T) 
 			if w := observe(started); w.Code != 200 {
 				t.Fatalf("dispatch_started: %d %s", w.Code, w.Body.String())
 			}
-			rejected := contracts.RunnerObservation{ObservationID: "rejected", RunID: "budget-run", AttemptID: "budget-attempt", Fence: 91, Kind: "create_rejected", CreateRejection: &contracts.CreateRejectionProof{Code: "worker_boot_failed"}}
+			rejected := contracts.RunnerObservation{ObservationID: "rejected", RunID: "budget-run", AttemptID: "budget-attempt", Fence: 91, Kind: "create_rejected", CreateRejection: &contracts.CreateRejectionProof{Code: code}}
 			w := observe(rejected)
 			var runStatus, taskStatus string
 			if err := server.store.DB().QueryRow(`SELECT runs.status,tasks.status FROM runs JOIN tasks ON tasks.id=runs.task_id WHERE runs.id='budget-run'`).Scan(&runStatus, &taskStatus); err != nil {
@@ -172,7 +177,7 @@ func TestWorkerBootRejectionReleasesCapacityOnlyForStable409Proof(t *testing.T) 
 				if w.Code != 409 || runStatus != "active" || taskStatus != "active" {
 					t.Fatalf("untrusted 503 released run: %d %s run=%s task=%s", w.Code, w.Body.String(), runStatus, taskStatus)
 				}
-				unknown := contracts.RunnerObservation{ObservationID: "unknown", RunID: "budget-run", AttemptID: "budget-attempt", Fence: 91, Kind: "effect_unknown", ExternalEffects: []contracts.ExternalEffect{{ID: "create", Kind: "ao_worker_create", Status: "unknown"}}}
+				unknown := contracts.RunnerObservation{ObservationID: "unknown", RunID: "budget-run", AttemptID: "budget-attempt", Fence: 91, Kind: "effect_unknown", ExternalEffects: []contracts.ExternalEffect{{ID: "create", Kind: "runtime_create", Status: "unknown"}}}
 				if w := observe(unknown); w.Code != 200 {
 					t.Fatalf("unknown: %d %s", w.Code, w.Body.String())
 				}

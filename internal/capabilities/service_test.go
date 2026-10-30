@@ -629,7 +629,7 @@ func postCapabilityRunTerminalObservation(t *testing.T, handler http.Handler, to
 		terminal := base
 		terminal.ObservationID = "obs-terminal-" + runID
 		terminal.Kind = "create_rejected"
-		terminal.CreateRejection = &contracts.CreateRejectionProof{Status: 400, Code: "INVALID_REQUEST"}
+		terminal.CreateRejection = &contracts.CreateRejectionProof{Code: "invalid_request"}
 		post(terminal)
 		return
 	}

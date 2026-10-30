@@ -40,7 +40,7 @@ func TestRuntimeCreateMountsScopedWorkspaceReadWrite(t *testing.T) {
 	if !strings.Contains(joined, "type=bind,src=/root/run,dst=/workspace") {
 		t.Fatalf("workspace mount missing or readonly: %s", joined)
 	}
-	if strings.Contains(joined, ",readonly") {
+	if strings.Contains(joined, "dst=/workspace,readonly") {
 		t.Fatalf("workspace unexpectedly readonly: %s", joined)
 	}
 	if !strings.Contains(joined, "OPENCODE_SERVER_PASSWORD=secret") || !strings.Contains(joined, "--network none") {
