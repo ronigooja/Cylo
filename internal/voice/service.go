@@ -76,6 +76,7 @@ type gatewaySessionRequest struct {
 type gatewaySessionResponse struct {
 	AnswerSDP              string `json:"answer_sdp"`
 	VoiceSessionID         string `json:"voice_session_id"`
+	VoiceSessionGeneration int64  `json:"voice_session_generation,omitempty"`
 	AccountLeaseID         string `json:"account_lease_id,omitempty"`
 	AccountLeaseGeneration int64  `json:"account_lease_generation,omitempty"`
 	AccountID              string `json:"account_id,omitempty"`
@@ -181,11 +182,12 @@ func (s *Service) create(ctx context.Context, p contracts.Principal, req createR
 	var id, state, gatewayID, accountLeaseID string
 	var generation int64
 	var accountLeaseGeneration int64
+	var gatewayMediaGeneration int64
 	var accountLeaseAccountHash []byte
 	var answer []byte
 	var existingHash []byte
-	err = s.db.QueryRowContext(ctx, `SELECT id,generation,state,gateway_session_id,offer_answer,request_hash,account_lease_id,account_lease_generation,account_id_hash FROM voice_sessions WHERE workspace_id=? AND owner_id=? AND request_id=?`, p.WorkspaceID, p.SubjectID, req.RequestID).
-		Scan(&id, &generation, &state, &gatewayID, &answer, &existingHash, &accountLeaseID, &accountLeaseGeneration, &accountLeaseAccountHash)
+	err = s.db.QueryRowContext(ctx, `SELECT id,generation,state,gateway_session_id,offer_answer,request_hash,account_lease_id,account_lease_generation,account_id_hash,gateway_media_generation FROM voice_sessions WHERE workspace_id=? AND owner_id=? AND request_id=?`, p.WorkspaceID, p.SubjectID, req.RequestID).
+		Scan(&id, &generation, &state, &gatewayID, &answer, &existingHash, &accountLeaseID, &accountLeaseGeneration, &accountLeaseAccountHash, &gatewayMediaGeneration)
 	if err == nil {
 		if !bytes.Equal(existingHash, hash[:]) {
 			return sessionResponse{}, apiError(http.StatusConflict, "idempotency_conflict", "request_id was already used with different session input", nil)
@@ -257,6 +259,10 @@ func (s *Service) create(ctx context.Context, p contracts.Principal, req createR
 		_ = s.markSession(ctx, id, "quarantined", "gateway_response_invalid", nil, "")
 		return sessionResponse{}, apiError(http.StatusBadGateway, "voice_outcome_unknown", "Space gateway response is incomplete; media lease quarantined", nil)
 	}
+	if upstream.VoiceSessionGeneration < 0 {
+		_ = s.markSession(ctx, id, "quarantined", "gateway_media_generation_invalid", nil, "")
+		return sessionResponse{}, apiError(http.StatusBadGateway, "voice_outcome_unknown", "Space gateway returned an invalid media generation; media lease quarantined", nil)
+	}
 	// The gateway's account ID is sensitive correlation data. Persist only the
 	// answer and opaque lease identity; the account ID is hashed below.
 	answerJSON, _ := json.Marshal(struct {
@@ -281,12 +287,14 @@ func (s *Service) create(ctx context.Context, p contracts.Principal, req createR
 			hash := sha256.Sum256([]byte(upstream.AccountID))
 			accountHash = hash[:]
 		}
-		if _, err := s.db.ExecContext(ctx, `UPDATE voice_sessions SET account_lease_id=?,account_lease_generation=?,account_id_hash=? WHERE id=? AND state='active'`, upstream.AccountLeaseID, upstream.AccountLeaseGeneration, accountHash, id); err != nil {
+		if _, err := s.db.ExecContext(ctx, `UPDATE voice_sessions SET account_lease_id=?,account_lease_generation=?,account_id_hash=?,gateway_media_generation=? WHERE id=? AND state='active'`, upstream.AccountLeaseID, upstream.AccountLeaseGeneration, accountHash, upstream.VoiceSessionGeneration, id); err != nil {
 			// The upstream media exists but its account lease identity is not durably bound.
 			// Keep the owner pool fenced; a future hangup cannot claim account-scoped release.
 			return sessionResponse{}, apiError(http.StatusInternalServerError, "voice_outcome_unknown", "media lease identity could not be durably bound; account pool remains isolated", nil)
 		}
 		accountLeaseID, accountLeaseGeneration, accountLeaseAccountHash = upstream.AccountLeaseID, upstream.AccountLeaseGeneration, accountHash
+	} else if _, err := s.db.ExecContext(ctx, `UPDATE voice_sessions SET gateway_media_generation=? WHERE id=? AND state='active'`, upstream.VoiceSessionGeneration, id); err != nil {
+		return sessionResponse{}, apiError(http.StatusInternalServerError, "voice_outcome_unknown", "media generation could not be durably bound; account pool remains isolated", nil)
 	}
 	return sessionResponse{SessionID: id, Generation: 1, State: "active", AnswerSDP: upstream.AnswerSDP, AccountLeaseID: accountLeaseID, AccountLeaseGeneration: accountLeaseGeneration, AccountLeaseAccountHash: accountLeaseAccountHash}, nil
 }

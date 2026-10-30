@@ -55,7 +55,7 @@ func newHangupHarnessWithMedia(t *testing.T, gatewayHandler http.Handler, media 
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := store.DB().ExecContext(ctx, `INSERT INTO voice_sessions(id,workspace_id,owner_id,device_id,request_id,request_hash,generation,state,gateway_session_id,created_at,updated_at) VALUES('hangup-session','default',?,?,'hangup-request',X'01',1,'active','gateway-session',?,?)`, ownerID, registration.Device.ID, now, now); err != nil {
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO voice_sessions(id,workspace_id,owner_id,device_id,request_id,request_hash,generation,state,gateway_session_id,gateway_media_generation,created_at,updated_at) VALUES('hangup-session','default',?,?,'hangup-request',X'01',1,'active','gateway-session',1,?,?)`, ownerID, registration.Device.ID, now, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.DB().ExecContext(ctx, `UPDATE voice_pool_state SET blocked=1,reason_code='active_session',source_session_id='hangup-session' WHERE id=1`); err != nil {
@@ -150,7 +150,7 @@ func TestVoiceReconciliationCannotRaceInFlightTrustedHangup(t *testing.T) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	accountHash := sha256.Sum256([]byte("test-account"))
-	if _, err := store.DB().ExecContext(ctx, `INSERT INTO voice_sessions(id,workspace_id,owner_id,device_id,request_id,request_hash,generation,state,gateway_session_id,account_lease_id,account_lease_generation,account_id_hash,created_at,updated_at) VALUES('session-race','default',?,?,'request-race',X'01',3,'active','gateway-session','test-lease',8,?,?,?)`, ownerID, registration.Device.ID, accountHash[:], now, now); err != nil {
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO voice_sessions(id,workspace_id,owner_id,device_id,request_id,request_hash,generation,state,gateway_session_id,account_lease_id,account_lease_generation,account_id_hash,gateway_media_generation,created_at,updated_at) VALUES('session-race','default',?,?,'request-race',X'01',3,'active','gateway-session','test-lease',8,?,?,?,?)`, ownerID, registration.Device.ID, accountHash[:], 3, now, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.DB().ExecContext(ctx, `UPDATE voice_pool_state SET blocked=1,reason_code='active_session',source_session_id='session-race' WHERE id=1`); err != nil {
@@ -358,7 +358,7 @@ func TestHangupRetryAfterGatewayUnbindRetriesOnlyAccountRelease(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}), media)
 	accountHash := sha256.Sum256([]byte("test-account"))
-	if _, err := store.DB().Exec(`UPDATE voice_sessions SET account_lease_id='test-lease',account_lease_generation=8,account_id_hash=? WHERE id='hangup-session'`, accountHash[:]); err != nil {
+	if _, err := store.DB().Exec(`UPDATE voice_sessions SET account_lease_id='test-lease',account_lease_generation=8,account_id_hash=?,gateway_media_generation=1 WHERE id='hangup-session'`, accountHash[:]); err != nil {
 		t.Fatal(err)
 	}
 	request := func() *httptest.ResponseRecorder {
