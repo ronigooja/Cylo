@@ -11,8 +11,15 @@ private final class InstanceURLProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
+        // Background diagnostic uploads can outlive a test. A request that arrives
+        // after tearDown has no handler and must fail as a transport error, not as
+        // an XCTest assertion attributed to whichever test is running.
+        guard let handler = Self.handle else {
+            client?.urlProtocol(self, didFailWithError: URLError(.cancelled))
+            return
+        }
         do {
-            let (status, data) = try XCTUnwrap(Self.handle)(request)
+            let (status, data) = try handler(request)
             let response = try XCTUnwrap(HTTPURLResponse(url: XCTUnwrap(request.url), statusCode: status, httpVersion: nil, headerFields: nil))
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: data)
