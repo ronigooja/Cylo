@@ -1,5 +1,5 @@
 [Unit]
-Description=Zoe trusted AO runner (Docker daemon authority)
+Description=Zoe trusted OpenCode runner (Docker daemon authority)
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
