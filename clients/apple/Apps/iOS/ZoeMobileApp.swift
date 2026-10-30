@@ -8,8 +8,9 @@ struct ZoeMobileApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ZoeRootView(model: model)
+            Color.clear
                 .onOpenURL { model.receiveInstallationLink($0) }
+                .task { await model.start() }
         }
     }
 }

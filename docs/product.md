@@ -98,9 +98,9 @@ The system should not require every event, state update, or background operation
 
 ## 3. Client Requirements
 
-The detailed native-assistant requirements and acceptance targets are in [Native assistant direction](#native-assistant-direction) and [Native presentation and acceptance targets](#native-presentation-and-acceptance-targets).
+The client interface design is being redone; the behavior boundaries every client must keep are in [Client behavior boundaries](#client-behavior-boundaries).
 
-Conversation, Tasks, and Projects are primary entrances; Memory, Capabilities, and Settings are secondary. End voice and Stop task are distinct actions. Voice acceptance includes a 30-minute mixed Mandarin–English session on each of a real iPhone and iPad while locked, plus interruption, reconnect, audio-route changes, and durable-task continuity; this is a target, not a completed result. APNs only prompts a durable-inbox refresh; a push is not the notice authority.
+End voice and Stop task are distinct actions. Voice acceptance includes a 30-minute mixed Mandarin–English session on each of a real iPhone and iPad while locked, plus interruption, reconnect, audio-route changes, and durable-task continuity; this is a target, not a completed result. APNs only prompts a durable-inbox refresh; a push is not the notice authority.
 
 <a id="cy-03-01"></a>
 
@@ -216,85 +216,17 @@ Examples include:
 
 A notification should identify its event source and link to the relevant project or task.
 
-### Native assistant direction
+### Client behavior boundaries
 
-The user approved the [native assistant reference](design/native-assistant-reference.png). Zoe is an automation assistant whose frequent workloads include programming. Its interface centers on natural conversation, durable task progress, results, and decisions. Present programming execution and validation through concise, understandable summaries. The client does not provide source-code browsing or editing, diff viewers, terminals, or test consoles, including optional or hidden variants.
+- **Truthful state.** Voice reports connecting, active, interrupted, reconnecting, unavailable, permission-denied, and stopped states only when they are true; permission or policy failures need a recovery path, temporary failures may reconnect, and text input remains usable whenever voice is unavailable. Normal connected state has no banner; offline, stale, and failed operations stay visible with an action.
+- **No silent business action.** Voice transports audio and spoken output only. Transcript submission and business-command authorization remain explicit; voice never silently submits or confirms business work. High-impact or irreversible actions require scoped, explicit confirmation tied to the task/run/action, expected version, and expiry; ambiguous words authorize nothing.
+- **Server-authored content.** Clients render persisted server data and never fabricate messages, progress, assistant answers, or inactive actions. Ordinary results are server-authored content with no client Accept/Reject workflow; follow-ups are interpreted by the server in task context. Contracts: [HTTP contract](../contracts/http.go) and [task-entry handlers](../internal/control/task_entries.go).
+- **Submissions.** A submission is accepted, failed, or unknown. Drafts clear only after durable acceptance; unknown submissions reconcile the original journaled receipt instead of issuing a new command, and the draft stays visible with confirmation pending. Drafts are cleared when the server or identity changes.
+- **Concise errors, automatic diagnostics.** Every client error surface shows only a short state and an actionable recovery or retry instruction, never detailed server, infrastructure, runtime, transport, account, or local exception text, credentials, headers, response bodies, transcripts, audio, or SDP/ICE. Redacted detail is encrypted, queued, and sent best effort to the authenticated diagnostic endpoint without blocking the user or changing command authority or receipt/retry semantics.
+- **Outcomes, not developer tools.** Programming work is summarized by goal, stage, outcome, validation summary, and decisions needed. Clients provide no source-code browsing or editing, diff viewer, terminal, or test console, including optional or hidden variants.
+- **Platform conventions.** English and Simplified Chinese; system appearance; dates and counts use the system region; server-authored content keeps its original language; accessibility support on each platform. Authority and diagnostics boundaries: [architecture](architecture.md#identity-clients-and-notices).
 
-- **Simple appearance, useful density.** Use native typography, restrained semantic colors, compact rows, and clear grouping. Keep more useful conversation and task information visible by reducing oversized headings, excessive whitespace, decorative cards, and repeated metadata. Preserve readability, keyboard access, Dynamic Type, and platform touch targets; density does not mean uniformly smaller text or controls.
-- **Conversation leads.** Keep projects and recent conversations/tasks in a compact sidebar. Show task receipts and concise progress/results in context. A compact, collapsible task rail may surface ongoing work, pending decisions, and recent completion on wide windows; collapse secondary surfaces before constraining the conversation in narrow windows. Avoid statistics dashboards and compulsory workflow panels.
-- **Voice is Settings-controlled.** Do not place a microphone button in the composer. Continuous voice is off
-until the user opts in through Settings. When enabled, the client automatically attempts to establish and
-maintain an authorized voice session after connection and identity initialization, subject to OS microphone
-permission, audio-session policy, app lifecycle/background limits, network, account-pool capacity, and server
-availability. The client must report connecting, active, interrupted, reconnecting, unavailable,
-permission-denied, and stopped states truthfully; it must not claim active voice when any required system,
-device, network, account, or server condition is unavailable. Automatic reconnect is appropriate for temporary
- failures; permission or policy failures require a Settings/system-settings recovery path. Text chat remains
-usable whenever voice is unavailable. Continuous voice transports audio and spoken output only; transcript
-review/submission and business-command authorization remain explicit, and voice never silently submits or
-confirms business work. Do not add persistent labels, large waveforms, timers, voice cards, or separate
-persistent control strips. Settings controls and status messages need accessible names/state values, keyboard
-access, and help on demand; color alone must not carry state. Detailed voice, transport, account, and server
-errors are not a client presentation responsibility: the client shows only a concise actionable state and
-automatically submits the redacted diagnostic through the authenticated diagnostic channel when available.
-- **Automation reduces required interaction.** After the user expresses and authorizes the intent, work
-proceeds within its granted scope. Keep ordinary progress concise; emphasize decisions that require the user,
-actionable failures, and recorded results. Ordinary assistant replies and ordinary task results are
-server-authored content, not client-side Accept/Reject workflows. Users continue through chat by asking for
-changes, continuation, or missing information; ambiguous words do not authorize a business decision.
-High-impact or irreversible actions require scoped, explicit conversational confirmation tied to the
-task/run/action, expected version, and expiry. Continuous voice does not alter these boundaries.
-- **Focus on outcomes.** Summarize programming work using its goal, current stage, outcome, validation summary, and decisions that require the user. Users should be able to understand what was accomplished and what remains unresolved through these summaries, without reviewing source code. The same conversation and task surfaces must support research and other authorized work.
-- **Client errors are concise; diagnostics are automatic.** This applies to every native-client error surface,
- including connection, voice, task, notification, export, capability, storage, and transport failures. The
-client must not display detailed server, infrastructure, runtime, transport, account, or local exception text.
- It shows only a short state and an actionable recovery or retry instruction; detailed context is redacted,
-encrypted, queued, and automatically returned to the authenticated diagnostic endpoint when available.
-Diagnostic upload is best effort and must not block the user, alter command authority, or change receipt/retry
- semantics. Authentication failures and user-input validation may show the minimum information needed to
-recover, but must not expose credentials, headers, response bodies, transcripts, audio, SDP/ICE, or
-secret-bearing details.
-
-### Native presentation and acceptance targets
-
-AO startup failures, unresolved runtime diagnostics, execution-slot accounting, and reconciliation instructions belong to operator interfaces and audit records. Conversation and task views show the actual task status without infrastructure queue reasons or capacity banners. Preserve actionable submission errors and pending-confirmation feedback; this presentation rule does not authorize client retries or change task authority.
-
-The Apple redesign uses system typography, SF Symbols, semantic colors, system appearance, and English/Simplified Chinese localization. Spacing follows 4/8/12/16/24/32 pt steps; conversation text is limited to 760 pt. Blue emphasizes primary actions. Task outcomes and actionable exceptional states have concise text labels; routine voice state follows the compact icon treatment above. Normal connected state has no banner. Offline, stale, and failed operations remain visible with an action at the affected surface.
-
-macOS uses a resizable sidebar (240 pt default) and workspace. iPad uses the same split structure in regular
-width and collapses in narrow windows; iPhone has Conversation, Tasks, and Projects tabs, hidden in the task
-workspace. Notifications are a toolbar entrance with an unread count. Account menus expose Settings, Memory,
-and Capabilities. Home contains a composer and recent work, without statistics or tutorial cards. Coverage
-includes home, empty, loading, send failure, and task states with language, appearance, and text-size
-variants; design examples are not application acceptance evidence.
-
-Every task entrance leads to the same workspace. The workspace shows persisted messages, actual task status,
-approvals, and recorded results/evidence; runtime identifiers and cursors belong in Technical details. No
-simulated assistant answers, historical progress, or inactive download actions fill missing server
-capabilities. Tasks support search, status filters, and update ordering. Projects offer a contextual new
-conversation. Settings group current connection/key management, notifications, data, and advanced options,
-following [the instance-key decision](architecture/decisions/0004-instance-key-authentication.md).
-
-Submission has accepted, failed, and unknown outcomes. Drafts clear only after durable acceptance. Unknown
-submissions reconcile the original journaled receipt rather than issuing a new command; the interface must
-retain the draft and show confirmation pending. Task drafts and selection survive navigation within the
-connected context and are cleared when the server or identity changes. There is no generic result-decision
-section or Accept result/Reject result control in ordinary task views. Ordinary results are displayed as
-server-authored content; follow-up messages are interpreted by the server in task context. A high-impact
-action may show a scoped conversational confirmation request, but confirmation authorizes execution and is not
- result acceptance. macOS keyboard targets are Command-Return to send, Command-N for a new conversation, and
-Command-F for task search.
-
-Authoritative task-history paging and reconnect contracts are defined in [the HTTP contract](../contracts/http.go) and [task-entry handlers](../internal/control/task_entries.go); clients must not fabricate messages or maintain a competing conversation authority. Dates and counts use the system region; server-authored content remains in its original language.
-
-Native application acceptance must cover Mac 840×620 and desktop sizes, iPad portrait/landscape/narrow
-windows, and small/large iPhones; both languages and appearances; long titles and Dynamic Type; keyboard
-avoidance; VoiceOver, keyboard focus, reduced motion, and 44×44 pt mobile targets. Core flows must verify
-one-tap continuation, contextual approvals/results, linked notifications, retained failed drafts, unknown
-receipts, duplicate events, reconnect history, terminal tasks, rejected/rotated instance keys, connection
-clearing, and identity changes. Record Go tests, Swift state/contract tests, Xcode app builds, simulator UI
-runs, real-device runs, and real-service checks separately. Linux source review and design references cannot
-establish Apple compilation, screenshots, interaction, or end-to-end acceptance.
+Real-device, simulator, build, and service evidence stays separate in [the evidence register](acceptance/evidence.md); design references cannot establish Apple compilation, screenshots, interaction, or end-to-end acceptance.
 
 ## 4. Server Requirements
 
