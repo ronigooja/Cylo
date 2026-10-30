@@ -430,7 +430,7 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 	}
 	if observation.Kind == "stop_confirmed" || observation.Kind == "runtime_terminated" {
 		if boundSession == "" || observation.RuntimeSessionID != boundSession {
-			writeError(w, apiError(409, "session_conflict", "termination observation must match the bound AO project and session", nil))
+			writeError(w, apiError(409, "session_conflict", "termination observation must match the bound runtime session", nil))
 			return
 		}
 		proof := observation.TerminationProof
@@ -443,7 +443,7 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 			expectedMethod = ""
 		}
 		if expectedMethod == "" || proof == nil || proof.Source != "runner_container_removal" || proof.Method != expectedMethod || proof.RuntimeSessionID != boundSession || !proof.CleanupComplete || proof.VerifiedAt.IsZero() || offset != 0 || proof.VerifiedAt.After(time.Now().UTC().Add(5*time.Minute)) {
-			writeError(w, apiError(409, "termination_unproven", "termination requires trusted AO stop proof for the bound session", nil))
+			writeError(w, apiError(409, "termination_unproven", "termination requires verified runner container removal for the bound session", nil))
 			return
 		}
 	}
@@ -455,7 +455,7 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		}
 		proof := observation.NoEffectProof
 		if proof == nil || (!reconciled && (proof.JournalPhase != "claimed" || proof.RuntimeCreateStarted)) || proof.RuntimeSessionID != "" || proof.RuntimeContainerID != "" || (proof.Outcome != "stopped" && proof.Outcome != "failed") || observation.RuntimeSessionID != "" || boundSession != "" || len(observation.ExternalEffects) != 0 || observation.TerminationProof != nil {
-			writeError(w, apiError(409, "no_effect_unproven", "no-effect termination requires a claimed journal entry with no AO binding or external effects", nil))
+			writeError(w, apiError(409, "no_effect_unproven", "no-effect termination requires a claimed journal entry with no runtime binding or external effects", nil))
 			return
 		}
 		if proof.Outcome == "stopped" && desired != "stop" {
@@ -478,15 +478,14 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		if reconciled {
 			evidence := proof.Reconciliation
 			_, offset := evidence.VerifiedAt.Zone()
-			_, startOffset := evidence.JournalUpdatedAt.Zone()
 			_, journalOffset := evidence.JournalUpdatedAt.Zone()
 			instance, instanceErr := GetInstanceState(r.Context(), tx)
 			if instanceErr != nil {
 				writeError(w, instanceErr)
 				return
 			}
-			if evidence.JournalUpdatedAt.IsZero() || startOffset != 0 || evidence.JournalUpdatedAt.IsZero() || journalOffset != 0 || !evidence.JournalUpdatedAt.After(evidence.JournalUpdatedAt) || evidence.JournalUpdatedAt.After(evidence.VerifiedAt) || evidence.JournalUpdatedAt.After(time.Now().UTC()) || status != "uncertain" || proof.JournalPhase != "effect_unknown" || !proof.RuntimeCreateStarted || proof.Outcome != "failed" || evidence.RunID != runID || strings.TrimSpace(evidence.Actor) == "" || len(evidence.Actor) > 200 || strings.ContainsAny(evidence.Actor, "\r\n") || !evidence.Confirmed || evidence.VerifiedAt.IsZero() || offset != 0 || evidence.VerifiedAt.After(time.Now().UTC().Add(5*time.Minute)) || evidence.RuntimeQuery != "docker ps --filter io.zoe.run/attempt/fence" || !evidence.RuntimeInventoryComplete || evidence.RuntimeMatches != 0 || evidence.DockerQuery != "docker ps -aq --no-trunc; docker inspect all IDs" || !evidence.DockerInventoryComplete || evidence.DockerRuntimeCount != 0 || evidence.InstanceID != instance.InstanceID || evidence.InstanceEpoch != instance.Epoch {
-				writeError(w, apiError(409, "no_effect_unproven", "explicit reconciliation requires complete AO and Docker absence proof under the current instance fence", nil))
+			if evidence.JournalUpdatedAt.IsZero() || journalOffset != 0 || evidence.JournalUpdatedAt.After(evidence.VerifiedAt) || evidence.JournalUpdatedAt.After(time.Now().UTC()) || status != "uncertain" || proof.JournalPhase != "effect_unknown" || !proof.RuntimeCreateStarted || proof.Outcome != "failed" || evidence.RunID != runID || strings.TrimSpace(evidence.Actor) == "" || len(evidence.Actor) > 200 || strings.ContainsAny(evidence.Actor, "\r\n") || !evidence.Confirmed || evidence.VerifiedAt.IsZero() || offset != 0 || evidence.VerifiedAt.After(time.Now().UTC().Add(5*time.Minute)) || evidence.RuntimeQuery != "docker ps --filter io.zoe.run/attempt/fence" || !evidence.RuntimeInventoryComplete || evidence.RuntimeMatches != 0 || evidence.DockerQuery != "docker ps -aq --no-trunc; docker inspect all IDs" || !evidence.DockerInventoryComplete || evidence.DockerRuntimeCount != 0 || evidence.InstanceID != instance.InstanceID || evidence.InstanceEpoch != instance.Epoch {
+				writeError(w, apiError(409, "no_effect_unproven", "explicit reconciliation requires complete runtime-label and Docker absence proof under the current instance fence", nil))
 				return
 			}
 			var runStartedAtText string
@@ -531,11 +530,11 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 	if observation.Kind == "create_rejected" {
 		proof := observation.CreateRejection
 		if status != "active" || proof == nil || proof.Code == "" || boundSession != "" || observation.RuntimeSessionID != "" || len(observation.ExternalEffects) != 0 || observation.NoEffectProof != nil || observation.TerminationProof != nil || observation.BudgetReservationID != "" && observation.BudgetReservationID != "runtime-initial-prompt" {
-			writeError(w, apiError(409, "create_rejection_unproven", "AO create rejection requires an active unbound run and sanitized rejection proof", nil))
+			writeError(w, apiError(409, "create_rejection_unproven", "runtime create rejection requires an active unbound run and sanitized rejection proof", nil))
 			return
 		}
 		if proof.Code != "invalid_request" && proof.Code != "image_missing" && proof.Code != "container_create_rejected" {
-			writeError(w, apiError(409, "create_rejection_unproven", "AO create rejection code is not allowlisted", nil))
+			writeError(w, apiError(409, "create_rejection_unproven", "runtime create rejection code is not allowlisted", nil))
 			return
 		}
 		var started, bound, effects int
