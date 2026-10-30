@@ -56,7 +56,7 @@ import Foundation
             do {
                 let record = try settings.write(key: key, value: value, by: .ai)
                 return .object(["ok": .bool(true), "recordID": .string(record?.id ?? "")])
-            } catch { return error(settingError(error)) }
+            } catch let failure { return self.error(settingError(failure)) }
         case "settings.undo":
             guard let id = string(args["recordID"] ?? args["recordId"]) else { return error("missing record id") }
             return settings.undo(recordID: id) ? .object(["ok": .bool(true)]) : error("unknown audit record")
