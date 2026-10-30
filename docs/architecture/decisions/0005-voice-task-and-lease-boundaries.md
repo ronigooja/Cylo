@@ -6,7 +6,7 @@ Status: accepted architecture baseline; delivery status and evidence remain in [
 
 A real-time voice session can be interrupted, retransmitted, or moved to a different upstream account while accepted work continues. Upstream speech does not prove a business command was accepted or a task completed. An expired lease does not prove microphone, media, account, or runtime resources have terminated.
 
-The selected gateway handles account selection and SDP signaling, while the native client connects its WebRTC media and DataChannel directly to the upstream service. That client-direct topology is the root cause of the separate account-media lease contract: a gateway session deletion cannot prove that the client or upstream PeerConnection has ended. The contract protects account reuse; it does not make the gateway a media owner.
+The selected gateway handles account selection (choosing and persisting a sticky pool account for each voice session; the account pool works with the account-media adapter left at its default `false`) and SDP signaling, while the native client connects its WebRTC media and DataChannel directly to the upstream service. That client-direct topology is the root cause of the separate account-media lease contract: a gateway session deletion cannot prove that the client or upstream PeerConnection has ended. The contract protects account reuse; it does not make the gateway a media owner.
 
 ## Decision
 
