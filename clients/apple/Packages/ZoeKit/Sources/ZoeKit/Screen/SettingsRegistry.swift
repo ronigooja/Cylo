@@ -105,7 +105,7 @@ public final class InMemorySettingsStore: SettingsStore {
         case "bool": if case .bool = value { return true }
         case "string": if case .string = value { return true }
         case "number":
-            guard case let .number(number) = value, let range = descriptor.range else { return false }
+            guard let number = value.screenNumber, let range = descriptor.range else { return false }
             let parts = range.components(separatedBy: "...").compactMap { Double($0) }
             if parts.count == 2 { return number >= parts[0] && number <= parts[1] }
             return false

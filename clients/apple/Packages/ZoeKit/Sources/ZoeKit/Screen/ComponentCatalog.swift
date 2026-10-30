@@ -86,6 +86,7 @@ public enum ComponentCatalog {
         case .null: "null"
         case let .bool(value): String(value)
         case let .number(value): String(value)
+        case let .integer(value): String(value)
         case let .string(value): value
         case let .array(values): "[\(values.map(jsonText).joined(separator: ", "))]"
         case let .object(values): "{\(values.keys.sorted().map { "\($0): \(jsonText(values[$0]!))" }.joined(separator: ", "))}"

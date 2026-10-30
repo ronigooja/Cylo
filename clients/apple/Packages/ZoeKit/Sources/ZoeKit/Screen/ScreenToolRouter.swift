@@ -137,7 +137,7 @@ import Foundation
         }
     }
     private func string(_ value: JSONValue?) -> String? { if case let .string(value) = value { value } else { nil } }
-    private func number(_ value: JSONValue?) -> Double? { if case let .number(value) = value { value } else { nil } }
+    private func number(_ value: JSONValue?) -> Double? { value?.screenNumber }
     private func bool(_ value: JSONValue?) -> Bool? { if case let .bool(value) = value { value } else { nil } }
     private func integer(_ value: JSONValue?) -> Int? { number(value).map(Int.init) }
     private func int64(_ value: JSONValue?) -> Int64? { number(value).map(Int64.init) }

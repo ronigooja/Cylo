@@ -3,10 +3,6 @@ import Foundation
 public enum ScreenEmphasis: String, Codable, Sendable { case low, normal, high }
 public enum ScreenTone: String, Codable, Sendable { case neutral, info, attention, success, critical }
 
-public indirect enum JSONValue: Codable, Equatable, Sendable {
-    case null, bool(Bool), number(Double), string(String), array([JSONValue]), object([String: JSONValue])
-}
-
 public struct ScreenAction: Codable, Equatable, Sendable {
     public var intent: String
     public var args: [String: JSONValue]
@@ -112,4 +108,15 @@ public struct ComponentDescriptor: Codable, Equatable, Sendable {
     public var purpose: String
     public var fallback: String
     public init(type: String, purpose: String, fallback: String) { self.type = type; self.purpose = purpose; self.fallback = fallback }
+}
+
+public extension JSONValue {
+    /// Numeric value for either integer or floating-point JSON numbers.
+    var screenNumber: Double? {
+        switch self {
+        case let .number(value): value
+        case let .integer(value): Double(value)
+        default: nil
+        }
+    }
 }

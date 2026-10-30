@@ -264,11 +264,11 @@ private struct CanvasLayout: Layout {
 
 private extension JSONValue {
     var stringValue: String? { if case let .string(value) = self { return value }; return nil }
-    var numberValue: Double? { if case let .number(value) = self { return value }; return nil }
+    var numberValue: Double? { screenNumber }
     var boolValue: Bool? { if case let .bool(value) = self { return value }; return nil }
     var arrayValue: [JSONValue]? { if case let .array(value) = self { return value }; return nil }
     var objectValue: [String: JSONValue]? { if case let .object(value) = self { return value }; return nil }
     subscript(key: String) -> JSONValue? { objectValue?[key] }
-    var displayString: String { switch self { case .null: return ""; case .bool(let value): return value ? "true" : "false"; case .number(let value): return String(value); case .string(let value): return value; case .array(let values): return values.map(\.displayString).joined(separator: ", "); case .object(let values): return values.map { "\($0.key): \($0.value.displayString)" }.joined(separator: ", ") } }
+    var displayString: String { switch self { case .null: return ""; case .bool(let value): return value ? "true" : "false"; case .number(let value): return String(value); case .integer(let value): return String(value); case .string(let value): return value; case .array(let values): return values.map(\.displayString).joined(separator: ", "); case .object(let values): return values.map { "\($0.key): \($0.value.displayString)" }.joined(separator: ", ") } }
 }
 #endif
