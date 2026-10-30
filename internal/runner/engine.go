@@ -261,7 +261,7 @@ func (e *Engine) emit(ctx context.Context, c contracts.JobClaim, kind, source, s
 	if proof != nil {
 		result, _ = json.Marshal(proof)
 	}
-	entry, _ := e.Journal.Entry(ctx, c.RunID)
+	entry, _, _ := e.Journal.Entry(ctx, c.RunID)
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s", c.RunID, c.AttemptID, kind, summary)))
 	o := contracts.RunnerObservation{ObservationID: hex.EncodeToString(sum[:16]), RunID: c.RunID, AttemptID: c.AttemptID, Fence: c.Fence, Kind: kind, OccurredAt: time.Now().UTC(), RuntimeSessionID: entry.Session, RuntimeContainerID: entry.Container, Result: result, ExternalEffects: effects}
 	if p, ok := proof.(*contracts.TerminationProof); ok {
@@ -289,7 +289,7 @@ func (e *Engine) emitMessage(ctx context.Context, c contracts.JobClaim, kind, so
 		}
 	}
 	raw, _ := json.Marshal(map[string]any{"assistant_output": out, "assistant_message": m})
-	entry, _ := e.Journal.Entry(ctx, c.RunID)
+	entry, _, _ := e.Journal.Entry(ctx, c.RunID)
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s", c.RunID, c.AttemptID, kind, summary)))
 	o := contracts.RunnerObservation{ObservationID: hex.EncodeToString(sum[:16]), RunID: c.RunID, AttemptID: c.AttemptID, Fence: c.Fence, Kind: kind, OccurredAt: time.Now().UTC(), RuntimeSessionID: entry.Session, RuntimeContainerID: entry.Container, Result: raw, ExternalEffects: []contracts.ExternalEffect{}}
 	if err := e.Journal.QueueObservation(ctx, c.RunID, o); err != nil {
@@ -333,4 +333,14 @@ func buildPrompt(c contracts.JobClaim) string {
 func observationID(run, attempt string, fence uint64, kind, disc string) string {
 	h := sha256.Sum256([]byte(strings.Join([]string{run, attempt, fmt.Sprint(fence), kind, disc}, "\x00")))
 	return hex.EncodeToString(h[:16])
+}
+
+func (e *Engine) emitNoEffectTerminal(ctx context.Context, c contracts.JobClaim, reason, message string, p *contracts.NoEffectProof) error {
+	return e.emit(ctx, c, "no_effect_terminal", reason, message, p, nil)
+}
+
+func sameRecoveredClaim(a, b contracts.JobClaim, _ string) bool {
+	a.RuntimeSessionID = ""
+	b.RuntimeSessionID = ""
+	return a.RunID == b.RunID && a.AttemptID == b.AttemptID && a.Fence == b.Fence && a.Harness == b.Harness
 }
