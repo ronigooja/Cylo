@@ -20,7 +20,7 @@ func TestDiscoverDeploymentTreatsSystemdSupervisedComposeAsCompose(t *testing.T)
 		t.Fatal(err)
 	}
 	m := NewManager(func(_ context.Context, _ string, _ ...string) ([]byte, error) {
-		return []byte("LoadState=loaded\nEnvironmentFiles=/etc/zoe/ao.env\n"), nil
+		return []byte("LoadState=loaded\nEnvironmentFiles=/etc/zoe/zoe-runner.env\n"), nil
 	})
 	d, err := DiscoverDeployment(context.Background(), m, root)
 	if err != nil {

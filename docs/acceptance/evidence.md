@@ -4,14 +4,13 @@ These retained observations still support current implementation conclusions. Ea
 
 ## Current OpenCode acceptance gates
 
-The Zoe-owned runtime remains unaccepted until evidence covers: streaming provider finish and token/usage propagation through the bridge; in-flight crash recovery without duplicate effects; runner-enforced tool-step/time/budget limits; and migration of the four uncertain historical AO runs through exact label lookup and fail-closed reconciliation. These are open gates, not claims established by the historical records below.
+The Zoe-owned runtime remains unaccepted until evidence covers: streaming provider finish and token/usage propagation through the bridge; in-flight crash recovery without duplicate effects; and runner-enforced tool-step/time/budget limits. The four uncertain historical runs were abandoned by operator decision, so no migration gate remains for them. These are open gates, not claims established by the historical records below.
 
 Known limitations of the current source (PR #4, hosted CI passed):
 
 - Runner unit coverage is reduced: the restored runner tests are about 15–20% of the pre-removal suite.
 - `toolEvidence` is unverified and reads only the final assistant message, not the whole session.
 - Legacy `runs.harness` and `tasks.harness` column defaults remain `'codex'`; production paths set the value explicitly.
-- AO leftovers remain in `internal/ops` (`zoe-ao.service`, `ao.env`), `cmd/zoe`, contract legacy-label checks, and the `ao_session_id` / `ao_container_id` columns (kept for rollback and backfill). Retained AO containers need operational reconciliation before AO is uninstalled.
 
 ## Historical superseded AO/Codex baseline
 

@@ -257,7 +257,7 @@ secret-bearing details.
 
 ### Native presentation and acceptance targets
 
-AO startup failures, unresolved runtime diagnostics, execution-slot accounting, and reconciliation instructions belong to operator interfaces and audit records. Conversation and task views show the actual task status without infrastructure queue reasons or capacity banners. Preserve actionable submission errors and pending-confirmation feedback; this presentation rule does not authorize client retries or change task authority.
+Runtime startup failures, unresolved diagnostics, execution-slot accounting, and reconciliation instructions belong to operator interfaces and audit records. Conversation and task views show the actual task status without infrastructure queue reasons or capacity banners. Preserve actionable submission errors and pending-confirmation feedback; this presentation rule does not authorize client retries or change task authority.
 
 The Apple redesign uses system typography, SF Symbols, semantic colors, system appearance, and English/Simplified Chinese localization. Spacing follows 4/8/12/16/24/32 pt steps; conversation text is limited to 760 pt. Blue emphasizes primary actions. Task outcomes and actionable exceptional states have concise text labels; routine voice state follows the compact icon treatment above. Normal connected state has no banner. Offline, stale, and failed operations remain visible with an action at the affected surface.
 
@@ -312,7 +312,7 @@ The Zoe server should be able to run as an independent background system.
 
 For the first release, the server and execution host use **Linux**. They can be deployed on a Linux server or another supported Linux environment to execute agent tasks and run ordinary background services.
 
-Running the Zoe server, AO, or Worker background services on macOS is outside the current baseline. Native macOS clients remain in scope; there is no browser/PWA client.
+Running the Zoe server or Worker background services on macOS is outside the current baseline. Native macOS clients remain in scope; there is no browser/PWA client.
 
 The server should not depend on a graphical client remaining open.
 
@@ -432,7 +432,7 @@ The runner enforces time, budget, and tool-step limits through event observation
 
 **CY-05-06.** Keep Zoe runtime outputs and migration records usable during provider/runtime maintenance and migration.
 
-Projects, code, artifacts, task history, runtime session identity, usage records, and unresolved recovery evidence must remain accessible without inventing unsupported native-tool handoff. The four historical uncertain AO runs must be migrated through the label-based Zoe runtime uncertainty procedure before legacy runtime removal; their records remain labeled as historical migration evidence.
+Projects, code, artifacts, task history, runtime session identity, usage records, and unresolved recovery evidence must remain accessible without inventing unsupported native-tool handoff. The four uncertain historical runs were abandoned by operator decision; they remain historical records and require no migration.
 
 ## 6. Agent System Requirements
 

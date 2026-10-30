@@ -27,7 +27,7 @@ Selections are combined for mixed changes. Source comments are not inferred from
 diff text: a comment-only source change follows its source component's checks.
 The current Go suite remains whole; the race package set also remains unchanged
 until dependency evidence supports a safe reduction. Python services and external
-AO runtime checks retain their existing coverage limitations.
+Runtime checks retain their existing coverage limitations.
 
 Each selected Apple build, Swift suite, Go suite, race suite, and script suite is
 an independent job. Routine Apple checks build apps without producing an archive;

@@ -20,14 +20,17 @@ import (
 
 const DefaultProviderSecretPath = "/etc/zoe/runner-secrets/cliproxyapi-api-key"
 
-// ProviderConfig is the deployment configuration consumed by the AO daemon.
+// ProviderConfig is the deployment configuration consumed by the Zoe runner.
 // Secret contains the credential only while configuring; it is never rendered
 // into an environment file or included in ProbeResult.
 type ProviderConfig struct {
-	BaseURL    string
-	Model      string
-	SecretPath string
-	Secret     string
+	BaseURL        string
+	Model          string
+	SecretPath     string
+	Secret         string
+	Image          string
+	ProviderSocket string
+	WorkspaceRoot  string
 }
 
 func (c ProviderConfig) Normalized() (ProviderConfig, error) {
@@ -76,9 +79,9 @@ func WriteSecretAtomic(path string, secret []byte) error {
 	return writeFileAtomic(path, secret, 0o600)
 }
 
-// WriteAOEnvAtomic renders only the AO external-provider variables. The token
+// WriteRunnerEnvAtomic renders runner provider/runtime variables. The token
 // itself stays in SecretPath and is never written to this file.
-func WriteAOEnvAtomic(path string, c ProviderConfig) error {
+func WriteRunnerEnvAtomic(path string, c ProviderConfig) error {
 	c, err := c.Normalized()
 	if err != nil {
 		return err
@@ -87,7 +90,7 @@ func WriteAOEnvAtomic(path string, c ProviderConfig) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	updates := map[string]string{"AO_CODEX_EXTERNAL_BASE_URL": c.BaseURL, "AO_CODEX_EXTERNAL_API_KEY_FILE": c.SecretPath, "AO_CODEX_EXTERNAL_MODEL": c.Model}
+	updates := map[string]string{"ZOE_OPENCODE_PROVIDER_BASE_URL": c.BaseURL, "ZOE_OPENCODE_PROVIDER_KEY_FILE": c.SecretPath, "ZOE_OPENCODE_MODEL": c.Model, "ZOE_OPENCODE_IMAGE": c.Image, "ZOE_OPENCODE_PROVIDER_SOCKET": c.ProviderSocket, "ZOE_OPENCODE_WORKSPACE_ROOT": c.WorkspaceRoot}
 	lines := strings.Split(string(old), "\n")
 	kept := make([]string, 0, len(lines)+3)
 	for _, line := range lines {
@@ -101,8 +104,10 @@ func WriteAOEnvAtomic(path string, c ProviderConfig) error {
 			kept = append(kept, line)
 		}
 	}
-	for _, key := range []string{"AO_CODEX_EXTERNAL_BASE_URL", "AO_CODEX_EXTERNAL_API_KEY_FILE", "AO_CODEX_EXTERNAL_MODEL"} {
-		kept = append(kept, key+"="+strconv.Quote(updates[key]))
+	for _, key := range []string{"ZOE_OPENCODE_PROVIDER_BASE_URL", "ZOE_OPENCODE_PROVIDER_KEY_FILE", "ZOE_OPENCODE_MODEL", "ZOE_OPENCODE_IMAGE", "ZOE_OPENCODE_PROVIDER_SOCKET", "ZOE_OPENCODE_WORKSPACE_ROOT"} {
+		if updates[key] != "" {
+			kept = append(kept, key+"="+strconv.Quote(updates[key]))
+		}
 	}
 	return writeFileAtomic(path, []byte(strings.Join(kept, "\n")+"\n"), 0o600)
 }

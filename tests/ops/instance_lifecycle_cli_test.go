@@ -8,7 +8,7 @@ import (
 
 // The lifecycle commands use only Python's standard library. Their regression
 // suite exercises temporary owned roots and fake executors; it never contacts
-// systemd, AO, a running deployment, or any external store.
+// systemd, a running deployment, or any external store.
 func TestInstanceLifecycleOperatorCLIs(t *testing.T) {
 	root := repositoryRoot(t)
 	python, err := exec.LookPath("python3")
