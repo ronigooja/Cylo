@@ -89,7 +89,7 @@ func (m Manager) Inspect(ctx context.Context, cfg InspectConfig) Status {
 	}
 	services := cfg.Services
 	if len(services) == 0 {
-		services = []string{"zoe-compose.service", "zoe-ao.service", "zoe-runner.service"}
+		services = []string{"zoe-compose.service", "zoe-runner.service"}
 	}
 	result := Status{Mode: mode, Provider: ProviderStatus{BaseURL: redactURL(cfg.ProviderBaseURL), Model: safeModel(cfg.ProviderModel), ConfigSource: cfg.ProviderConfigSource, LastCheck: cfg.ProviderLastCheck}}
 	for _, name := range services {
@@ -173,7 +173,7 @@ func (m Manager) Reload(ctx context.Context, mode Mode, services []string, compo
 		mode = DetectMode()
 	}
 	if len(services) == 0 {
-		services = []string{"zoe-ao.service", "zoe-runner.service"}
+		services = []string{"zoe-runner.service"}
 	}
 	for _, service := range services {
 		if !validService(service) {

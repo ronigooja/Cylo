@@ -34,11 +34,9 @@ type Config struct {
 type RuntimeProfile struct {
 	ID              string      `json:"id"`
 	Harness         string      `json:"harness,omitempty"`
-	AOProjectID     string      `json:"ao_project_id"`
 	RuntimeRouteID  string      `json:"runtime_route_id"`
 	ModelRouteID    string      `json:"model_route_id"`
 	Role            string      `json:"role"`
-	AOAgentKind     string      `json:"ao_agent_kind"`
 	IsolationPolicy string      `json:"isolation_policy"`
 	CapabilityIDs   []string    `json:"capability_ids"`
 	Scopes          []string    `json:"scopes"`
@@ -48,6 +46,10 @@ type RuntimeProfile struct {
 // ChildPolicy is a profile's bounded authority to request descendants. A task
 // receives a serialized snapshot at admission, so later config changes cannot
 // enlarge an existing lineage.
+func normalizeIsolationPolicy(policy string) string {
+	return policy
+}
+
 type ChildPolicy struct {
 	AllowedProfileIDs []string `json:"allowed_profile_ids"`
 	CapabilityIDs     []string `json:"capability_ids"`
@@ -142,7 +144,7 @@ func (s *Server) AppendEventsTx(ctx context.Context, tx *sql.Tx, p contracts.Pri
 type TaskSourceAdmissionHandler func(context.Context, *sql.Tx, contracts.Principal, string, *TaskSourceRequest, json.RawMessage, time.Time) ([]contracts.Event, error)
 
 // TaskDispatchGuard decides whether a trusted non-user task source remains
-// authorized immediately before a runner creates an AO runtime. A non-empty
+// authorized immediately before a runner creates a runtime. A non-empty
 // reason code denies dispatch. Implementations may update their source-owned
 // records inside tx so cancellation and the task transition commit together.
 type TaskDispatchGuard func(context.Context, *sql.Tx, string, string, time.Time) (reasonCode string, err error)
@@ -230,9 +232,10 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 	}
 	profiles := make(map[string]RuntimeProfile, len(cfg.Profiles))
 	for id, profile := range cfg.Profiles {
+		profile.IsolationPolicy = normalizeIsolationPolicy(profile.IsolationPolicy)
 		profile.Harness = strings.TrimSpace(profile.Harness)
 		if profile.Harness == "" {
-			profile.Harness = "codex"
+			profile.Harness = "opencode"
 		}
 		profile.CapabilityIDs = append([]string(nil), profile.CapabilityIDs...)
 		profile.Scopes = append([]string(nil), profile.Scopes...)
@@ -245,7 +248,7 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 	for role, profileID := range cfg.RoleProfiles {
 		role, profileID = strings.TrimSpace(role), strings.TrimSpace(profileID)
 		profile, ok := cfg.Profiles[profileID]
-		if role == "" || !ok || profile.Role != role || profile.AOAgentKind != "worker" {
+		if role == "" || !ok || profile.Role != role {
 			return nil, fmt.Errorf("role profile mapping %q -> %q must reference a configured worker profile with the same role", role, profileID)
 		}
 		if _, exists := roleProfiles[role]; exists {
@@ -265,17 +268,14 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 		}
 	}
 	for id, profile := range cfg.Profiles {
-		if profile.Harness != "codex" && profile.Harness != "opencode" {
+		if profile.Harness != "opencode" {
 			return nil, fmt.Errorf("runtime profile %q selects unsupported harness %q", id, profile.Harness)
 		}
-		if profile.Harness == "opencode" && profile.IsolationPolicy != "ao-opencode-workspace-write-v1" {
+		if profile.IsolationPolicy != "opencode-workspace-write-v1" {
 			return nil, fmt.Errorf("runtime profile %q selects OpenCode with an incompatible isolation policy", id)
 		}
-		if profile.Harness == "codex" && profile.IsolationPolicy == "ao-opencode-workspace-write-v1" {
-			return nil, fmt.Errorf("runtime profile %q selects Codex with an OpenCode isolation policy", id)
-		}
-		if id == "" || profile.ID != id || profile.AOProjectID == "" || profile.RuntimeRouteID == "" || profile.ModelRouteID == "" || profile.Role == "" || profile.AOAgentKind != "worker" || profile.IsolationPolicy == "" {
-			return nil, fmt.Errorf("runtime profile %q is incomplete or does not select AO worker execution", id)
+		if id == "" || profile.ID != id || profile.RuntimeRouteID == "" || profile.ModelRouteID == "" || profile.Role == "" || profile.IsolationPolicy == "" {
+			return nil, fmt.Errorf("runtime profile %q is incomplete or does not select worker execution", id)
 		}
 		policy := profile.ChildPolicy
 		if policy.MaxChildRuns == 0 {
@@ -323,7 +323,7 @@ func (s *Server) ProfileForRole(role string) (string, bool) {
 	}
 	profileID := ""
 	for id, profile := range s.cfg.Profiles {
-		if profile.Role != role || profile.AOAgentKind != "worker" {
+		if profile.Role != role {
 			continue
 		}
 		if profileID != "" {

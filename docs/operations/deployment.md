@@ -12,7 +12,6 @@ SQLite inspection, and voice pool isolation checks, see the
 
 - `/opt/zoe/releases/current` selects the immutable server/runner release.
 - `zoe-compose.service` supervises the server, memory worker, and Qdrant.
-- `zoe-ao.service` runs the separately managed, Zoe-patched AO daemon.
 - `zoe-runner.service` runs the trusted execution runner.
 - `zoe-macair-tunnel.service` maintains private SSH forwarding to the Mac.
 - `/etc/zoe` contains deployment configuration and secret references.
@@ -21,7 +20,7 @@ SQLite inspection, and voice pool isolation checks, see the
 The operator classifies a host with an absolute `ZOE_COMPOSE_FILE` (including
 the standard `zoe-compose.service` systemd wrapper) as a managed Compose
 deployment. Systemd supervises the Compose process; it does not select the
-AO systemd provider path. Keep `provider-deployment.json` consistent with
+OpenCode runtime path. Keep `provider-deployment.json` consistent with
 this layout or let the operator rediscover the mode from `zoe-stack.env`.
 
 The external Docker network `zoe` is prepared by
@@ -37,9 +36,9 @@ gateway release implements the required lease contract.
 Check service status without printing environment files or secret values:
 
 ```bash
-systemctl is-active zoe-compose zoe-ao zoe-runner zoe-macair-tunnel
+systemctl is-active zoe-compose zoe-runner zoe-macair-tunnel
 curl --fail http://127.0.0.1:8787/healthz
-curl --fail http://127.0.0.1:18001/readyz
+curl --fail http://127.0.0.1:8787/readyz
 ```
 
 The previously recorded installation binds port 8787 on both host loopback and the authorized
@@ -52,10 +51,7 @@ The deployment override `/etc/zoe/control.lan.compose.yaml` adds this binding;
 the service's Compose commands. The source template is
 `deploy/linux/docker-compose.lan.yml`; set `ZOE_SERVER_LAN_ADDRESS` to the
 host LAN address. Update that setting if the host address changes.
-AO binds host loopback port
-18001; its listener uses the trusted local-process boundary and does not
-enforce bearer authentication. Health/readiness responses do not prove model
-execution, memory processing, or task completion.
+OpenCode runs only in runner-created containers. The provider bridge/socket is the only runtime egress; health/readiness responses do not prove model execution, memory processing, or task completion.
 
 ## Installation and configuration
 
@@ -68,26 +64,21 @@ The operator release installation procedure below installs only the maintenance 
 Use this order when installing a complete Zoe instance. Each step applies to
 the host being deployed.
 
-1. Build and review the Linux amd64 server/runner release and the patched AO
-   amd64 release from the pinned [server workflow](../../.github/workflows/server-release.yml)
-   and [AO workflow](../../.github/workflows/ao-release.yml). Those workflows
+1. Build and review the Linux amd64 server/runner release and the Zoe-owned OpenCode runtime
+   image from the pinned [server workflow](../../.github/workflows/server-release.yml)
+   and the reviewed OpenCode runtime image release process. The release inputs
    publish the container images directly to GHCR and record their immutable
-   digests in the release manifest (server) or `IMAGE_DIGEST` (AO). Verify the
+   digests in the release manifest (server) or `IMAGE_DIGEST` (OpenCode runtime). Verify the
    binary `SHA256SUMS` file before transferring the small daemon/CLI binaries;
    do not export or re-upload image tarballs.
 2. Run `prepare-host-layout.sh`. It creates the Docker network, service user,
-   persistent roots, and protected secret directories. It does not create AO
-   state or an AO unit.
+   persistent roots, and protected secret directories. It does not create
+   runtime state beyond the configured runner roots.
 3. Authenticate the deployment host to `ghcr.io` with a deployment-managed
    GitHub token that has read-only package access, then set the server and
    worker image variables to the GHCR references from the reviewed server
    manifest. Use `@sha256:<digest>` references for the running Compose
-   configuration. Set `AO_CODEX_CONTAINER_IMAGE` to the reviewed GHCR AO
-   reference and digest, install the AO daemon, then create the host-managed
-   `zoe-ao.service`. AO listens on loopback port
-   `18001` and stores state under `/var/lib/zoe/ao`; set `HOME` to that private
-   directory. The repository provides the patched AO source and runtime image,
-   but the AO systemd unit remains deployment-owned.
+   configuration. Set `ZOE_OPENCODE_IMAGE` to the reviewed GHCR OpenCode reference and digest. Configure `ZOE_OPENCODE_MODEL`, `ZOE_OPENCODE_PROVIDER_SOCKET`, and `ZOE_OPENCODE_WORKSPACE_ROOT` (the runner mounts only `<root>/<run-id>`); the runner creates and labels each runtime container.
 4. Install the immutable server/runner release under
    `/opt/zoe/releases/<revision>` and update the `current` selector. Create
    the runner and memory-worker secret files with the documented owner and
@@ -104,17 +95,17 @@ the host being deployed.
    directory's private JSON exports.
 6. Configure and start `zoe-compose.service`, then start `zoe-runner.service`.
    Run `docker compose pull` from the reviewed Compose directory so Docker
-   fetches the pinned GHCR images directly, then start AO first so runner
-   readiness can reach `ZOE_AO_URL`.
+   fetches the pinned GHCR images directly, then start the runner so
+   the runner can reach the configured control-plane URL.
 7. Verify service state and health/readiness endpoints. These checks establish
    installation and process readiness; model execution, memory processing, and
    end-to-end task completion require a separate acceptance run.
 
-The complete host installation therefore includes the AO daemon/runtime image,
+The complete host installation therefore includes the Zoe-owned OpenCode runtime image,
 Zoe server image, trusted runner, memory worker image, Qdrant service, Docker,
 and the three Zoe systemd services. An external model gateway is not installed
 by this procedure. Its URL, selected model, and API-key file are deployment
-configuration applied to AO and the memory worker after the host components
+configuration applied to the OpenCode runtime and memory worker after the host components
 are installed; leaving them unset keeps the daemons available but prevents
 model-backed task execution.
 
@@ -122,48 +113,17 @@ model-backed task execution.
 
 The Linux control server reads deployment settings from its process environment. Follow the repository's [credential handling rule](../../AGENTS.md) for deployment-managed secrets; the server does not print them. Bind to loopback or a private trusted interface and put external TLS termination behind the deployment's authenticated network boundary.
 
-The supported AO release is built from the pinned, prepatched Zoe fork by the
-[AO workflow](../../.github/workflows/ao-release.yml). The repository does not
-provide an AO daemon unit or environment template; the host deployment owns
-`zoe-ao.service`. The [patch helper](../../deploy/linux/apply-ao-patch.sh)
-remains the verification path for the corresponding upstream checkout and its
-locked source/tree fingerprints; do not mix that upstream checkout with a
-prepatched fork release or replace either pin from historical notes. The AO
-daemon requires `AO_CODEX_EXTERNAL_BASE_URL`, `AO_CODEX_EXTERNAL_API_KEY_FILE`,
-and `AO_CODEX_EXTERNAL_MODEL` together only when the external Codex Responses
-route is enabled. Both the AO daemon and Zoe runner require the same
-`AO_CODEX_CONTAINER_IMAGE` value for the supervised image. The URL, key-file
-path, and model belong only to the separately managed AO daemon; the image
-setting belongs to both deployments, not the Zoe server.
+The supported runtime image is the pinned Zoe-owned OpenCode image under `deploy/linux/second-runtime/opencode`. Configure `ZOE_OPENCODE_IMAGE`, `ZOE_OPENCODE_MODEL`, `ZOE_OPENCODE_PROVIDER_BASE_URL`, `ZOE_OPENCODE_PROVIDER_KEY_FILE`, and `ZOE_OPENCODE_PROVIDER_SOCKET` in the runner environment. CLIProxyAPI remains external and unchanged.
 
-### Register the worker project
+### Configure the OpenCode runtime
 
-During AO deployment, initialize and register the project named `workers` once
-on the AO host. This applies whenever a new AO state directory is created or
-an existing AO database is replaced. The Zoe `worker` runtime profile sends
-ordinary tasks to this project; each task receives its own AO session, so new
-chats do not require additional projects or share conversation context through
-the project record.
+The runner creates one OpenCode session per container. Runtime profiles select the OpenCode provider/model route; clients cannot override execution routes or grants.
 
-The project path must be an absolute directory visible to the AO daemon and
-must be a Git repository. For the standard deployment, use
-`/var/lib/zoe/ao/workers` and run these commands after AO is ready:
+The workspace path must be absolute, private, and available to the runner-created container.
 
-```sh
-mkdir -p /var/lib/zoe/ao/workers
-curl --fail --silent --show-error -X POST http://127.0.0.1:18001/api/v1/projects/initialize \
-  -H 'Content-Type: application/json' \
-  --data '{"path":"/var/lib/zoe/ao/workers"}'
-curl --fail --silent --show-error -X POST http://127.0.0.1:18001/api/v1/projects \
-  -H 'Content-Type: application/json' \
-  --data '{"path":"/var/lib/zoe/ao/workers","projectId":"workers","name":"workers"}'
-curl --fail --silent --show-error http://127.0.0.1:18001/api/v1/projects
-```
 
-The final response must list a project with ID `workers` and
-`folderMissing: false`. A missing project causes task execution to fail with
-AO `PROJECT_NOT_FOUND` even though Zoe server and runner health checks remain
-successful. Do not create a new AO project for each chat.
+
+A missing or invalid workspace fails closed even when server and runner health checks pass. Do not share a workspace across concurrent runs without an explicit ownership grant.
 
 Required settings:
 
@@ -174,7 +134,7 @@ Optional settings:
 
 - `ZOE_LISTEN_ADDR`: defaults to `127.0.0.1:8787`.
 - `ZOE_DEFAULT_PROFILE_ID`: the server-selected profile for new tasks.
-- `ZOE_RUNTIME_PROFILES`: JSON object keyed by profile ID. Each profile sets `id`, `ao_project_id`, `runtime_route_id`, `model_route_id`, `role`, `ao_agent_kind` (`worker`), `isolation_policy`, `capability_ids`, and `scopes`. Client requests cannot override these execution routes or grants.
+- `ZOE_RUNTIME_PROFILES`: JSON object keyed by profile ID. Each profile sets `id`, `runtime_route_id`, `model_route_id`, `role`, `isolation_policy`, `capability_ids`, and `scopes`. Client requests cannot override these execution routes or grants.
 - `ZOE_RUNNER_TOKEN`: deployment-provisioned 32-byte base64url runner credential. When set, `ZOE_RUNNER_ID`, `ZOE_RUNNER_WORKSPACES`, and `ZOE_RUNNER_SCOPES` default to `configured-runner`, `default`, and `runner:claim,runner:observe,runner:control:read`.
 - `ZOE_MEMORY_RUNNER_TOKEN_FILE`: optional path to a deployment-managed file containing a distinct 32-byte base64url memory worker credential. When enabled, `ZOE_MEMORY_RUNNER_WORKSPACES` must list exact workspace IDs; `ZOE_MEMORY_RUNNER_ID` defaults to `memory-worker`; and `ZOE_MEMORY_RUNNER_SCOPES` may only contain exactly `memory:jobs:claim,memory:jobs:complete,memory:propose`. The server stores only the credential hash and never logs the token. This credential exposes the durable derived-job API; it does not enable a Mem0 or Qdrant runtime.
 - Memory-worker deployment also requires `ZOE_CONTROL_URL`, the scoped worker credential injected as `ZOE_RUNNER_TOKEN` (provisioned for the server through `ZOE_MEMORY_RUNNER_TOKEN_FILE`), `ZOE_MEM0_LLM_MODEL`, `ZOE_MEM0_LLM_BASE_URL`, and `ZOE_MEM0_LLM_API_KEY` from deployment-managed secret references. `ZOE_MEM0_LLM_PROVIDER` must use the accounted `openai` path; `ollama` is rejected until it supports the same accounting boundary; `ZOE_MEM0_HISTORY_DB` and the model cache belong on the private persistent memory volume. Qdrant URL, optional API-key reference, collection/codec, and worker batch/poll settings are deployment configuration. The pinned multilingual embedding revision and dimensions are defined in [worker configuration](../../services/memory/config.py); changing them requires a separate collection and rebuild.
@@ -187,68 +147,18 @@ Stop the server before `zoe key init --database PATH --output PRIVATE_JSON --ser
 
 Data export and destruction procedures are in [data lifecycle operations](data-lifecycle.md).
 
-## Unknown AO creation reconciliation
+## Zoe runtime uncertainty reconciliation
 
 Unknown create outcomes keep their execution slots and must never be retried as
-new AO creates. The operator command changes authority only through the normal
+new OpenCode container creates. The operator command changes authority only through the normal
 runner observation API; it does not delete journal rows, task/run history, or
 container records.
 
-Use a runner built from the same reviewed source as the control server and the
-patched AO gateway. Stop `zoe-runner` first so the maintenance command can take
-the deployment-host and journal locks. Restart AO after stopping the runner to
-drain the original create connections. Reconciliation requires a direct AO
-daemon connection without a proxy that buffers or retries create requests. The
-complete inventory must report a server start time later than the journal's unknown-create update. Keep the runner
-stopped until reconciliation finishes. Run the command under the existing
-runner service account and deployment environment/secret-entrypoint boundary:
+Use a runner built from the same reviewed source as the control server. Stop `zoe-runner` to hold the deployment and journal locks, then inspect Docker by the exact labels `io.zoe.managed=true`, `io.zoe.runtime=opencode`, `io.zoe.run`, `io.zoe.attempt`, and `io.zoe.fence`. Compare two complete, stable inventories. A matching container ID is preserved and reconciled; no match is a no-effect proof only when the complete inventory is authoritative. Any ambiguity, started container, missing identity, or incomplete inventory remains `effect_unknown`; never replay the create.
 
-```sh
-zoe-runner --reconcile-runs RUN_ID --actor OPERATOR --confirm-no-effect
-```
+Historical uncertain runs were abandoned by operator decision; no reconciliation or migration is required. Do not infer recovery from old records. Restart the runner only after any current inspection is recorded.
 
-Supply exact run IDs and a non-secret operator identity. Run each ID separately
-if every refusal must be inspected: a multi-ID invocation stops at the first
-failure. The command checks the original journal claim, current server claim,
-instance fence, complete AO inventory and `clientRequestId` absence, and a
-complete Docker inventory. Missing identities, unavailable evidence, running or
-previously started AO containers, and ambiguous managed containers cause refusal.
-Do not remove a container or edit a database to force a check to pass.
-
-An operator may explicitly select an existing AO record for preservation with
-repeatable `--retain-never-started-container FULL_CONTAINER_ID`. Every selected
-record must have complete AO ownership, `created` state, PID zero, no process
-start/finish, no restart policy or restart history, and no exit/OOM/error facts.
-Two complete Docker inspections must have identical identities and contents.
-The record is retained as a created artifact, and its effect is recorded as
-`runtime_not_started`, rather than claiming that no artifact was created.
-
-Known capability containers with matching journal/host authority are excluded
-from AO inventory. Historical capability containers lacking those records need
-explicit repeatable `--unrelated-preexisting-capability-container FULL_CONTAINER_ID`.
-Their full capability ownership/name, pinned image, and immutable creation time
-must prove they predate the original dispatch; the control plane independently
-compares them against the run's authoritative start time. Both inspections must
-remain identical. This exception does not change those services or attest to
-their current deployment authority. Ordinary complete, untagged non-AO service
-records are inventoried without being mistaken for an AO worker.
-
-The journal's `journal_reconciliations` table audits both successful and refused
-checks. Successful checks persist an immutable `no_effect_terminal` receipt with
-the operator and absence evidence before delivery. Repeating the same operation
-replays that receipt; it does not emit another terminal transition. The control
-plane validates ownership, attempt/fence, instance, and prior effect history,
-marks the run/task failed, and publishes the normal event used by client refresh.
-Restart `zoe-runner` after maintenance. A refusal keeps the run uncertain and its
-slot occupied; it requires further lifecycle evidence or a separately authorized
-AO recovery operation.
-
-The snapshot's `execution_capacity` reports the global four-slot gate, active and
-uncertain counts, available slots, and a stable blocking reason for operator
-diagnosis. Queued tasks report `execution_reconciliation_required` when uncertain
-runs contribute to saturation. Apple clients show ordinary task status and
-refresh through existing events; internal capacity/reconciliation diagnostics
-are not rendered in the product UI. Clients must not resubmit unknown runs.
+For the authorized host-removal procedure for retired AO components, see [AO host removal](ao-host-removal.md). It is a separate runbook and has not been executed.
 
 ## Voice gateway
 
@@ -283,14 +193,8 @@ provider endpoint and model, the source of provider configuration, the last
 provider check category, and the secret file mode. Token contents, instance
 keys, and complete installation links are never included in status output.
 
-The canonical AO provider variables are `AO_CODEX_EXTERNAL_BASE_URL`,
-`AO_CODEX_EXTERNAL_API_KEY_FILE`, and `AO_CODEX_EXTERNAL_MODEL`. The default
-key file is `/etc/zoe/runner-secrets/cliproxyapi-api-key` with mode `0600`.
-These variables configure the patched AO Codex route only. The preserved
-OpenCode example may name the same endpoint and model, but the current AO patch
-does not implement external OpenCode configuration. `AO_OPENCODE_EXTERNAL_*` is
-not a supported AO namespace. An OpenCode container image must remain an
-OpenCode image setting; it must not be supplied as `AO_CODEX_CONTAINER_IMAGE`.
+The canonical OpenCode provider variables are `ZOE_OPENCODE_PROVIDER_BASE_URL`, `ZOE_OPENCODE_PROVIDER_KEY_FILE`, and `ZOE_OPENCODE_MODEL`; the runtime image and bridge use `ZOE_OPENCODE_IMAGE` and `ZOE_OPENCODE_PROVIDER_SOCKET`. The default key file is `/etc/zoe/runner-secrets/cliproxyapi-api-key` with mode `0600`. Provider credentials never enter the OpenCode container environment.
+
 
 Service reloads are performed by the CLI through the detected deployment
 manager. For systemd it runs `daemon-reload` followed by
@@ -357,14 +261,14 @@ deploy/linux/deployment-candidate.sh RELEASE_MANIFEST.json \
 
 This command is read-only. It verifies the source revision, architecture, every
 artifact SHA-256 and optional image digest, and the rendered Compose configuration.
-It prints an explicit order: verify hashes, install AO and the immutable Zoe
+It prints an explicit order: verify hashes, install OpenCode runtime and the immutable Zoe
 release, switch `/opt/zoe/releases/current`, then start and check services. The
 plan records the previous immutable release and image digests as rollback targets.
 It never contacts a host, changes a selector, pulls an image, or starts a service.
 
 On the host, apply the reviewed plan manually. Keep old immutable release
  directories and image tags. Rollback changes only the `current` selector and
-Compose image tags, then repeats `/healthz`, `/readyz`, runner/AO/Qdrant, and
+Compose image tags, then repeats `/healthz`, `/readyz`, runner/OpenCode/Qdrant, and
 independent task checks. Record integrity, installation, readiness, connectivity,
 and end-to-end results separately; see the [acceptance evidence register](../acceptance/evidence.md)
 for the acceptance boundary. This does not modify the external CLIProxyAPI deployment.

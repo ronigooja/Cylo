@@ -10,9 +10,9 @@ import (
 )
 
 func TestProfileForRoleUsesExplicitMappingAndUnambiguousFallback(t *testing.T) {
-	workerA := control.RuntimeProfile{ID: "worker-a", AOProjectID: "workers-a", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "native-sandbox"}
-	workerB := control.RuntimeProfile{ID: "worker-b", AOProjectID: "workers-b", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "native-sandbox"}
-	reader := control.RuntimeProfile{ID: "reader", AOProjectID: "readers", RuntimeRouteID: "native", ModelRouteID: "model", Role: "reader", AOAgentKind: "worker", IsolationPolicy: "native-sandbox"}
+	workerA := control.RuntimeProfile{ID: "worker-a", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", IsolationPolicy: "opencode-workspace-write-v1"}
+	workerB := control.RuntimeProfile{ID: "worker-b", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", IsolationPolicy: "opencode-workspace-write-v1"}
+	reader := control.RuntimeProfile{ID: "reader", RuntimeRouteID: "native", ModelRouteID: "model", Role: "reader", IsolationPolicy: "opencode-workspace-write-v1"}
 	profiles := map[string]control.RuntimeProfile{"worker-a": workerA, "worker-b": workerB, "reader": reader}
 	var explicit *control.Server
 	_, _ = reviewServer(t, control.Config{Profiles: profiles, RoleProfiles: map[string]string{"worker": "worker-b"}}, func(s *control.Server) { explicit = s })
@@ -34,7 +34,7 @@ func TestProfileForRoleUsesExplicitMappingAndUnambiguousFallback(t *testing.T) {
 }
 
 func TestRoleProfileMappingMustReferenceMatchingWorkerProfile(t *testing.T) {
-	profile := control.RuntimeProfile{ID: "worker", AOProjectID: "workers", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "native-sandbox"}
+	profile := control.RuntimeProfile{ID: "worker", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", IsolationPolicy: "opencode-workspace-write-v1"}
 	store := openStore(t, filepath.Join(t.TempDir(), "control.db"))
 	if err := storage.RegisterCoreMigrations(store); err != nil {
 		t.Fatal(err)

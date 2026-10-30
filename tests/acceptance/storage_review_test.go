@@ -160,6 +160,16 @@ func TestReviewLateCoreMigrationAfterFeatureHistory(t *testing.T) {
 		`ALTER TABLE runs DROP COLUMN lineage_parent_task_id`, `ALTER TABLE runs DROP COLUMN lineage_depth`,
 		`ALTER TABLE tasks DROP COLUMN harness`, `ALTER TABLE runs DROP COLUMN harness`,
 		`ALTER TABLE runs DROP COLUMN budget_snapshot_json`,
+		// Later core migrations (8, 11, 12) must also be undone: the scenario is a
+		// database whose core history stopped at version 3.
+		`DROP INDEX client_diagnostic_events_device_time`, `DROP INDEX client_diagnostic_events_request`, `DROP TABLE client_diagnostic_events`,
+		`DROP INDEX task_confirmations_task`, `DROP TABLE task_confirmations`,
+		`ALTER TABLE tasks DROP COLUMN interaction_state`, `ALTER TABLE tasks DROP COLUMN interaction_scope`,
+		`ALTER TABLE tasks DROP COLUMN interaction_run_id`, `ALTER TABLE tasks DROP COLUMN interaction_action_digest`,
+		`ALTER TABLE tasks DROP COLUMN interaction_expires_at`, `ALTER TABLE tasks DROP COLUMN interaction_expected_version`,
+		`DROP TABLE runtime_harness_quarantine`,
+		`ALTER TABLE runs DROP COLUMN runtime_session_id`, `ALTER TABLE runs DROP COLUMN runtime_container_id`,
+		`ALTER TABLE runs ADD COLUMN ao_session_id TEXT NOT NULL DEFAULT ''`, `ALTER TABLE runs ADD COLUMN ao_container_id TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := s.DB().ExecContext(ctx, stmt); err != nil {
 			t.Fatal(err)
@@ -176,6 +186,11 @@ func TestReviewLateCoreMigrationAfterFeatureHistory(t *testing.T) {
 	}
 	if _, err := s.DB().ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=7`); err != nil {
 		t.Fatal(err)
+	}
+	for _, version := range []int{8, 11, 12, 13} {
+		if _, err := s.DB().ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=?`, version); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := s.DB().ExecContext(ctx, `CREATE TABLE schema_migrations_legacy (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
 		t.Fatal(err)

@@ -16,11 +16,7 @@ import (
 func testDeployment(t *testing.T) Deployment {
 	t.Helper()
 	root := t.TempDir()
-	base := filepath.Join(root, "compose.yml")
-	if err := os.WriteFile(base, []byte("services: {}"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	return Deployment{Root: root, Mode: ModeCompose, AOService: "ao", AOEnv: filepath.Join(root, "ao.env"), StackEnv: filepath.Join(root, "stack.env"), ComposeFile: base, ComposeProject: "zoe"}
+	return Deployment{Root: root, Mode: ModeSystemd, RunnerService: "zoe-runner.service", RunnerEnv: filepath.Join(root, "zoe-runner.env"), StackEnv: filepath.Join(root, "stack.env"), ComposeProject: "zoe", DropInPath: filepath.Join(root, "zoe-runner.service.d", "90-zoe-provider.conf")}
 }
 func modelServer(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -33,25 +29,22 @@ func modelServer(t *testing.T) *httptest.Server {
 	t.Cleanup(s.Close)
 	return s
 }
-func TestProviderTransactionPreservesConfigAndTargetsOnlyAO(t *testing.T) {
+func TestProviderTransactionPreservesConfigAndTargetsOnlyRunner(t *testing.T) {
 	d := testDeployment(t)
 	server := modelServer(t)
 	secret := filepath.Join(d.Root, "token")
 	_ = os.WriteFile(secret, []byte("old"), 0600)
-	_ = os.WriteFile(d.AOEnv, []byte("KEEP=original\nAO_CODEX_EXTERNAL_MODEL=old\n"), 0600)
+	_ = os.WriteFile(d.RunnerEnv, []byte("KEEP=original\nZOE_OPENCODE_MODEL=old\n"), 0600)
 	var commands [][]string
 	m := NewManager(func(_ context.Context, name string, args ...string) ([]byte, error) {
 		commands = append(commands, append([]string{name}, args...))
-		if strings.Contains(strings.Join(args, " "), "config --format json") {
-			return []byte(`{"services":{"ao":{"user":"0:0"}}}`), nil
-		}
 		return nil, nil
 	})
 	result, err := m.ConfigureProvider(context.Background(), d, ProviderConfig{BaseURL: server.URL, Model: "test-model", SecretPath: secret, Secret: "next"}, server.Client())
 	if err != nil || !result.OK() {
 		t.Fatalf("apply: %v %+v", err, result)
 	}
-	contents, _ := os.ReadFile(d.AOEnv)
+	contents, _ := os.ReadFile(d.RunnerEnv)
 	if !strings.Contains(string(contents), "KEEP=original") || strings.Contains(string(contents), "=old") {
 		t.Fatal("unrelated environment lost or stale provider survived")
 	}
@@ -59,16 +52,12 @@ func TestProviderTransactionPreservesConfigAndTargetsOnlyAO(t *testing.T) {
 	if string(got) != "next" {
 		t.Fatal("credential not replaced")
 	}
-	override, _ := os.ReadFile(d.composeOverride())
-	if strings.Contains(string(override), "next") || !strings.Contains(string(override), `"read_only": true`) {
-		t.Fatal("invalid secret mount or leaked token")
-	}
-	expected := append([]string{"docker"}, append(d.composeArgs(), "up", "-d", "--no-build", "--no-deps", "--force-recreate", "ao")...)
+	expected := []string{"systemctl", "reload-or-restart", "zoe-runner.service"}
 	if !reflect.DeepEqual(commands[len(commands)-1], expected) {
 		t.Fatalf("targeted reload args: %v", commands)
 	}
 	restored, err := DiscoverDeployment(context.Background(), m, d.Root)
-	if err != nil || restored.AOService != "ao" || restored.ComposeFile != d.ComposeFile {
+	if err != nil || restored.RunnerService != "zoe-runner.service" {
 		t.Fatal("managed deployment not rediscovered")
 	}
 	if LastProviderCheck(d) == "not checked" {
@@ -80,13 +69,10 @@ func TestProviderTransactionRestoresAfterPartialReload(t *testing.T) {
 	server := modelServer(t)
 	secret := filepath.Join(d.Root, "token")
 	_ = os.WriteFile(secret, []byte("old"), 0600)
-	_ = os.WriteFile(d.AOEnv, []byte("KEEP=old\n"), 0640)
+	_ = os.WriteFile(d.RunnerEnv, []byte("KEEP=old\n"), 0640)
 	calls := 0
 	m := NewManager(func(_ context.Context, _ string, args ...string) ([]byte, error) {
-		if strings.Contains(strings.Join(args, " "), "config --format json") {
-			return []byte(`{"services":{"ao":{"user":"0:0"}}}`), nil
-		}
-		if strings.Contains(strings.Join(args, " "), " up ") {
+		if strings.Contains(strings.Join(args, " "), "reload-or-restart") {
 			calls++
 			if calls == 1 {
 				return nil, errors.New("partial failure")
@@ -102,13 +88,10 @@ func TestProviderTransactionRestoresAfterPartialReload(t *testing.T) {
 	if string(data) != "old" {
 		t.Fatal("secret rollback failed")
 	}
-	data, _ = os.ReadFile(d.AOEnv)
-	info, _ := os.Stat(d.AOEnv)
+	data, _ = os.ReadFile(d.RunnerEnv)
+	info, _ := os.Stat(d.RunnerEnv)
 	if string(data) != "KEEP=old\n" || info.Mode().Perm() != 0640 {
 		t.Fatal("environment rollback failed")
-	}
-	if _, err = os.Stat(d.composeOverride()); !os.IsNotExist(err) {
-		t.Fatal("override rollback failed")
 	}
 	if calls != 2 {
 		t.Fatal("old service configuration was not reloaded")
@@ -158,15 +141,15 @@ func TestProviderLockHonorsCancellation(t *testing.T) {
 		t.Fatalf("lock error=%v", err)
 	}
 }
-func TestComposeStatusIsScopedAndAllowlisted(t *testing.T) {
+func TestRunnerStatusIsScopedAndAllowlisted(t *testing.T) {
 	m := NewManager(func(_ context.Context, _ string, args ...string) ([]byte, error) {
-		if args[len(args)-1] != "ao" {
+		if args[len(args)-1] != "zoe-runner.service" {
 			t.Fatal("status missing service scope")
 		}
-		return []byte(`[{"Service":"ao","State":"exited"}]`), nil
+		return []byte("active\n"), nil
 	})
-	s := m.Inspect(context.Background(), InspectConfig{Mode: ModeCompose, Services: []string{"ao"}})
-	if s.Services[0].State != "exited" {
+	s := m.Inspect(context.Background(), InspectConfig{Mode: ModeSystemd, Services: []string{"zoe-runner.service"}})
+	if s.Services[0].State != "active" {
 		t.Fatal(s.Services)
 	}
 }

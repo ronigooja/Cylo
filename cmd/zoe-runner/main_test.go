@@ -3,10 +3,10 @@ package main
 import "testing"
 
 func TestLoadRoutesRequiresServerMatchingProfile(t *testing.T) {
-	if _, err := loadRoutes(`{"worker":{"profile_id":"other","runtime_route_id":"runtime","model_route_id":"model","isolation_policy":"ao-codex-workspace-write-v1","harness":"codex","model":"gpt-6-luna"}}`); err == nil {
+	if _, err := loadRoutes(`{"worker":{"profile_id":"other","runtime_route_id":"runtime","model_route_id":"model","isolation_policy":"opencode-workspace-write-v1","harness":"opencode","model":"gpt-6-luna"}}`); err == nil {
 		t.Fatal("route key mismatch was accepted")
 	}
-	routes, err := loadRoutes(`{"worker":{"profile_id":"worker","runtime_route_id":"runtime","model_route_id":"model","isolation_policy":"ao-codex-workspace-write-v1","harness":"codex","model":"gpt-6-luna","approval_mode":"accept-edits"}}`)
+	routes, err := loadRoutes(`{"worker":{"profile_id":"worker","runtime_route_id":"runtime","model_route_id":"model","isolation_policy":"opencode-workspace-write-v1","harness":"opencode","model":"gpt-6-luna","approval_mode":"accept-edits"}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -16,12 +16,12 @@ func TestLoadRoutesRequiresServerMatchingProfile(t *testing.T) {
 }
 
 func TestLoadRoutesKeepsOpenCodeRuntimeAndModelRouteExplicit(t *testing.T) {
-	routes, err := loadRoutes(`{"worker-opencode":{"profile_id":"worker-opencode","runtime_route_id":"ao-opencode","model_route_id":"cliproxyapi","isolation_policy":"ao-opencode-workspace-write-v1","harness":"opencode","model":"zoe/gpt-6-luna","approval_mode":"auto"}}`)
+	routes, err := loadRoutes(`{"worker-opencode":{"profile_id":"worker-opencode","runtime_route_id":"runtime-opencode","model_route_id":"cliproxyapi","isolation_policy":"opencode-workspace-write-v1","harness":"opencode","model":"zoe/gpt-6-luna","approval_mode":"auto"}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	route := routes["worker-opencode"]
-	if route.Harness != "opencode" || route.IsolationPolicy != "ao-opencode-workspace-write-v1" || route.ModelRouteID != "cliproxyapi" || route.Model != "zoe/gpt-6-luna" {
+	if route.Harness != "opencode" || route.IsolationPolicy != "opencode-workspace-write-v1" || route.ModelRouteID != "cliproxyapi" || route.Model != "zoe/gpt-6-luna" {
 		t.Fatalf("OpenCode runtime, isolation, and model route were not preserved independently: %+v", route)
 	}
 }

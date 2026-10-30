@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/ronigooja/Zoe/contracts"
-	"github.com/ronigooja/Zoe/internal/agents/ao"
 )
 
 func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
@@ -99,10 +98,10 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		if !exists {
 			continue
 		}
-		if c.harness == "" {
-			c.harness = "codex"
+		if c.harness == "" || c.harness != "opencode" {
+			continue
 		}
-		if profile.AOAgentKind != "worker" || profile.IsolationPolicy == "" || profile.Harness != c.harness {
+		if profile.IsolationPolicy == "" || profile.Harness != c.harness {
 			continue
 		}
 		chosen = &c
@@ -192,7 +191,7 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	_, err = tx.ExecContext(r.Context(), `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,control_version,fence,runner_id,authorized_device_id,command_id,goal,profile_id,harness,runtime_route_id,model_route_id,role,isolation_policy,ao_project_id,started_at,task_version,authorization_json,child_policy_json,lineage_root_task_id,lineage_parent_task_id,lineage_depth,budget_snapshot_json) VALUES(?,?,?,?,'dispatching','run',1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, runID, chosen.workspace, chosen.id, attemptID, fence, p.RunnerID, chosen.device, chosen.command, chosen.goal, profile.ID, chosen.harness, profile.RuntimeRouteID, profile.ModelRouteID, profile.Role, profile.IsolationPolicy, profile.AOProjectID, now, newVersion, authorizationJSON, policyBytes, chosen.root, nullString(chosen.parent), chosen.depth, budgetJSON)
+	_, err = tx.ExecContext(r.Context(), `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,desired_control,control_version,fence,runner_id,authorized_device_id,command_id,goal,profile_id,harness,runtime_route_id,model_route_id,role,isolation_policy,started_at,task_version,authorization_json,child_policy_json,lineage_root_task_id,lineage_parent_task_id,lineage_depth,budget_snapshot_json) VALUES(?,?,?,?,'dispatching','run',1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, runID, chosen.workspace, chosen.id, attemptID, fence, p.RunnerID, chosen.device, chosen.command, chosen.goal, profile.ID, chosen.harness, profile.RuntimeRouteID, profile.ModelRouteID, profile.Role, profile.IsolationPolicy, now, newVersion, authorizationJSON, policyBytes, chosen.root, nullString(chosen.parent), chosen.depth, budgetJSON)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -206,7 +205,7 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	claim := contracts.JobClaim{RunID: runID, TaskID: chosen.id, AttemptID: attemptID, WorkspaceID: chosen.workspace, TaskVersion: newVersion, Goal: chosen.goal, ProfileID: profile.ID, Harness: chosen.harness, RuntimeRouteID: profile.RuntimeRouteID, ModelRouteID: profile.ModelRouteID, IsolationPolicy: profile.IsolationPolicy, Role: profile.Role, AOProjectID: profile.AOProjectID, Authorization: authorization, Fence: fence, LineageRootTaskID: chosen.root, LineageParentTaskID: chosen.parent, LineageDepth: chosen.depth, PregrantCapabilityIDs: append([]string{}, pregrant...), Budget: budget}
+	claim := contracts.JobClaim{RunID: runID, TaskID: chosen.id, AttemptID: attemptID, WorkspaceID: chosen.workspace, TaskVersion: newVersion, Goal: chosen.goal, ProfileID: profile.ID, Harness: chosen.harness, RuntimeRouteID: profile.RuntimeRouteID, ModelRouteID: profile.ModelRouteID, IsolationPolicy: profile.IsolationPolicy, Role: profile.Role, Authorization: authorization, Fence: fence, LineageRootTaskID: chosen.root, LineageParentTaskID: chosen.parent, LineageDepth: chosen.depth, PregrantCapabilityIDs: append([]string{}, pregrant...), Budget: budget}
 	if err = tx.Commit(); err != nil {
 		writeError(w, err)
 		return
@@ -240,18 +239,15 @@ func loadClaim(ctx context.Context, tx *sql.Tx, runID string, cfg Config) (contr
 	_ = cfg
 	var c contracts.JobClaim
 	var fence uint64
-	var aoProject, aoSession string
 	var authJSON []byte
 	var budgetJSON []byte
-	err := tx.QueryRowContext(ctx, `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.harness,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json,coalesce(r.lineage_root_task_id,''),coalesce(r.lineage_parent_task_id,''),r.lineage_depth,r.budget_snapshot_json FROM runs r WHERE r.id=?`, runID).Scan(&c.RunID, &c.TaskID, &c.AttemptID, &c.WorkspaceID, &c.TaskVersion, &c.Goal, &c.ProfileID, &c.Harness, &c.RuntimeRouteID, &c.ModelRouteID, &c.Role, &c.IsolationPolicy, &aoProject, &aoSession, &fence, &authJSON, &c.LineageRootTaskID, &c.LineageParentTaskID, &c.LineageDepth, &budgetJSON)
+	err := tx.QueryRowContext(ctx, `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.harness,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.runtime_session_id,r.fence,r.authorization_json,coalesce(r.lineage_root_task_id,''),coalesce(r.lineage_parent_task_id,''),r.lineage_depth,r.budget_snapshot_json FROM runs r WHERE r.id=?`, runID).Scan(&c.RunID, &c.TaskID, &c.AttemptID, &c.WorkspaceID, &c.TaskVersion, &c.Goal, &c.ProfileID, &c.Harness, &c.RuntimeRouteID, &c.ModelRouteID, &c.Role, &c.IsolationPolicy, &c.RuntimeSessionID, &fence, &authJSON, &c.LineageRootTaskID, &c.LineageParentTaskID, &c.LineageDepth, &budgetJSON)
 	if err != nil {
 		return c, err
 	}
-	if c.Harness == "" {
-		c.Harness = "codex"
+	if c.Harness == "" || c.Harness != "opencode" {
+		return c, errors.New("persisted run has unsupported harness")
 	}
-	c.AOProjectID = aoProject
-	c.AOSessionID = aoSession
 	c.Fence = fence
 	if err := json.Unmarshal(authJSON, &c.Authorization); err != nil {
 		return c, fmt.Errorf("decode persisted run authorization: %w", err)
@@ -302,13 +298,14 @@ func (s *Server) handleCurrentClaims(w http.ResponseWriter, r *http.Request) {
 		var claim contracts.JobClaim
 		var authJSON []byte
 		var budgetJSON []byte
-		err = s.store.DB().QueryRowContext(r.Context(), `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.harness,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.ao_project_id,r.ao_session_id,r.fence,r.authorization_json,coalesce(r.lineage_root_task_id,''),coalesce(r.lineage_parent_task_id,''),r.lineage_depth,r.budget_snapshot_json FROM runs r WHERE r.id=?`, id).Scan(&claim.RunID, &claim.TaskID, &claim.AttemptID, &claim.WorkspaceID, &claim.TaskVersion, &claim.Goal, &claim.ProfileID, &claim.Harness, &claim.RuntimeRouteID, &claim.ModelRouteID, &claim.Role, &claim.IsolationPolicy, &claim.AOProjectID, &claim.AOSessionID, &claim.Fence, &authJSON, &claim.LineageRootTaskID, &claim.LineageParentTaskID, &claim.LineageDepth, &budgetJSON)
+		err = s.store.DB().QueryRowContext(r.Context(), `SELECT r.id,r.task_id,r.attempt_id,r.workspace_id,r.task_version,r.goal,r.profile_id,r.harness,r.runtime_route_id,r.model_route_id,r.role,r.isolation_policy,r.runtime_session_id,r.fence,r.authorization_json,coalesce(r.lineage_root_task_id,''),coalesce(r.lineage_parent_task_id,''),r.lineage_depth,r.budget_snapshot_json FROM runs r WHERE r.id=?`, id).Scan(&claim.RunID, &claim.TaskID, &claim.AttemptID, &claim.WorkspaceID, &claim.TaskVersion, &claim.Goal, &claim.ProfileID, &claim.Harness, &claim.RuntimeRouteID, &claim.ModelRouteID, &claim.Role, &claim.IsolationPolicy, &claim.RuntimeSessionID, &claim.Fence, &authJSON, &claim.LineageRootTaskID, &claim.LineageParentTaskID, &claim.LineageDepth, &budgetJSON)
 		if err != nil {
 			writeError(w, err)
 			return
 		}
-		if claim.Harness == "" {
-			claim.Harness = "codex"
+		if claim.Harness == "" || claim.Harness != "opencode" {
+			writeError(w, apiError(409, "unsupported_harness", "persisted run has unsupported harness", nil))
+			return
 		}
 		if err = json.Unmarshal(authJSON, &claim.Authorization); err != nil {
 			writeError(w, apiError(500, "internal", "persisted run authorization is invalid", nil))
@@ -384,9 +381,9 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
-	var workspace, taskID, attempt, runnerID, status, desired, boundProject, boundSession, boundHarness, authorizedDevice string
+	var workspace, taskID, attempt, runnerID, status, desired, boundSession, boundHarness, authorizedDevice string
 	var fence uint64
-	err = tx.QueryRowContext(r.Context(), `SELECT workspace_id,task_id,attempt_id,runner_id,status,desired_control,fence,ao_project_id,ao_session_id,harness,authorized_device_id FROM runs WHERE id=?`, runID).Scan(&workspace, &taskID, &attempt, &runnerID, &status, &desired, &fence, &boundProject, &boundSession, &boundHarness, &authorizedDevice)
+	err = tx.QueryRowContext(r.Context(), `SELECT workspace_id,task_id,attempt_id,runner_id,status,desired_control,fence,runtime_session_id,harness,authorized_device_id FROM runs WHERE id=?`, runID).Scan(&workspace, &taskID, &attempt, &runnerID, &status, &desired, &fence, &boundSession, &boundHarness, &authorizedDevice)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, apiError(404, "not_found", "run not found", nil))
 		return
@@ -430,24 +427,21 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if observation.Kind == "stop_confirmed" || observation.Kind == "runtime_terminated" {
-		if boundProject == "" || boundSession == "" || observation.AOProjectID != boundProject || observation.AOSessionID != boundSession {
-			writeError(w, apiError(409, "session_conflict", "termination observation must match the bound AO project and session", nil))
+		if boundSession == "" || observation.RuntimeSessionID != boundSession {
+			writeError(w, apiError(409, "session_conflict", "termination observation must match the bound runtime session", nil))
 			return
 		}
 		proof := observation.TerminationProof
 		_, offset := proofTimeZone(proof)
 		if boundHarness == "" {
-			boundHarness = "codex"
+			boundHarness = "opencode"
 		}
-		expectedMethod := ""
-		switch boundHarness {
-		case "codex":
-			expectedMethod = "native_process_exit_waited"
-		case "opencode":
-			expectedMethod = "acp_process_exit_waited"
+		expectedMethod := "container_removed"
+		if boundHarness != "opencode" {
+			expectedMethod = ""
 		}
-		if expectedMethod == "" || proof == nil || proof.Source != "ao_chat_stop" || proof.Method != expectedMethod || proof.SessionID != boundSession || !proof.CleanupComplete || proof.VerifiedAt.IsZero() || offset != 0 || proof.VerifiedAt.After(time.Now().UTC().Add(5*time.Minute)) {
-			writeError(w, apiError(409, "termination_unproven", "termination requires trusted AO stop proof for the bound session", nil))
+		if expectedMethod == "" || proof == nil || proof.Source != "runner_container_removal" || proof.Method != expectedMethod || proof.RuntimeSessionID != boundSession || !proof.CleanupComplete || proof.VerifiedAt.IsZero() || offset != 0 || proof.VerifiedAt.After(time.Now().UTC().Add(5*time.Minute)) {
+			writeError(w, apiError(409, "termination_unproven", "termination requires verified runner container removal for the bound session", nil))
 			return
 		}
 	}
@@ -458,8 +452,8 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		proof := observation.NoEffectProof
-		if proof == nil || (!reconciled && (proof.JournalPhase != "claimed" || proof.AOCreateStarted)) || proof.AOSessionID != "" || proof.AOContainerID != "" || (proof.Outcome != "stopped" && proof.Outcome != "failed") || (observation.AOProjectID != "" && observation.AOProjectID != boundProject) || observation.AOSessionID != "" || boundSession != "" || len(observation.ExternalEffects) != 0 || observation.TerminationProof != nil {
-			writeError(w, apiError(409, "no_effect_unproven", "no-effect termination requires a claimed journal entry with no AO binding or external effects", nil))
+		if proof == nil || (!reconciled && (proof.JournalPhase != "claimed" || proof.RuntimeCreateStarted)) || proof.RuntimeSessionID != "" || proof.RuntimeContainerID != "" || (proof.Outcome != "stopped" && proof.Outcome != "failed") || observation.RuntimeSessionID != "" || boundSession != "" || len(observation.ExternalEffects) != 0 || observation.TerminationProof != nil {
+			writeError(w, apiError(409, "no_effect_unproven", "no-effect termination requires a claimed journal entry with no runtime binding or external effects", nil))
 			return
 		}
 		if proof.Outcome == "stopped" && desired != "stop" {
@@ -482,15 +476,14 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		if reconciled {
 			evidence := proof.Reconciliation
 			_, offset := evidence.VerifiedAt.Zone()
-			_, startOffset := evidence.AOServerStartedAt.Zone()
 			_, journalOffset := evidence.JournalUpdatedAt.Zone()
 			instance, instanceErr := GetInstanceState(r.Context(), tx)
 			if instanceErr != nil {
 				writeError(w, instanceErr)
 				return
 			}
-			if evidence.AOServerStartedAt.IsZero() || startOffset != 0 || evidence.JournalUpdatedAt.IsZero() || journalOffset != 0 || !evidence.AOServerStartedAt.After(evidence.JournalUpdatedAt) || evidence.AOServerStartedAt.After(evidence.VerifiedAt) || evidence.AOServerStartedAt.After(time.Now().UTC()) || status != "uncertain" || proof.JournalPhase != "effect_unknown" || !proof.AOCreateStarted || proof.Outcome != "failed" || evidence.RunID != runID || strings.TrimSpace(evidence.Actor) == "" || len(evidence.Actor) > 200 || strings.ContainsAny(evidence.Actor, "\r\n") || !evidence.Confirmed || evidence.VerifiedAt.IsZero() || offset != 0 || evidence.VerifiedAt.After(time.Now().UTC().Add(5*time.Minute)) || evidence.AOQuery != "GET /api/v1/sessions/inventory" || !evidence.AOInventoryComplete || !evidence.AOClientRequestIDComplete || evidence.AOMatches != 0 || evidence.DockerQuery != "docker ps -aq --no-trunc; docker inspect all IDs" || !evidence.DockerInventoryComplete || evidence.DockerRuntimeCount != 0 || evidence.InstanceID != instance.InstanceID || evidence.InstanceEpoch != instance.Epoch {
-				writeError(w, apiError(409, "no_effect_unproven", "explicit reconciliation requires complete AO and Docker absence proof under the current instance fence", nil))
+			if evidence.JournalUpdatedAt.IsZero() || journalOffset != 0 || evidence.JournalUpdatedAt.After(evidence.VerifiedAt) || evidence.JournalUpdatedAt.After(time.Now().UTC()) || status != "uncertain" || proof.JournalPhase != "effect_unknown" || !proof.RuntimeCreateStarted || proof.Outcome != "failed" || evidence.RunID != runID || strings.TrimSpace(evidence.Actor) == "" || len(evidence.Actor) > 200 || strings.ContainsAny(evidence.Actor, "\r\n") || !evidence.Confirmed || evidence.VerifiedAt.IsZero() || offset != 0 || evidence.VerifiedAt.After(time.Now().UTC().Add(5*time.Minute)) || evidence.RuntimeQuery != "docker ps --filter io.zoe.run/attempt/fence" || !evidence.RuntimeInventoryComplete || evidence.RuntimeMatches != 0 || evidence.DockerQuery != "docker ps -aq --no-trunc; docker inspect all IDs" || !evidence.DockerInventoryComplete || evidence.DockerRuntimeCount != 0 || evidence.InstanceID != instance.InstanceID || evidence.InstanceEpoch != instance.Epoch {
+				writeError(w, apiError(409, "no_effect_unproven", "explicit reconciliation requires complete runtime-label and Docker absence proof under the current instance fence", nil))
 				return
 			}
 			var runStartedAtText string
@@ -512,7 +505,7 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 				writeError(w, err)
 				return
 			}
-			if err = tx.QueryRowContext(r.Context(), `SELECT count(*) FROM external_effects WHERE run_id=? AND (kind!='ao_worker_create' OR status!='unknown' OR external_reference!='')`, runID).Scan(&unsafeEffects); err != nil {
+			if err = tx.QueryRowContext(r.Context(), `SELECT count(*) FROM external_effects WHERE run_id=? AND (kind != 'runtime_create' OR status!='unknown' OR external_reference!='')`, runID).Scan(&unsafeEffects); err != nil {
 				writeError(w, err)
 				return
 			}
@@ -525,7 +518,7 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 				writeError(w, marshalErr)
 				return
 			}
-			if _, err = tx.ExecContext(r.Context(), `UPDATE external_effects SET status=?,last_observed_at=?,details=? WHERE run_id=? AND kind='ao_worker_create' AND status='unknown' AND external_reference=''`, reconciliationEffectStatus(evidence), time.Now().UTC().Format(time.RFC3339Nano), details, runID); err != nil {
+			if _, err = tx.ExecContext(r.Context(), `UPDATE external_effects SET status=?,last_observed_at=?,details=? WHERE run_id=? AND kind='runtime_create' AND status='unknown' AND external_reference=''`, reconciliationEffectStatus(evidence), time.Now().UTC().Format(time.RFC3339Nano), details, runID); err != nil {
 				writeError(w, err)
 				return
 			}
@@ -534,12 +527,12 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 
 	if observation.Kind == "create_rejected" {
 		proof := observation.CreateRejection
-		if status != "active" || proof == nil || proof.HTTPStatus < 400 || proof.HTTPStatus >= 600 || proof.ErrorCode == "" || observation.AOProjectID != boundProject || boundSession != "" || observation.AOSessionID != "" || len(observation.ExternalEffects) != 0 || observation.NoEffectProof != nil || observation.TerminationProof != nil || observation.BudgetReservationID != "" && observation.BudgetReservationID != "ao-initial-prompt" {
-			writeError(w, apiError(409, "create_rejection_unproven", "AO create rejection requires an active unbound run and sanitized rejection proof", nil))
+		if status != "active" || proof == nil || proof.Code == "" || boundSession != "" || observation.RuntimeSessionID != "" || len(observation.ExternalEffects) != 0 || observation.NoEffectProof != nil || observation.TerminationProof != nil || observation.BudgetReservationID != "" && observation.BudgetReservationID != "runtime-initial-prompt" {
+			writeError(w, apiError(409, "create_rejection_unproven", "runtime create rejection requires an active unbound run and sanitized rejection proof", nil))
 			return
 		}
-		if !ao.IsDefiniteCreateRejection(proof.HTTPStatus, proof.ErrorCode) {
-			writeError(w, apiError(409, "create_rejection_unproven", "AO create rejection code is not allowlisted", nil))
+		if proof.Code != "invalid_request" && proof.Code != "image_missing" && proof.Code != "container_create_rejected" {
+			writeError(w, apiError(409, "create_rejection_unproven", "runtime create rejection code is not allowlisted", nil))
 			return
 		}
 		var started, bound, effects int
@@ -560,10 +553,10 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// This trusted, same-fence rejection is proof that the initial prompt
-		// never reached AO. Release only its reserved call; unknown session work
+		// never reached the runtime. Release only its reserved call; unknown session work
 		// and every other usage reservation remain charged conservatively.
 		if observation.BudgetReservationID != "" {
-			_, err = tx.ExecContext(r.Context(), `UPDATE run_budget_reservations SET status='settled',actual_json='{}',settlement_id=?,settlement_hash=?,updated_at=? WHERE run_id=? AND reservation_id=? AND attempt_id=? AND fence=? AND status IN ('reserved','unknown')`, "ao-create-rejected:"+observation.ObservationID, bodyHash[:], time.Now().UTC().Format(time.RFC3339Nano), runID, observation.BudgetReservationID, attempt, fence)
+			_, err = tx.ExecContext(r.Context(), `UPDATE run_budget_reservations SET status='settled',actual_json='{}',settlement_id=?,settlement_hash=?,updated_at=? WHERE run_id=? AND reservation_id=? AND attempt_id=? AND fence=? AND status IN ('reserved','unknown')`, "runtime-create-rejected:"+observation.ObservationID, bodyHash[:], time.Now().UTC().Format(time.RFC3339Nano), runID, observation.BudgetReservationID, attempt, fence)
 			if err != nil {
 				writeError(w, err)
 				return
@@ -671,7 +664,7 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		taskVersion++
 	}
 	if observation.Kind == "create_rejected" {
-		_, err = tx.ExecContext(r.Context(), `UPDATE tasks SET error=?,version=version+1,updated_at=? WHERE id=? AND workspace_id=?`, "ao_worker_create_rejected", now.Format(time.RFC3339Nano), taskID, workspace)
+		_, err = tx.ExecContext(r.Context(), `UPDATE tasks SET error=?,version=version+1,updated_at=? WHERE id=? AND workspace_id=?`, "runtime_create_rejected", now.Format(time.RFC3339Nano), taskID, workspace)
 		if err != nil {
 			writeError(w, err)
 			return
@@ -698,11 +691,11 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		}
 		nextRunStatus = "active"
 	case "dispatch_bound":
-		if observation.AOProjectID == "" || observation.AOSessionID == "" {
-			writeError(w, apiError(400, "invalid_request", "dispatch_bound requires AO project and session IDs", nil))
+		if observation.RuntimeSessionID == "" {
+			writeError(w, apiError(400, "invalid_request", "dispatch_bound requires runtime session ID", nil))
 			return
 		}
-		_, err = tx.ExecContext(r.Context(), `UPDATE runs SET ao_project_id=?,ao_session_id=? WHERE id=?`, observation.AOProjectID, observation.AOSessionID, runID)
+		_, err = tx.ExecContext(r.Context(), `UPDATE runs SET runtime_session_id=?,runtime_container_id=? WHERE id=?`, observation.RuntimeSessionID, observation.RuntimeContainerID, runID)
 		if err != nil {
 			writeError(w, err)
 			return
@@ -899,13 +892,13 @@ func validReconciliationContainerEvidence(e *contracts.NoEffectReconciliation, r
 		all[id] = true
 	}
 	for _, p := range e.RetainedNeverStartedContainers {
-		if !retained[p.ID] || !p.Valid(e.AOServerStartedAt, e.VerifiedAt) {
+		if !retained[p.ID] || !p.Valid(e.JournalUpdatedAt, e.VerifiedAt) {
 			return false
 		}
 		delete(retained, p.ID)
 	}
 	for _, p := range e.PreexistingCapabilityContainers {
-		if !preexisting[p.ID] || !p.Valid(runStartedAt, e.AOServerStartedAt, e.VerifiedAt) {
+		if !preexisting[p.ID] || !p.Valid(runStartedAt, e.JournalUpdatedAt, e.VerifiedAt) {
 			return false
 		}
 		delete(preexisting, p.ID)

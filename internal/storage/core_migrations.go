@@ -141,7 +141,6 @@ CREATE TABLE runs (
   runtime_route_id TEXT NOT NULL,
   model_route_id TEXT NOT NULL,
   role TEXT NOT NULL,
-  ao_project_id TEXT NOT NULL DEFAULT '',
   ao_session_id TEXT NOT NULL DEFAULT '',
   started_at TEXT NOT NULL,
   stopped_at TEXT,
@@ -398,6 +397,9 @@ CREATE INDEX task_confirmations_task ON task_confirmations(workspace_id,task_id,
 		return err
 	}
 	if err := RegisterInstanceAuthMigration(s); err != nil {
+		return err
+	}
+	if err := RegisterRuntimeMigration(s); err != nil {
 		return err
 	}
 	return RegisterRunBudgetMigrations(s)

@@ -16,7 +16,7 @@ func TestInspectNeverIncludesSecretContents(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := NewManager(func(context.Context, string, ...string) ([]byte, error) { return []byte("active\n"), nil })
-	got := m.Inspect(context.Background(), InspectConfig{Mode: ModeSystemd, Services: []string{"zoe-ao.service"}, SecretPath: secret, ProviderBaseURL: "https://user:pass@gateway.example/v1?token=x"})
+	got := m.Inspect(context.Background(), InspectConfig{Mode: ModeSystemd, Services: []string{"zoe-runner.service"}, SecretPath: secret, ProviderBaseURL: "https://user:pass@gateway.example/v1?token=x"})
 	if got.Secret.Mode != "0600" || !got.Secret.Exists {
 		t.Fatalf("secret metadata = %#v", got.Secret)
 	}

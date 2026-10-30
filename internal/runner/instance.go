@@ -34,7 +34,7 @@ func (e *Engine) checkInstance(ctx context.Context, claim contracts.JobClaim, re
 	}
 	if entry.InstanceID == "" {
 		if entry.Session != "" || (entry.Phase != "claimed" && entry.Phase != "failed") {
-			return fmt.Errorf("%w: pre-existing AO effect has no persisted instance epoch", ErrInstanceFence)
+			return fmt.Errorf("%w: pre-existing runtime effect has no persisted instance epoch", ErrInstanceFence)
 		}
 		if err := e.Journal.SetInstance(ctx, claim.RunID, claim.AttemptID, claim.Fence, state.InstanceID, state.Epoch); err != nil {
 			return fmt.Errorf("persist active instance fence: %w", err)
