@@ -15,8 +15,8 @@ func TestChildProposalAdmissionIsIdempotentAndClaimedThroughOrdinaryRunnerPath(t
 	bootstrapCode, deviceToken := reviewToken(t), reviewToken(t)
 	runnerOne, runnerTwo, runnerThree, runnerFour := reviewToken(t), reviewToken(t), reviewToken(t), reviewToken(t)
 	policy := control.ChildPolicy{AllowedProfileIDs: []string{"child"}, CapabilityIDs: []string{"task.read"}, MaxChildRuns: 3, MaxDepth: 3}
-	parentProfile := control.RuntimeProfile{ID: "parent", AOProjectID: "workers", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "native-sandbox", CapabilityIDs: []string{"task.read"}, ChildPolicy: policy}
-	childProfile := control.RuntimeProfile{ID: "child", AOProjectID: "workers", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "native-sandbox", CapabilityIDs: []string{"task.read"}, ChildPolicy: policy}
+	parentProfile := control.RuntimeProfile{ID: "parent", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", IsolationPolicy: "native-sandbox", CapabilityIDs: []string{"task.read"}, ChildPolicy: policy}
+	childProfile := control.RuntimeProfile{ID: "child", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", IsolationPolicy: "native-sandbox", CapabilityIDs: []string{"task.read"}, ChildPolicy: policy}
 	store, h := reviewServer(t, control.Config{DefaultProfileID: "parent", Profiles: map[string]control.RuntimeProfile{"parent": parentProfile, "child": childProfile}}, func(s *control.Server) {
 		for i, token := range []string{runnerOne, runnerTwo, runnerThree, runnerFour} {
 			if err := s.RegisterRunnerCredential(context.Background(), token, "runner-"+string(rune('1'+i)), []string{"default"}, []string{"runner:claim", "runner:propose"}); err != nil {
@@ -141,8 +141,8 @@ func TestChildProposalAdmissionIsIdempotentAndClaimedThroughOrdinaryRunnerPath(t
 func TestOutOfPolicyChildRequiresExpectedVersionApprovalAndCannotReviveParent(t *testing.T) {
 	bootstrapCode, deviceToken, runnerToken := reviewToken(t), reviewToken(t), reviewToken(t)
 	policy := control.ChildPolicy{AllowedProfileIDs: []string{"worker"}, CapabilityIDs: []string{"task.read"}, MaxChildRuns: 2, MaxDepth: 2}
-	worker := control.RuntimeProfile{ID: "worker", AOProjectID: "workers", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "native-sandbox", CapabilityIDs: []string{"task.read"}, ChildPolicy: policy}
-	admin := control.RuntimeProfile{ID: "admin-worker", AOProjectID: "workers", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "native-sandbox", CapabilityIDs: []string{"admin"}}
+	worker := control.RuntimeProfile{ID: "worker", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", IsolationPolicy: "native-sandbox", CapabilityIDs: []string{"task.read"}, ChildPolicy: policy}
+	admin := control.RuntimeProfile{ID: "admin-worker", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", IsolationPolicy: "native-sandbox", CapabilityIDs: []string{"admin"}}
 	store, h := reviewServer(t, control.Config{DefaultProfileID: "worker", Profiles: map[string]control.RuntimeProfile{"worker": worker, "admin-worker": admin}}, func(s *control.Server) {
 		if err := s.RegisterRunnerCredential(context.Background(), runnerToken, "runner", []string{"default"}, []string{"runner:claim", "runner:propose"}); err != nil {
 			t.Fatal(err)
@@ -198,7 +198,7 @@ func TestOutOfPolicyChildRequiresExpectedVersionApprovalAndCannotReviveParent(t 
 func TestConcurrentChildProposalsCannotOverspendRootBudget(t *testing.T) {
 	bootstrapCode, deviceToken, runnerToken := reviewToken(t), reviewToken(t), reviewToken(t)
 	policy := control.ChildPolicy{AllowedProfileIDs: []string{"worker"}, CapabilityIDs: []string{"task.read"}, MaxChildRuns: 1, MaxDepth: 2}
-	profile := control.RuntimeProfile{ID: "worker", AOProjectID: "workers", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", AOAgentKind: "worker", IsolationPolicy: "native-sandbox", CapabilityIDs: []string{"task.read"}, ChildPolicy: policy}
+	profile := control.RuntimeProfile{ID: "worker", RuntimeRouteID: "native", ModelRouteID: "model", Role: "worker", IsolationPolicy: "native-sandbox", CapabilityIDs: []string{"task.read"}, ChildPolicy: policy}
 	store, h := reviewServer(t, control.Config{DefaultProfileID: "worker", Profiles: map[string]control.RuntimeProfile{"worker": profile}}, func(s *control.Server) {
 		if err := s.RegisterRunnerCredential(context.Background(), runnerToken, "runner", []string{"default"}, []string{"runner:claim", "runner:propose"}); err != nil {
 			t.Fatal(err)

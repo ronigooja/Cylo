@@ -193,12 +193,12 @@ func TestCapabilityRevocationFencesClaimsAndRequiresProvenCleanup(t *testing.T) 
 	if cleanupResponse.Code != http.StatusOK || json.Unmarshal(cleanupResponse.Body.Bytes(), &cleanupClaim) != nil || !cleanupClaim.CleanupOnly || cleanupClaim.DesiredOp != "stop" || cleanupClaim.Fence <= active.Fence || cleanupClaim.Grant.ExpiresAt.After(time.Now().UTC()) {
 		t.Fatalf("cleanup claim did not preserve narrow stop authority: %d %+v %s", cleanupResponse.Code, cleanupClaim, cleanupResponse.Body.String())
 	}
-	failedCleanup := contracts.DeploymentObservation{DeploymentID: deploymentID, AttemptID: cleanupClaim.AttemptID, Fence: cleanupClaim.Fence, ObservationID: "cleanup-failed", Operation: "stop", State: "failed", ErrorCode: "docker_unavailable", ObservedAt: time.Now().UTC()}
+	failedCleanup := contracts.DeploymentObservation{DeploymentID: deploymentID, AttemptID: cleanupClaim.AttemptID, Fence: cleanupClaim.Fence, ObservationID: "cleanup-failed", Operation: "stop", State: "failed", Code: "docker_unavailable", ObservedAt: time.Now().UTC()}
 	failedResponse := reviewRequest(handler, http.MethodPost, "/runner/v1/deployments/"+deploymentID+"/observations", runnerToken, "", failedCleanup)
 	if failedResponse.Code != http.StatusBadRequest {
 		t.Fatalf("unproven cleanup failure was accepted as terminal: %d %s", failedResponse.Code, failedResponse.Body.String())
 	}
-	uncertain := contracts.DeploymentObservation{DeploymentID: deploymentID, AttemptID: cleanupClaim.AttemptID, Fence: cleanupClaim.Fence, ObservationID: "cleanup-uncertain", Operation: "stop", State: "uncertain", ErrorCode: "docker_outcome_unverified", ObservedAt: time.Now().UTC()}
+	uncertain := contracts.DeploymentObservation{DeploymentID: deploymentID, AttemptID: cleanupClaim.AttemptID, Fence: cleanupClaim.Fence, ObservationID: "cleanup-uncertain", Operation: "stop", State: "uncertain", Code: "docker_outcome_unverified", ObservedAt: time.Now().UTC()}
 	uncertainResponse := reviewRequest(handler, http.MethodPost, "/runner/v1/deployments/"+deploymentID+"/observations", runnerToken, "", uncertain)
 	if uncertainResponse.Code != http.StatusAccepted {
 		t.Fatalf("uncertain cleanup report=%d %s", uncertainResponse.Code, uncertainResponse.Body.String())

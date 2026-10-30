@@ -1,4 +1,4 @@
-// zoe-runner executes server-authorized runs through AO. Credentials and
+// zoe-runner executes server-authorized runs through OpenCode. Credentials and
 // route configuration are deployment-provided environment values.
 package main
 
@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/ronigooja/Zoe/contracts"
-	"github.com/ronigooja/Zoe/internal/agents/ao"
+	"github.com/ronigooja/Zoe/internal/agents/opencode"
 	"github.com/ronigooja/Zoe/internal/runner"
 )
 
@@ -48,7 +48,7 @@ func run(args []string) error {
 	})
 	reconcileRuns := flags.String("reconcile-runs", "", "explicit comma-separated effect_unknown run IDs for read-only no-effect reconciliation")
 	actor := flags.String("actor", "", "operator identity recorded in reconciliation proof")
-	confirm := flags.Bool("confirm-no-effect", false, "confirm explicit no-effect reconciliation after complete AO and Docker absence checks")
+	confirm := flags.Bool("confirm-no-effect", false, "confirm explicit no-effect reconciliation after complete runtime and Docker absence checks")
 	once := flags.Bool("once", false, "reconcile current runs and perform one claim poll")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -58,8 +58,10 @@ func run(args []string) error {
 	}
 	baseURL := requiredEnv("ZOE_CONTROL_URL")
 	controlToken := requiredEnv("ZOE_RUNNER_TOKEN")
-	aoURL := requiredEnv("ZOE_AO_URL")
-	aoToken := requiredEnv("ZOE_AO_TOKEN")
+	opencodeImage := requiredEnv("ZOE_OPENCODE_IMAGE")
+	opencodeModel := requiredEnv("ZOE_OPENCODE_MODEL")
+	providerSocket := requiredEnv("ZOE_OPENCODE_PROVIDER_SOCKET")
+	workspaceRoot := requiredEnv("ZOE_OPENCODE_WORKSPACE_ROOT")
 	journalPath := requiredEnv("ZOE_RUNNER_JOURNAL_PATH")
 	routes, err := loadRoutes(os.Getenv("ZOE_RUNNER_ROUTES"))
 	if err != nil {
@@ -69,9 +71,11 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("configure control API: %w", err)
 	}
-	agent, err := ao.New(ao.Config{BaseURL: aoURL, Token: aoToken})
+	serverURL := optionalEnv("ZOE_OPENCODE_URL", "http://127.0.0.1:4096")
+	password := requiredEnv("ZOE_OPENCODE_PASSWORD")
+	agent, err := opencode.New(opencode.Config{BaseURL: serverURL, Password: password})
 	if err != nil {
-		return fmt.Errorf("configure AO gateway: %w", err)
+		return fmt.Errorf("configure OpenCode runtime: %w", err)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -91,17 +95,18 @@ func run(args []string) error {
 	}
 	defer journal.Close()
 	docker := runner.ExecDockerCommand{Binary: optionalEnv("ZOE_DOCKER_BINARY", "docker")}
-	codexImage := strings.TrimSpace(os.Getenv("AO_CODEX_CONTAINER_IMAGE"))
-	openCodeImage := strings.TrimSpace(os.Getenv("AO_OPENCODE_CONTAINER_IMAGE"))
+	openCodeImage := strings.TrimSpace(opencodeImage)
+	if openCodeImage == "" || opencodeModel == "" || providerSocket == "" || workspaceRoot == "" {
+		return errors.New("ZOE_OPENCODE_IMAGE, ZOE_OPENCODE_MODEL, ZOE_OPENCODE_PROVIDER_SOCKET, and ZOE_OPENCODE_WORKSPACE_ROOT are required")
+	}
+	openCode := runner.OpenCodeRuntime{Client: agent, Supervisor: runner.DockerRuntimeSupervisor{Docker: docker}, Container: runner.RuntimeContainerSpec{Image: openCodeImage, Model: opencodeModel, WorkspaceRoot: workspaceRoot, ProviderSocket: providerSocket, ContainerWorkspace: "/workspace", PidsLimit: 256}}
 	engine := &runner.Engine{
-		Control:    control,
-		Instance:   control,
-		AO:         agent,
-		Containers: runner.DockerAOContainerSupervisor{Docker: docker},
-		Journal:    journal,
-		Routes:     routes,
+		Control:  control,
+		Instance: control,
+		Runtime:  openCode,
+		Journal:  journal,
+		Routes:   routes,
 		Isolation: runner.SupervisedRuntimeIsolation{Docker: docker, Profiles: map[string]runner.SupervisedRuntimeProfile{
-			"codex":    {Harness: "codex", IsolationPolicy: runner.CodexWorkspaceWritePolicy, Image: codexImage},
 			"opencode": {Harness: "opencode", IsolationPolicy: runner.OpenCodeWorkspaceWritePolicy, Image: openCodeImage},
 		}},
 		PollInterval:   durationEnv("ZOE_RUNNER_POLL_INTERVAL", 2*time.Second),
@@ -111,7 +116,7 @@ func run(args []string) error {
 		if *once {
 			return errors.New("--once cannot be combined with explicit reconciliation")
 		}
-		return engine.ReconcileNoEffect(ctx, strings.Split(*reconcileRuns, ","), *actor, *confirm, agent, docker, runner.ReconciliationOptions{UnrelatedPreexistingCapabilityContainerIDs: preexistingContainers, RetainNeverStartedContainerIDs: retainContainers, DeploymentAuthority: deploymentAuthority})
+		return engine.ReconcileNoEffect(ctx, strings.Split(*reconcileRuns, ","), *actor, *confirm, nil, docker, runner.ReconciliationOptions{UnrelatedPreexistingCapabilityContainerIDs: preexistingContainers, RetainNeverStartedContainerIDs: retainContainers, DeploymentAuthority: deploymentAuthority})
 	}
 	deployments := &runner.DeploymentWorker{Control: control, Journal: journal, Executor: &runner.DeploymentExecutor{Docker: docker, Fences: deploymentAuthority}}
 	var triggerAdmissions *runner.TriggerAdmissionWorker

@@ -7,40 +7,29 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 	"time"
 
 	"github.com/ronigooja/Zoe/contracts"
-	"github.com/ronigooja/Zoe/internal/agents/ao"
+	"github.com/ronigooja/Zoe/internal/agents/opencode"
 )
 
 var ErrNoClaim = errors.New("no runner claim available")
 var ErrOutcomePending = errors.New("external outcome remains unresolved and fenced")
 
-type AO interface {
-	CreateWorker(context.Context, ao.WorkerSpec) (ao.Session, error)
-	GetSession(context.Context, string) (ao.Session, error)
-	GetConversation(context.Context, string) (ao.Conversation, error)
-	StopWorker(context.Context, string) (ao.Session, ao.KillResponse, error)
-}
-
 type WorkIsolation interface {
 	Check(context.Context, contracts.JobClaim) error
 }
-
 type RunnerAPI interface {
 	Claim(context.Context) (*contracts.JobClaim, error)
 	Current(context.Context) ([]contracts.JobClaim, error)
 	Control(context.Context, string) (contracts.RunControl, error)
 	Observe(context.Context, string, contracts.RunnerObservation) error
 }
-
 type runBudgetControl interface {
 	ReserveBudget(context.Context, string, contracts.RunBudgetReserveRequest) (contracts.RunBudgetReceipt, error)
 	SettleBudget(context.Context, string, string, contracts.RunBudgetSettleRequest) (contracts.RunBudgetReceipt, error)
 }
-
 type dispatchAuthorizationControl interface {
 	CheckDispatchAuthorization(context.Context, string) (bool, string, error)
 }
@@ -55,951 +44,218 @@ type Route struct {
 	Effort          string `json:"effort,omitempty"`
 	ApprovalMode    string `json:"approval_mode"`
 }
-
 type Engine struct {
-	Control        RunnerAPI
-	Instance       InstanceAuthority
-	AO             AO
-	Containers     AOContainerSupervisor
-	Journal        *Journal
-	Routes         map[string]Route
-	Isolation      WorkIsolation
-	PollInterval   time.Duration
-	ObserveTimeout time.Duration
+	Control                      RunnerAPI
+	Instance                     InstanceAuthority
+	Runtime                      Runtime
+	Journal                      *Journal
+	Routes                       map[string]Route
+	Isolation                    WorkIsolation
+	PollInterval, ObserveTimeout time.Duration
 }
 
 func (e *Engine) RunOnce(ctx context.Context) error {
 	if e.Control == nil || e.Journal == nil {
 		return errors.New("runner engine requires control client and journal")
 	}
-	claim, err := e.Control.Claim(ctx)
+	c, err := e.Control.Claim(ctx)
 	if err != nil {
 		return err
 	}
-	if claim == nil {
+	if c == nil {
 		return ErrNoClaim
 	}
-	return e.Process(ctx, *claim)
+	return e.Process(ctx, *c)
 }
-
-// Process first journals the server claim and exact AO request. If the runner
-// restarts, it can safely replay creation under AO's stable clientRequestId or
-// continue controlling the already-bound session.
 func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
-	if err := e.validateClaim(claim); err != nil {
+	if err := validateClaim(claim); err != nil {
 		return err
 	}
-	if e.AO == nil {
-		return errors.New("AO adapter is required")
+	if e.Runtime == nil {
+		return errors.New("OpenCode runtime is required")
 	}
-	persisted, hasPersisted, err := e.Journal.Entry(ctx, claim.RunID)
-	if err != nil {
-		return fmt.Errorf("read runner journal claim: %w", err)
-	}
-	var spec ao.WorkerSpec
-	phase := "claimed"
-	replayBoundSession := false
-	boundObservationPending := false
-	if hasPersisted {
-		// Recovery must preserve the exact original AO request even if the
-		// currently configured route has since changed or been removed.
-		if !sameRecoveredClaim(persisted.Claim, claim, persisted.Session) || persisted.Spec.ClientRequestID != "" && persisted.Spec.Harness != effectiveHarness(claim.Harness) {
-			return errors.New("runner journal claim and AO request harness do not match the server claim")
-		}
-		receipt, receiptErr := e.Journal.NoEffectReceipt(ctx, claim.RunID)
-		if receiptErr != nil {
-			return receiptErr
-		}
-		if receipt != nil && receipt.NoEffectProof != nil && receipt.NoEffectProof.Reconciliation != nil {
-			return e.flush(ctx, claim.RunID)
-		}
-		spec = persisted.Spec
-		phase = ""
-		if persisted.Phase == "create_rejected" || persisted.Phase == "no_effect_terminal" {
-			// The rejection receipt is durable before delivery. Replaying a claim
-			// after a lost acknowledgement must never call AO a second time.
-			return e.flush(ctx, claim.RunID)
-		}
-		if persisted.Session != "" {
-			// The local session write precedes dispatch_bound. A crash in that
-			// interval leaves the server claim empty, so preserve the immutable
-			// journal identity and replay the binding before any session work.
-			if claim.AOSessionID != "" && claim.AOSessionID != persisted.Session {
-				return errors.New("server AO session conflicts with runner journal binding")
-			}
-			if spec.ClientRequestID != claim.RunID || spec.ProjectID != claim.AOProjectID || spec.Harness != effectiveHarness(claim.Harness) {
-				return errors.New("runner journal AO request identity does not match the fenced server claim")
-			}
-			replayBoundSession = claim.AOSessionID == ""
-		}
-		if persisted.Phase == "claimed" && spec.ClientRequestID == "" && persisted.Session == "" && persisted.Container == "" {
-			pending, pendingErr := e.Journal.PendingObservations(ctx, claim.RunID)
-			if pendingErr != nil {
-				return pendingErr
-			}
-			for _, queued := range pending {
-				if queued.Body.Kind == "create_rejected" {
-					return e.flush(ctx, claim.RunID)
-				}
-				if queued.Body.Kind == "no_effect_terminal" {
-					// Replay the exact queued receipt. A second terminal body would
-					// conflict after the first one commits on the control plane.
-					return e.flush(ctx, claim.RunID)
-				}
-			}
-			// A prior preflight failure can persist its no-effect receipt before
-			// reporting it. If the runner restarted between those writes, fail the
-			// empty request closed instead of attempting AO creation.
-			return e.reportNoEffectTerminal(ctx, claim, "failed", "claim_recovery_incomplete", "The runner recovered an incomplete claim before AO creation; no runtime was created.")
-		}
-		if persisted.Phase == "claimed" {
-			pending, pendingErr := e.Journal.PendingObservations(ctx, claim.RunID)
-			if pendingErr != nil {
-				return pendingErr
-			}
-			for _, queued := range pending {
-				if queued.Body.Kind == "create_rejected" {
-					return e.flush(ctx, claim.RunID)
-				}
-			}
-		}
-	} else {
-		route, ok := e.Routes[claim.ProfileID]
-		if !ok || route.ProfileID != claim.ProfileID || route.RuntimeRouteID != claim.RuntimeRouteID || route.ModelRouteID != claim.ModelRouteID || !validAOApprovalMode(route.ApprovalMode) {
-			return e.reportNoEffectTerminal(ctx, claim, "failed", "route_unavailable", "Server-selected runtime route is not available on this runner.")
-		}
-		if effectiveHarness(route.Harness) != effectiveHarness(claim.Harness) || route.IsolationPolicy != claim.IsolationPolicy {
-			return e.reportNoEffectTerminal(ctx, claim, "failed", "route_unavailable", "Runner route harness and isolation do not match the server-selected run profile.")
-		}
-		if !supportedSupervisedRoute(route) {
-			return e.reportNoEffectTerminal(ctx, claim, "failed", "runtime_unavailable", "This runner has no approved supervised runtime profile for the selected AO harness and isolation policy.")
-		}
-		if e.Isolation == nil {
-			return e.reportNoEffectTerminal(ctx, claim, "failed", "isolation_unavailable", "Runtime dispatch is disabled because AO execution isolation has not been verified.")
-		}
-		var isolationErr error
-		if routeIsolation, ok := e.Isolation.(interface {
-			CheckRoute(context.Context, contracts.JobClaim, Route) error
-		}); ok {
-			isolationErr = routeIsolation.CheckRoute(ctx, claim, route)
-		} else {
-			isolationErr = e.Isolation.Check(ctx, claim)
-		}
-		if isolationErr != nil {
-			return e.reportNoEffectTerminal(ctx, claim, "failed", "isolation_denied", "Runtime dispatch was denied by the configured isolation policy.")
-		}
-		if strings.TrimSpace(claim.Goal) == "" {
-			return e.reportNoEffectTerminal(ctx, claim, "failed", "empty_goal", "The server supplied an empty task goal.")
-		}
-		spec = ao.WorkerSpec{
-			ClientRequestID: claim.RunID,
-			ProjectID:       claim.AOProjectID,
-			Harness:         route.Harness,
-			Model:           route.Model,
-			Effort:          route.Effort,
-			// The control plane grant plus the container boundary defines this
-			// worker's authority. The selected harness auto-approves only inside
-			// that configured scope.
-			ApprovalMode: "auto",
-			DisplayName:  workerName(claim),
-			Prompt:       buildPrompt(claim),
-		}
-	}
-	entry, err := e.Journal.SaveClaim(ctx, claim, spec, phase)
-	if err != nil {
-		return fmt.Errorf("journal runner claim: %w", err)
-	}
-	// QueueObservation and SetPhase are separate durable writes. A crash between
-	// them leaves create_pending plus a rejection receipt; inspect the receipt
-	// before every path that could call AO, regardless of the journal phase.
-	pendingCreateRejection, err := e.pendingCreateRejection(ctx, claim.RunID)
-	if err != nil {
-		return err
-	}
-	if pendingCreateRejection {
-		return e.flush(ctx, claim.RunID)
-	}
-	if replayBoundSession {
-		pending, pendingErr := e.Journal.PendingObservations(ctx, claim.RunID)
-		if pendingErr != nil {
-			return pendingErr
-		}
-		for _, queued := range pending {
-			if queued.Body.Kind != "dispatch_bound" {
-				continue
-			}
-			if queued.Body.AOProjectID != claim.AOProjectID || queued.Body.AOSessionID != entry.Session || queued.Body.RunID != claim.RunID || queued.Body.AttemptID != claim.AttemptID || queued.Body.Fence != claim.Fence {
-				return errors.New("pending AO session binding conflicts with runner journal identity")
-			}
-			boundObservationPending = true
-		}
-	}
-	if err := e.flush(ctx, claim.RunID); err != nil {
-		return err
-	}
-	if replayBoundSession && !boundObservationPending {
-		if err := e.replayBoundSession(ctx, claim, entry.Session); err != nil {
-			return err
-		}
-	}
-	if entry.Session == "" {
-		control, err := e.Control.Control(ctx, claim.RunID)
-		if err != nil {
-			return err
-		}
-		if control.RunID != claim.RunID {
-			return errors.New("runner control response run id mismatch")
-		}
-		if control.DesiredControl == "stop" {
-			return e.reportStopWithoutSession(ctx, claim)
-		}
-		if control.DesiredControl != "run" {
-			return fmt.Errorf("unsupported desired control %q", control.DesiredControl)
-		}
-		if entry.Phase == "create_pending" || entry.Phase == "create_attempted" || entry.Phase == "effect_unknown" {
-			return e.reportCreateAttemptUnresolved(ctx, claim, entry.Phase)
-		}
-		if entry.Phase == "claimed" || entry.Phase == "dispatch_pending" || entry.Phase == "create_ready" {
-			if authorization, ok := e.Control.(dispatchAuthorizationControl); ok {
-				allowed, reason, checkErr := authorization.CheckDispatchAuthorization(ctx, claim.RunID)
-				if checkErr != nil {
-					return fmt.Errorf("recheck task dispatch authorization before AO creation: %w", checkErr)
-				}
-				if !allowed {
-					if reason == "" {
-						reason = "dispatch_authorization_revoked"
-					}
-					return e.reportDispatchAuthorizationDenied(ctx, claim, entry.Phase, reason)
-				}
-			}
-			budgetID := "ao-initial-prompt"
-			budgetAdmitted := false
-			if budgetControl, ok := e.Control.(runBudgetControl); ok && claim.Budget.MaxModelCalls > 0 {
-				receipt, budgetErr := budgetControl.ReserveBudget(ctx, claim.RunID, contracts.RunBudgetReserveRequest{AttemptID: claim.AttemptID, Fence: claim.Fence, ReservationID: budgetID, Usage: contracts.RunBudgetUsage{ModelCalls: 1}})
-				if budgetErr != nil {
-					return fmt.Errorf("reserve initial AO prompt budget before dispatch: %w", budgetErr)
-				}
-				if !receipt.Allowed {
-					return e.reportNoEffectTerminal(ctx, claim, "failed", "run_budget_exhausted", "The run budget is exhausted; AO dispatch was not started and the run was asked to stop.")
-				}
-				budgetAdmitted = true
-			}
-			if err := e.checkInstance(ctx, claim, true); err != nil {
-				return e.reportFailure(ctx, claim, "instance_fence_unavailable", "The active server instance changed or disabled dispatch; AO creation remains fenced.")
-			}
-			if err := e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "dispatch_pending"); err != nil {
-				return err
-			}
-			if err := e.emit(ctx, claim, "dispatch_started", "ao_dispatch", "AO worker creation is beginning under the run idempotency key.", nil, nil, ""); err != nil {
-				return err
-			}
-			if err := e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "create_ready"); err != nil {
-				return err
-			}
-			if err := e.checkInstance(ctx, claim, true); err != nil {
-				return e.reportFailure(ctx, claim, "instance_fence_changed", "The active server instance changed before AO creation; the run remains fenced.")
-			}
-			// This write-ahead marker distinguishes a create request that may have
-			// reached AO from a dispatch observation that was durably recorded but
-			// whose create request was never started. After a restart, attempted
-			// creates remain uncertain without a read-only AO lookup.
-			if err := e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "create_attempted"); err != nil {
-				return err
-			}
-			session, err := e.AO.CreateWorker(ctx, spec)
-			if err != nil {
-				if errors.Is(err, ao.ErrOutcomeUnknown) {
-					if budgetAdmitted {
-						e.settleUnknownCreateBudget(ctx, claim, budgetID)
-					}
-					_ = e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "effect_unknown")
-					return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_create", "AO worker creation could not be reconciled after replaying the identical clientRequestId and request body.", nil, nil, "AO worker create remains unknown", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "unknown"}}))
-				}
-				var rejected ao.CreateRejectedError
-				if errors.As(err, &rejected) {
-					return e.reportCreateRejected(ctx, claim, rejected)
-				}
-				_ = e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "effect_unknown")
-				return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_create", "AO worker creation response could not prove whether a session was created.", nil, nil, "AO worker create remains unknown", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "unknown"}}))
-			}
-			if err := e.Journal.SetSession(ctx, claim.RunID, claim.AttemptID, claim.Fence, session.ID, "bound"); err != nil {
-				return fmt.Errorf("persist AO session binding: %w", err)
-			}
-			entry.Session = session.ID
-			entry.Phase = "bound"
-			if budgetAdmitted {
-				e.settleUnknownCreateBudget(ctx, claim, budgetID)
-			}
-			if err := e.emitWithEffects(ctx, claim, "dispatch_bound", "ao_session", "AO worker session id was returned and durably journaled.", nil, nil, "", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "created", Reference: session.ID}}); err != nil {
-				return err
-			}
-		}
-	}
-	return e.monitor(ctx, claim, entry.Session, effectiveHarness(spec.Harness))
-}
-
-func (e *Engine) pendingCreateRejection(ctx context.Context, runID string) (bool, error) {
-	pending, err := e.Journal.PendingObservations(ctx, runID)
-	if err != nil {
-		return false, err
-	}
-	for _, queued := range pending {
-		if queued.Body.Kind == "create_rejected" {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func (e *Engine) reportCreateRejected(ctx context.Context, claim contracts.JobClaim, rejected ao.CreateRejectedError) error {
 	entry, ok, err := e.Journal.Entry(ctx, claim.RunID)
 	if err != nil {
 		return err
 	}
-	if !ok || entry.Claim.AttemptID != claim.AttemptID || entry.Claim.Fence != claim.Fence || entry.Session != "" || entry.Container != "" {
-		return reportUnknown(errors.New("journal cannot prove an unbound AO create rejection"))
+	if ok && entry.Session != "" {
+		return e.monitor(ctx, claim, RuntimeBinding{SessionID: entry.Session, ContainerID: entry.Container})
 	}
-	proof := &contracts.CreateRejectionProof{HTTPStatus: rejected.Status, ErrorCode: rejected.Code}
-	obsID := observationID(claim.RunID, claim.AttemptID, claim.Fence, "create_rejected", rejected.Code)
-	if exists, acknowledged, err := e.Journal.ObservationExists(ctx, obsID); err != nil {
-		return err
-	} else if exists {
-		if acknowledged {
-			return nil
+	route, exists := e.Routes[claim.ProfileID]
+	if !exists || route.Harness != "opencode" || route.IsolationPolicy != OpenCodeWorkspaceWritePolicy {
+		return e.terminal(ctx, claim, "runtime_unavailable", "OpenCode route unavailable")
+	}
+	if e.Isolation != nil {
+		if err := e.Isolation.Check(ctx, claim); err != nil {
+			return e.terminal(ctx, claim, "isolation_denied", err.Error())
 		}
-		return e.flush(ctx, claim.RunID)
 	}
-	obs := contracts.RunnerObservation{ObservationID: obsID, RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence, Kind: "create_rejected", OccurredAt: time.Now().UTC(), AOProjectID: claim.AOProjectID, Error: "AO rejected worker creation before creating a session.", CreateRejection: proof, BudgetReservationID: "ao-initial-prompt", Evidence: []contracts.Evidence{{ID: observationID(claim.RunID, claim.AttemptID, claim.Fence, "create_rejected", rejected.Code), Kind: "create_rejected", Summary: "AO definitively rejected worker creation.", Source: "ao_gateway", CreatedAt: time.Now().UTC(), Verified: false}}}
-	if err := e.Journal.QueueObservation(ctx, claim.RunID, obs); err != nil {
+	spec := RuntimeSpec{RunID: claim.RunID, AttemptID: claim.AttemptID, Fence: fmt.Sprint(claim.Fence), Model: route.Model, Prompt: buildPrompt(claim), Workspace: claim.WorkspaceID}
+	entry, err = e.Journal.SaveClaim(ctx, claim, spec, "create_attempted")
+	if err != nil {
 		return err
 	}
-	if err := e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "create_rejected"); err != nil {
+	binding, err := e.Runtime.Create(ctx, spec)
+	if err != nil {
 		return err
 	}
-	return e.flush(ctx, claim.RunID)
-}
-
-func (e *Engine) settleUnknownCreateBudget(ctx context.Context, claim contracts.JobClaim, reservationID string) {
-	budgetControl, ok := e.Control.(runBudgetControl)
-	if !ok || claim.Budget.MaxModelCalls <= 0 {
-		return
+	if binding.SessionID == "" || binding.ContainerID == "" {
+		return fmt.Errorf("%w: incomplete runtime binding", ErrRuntimeOutcomeUnknown)
 	}
-	_, _ = budgetControl.SettleBudget(ctx, claim.RunID, reservationID, contracts.RunBudgetSettleRequest{AttemptID: claim.AttemptID, Fence: claim.Fence, SettlementID: "ao-initial-prompt-outcome", Outcome: "unknown"})
+	if err = e.Journal.SetSession(ctx, claim.RunID, claim.AttemptID, claim.Fence, binding.SessionID, "bound"); err != nil {
+		return err
+	}
+	if err = e.Journal.SetContainer(ctx, claim.RunID, claim.AttemptID, claim.Fence, binding.ContainerID); err != nil {
+		return err
+	}
+	_ = entry
+	if err = e.Runtime.Prompt(ctx, binding.SessionID, spec.Prompt); err != nil {
+		return err
+	}
+	return e.monitor(ctx, claim, binding)
 }
-
-func sameRecoveredClaim(persisted, current contracts.JobClaim, journalSession string) bool {
-	if persisted.Harness == "" {
-		// Older server claims did not serialize harness. The journaled AO request
-		// separately binds the legacy claim to Codex, checked by the caller.
-		if effectiveHarness(current.Harness) != "codex" {
-			return false
+func (e *Engine) monitor(ctx context.Context, claim contracts.JobClaim, b RuntimeBinding) error {
+	steps := int64(0)
+	maxSteps := claim.Budget.MaxToolSteps
+	events, errs := e.Runtime.Events(ctx)
+	stepEvents := make(chan opencode.Event, 16)
+	go func() {
+		defer close(stepEvents)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event, ok := <-events:
+				if !ok {
+					return
+				}
+				select {
+				case stepEvents <- event:
+				case <-ctx.Done():
+					return
+				}
+			case err, ok := <-errs:
+				if ok && err != nil {
+					return
+				}
+			}
 		}
-		persisted.Harness = "codex"
-	}
-	persisted.Harness = effectiveHarness(persisted.Harness)
-	current.Harness = effectiveHarness(current.Harness)
-	// A recovered current claim may include the AO session assigned after the
-	// local claim was first journaled. Accept only the same session durably
-	// recorded with this run; foreign session bindings fail closed, while an
-	// empty server claim can recover the journaled session after a lost bind.
-	if current.AOSessionID != "" && current.AOSessionID != journalSession || persisted.AOSessionID != "" && persisted.AOSessionID != journalSession {
-		return false
-	}
-	persisted.AOSessionID = ""
-	current.AOSessionID = ""
-	return reflect.DeepEqual(persisted, current)
-}
-
-// replayBoundSession records a deterministic binding receipt when the journal
-// has a session but the server claim still has none and no queued receipt can
-// be replayed. Its stable id and body also make a lost acknowledgement safe.
-func (e *Engine) replayBoundSession(ctx context.Context, claim contracts.JobClaim, sessionID string) error {
-	if sessionID == "" || claim.RunID == "" || claim.AOProjectID == "" {
-		return errors.New("runner journal AO session binding is incomplete")
-	}
-	obsID := observationID(claim.RunID, claim.AttemptID, claim.Fence, "dispatch_bound", sessionID)
-	if exists, acknowledged, err := e.Journal.ObservationExists(ctx, obsID); err != nil {
-		return err
-	} else if exists {
-		if acknowledged {
-			return nil
-		}
-		return e.flush(ctx, claim.RunID)
-	}
-	const summary = "AO worker session id was returned and durably journaled."
-	const source = "ao_session"
-	occurredAt := time.Now().UTC()
-	observation := contracts.RunnerObservation{
-		ObservationID: obsID,
-		RunID:         claim.RunID, AttemptID: claim.AttemptID, Fence: claim.Fence,
-		Kind: "dispatch_bound", OccurredAt: occurredAt,
-		AOProjectID: claim.AOProjectID, AOSessionID: sessionID,
-		Evidence: []contracts.Evidence{{
-			ID:   observationID(claim.RunID, claim.AttemptID, claim.Fence, "dispatch_bound", source),
-			Kind: "dispatch_bound", Summary: summary, Source: source,
-			CreatedAt: occurredAt, Verified: false,
-		}},
-		ExternalEffects: []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "created", Reference: sessionID}},
-	}
-	if err := e.Journal.QueueObservation(ctx, claim.RunID, observation); err != nil {
-		return err
-	}
-	return e.flush(ctx, claim.RunID)
-}
-
-func supportedSupervisedRoute(route Route) bool {
-	switch route.Harness {
-	case "codex":
-		return route.IsolationPolicy == CodexWorkspaceWritePolicy
-	case "opencode":
-		return route.IsolationPolicy == OpenCodeWorkspaceWritePolicy
-	default:
-		return false
-	}
-}
-
-func (e *Engine) validateClaim(claim contracts.JobClaim) error {
-	if claim.RunID == "" || claim.TaskID == "" || claim.AttemptID == "" || claim.WorkspaceID == "" || claim.Fence == 0 || claim.ProfileID == "" || claim.RuntimeRouteID == "" || claim.ModelRouteID == "" || claim.AOProjectID == "" || claim.IsolationPolicy == "" {
-		return errors.New("runner claim is missing required server-selected identity or route fields")
-	}
-	if harness := effectiveHarness(claim.Harness); harness != "codex" && harness != "opencode" {
-		return errors.New("runner claim selects an unsupported AO harness")
-	}
-	if claim.Role != "super" && claim.Role != "worker" && claim.Role != "curator" {
-		return errors.New("runner claim has an unsupported role")
-	}
-	if len(claim.RunID) > 128 {
-		return errors.New("run id is too long for AO clientRequestId")
-	}
-	return nil
-}
-
-func (e *Engine) monitor(ctx context.Context, claim contracts.JobClaim, sessionID, harness string) error {
-	interval := e.PollInterval
-	if interval <= 0 {
-		interval = 3 * time.Second
-	}
+	}()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(interval):
-		}
-		if err := e.flush(ctx, claim.RunID); err != nil {
-			return err
-		}
-		if err := e.observeAOContainer(ctx, claim, harness, sessionID); err != nil {
-			return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_container", "The supervised AO container identity or PID namespace could not be verified; the run remains fenced.", nil, nil, "AO container reconciliation is pending", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_container", Status: "unknown", Reference: sessionID}}))
-		}
-		entry, hasEntry, err := e.Journal.Entry(ctx, claim.RunID)
-		if err != nil {
-			return err
-		}
-		if hasEntry && entry.Phase == "terminated" {
-			return nil
-		}
-		if hasEntry && entry.Phase == "result_reported" {
-			return e.stopAndConfirm(ctx, claim, sessionID)
-		}
-		if !claim.Budget.HardDeadline.IsZero() && !time.Now().UTC().Before(claim.Budget.HardDeadline) {
-			var deadlineReportErr error
-			if !hasEntry || entry.Phase != "budget_exhausted" {
-				deadlineReportErr = e.emit(ctx, claim, "failure", "run_budget", "Run hard deadline was exhausted; the AO runtime is being stopped.", nil, map[string]string{"code": "run_deadline_exceeded"}, "Run deadline exceeded")
-				if entry.Phase != "stop_pending" && entry.Phase != "stop_uncertain" {
-					if err := e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "budget_exhausted"); err != nil {
-						deadlineReportErr = errors.Join(deadlineReportErr, err)
-					}
-				}
+		case _, ok := <-stepEvents:
+			if !ok {
+				stepEvents = nil
+				continue
 			}
-			stopErr := e.stopAndConfirm(ctx, claim, sessionID)
-			return errors.Join(deadlineReportErr, stopErr)
+			steps++
+			if maxSteps > 0 && steps > maxSteps {
+				_ = e.Runtime.Abort(ctx, b.SessionID)
+				return e.stop(ctx, claim, b, "tool_step_limit")
+			}
+		default:
 		}
-		control, err := e.Control.Control(ctx, claim.RunID)
+		status, err := e.Runtime.Status(ctx)
 		if err != nil {
+			time.Sleep(e.interval())
 			continue
 		}
-		if control.RunID != claim.RunID {
-			return errors.New("runner control response run id mismatch")
-		}
-		if control.DesiredControl == "stop" {
-			return e.stopAndConfirm(ctx, claim, sessionID)
-		}
-		if control.DesiredControl != "run" {
-			return fmt.Errorf("unsupported desired control %q", control.DesiredControl)
-		}
-		session, err := e.AO.GetSession(ctx, sessionID)
+		msgs, err := e.Runtime.Messages(ctx, b.SessionID)
 		if err != nil {
+			time.Sleep(e.interval())
 			continue
 		}
-		if hasEntry && (entry.Phase == "stop_pending" || entry.Phase == "stop_uncertain") {
-			return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_stop", "A previous AO stop request is unresolved; only read-only reconciliation is permitted.", nil, nil, "AO stop requires manual reconciliation", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_stop", Status: "unknown", Reference: sessionID}}))
-		}
-		if session.Status == "terminated" {
-			// AO status alone is not a process-exit proof. Ask the authorized kill
-			// endpoint for its ownership-aware proof and stay fenced without it.
-			return e.stopAndConfirm(ctx, claim, sessionID)
-		}
-		conversation, err := e.AO.GetConversation(ctx, sessionID)
-		if err != nil {
-			continue
-		}
-		if result, failure, ready := finalTurn(conversation); ready {
-			if e.Containers != nil && entry.Container == "" {
-				return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_container", "AO completed a worker turn without a journaled supervised container identity; the result remains fenced.", conversationEvidence(conversation, sessionID), nil, "AO container identity was not captured", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_container", Status: "unknown", Reference: sessionID}}))
+		m, done, term := opencode.Completion(status[b.SessionID], msgs)
+		if done {
+			if term != nil {
+				_ = e.Runtime.Abort(ctx, b.SessionID)
+				return e.stop(ctx, claim, b, "runtime_error")
 			}
-			if failure != "" {
-				if err := e.emit(ctx, claim, "failure", "ao_conversation", "AO reported a failed worker turn.", conversationEvidence(conversation, sessionID), map[string]any{"turn_id": result.TurnID, "error": failure}, failure); err != nil {
-					return err
-				}
-			} else {
-				if err := e.emit(ctx, claim, "result", "ao_conversation", "AO reported a completed worker turn; the result remains unverified until deterministic or user review.", conversationEvidence(conversation, sessionID), map[string]any{"turn_id": result.TurnID, "assistant_output": result.Output}, ""); err != nil {
-					return err
-				}
-				if err := e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "result_reported"); err != nil {
-					return err
-				}
-			}
-			return e.stopAndConfirm(ctx, claim, sessionID)
+			return e.stopWithResult(ctx, claim, b, "completed", m)
 		}
-	}
-}
-
-func (e *Engine) stopAndConfirm(ctx context.Context, claim contracts.JobClaim, sessionID string) error {
-	entry, ok, err := e.Journal.Entry(ctx, claim.RunID)
-	if err != nil {
-		return err
-	}
-	var session ao.Session
-	var kill ao.KillResponse
-	if ok && (entry.Phase == "stop_pending" || entry.Phase == "stop_uncertain") {
-		// A previous process may have sent kill before it stopped. Never issue a
-		// second non-idempotent kill. Re-read the session, but AO persists
-		// "terminated" before workspace cleanup, so that status cannot resolve
-		// whether cleanup finished after a lost kill reply.
-		_, _ = e.AO.GetSession(ctx, sessionID)
-		_ = e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "stop_uncertain")
-		return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_stop", "A previous AO stop reply was lost; session status cannot verify whether AO workspace cleanup is complete, and the run remains fenced.", nil, nil, "AO stop requires manual reconciliation", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_stop", Status: "unknown", Reference: sessionID}}))
-	}
-	if err := e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "stop_pending"); err != nil {
-		return err
-	}
-	if err := e.checkInstance(ctx, claim, false); err != nil {
-		return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_stop", "The active server instance changed before AO cleanup; stop remains fenced for the current owner.", nil, nil, "AO stop requires instance reconciliation", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_stop", Status: "unknown", Reference: sessionID}}))
-	}
-	session, kill, err = e.AO.StopWorker(ctx, sessionID)
-	var containerProof *contracts.CapabilityTerminationProof
-	if e.Containers != nil {
-		proof, proofErr := e.stopAndVerifyAOContainer(ctx, claim, entry.Spec.Harness, sessionID)
-		if proofErr != nil {
-			_ = e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "stop_uncertain")
-			return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_container_stop", "AO container PID namespace exit could not be confirmed; the run stays fenced.", nil, nil, "AO container termination is not confirmed", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_container", Status: "pending", Reference: sessionID}}))
+		if !claim.Budget.HardDeadline.IsZero() && time.Now().After(claim.Budget.HardDeadline) {
+			_ = e.Runtime.Abort(ctx, b.SessionID)
+			return e.stop(ctx, claim, b, "run_deadline_exceeded")
 		}
-		containerProof = &proof
+		time.Sleep(e.interval())
 	}
+}
+func (e *Engine) stop(ctx context.Context, claim contracts.JobClaim, b RuntimeBinding, reason string) error {
+	return e.stopWithResult(ctx, claim, b, reason, opencode.Message{})
+}
+func (e *Engine) stopWithResult(ctx context.Context, claim contracts.JobClaim, b RuntimeBinding, reason string, message opencode.Message) error {
+	id, err := e.Runtime.Terminate(ctx, b)
 	if err != nil {
-		// Kill may have succeeded even if its response was lost. Reconcile only by
-		// reading the same AO session; do not issue a second kill automatically.
-		session, err = e.AO.GetSession(ctx, sessionID)
-		if err != nil || session.Status != "terminated" {
-			_ = e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "stop_uncertain")
-			return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_stop", "AO stop outcome remains unknown; the run stays fenced.", nil, nil, "AO stop could not be verified", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_stop", Status: "unknown", Reference: sessionID}}))
-		}
-		_ = e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "stop_uncertain")
-		return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_stop", "AO reports terminal status after a lost kill reply, but workspace cleanup completion is unknown; the run stays fenced.", nil, nil, "AO cleanup could not be verified", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_stop", Status: "unknown", Reference: sessionID}}))
+		return fmt.Errorf("%w: %v", ErrOutcomePending, err)
 	}
-	if session.Status != "terminated" || kill.CleanupPending || !validTerminationProof(kill.TerminationProof, entry.Spec.Harness, sessionID) || (e.Containers != nil && (containerProof == nil || !containerProof.CleanupComplete)) {
-		_ = e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "stop_uncertain")
-		return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_stop", "AO has not provided trusted native process-exit and cleanup proof; the run stays fenced.", nil, nil, "AO termination is not confirmed", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_stop", Status: "pending", Reference: sessionID}}))
-	}
-	entry, ok, err = e.Journal.Entry(ctx, claim.RunID)
-	if err != nil {
-		return err
-	}
-	kind := "runtime_terminated"
-	if ok && entry.Phase != "result_reported" {
-		control, controlErr := e.Control.Control(ctx, claim.RunID)
-		if controlErr == nil && control.DesiredControl == "stop" {
-			kind = "stop_confirmed"
-		}
-	}
-	proof := toContractProof(kill.TerminationProof)
-	effects := []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_runtime", Status: "terminated", Reference: sessionID}}
-	if containerProof != nil {
-		effects = append(effects, contracts.ExternalEffect{ID: claim.RunID, Kind: "ao_container_pid_namespace", Status: "terminated", Reference: containerProof.EffectRef})
-	}
-	if err := e.emitWithTerminationProof(ctx, claim, kind, "ao_session", "AO runtime host exit and its supervised container PID namespace were verified.", nil, nil, "", effects, proof); err != nil {
-		return err
-	}
-	return e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "terminated")
+	proof := &contracts.TerminationProof{Source: "runner_container_removal", Method: "container_removed", RuntimeSessionID: b.SessionID, RuntimeContainerID: id, VerifiedAt: time.Now().UTC(), CleanupComplete: true}
+	return e.emitResult(ctx, claim, "runtime_terminated", "runtime", reason, proof, message)
 }
-
-func validTerminationProof(proof *ao.TerminationProof, harness, sessionID string) bool {
-	expectedMethod := ""
-	switch effectiveHarness(harness) {
-	case "codex":
-		expectedMethod = "native_process_exit_waited"
-	case "opencode":
-		expectedMethod = "acp_process_exit_waited"
-	}
-	if expectedMethod == "" || proof == nil || proof.Source != "ao_chat_stop" || proof.Method != expectedMethod || proof.SessionID != sessionID || !proof.CleanupComplete || proof.VerifiedAt.IsZero() || proof.VerifiedAt.After(time.Now().UTC().Add(time.Minute)) {
-		return false
-	}
-	_, offset := proof.VerifiedAt.Zone()
-	return offset == 0
+func (e *Engine) terminal(ctx context.Context, c contracts.JobClaim, code, msg string) error {
+	return e.emit(ctx, c, "failure", "runner", code, nil)
 }
-
-func effectiveHarness(harness string) string {
-	if strings.TrimSpace(harness) == "" {
-		return "codex"
-	}
-	return strings.TrimSpace(harness)
+func (e *Engine) emit(ctx context.Context, c contracts.JobClaim, kind, source, summary string, proof *contracts.TerminationProof) error {
+	return e.emitResult(ctx, c, kind, source, summary, proof, opencode.Message{})
 }
-
-func toContractProof(proof *ao.TerminationProof) *contracts.TerminationProof {
-	if proof == nil {
-		return nil
+func (e *Engine) emitResult(ctx context.Context, c contracts.JobClaim, kind, source, summary string, proof *contracts.TerminationProof, message opencode.Message) error {
+	raw, _ := json.Marshal(map[string]string{"summary": summary})
+	if message.Info.ID != "" {
+		raw, _ = json.Marshal(map[string]any{"summary": summary, "assistant_message": message})
 	}
-	return &contracts.TerminationProof{Source: proof.Source, Method: proof.Method, SessionID: proof.SessionID, VerifiedAt: proof.VerifiedAt, CleanupComplete: proof.CleanupComplete}
-}
-
-func (e *Engine) observeAOContainer(ctx context.Context, claim contracts.JobClaim, harness, sessionID string) error {
-	if e.Containers == nil {
-		return nil
+	sum := sha256.Sum256(raw)
+	obs := contracts.RunnerObservation{ObservationID: hex.EncodeToString(sum[:16]), RunID: c.RunID, AttemptID: c.AttemptID, Fence: c.Fence, Kind: kind, OccurredAt: time.Now().UTC(), RuntimeSessionID: c.RuntimeSessionID, TerminationProof: proof, Result: raw}
+	if e.Journal != nil {
+		_ = e.Journal.QueueObservation(ctx, c.RunID, obs)
 	}
-	containerID, found, err := e.Containers.Find(ctx, harness, sessionID)
-	if err != nil || !found {
-		return err
-	}
-	entry, ok, err := e.Journal.Entry(ctx, claim.RunID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return errors.New("AO container has no durable runner journal claim")
-	}
-	if entry.Container != "" && entry.Container != containerID {
-		return errors.New("AO container identity changed after runner journal binding")
-	}
-	if entry.Container == "" {
-		return e.Journal.SetContainer(ctx, claim.RunID, claim.AttemptID, claim.Fence, containerID)
+	if e.Control != nil {
+		return e.Control.Observe(ctx, c.RunID, obs)
 	}
 	return nil
 }
-
-func (e *Engine) stopAndVerifyAOContainer(ctx context.Context, claim contracts.JobClaim, harness, sessionID string) (contracts.CapabilityTerminationProof, error) {
-	entry, ok, err := e.Journal.Entry(ctx, claim.RunID)
-	if err != nil {
-		return contracts.CapabilityTerminationProof{}, err
-	}
-	if !ok {
-		return contracts.CapabilityTerminationProof{}, errors.New("AO container has no durable runner journal claim")
-	}
-	containerID := entry.Container
-	if containerID == "" {
-		foundID, found, findErr := e.Containers.Find(ctx, harness, sessionID)
-		if findErr != nil {
-			return contracts.CapabilityTerminationProof{}, findErr
-		}
-		if found {
-			containerID = foundID
-			if err := e.Journal.SetContainer(ctx, claim.RunID, claim.AttemptID, claim.Fence, containerID); err != nil {
-				return contracts.CapabilityTerminationProof{}, err
-			}
-		}
-	}
-	if err := e.checkInstance(ctx, claim, false); err != nil {
-		return contracts.CapabilityTerminationProof{}, err
-	}
-	return e.Containers.StopAndVerify(ctx, harness, sessionID, containerID)
-}
-
-func (e *Engine) reportStopWithoutSession(ctx context.Context, claim contracts.JobClaim) error {
-	entry, ok, err := e.Journal.Entry(ctx, claim.RunID)
-	if err != nil {
-		return err
-	}
-	if ok && entry.Phase == "claimed" && entry.Session == "" && entry.Container == "" {
-		return e.reportNoEffectTerminal(ctx, claim, "stopped", "stop_before_dispatch", "Stop was confirmed before any AO session was created.")
-	}
-	return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_create", "Stop arrived while AO creation may have had an unknown outcome; the run remains fenced for reconciliation.", nil, nil, "", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "unknown"}}))
-}
-
-func (e *Engine) reportDispatchAuthorizationDenied(ctx context.Context, claim contracts.JobClaim, phase, reason string) error {
-	if phase == "claimed" {
-		return e.reportNoEffectTerminal(ctx, claim, "failed", reason, "Task authorization was revoked before AO dispatch started.")
-	}
-	// Once dispatch_started is in the journal, a grant change cannot prove that
-	// AO did not accept the request. Do not send another create request or claim
-	// no effect; retain the effect as uncertain until a read-only reconciliation
-	// API or other trusted evidence resolves it.
-	if err := e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "effect_unknown"); err != nil {
-		return err
-	}
-	return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_create", "Task authorization changed after AO dispatch began; no new create request was sent and the previous create outcome remains unresolved.", nil, map[string]any{"reason": reason}, "AO worker creation remains uncertain pending read-only reconciliation.", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "unknown"}}))
-}
-
-func (e *Engine) reportCreateAttemptUnresolved(ctx context.Context, claim contracts.JobClaim, journalPhase string) error {
-	// `create_pending` is retained for journals written by older runners. It
-	// predates the write-ahead create_attempted marker, so it cannot prove that
-	// the AO POST was never sent. Never replay it as a new create.
-	if err := e.Journal.SetPhase(ctx, claim.RunID, claim.AttemptID, claim.Fence, "effect_unknown"); err != nil {
-		return err
-	}
-	return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_create", "The runner recovered a journaled AO create attempt without a read-only lookup; it did not send another create request and the result remains uncertain.", nil, map[string]any{"journal_phase": journalPhase}, "AO worker creation remains uncertain pending read-only reconciliation.", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "unknown"}}))
-}
-
-func (e *Engine) reportNoEffectTerminal(ctx context.Context, claim contracts.JobClaim, outcome, reason, message string) error {
-	entry, ok, err := e.Journal.Entry(ctx, claim.RunID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		entry, err = e.Journal.SaveClaim(ctx, claim, ao.WorkerSpec{}, "claimed")
-		if err != nil {
-			return err
-		}
-	}
-	if entry.Claim.AttemptID != claim.AttemptID || entry.Claim.Fence != claim.Fence || entry.Phase != "claimed" || entry.Session != "" || entry.Container != "" {
-		return reportUnknown(e.emitWithEffects(ctx, claim, "effect_unknown", "ao_worker_create", "The runner journal cannot prove that AO creation never began; the run remains fenced.", nil, nil, "", []contracts.ExternalEffect{{ID: claim.RunID, Kind: "ao_worker_create", Status: "unknown"}}))
-	}
-	proof := &contracts.NoEffectProof{JournalPhase: "claimed", AOCreateStarted: false, Outcome: outcome}
-	return e.emitNoEffectTerminal(ctx, claim, reason, message, proof)
-}
-
-func (e *Engine) emitNoEffectTerminal(ctx context.Context, claim contracts.JobClaim, reason, message string, proof *contracts.NoEffectProof) error {
-	if e.Journal == nil || e.Control == nil {
-		return errors.New("runner engine is not initialized")
-	}
-	encoded, err := json.Marshal(struct {
-		Reason string
-		Proof  *contracts.NoEffectProof
-		Error  string
-	}{reason, proof, message})
-	if err != nil {
-		return err
-	}
-	digest := sha256.Sum256(encoded)
-	obsID := observationID(claim.RunID, claim.AttemptID, claim.Fence, "no_effect_terminal", reason+hex.EncodeToString(digest[:]))
-	if exists, acknowledged, err := e.Journal.ObservationExists(ctx, obsID); err != nil {
-		return err
-	} else if exists {
-		if acknowledged {
-			return nil
-		}
-		return e.flush(ctx, claim.RunID)
-	}
-	observation := contracts.RunnerObservation{
-		ObservationID: obsID,
-		RunID:         claim.RunID,
-		AttemptID:     claim.AttemptID,
-		Fence:         claim.Fence,
-		Kind:          "no_effect_terminal",
-		OccurredAt:    time.Now().UTC(),
-		Error:         message,
-		NoEffectProof: proof,
-		Evidence: []contracts.Evidence{{
-			ID:        observationID(claim.RunID, claim.AttemptID, claim.Fence, "no_effect_terminal", reason),
-			Kind:      "no_effect_terminal",
-			Summary:   message,
-			Source:    "runner_journal",
-			CreatedAt: time.Now().UTC(),
-			Verified:  false,
-		}},
-		ExternalEffects: []contracts.ExternalEffect{},
-	}
-	if err := e.Journal.QueueObservation(ctx, claim.RunID, observation); err != nil {
-		return err
-	}
-	return e.flush(ctx, claim.RunID)
-}
-
-func reportUnknown(err error) error {
-	if err != nil {
-		return err
-	}
-	return ErrOutcomePending
-}
-
-func (e *Engine) reportFailure(ctx context.Context, claim contracts.JobClaim, code, message string) error {
-	return e.emit(ctx, claim, "failure", code, message, nil, map[string]string{"code": code}, message)
-}
-
-func (e *Engine) emit(ctx context.Context, claim contracts.JobClaim, kind, source, summary string, evidence []contracts.Evidence, result any, message string) error {
-	return e.emitWithEffects(ctx, claim, kind, source, summary, evidence, result, message, nil)
-}
-
-func (e *Engine) emitWithEffects(ctx context.Context, claim contracts.JobClaim, kind, source, summary string, evidence []contracts.Evidence, result any, message string, effects []contracts.ExternalEffect) error {
-	return e.emitWithTerminationProof(ctx, claim, kind, source, summary, evidence, result, message, effects, nil)
-}
-
-func (e *Engine) emitWithTerminationProof(ctx context.Context, claim contracts.JobClaim, kind, source, summary string, evidence []contracts.Evidence, result any, message string, effects []contracts.ExternalEffect, proof *contracts.TerminationProof) error {
-	if e.Journal == nil || e.Control == nil {
-		return errors.New("runner engine is not initialized")
-	}
-	var raw json.RawMessage
-	if result != nil {
-		encoded, err := json.Marshal(result)
-		if err != nil {
-			return err
-		}
-		raw = encoded
-	}
-	digestPayload, err := json.Marshal(struct {
-		Evidence []contracts.Evidence
-		Result   json.RawMessage
-		Error    string
-		Effects  []contracts.ExternalEffect
-	}{evidence, raw, message, effects})
-	if err != nil {
-		return err
-	}
-	digest := sha256.Sum256(digestPayload)
-	obsID := observationID(claim.RunID, claim.AttemptID, claim.Fence, kind, summary+hex.EncodeToString(digest[:]))
-	if exists, acknowledged, err := e.Journal.ObservationExists(ctx, obsID); err != nil {
-		return err
-	} else if exists {
-		if acknowledged {
-			return nil
-		}
-		return e.flush(ctx, claim.RunID)
-	}
-	observation := contracts.RunnerObservation{
-		ObservationID:    obsID,
-		RunID:            claim.RunID,
-		AttemptID:        claim.AttemptID,
-		Fence:            claim.Fence,
-		Kind:             kind,
-		OccurredAt:       time.Now().UTC(),
-		AOProjectID:      claim.AOProjectID,
-		AOSessionID:      claim.AOSessionID,
-		Evidence:         evidence,
-		Result:           raw,
-		Error:            message,
-		ExternalEffects:  effects,
-		TerminationProof: proof,
-	}
-	if entry, ok, err := e.Journal.Entry(ctx, claim.RunID); err == nil && ok && entry.Session != "" {
-		observation.AOSessionID = entry.Session
-	}
-	if len(evidence) == 0 && summary != "" {
-		observation.Evidence = []contracts.Evidence{{ID: observationID(claim.RunID, claim.AttemptID, claim.Fence, kind, source), Kind: kind, Summary: summary, Source: source, CreatedAt: observation.OccurredAt, Verified: false}}
-	}
-	if err := e.Journal.QueueObservation(ctx, claim.RunID, observation); err != nil {
-		return err
-	}
-	return e.flush(ctx, claim.RunID)
-}
-
 func (e *Engine) flush(ctx context.Context, runID string) error {
-	if e.ObserveTimeout <= 0 {
-		e.ObserveTimeout = 15 * time.Second
-	}
 	pending, err := e.Journal.PendingObservations(ctx, runID)
 	if err != nil {
 		return err
 	}
-	for _, queued := range pending {
-		sendCtx, cancel := context.WithTimeout(ctx, e.ObserveTimeout)
-		err := e.Control.Observe(sendCtx, queued.RunID, queued.Body)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("submit durable runner observation: %w", err)
+	for _, q := range pending {
+		if err := e.Control.Observe(ctx, runID, q.Body); err != nil {
+			return err
 		}
-		if err := e.Journal.AcknowledgeObservation(ctx, queued.Body.ObservationID); err != nil {
+		if err := e.Journal.AcknowledgeObservation(ctx, q.Body.ObservationID); err != nil {
 			return err
 		}
 	}
 	return nil
 }
-
-type finalResult struct {
-	TurnID string
-	Output string
+func (e *Engine) emitNoEffectTerminal(ctx context.Context, c contracts.JobClaim, reason, message string, p *contracts.NoEffectProof) error {
+	return e.emit(ctx, c, "no_effect_terminal", reason, message, nil)
 }
-
-func finalTurn(conversation ao.Conversation) (finalResult, string, bool) {
-	var latest *ao.Turn
-	for i := range conversation.Turns {
-		turn := &conversation.Turns[i]
-		if latest == nil || turnRequestedAt(*turn).After(turnRequestedAt(*latest)) {
-			latest = turn
-		}
-	}
-	if latest == nil || conversation.Controller == "busy" || conversation.Controller == "connecting" || conversation.Controller == "recovering" {
-		return finalResult{}, "", false
-	}
-	if latest.State == "failed" || latest.State == "interrupted" || latest.State == "cancelled" {
-		return finalResult{TurnID: latest.ID}, latest.State, true
-	}
-	if latest.State != "completed" && latest.State != "recovered" {
-		return finalResult{}, "", false
-	}
-	var answer ao.Message
-	for _, message := range conversation.Messages {
-		if message.Role == "assistant" && message.TurnID == latest.ID && !message.Streaming && message.Sequence > answer.Sequence {
-			answer = message
-		}
-	}
-	if answer.ID == "" || answer.Text == "" {
-		return finalResult{}, "", false
-	}
-	return finalResult{TurnID: latest.ID, Output: answer.Text}, "", true
+func sameRecoveredClaim(a, b contracts.JobClaim, _ string) bool {
+	a.RuntimeSessionID = ""
+	b.RuntimeSessionID = ""
+	return a.RunID == b.RunID && a.AttemptID == b.AttemptID && a.Fence == b.Fence && a.Harness == b.Harness
 }
-
-func conversationEvidence(conversation ao.Conversation, sessionID string) []contracts.Evidence {
-	var evidence []contracts.Evidence
-	for _, message := range conversation.Messages {
-		if message.Role != "assistant" || message.Streaming {
-			continue
-		}
-		source := fmt.Sprintf("ao://sessions/%s/conversation/messages/%s", sessionID, message.ID)
-		evidence = append(evidence, contracts.Evidence{ID: message.ID, Kind: "assistant_message", Summary: fmt.Sprintf("AO assistant message observed at sequence %d; content is carried separately as an unverified result.", message.Sequence), Source: source, CreatedAt: parseAOTime(message.CreatedAt), Verified: false})
+func (e *Engine) interval() time.Duration {
+	if e.PollInterval > 0 {
+		return e.PollInterval
 	}
-	for _, activity := range conversation.Activities {
-		if activity.ActivityKind != "command" && activity.ActivityKind != "file_change" && activity.ActivityKind != "mcp_tool" {
-			continue
-		}
-		summary := activity.Summary
-		if len(summary) > 1000 {
-			summary = summary[:1000]
-		}
-		source := fmt.Sprintf("ao://sessions/%s/conversation/activities/%s", sessionID, activity.ID)
-		evidence = append(evidence, contracts.Evidence{ID: activity.ID, Kind: activity.ActivityKind, Summary: summary, Source: source, CreatedAt: parseAOTime(activity.CreatedAt), Verified: false})
+	return time.Second
+}
+func validateClaim(c contracts.JobClaim) error {
+	if c.RunID == "" || c.TaskID == "" || c.AttemptID == "" || c.WorkspaceID == "" || c.Fence == 0 || c.ProfileID == "" || c.RuntimeRouteID == "" || c.ModelRouteID == "" || c.IsolationPolicy == "" {
+		return errors.New("runner claim is missing required identity")
 	}
-	return evidence
-}
-
-func buildPrompt(claim contracts.JobClaim) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Zoe role: %s.\n", claim.Role)
-	b.WriteString("Work only on the assigned goal in the AO project workspace. Do not create child runtimes or delegate through AO. Do not send messages, publish changes, deploy services, delete data, or make external irreversible changes. Report what you actually did and cite concrete workspace paths or tool results. Distinguish observed evidence from assumptions.\n\nGoal:\n")
-	b.WriteString(claim.Goal)
-	if len(claim.Authorization.Scopes) > 0 {
-		b.WriteString("\n\nAuthorized capability scopes:\n")
-		for _, scope := range claim.Authorization.Scopes {
-			fmt.Fprintf(&b, "- %s\n", scope)
-		}
+	if c.Harness != "opencode" {
+		return errors.New("runner claim selects unsupported runtime")
 	}
-	return b.String()
+	return nil
 }
-
-func validAOApprovalMode(mode string) bool { return mode == "accept-edits" || mode == "auto" }
-
-func workerName(claim contracts.JobClaim) string {
-	return "Zoe " + claim.Role + " " + claim.RunID
+func buildPrompt(c contracts.JobClaim) string {
+	return "Work only on the assigned goal. Do not delegate or perform external irreversible changes.\n\nGoal:\n" + c.Goal
 }
-
-func observationID(runID, attemptID string, fence uint64, kind, discriminator string) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d\x00%s\x00%s", runID, attemptID, fence, kind, discriminator)))
-	return hex.EncodeToString(sum[:16])
-}
-
-// turnRequestedAt parses an AO timestamp; malformed timestamps sort first.
-func turnRequestedAt(t ao.Turn) time.Time {
-	return parseAOTime(t.RequestedAt)
-}
-
-func parseAOTime(raw string) time.Time {
-	parsed, _ := time.Parse(time.RFC3339Nano, raw)
-	return parsed
+func observationID(run, attempt string, fence uint64, kind, disc string) string {
+	h := sha256.Sum256([]byte(strings.Join([]string{run, attempt, fmt.Sprint(fence), kind, disc}, "\x00")))
+	return hex.EncodeToString(h[:16])
 }
