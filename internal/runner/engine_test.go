@@ -192,3 +192,24 @@ func openTestJournal(t *testing.T) *Journal {
 	t.Cleanup(func() { j.Close() })
 	return j
 }
+
+func TestToolEvidenceClassifiesCallsAndStaysUnverified(t *testing.T) {
+	var m opencode.Message
+	m.Info.ID = "msg"
+	m.Parts = []map[string]any{
+		{"type": "text", "text": "ignored"},
+		{"type": "tool", "tool": "bash", "callID": "c1", "state": map[string]any{"status": "completed", "title": "ls"}},
+		{"type": "tool", "tool": "edit", "callID": "c2", "state": map[string]any{"status": "error"}},
+		{"type": "tool", "tool": "custom_mcp", "callID": "c3"},
+		{"type": "tool", "tool": "no_call_id"},
+	}
+	got := toolEvidence("sess", m)
+	if len(got) != 3 {
+		t.Fatalf("evidence=%+v, want 3 tool entries", got)
+	}
+	for i, kind := range []string{"command", "file_change", "mcp_tool"} {
+		if got[i].Kind != kind || got[i].Verified || got[i].Source == "" {
+			t.Fatalf("evidence[%d]=%+v, want kind %s unverified with source", i, got[i], kind)
+		}
+	}
+}

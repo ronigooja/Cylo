@@ -687,6 +687,7 @@ func (*capabilityIntegrationRuntime) Messages(context.Context, runner.RuntimeBin
 	message.Info.Role = "assistant"
 	message.Info.Time.Completed = time.Now().UnixMilli()
 	message.Info.Finish = "stop"
+	message.Parts = []map[string]any{{"type": "tool", "tool": "capability_lookup", "callID": "call-1", "state": map[string]any{"status": "completed", "title": "lookup"}}}
 	return []opencode.Message{message}, nil
 }
 func (*capabilityIntegrationRuntime) Events(context.Context, runner.RuntimeBinding) (<-chan opencode.Event, <-chan error) {
@@ -820,7 +821,7 @@ func TestCapabilityTriggerRunnerOpenCodeResultChain(t *testing.T) {
 		t.Fatalf("ControlClient claim for admitted trigger: claim=%#v err=%v", claim, err)
 	}
 	if err := engine.Process(ctx, *claim); err != nil {
-		t.Fatalf("runner Engine AO execution: %v", err)
+		t.Fatalf("runner Engine OpenCode execution: %v", err)
 	}
 	if runtime.created != 1 || runtime.terminated != 1 {
 		t.Fatalf("OpenCode runtime lifecycle create=%d terminate=%d, want one each", runtime.created, runtime.terminated)
@@ -831,7 +832,7 @@ func TestCapabilityTriggerRunnerOpenCodeResultChain(t *testing.T) {
 	}
 	var toolEvidence int
 	if err := store.DB().QueryRowContext(ctx, `SELECT count(*) FROM evidence WHERE run_id=? AND kind='mcp_tool'`, claim.RunID).Scan(&toolEvidence); err != nil || toolEvidence != 1 {
-		t.Fatalf("AO tool evidence was not persisted: count=%d err=%v", toolEvidence, err)
+		t.Fatalf("runtime tool evidence was not persisted: count=%d err=%v", toolEvidence, err)
 	}
 	postAdmissions()
 	var triggerState string

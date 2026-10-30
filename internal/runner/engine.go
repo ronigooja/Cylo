@@ -296,8 +296,9 @@ func (e *Engine) emitMessage(ctx context.Context, c contracts.JobClaim, kind, so
 	}
 	raw, _ := json.Marshal(map[string]any{"assistant_output": out, "assistant_message": m})
 	entry, _, _ := e.Journal.Entry(ctx, c.RunID)
+	evidence := toolEvidence(entry.Session, m)
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%s", c.RunID, c.AttemptID, kind, summary)))
-	o := contracts.RunnerObservation{ObservationID: hex.EncodeToString(sum[:16]), RunID: c.RunID, AttemptID: c.AttemptID, Fence: c.Fence, Kind: kind, OccurredAt: time.Now().UTC(), RuntimeSessionID: entry.Session, RuntimeContainerID: entry.Container, Result: raw, ExternalEffects: []contracts.ExternalEffect{}}
+	o := contracts.RunnerObservation{ObservationID: hex.EncodeToString(sum[:16]), RunID: c.RunID, AttemptID: c.AttemptID, Fence: c.Fence, Kind: kind, OccurredAt: time.Now().UTC(), RuntimeSessionID: entry.Session, RuntimeContainerID: entry.Container, Result: raw, ExternalEffects: []contracts.ExternalEffect{}, Evidence: evidence}
 	if err := e.Journal.QueueObservation(ctx, c.RunID, o); err != nil {
 		return err
 	}
@@ -349,4 +350,46 @@ func sameRecoveredClaim(a, b contracts.JobClaim, _ string) bool {
 	a.RuntimeSessionID = ""
 	b.RuntimeSessionID = ""
 	return a.RunID == b.RunID && a.AttemptID == b.AttemptID && a.Fence == b.Fence && a.Harness == b.Harness
+}
+
+// toolEvidence reports the tool calls OpenCode made. Evidence stays unverified:
+// it records that a call occurred, not that its effect is correct.
+func toolEvidence(session string, m opencode.Message) []contracts.Evidence {
+	evidence := []contracts.Evidence{}
+	for _, part := range m.Parts {
+		if kind, _ := part["type"].(string); kind != "tool" {
+			continue
+		}
+		tool, _ := part["tool"].(string)
+		callID, _ := part["callID"].(string)
+		if tool == "" || callID == "" {
+			continue
+		}
+		status := ""
+		title := ""
+		if state, ok := part["state"].(map[string]any); ok {
+			status, _ = state["status"].(string)
+			title, _ = state["title"].(string)
+		}
+		summary := tool + " " + status
+		if title != "" {
+			summary += ": " + title
+		}
+		if len(summary) > 1000 {
+			summary = summary[:1000]
+		}
+		evidence = append(evidence, contracts.Evidence{ID: callID, Kind: toolEvidenceKind(tool), Summary: summary, Source: "opencode://sessions/" + session + "/messages/" + m.Info.ID + "/tools/" + callID, CreatedAt: time.Now().UTC(), Verified: false})
+	}
+	return evidence
+}
+
+func toolEvidenceKind(tool string) string {
+	switch tool {
+	case "bash":
+		return "command"
+	case "edit", "write", "patch", "multiedit":
+		return "file_change"
+	default:
+		return "mcp_tool"
+	}
 }
