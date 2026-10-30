@@ -111,7 +111,7 @@ func TestMemoryConfigureConsumesCRLFAnswersFromSingleChunk(t *testing.T) {
 	defer gateway.Close()
 	var out, errOut bytes.Buffer
 	answers := gateway.URL + "\r\ngpt-6.1-sol\r\nmemory-token\r\n"
-	if err := memoryConfigureOperation([]string{"--root", root}, strings.NewReader(answers), &out, &errOut); err != nil {
+	if err := memoryConfigureOperation([]string{"--root", root, "--secret", filepath.Join(root, "secrets", "mem0-llm-api-key")}, strings.NewReader(answers), &out, &errOut); err != nil {
 		t.Fatalf("configure failed: %v; stderr=%s", err, errOut.String())
 	}
 	if strings.Contains(out.String()+errOut.String(), "invalid_configuration") {
