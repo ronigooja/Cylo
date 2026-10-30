@@ -18,8 +18,8 @@ public struct MacSurfaceRoot: View {
 
     public var body: some View {
         Group {
-            if !model.authentication.isConnected { ConnectionSurface(model: model, address: $address, key: $key) }
-            else { AmbientPlaceholder(model: model, coordinator: coordinator, draft: $draft) }
+            if !model.authentication.isConnected { ConnectionSurface(model: model, address: $address, key: $key).frame(width: 460, height: 380) }
+            else { AmbientPlaceholder(model: model, coordinator: coordinator, draft: $draft).frame(minWidth: 520, idealWidth: 960, minHeight: 360, idealHeight: 640) }
         }
         .onAppear { address = model.serverAddress; coordinator.start(); if model.authentication.isConnected { coordinator.openDefault() } }
         .onChange(of: model.authentication) { _, state in if state.isConnected { coordinator.openDefault() } }

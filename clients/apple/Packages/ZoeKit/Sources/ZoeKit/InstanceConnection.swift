@@ -96,7 +96,22 @@ public final class InstanceKeyStore: InstanceKeyStoring, @unchecked Sendable {
     private var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "instance-key"]
     }
+    /// Process-wide read cache so repeated requests do not hit Keychain (and its prompts) each time.
+    private static let cache = KeyCache()
+    private final class KeyCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [String: InstanceKey] = [:]
+        func get(_ service: String) -> InstanceKey? { lock.lock(); defer { lock.unlock() }; return values[service] }
+        func set(_ service: String, _ key: InstanceKey?) { lock.lock(); defer { lock.unlock() }; values[service] = key }
+    }
+
     public func load() throws -> InstanceKey? {
+        if let cached = Self.cache.get(service) { return cached }
+        let loaded = try loadFromKeychain()
+        if let loaded { Self.cache.set(service, loaded) }
+        return loaded
+    }
+    private func loadFromKeychain() throws -> InstanceKey? {
         var request = query
         request[kSecReturnData as String] = true
         request[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -116,10 +131,12 @@ public final class InstanceKeyStore: InstanceKeyStoring, @unchecked Sendable {
             request[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             try check(SecItemAdd(request as CFDictionary, nil))
         } else { try check(status) }
+        Self.cache.set(service, key)
     }
     public func reset() throws {
         let status = SecItemDelete(query as CFDictionary)
         if status != errSecItemNotFound { try check(status) }
+        Self.cache.set(service, nil)
     }
     public func bearerToken() throws -> String {
         guard let key = try load() else { throw ZoeError.missingCredential }

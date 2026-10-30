@@ -19,9 +19,9 @@ struct ZoeMacApp: App {
             MacSurfaceRoot(model: model, coordinator: coordinator)
                 .onOpenURL { model.receiveInstallationLink($0) }
                 .task { await model.start() }
-                .frame(minWidth: 840, minHeight: 620)
         }
-        .defaultSize(width: 1280, height: 820)
+        .windowResizability(.contentSize)
+        .defaultSize(width: 460, height: 380)
         .commands {
             CommandMenu("Demo") {
                 Button("All components (one window)") { coordinator.surfaces.open(SurfaceSpec(id: "demo.gallery", kind: .window, document: DemoDocuments.gallery)) }
