@@ -210,7 +210,10 @@ CREATE TABLE IF NOT EXISTS journal_deployments (
 		}
 	}
 	if _, err := db.ExecContext(ctx, `UPDATE journal_runs SET runtime_spec_json=ao_spec_json WHERE runtime_spec_json IS NULL OR runtime_spec_json='' OR runtime_spec_json='{}'; UPDATE journal_runs SET runtime_session_id=ao_session_id WHERE runtime_session_id=''; UPDATE journal_runs SET runtime_container_id=ao_container_id WHERE runtime_container_id=''`); err != nil {
-		return fmt.Errorf("backfill neutral runner journal columns: %w", err)
+		_ = db.Close()
+		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		_ = lock.Close()
+		return nil, fmt.Errorf("backfill neutral runner journal columns: %w", err)
 	}
 	if err := protectSQLiteFiles(filename); err != nil {
 		_ = db.Close()

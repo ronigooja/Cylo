@@ -1556,7 +1556,7 @@ Several distinctions need to remain clear to avoid future misunderstandings; the
 
 **Third, Zoe is more than an Agent orchestration tool.** It can create, deploy, and manage ordinary programs under authorization ([Chapter 7](#7-autonomous-capability-expansion)).
 
-**Fourth, Zoe is not a new code editor.** It uses native development tools such as Codex and preserves required CLI execution, stopping, viewing, task recovery, and code-artifact access; human takeover and bidirectional handoff remain optional ([Chapter 5](#5-agent-and-native-tool-integration-requirements)).
+**Fourth, Zoe is not a new code editor.** It uses native development tools such as Codex and preserves required CLI execution, stopping, viewing, task recovery, and code-artifact access; human takeover and bidirectional handoff remain optional ([Chapter 5](#5-agent-and-runtime-integration-requirements)).
 
 **Fifth, Zoe is not an operating system in the traditional sense.** It builds on existing operating systems rather than replacing macOS or Linux ([Section 1.3](#13-product-boundaries)).
 
@@ -1567,7 +1567,7 @@ Several distinctions need to remain clear to avoid future misunderstandings; the
 ## 22. Final Complete Product Definition
 
 The complete product is summarized by the authoritative requirements in [Chapter 3](#3-client-requirements),
-[Chapter 5](#5-agent-and-native-tool-integration-requirements), [Chapter 6](#6-agent-system-requirements),
+[Chapter 5](#5-agent-and-runtime-integration-requirements), [Chapter 6](#6-agent-system-requirements),
 [Chapter 7](#7-autonomous-capability-expansion), [Chapter 8](#8-task-management-requirements), [Chapter
 9](#9-long-running-background-services), [Chapter 10](#10-long-term-memory-requirements), [Chapter
 11](#11-context-management), [Chapter 12](#12-unified-state-and-cross-device-continuity), [Chapter

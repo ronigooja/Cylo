@@ -195,7 +195,7 @@ func (e *APIError) Error() string {
 func (e *APIError) Unwrap() error { return e.Cause }
 
 func apiError(status int, code, message string, details any) *APIError {
-	return &APIError{Code: code, Message: message, Details: details}
+	return &APIError{Status: status, Code: code, Message: message, Details: details}
 }
 
 func NewAPIError(status int, code, message string, details any) *APIError {
@@ -277,11 +277,8 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 		if profile.IsolationPolicy != "opencode-workspace-write-v1" && profile.IsolationPolicy != "ao-opencode-workspace-write-v1" {
 			return nil, fmt.Errorf("runtime profile %q selects OpenCode with an incompatible isolation policy", id)
 		}
-		if false {
-			return nil, fmt.Errorf("runtime profile %q selects Codex with an OpenCode isolation policy", id)
-		}
-		if id == "" || profile.ID != id || profile.RuntimeRouteID == "" || profile.ModelRouteID == "" || profile.Role == "" || profile.Role != "worker" || profile.IsolationPolicy == "" {
-			return nil, fmt.Errorf("runtime profile %q is incomplete or does not select AO worker execution", id)
+		if id == "" || profile.ID != id || profile.RuntimeRouteID == "" || profile.ModelRouteID == "" || profile.Role != "worker" || profile.IsolationPolicy == "" {
+			return nil, fmt.Errorf("runtime profile %q is incomplete or does not select worker execution", id)
 		}
 		policy := profile.ChildPolicy
 		if policy.MaxChildRuns == 0 {
@@ -329,7 +326,7 @@ func (s *Server) ProfileForRole(role string) (string, bool) {
 	}
 	profileID := ""
 	for id, profile := range s.cfg.Profiles {
-		if profile.Role != role || profile.Role != "worker" {
+		if profile.Role != role || role != "worker" {
 			continue
 		}
 		if profileID != "" {
