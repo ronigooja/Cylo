@@ -30,7 +30,7 @@ private let internalRuntimeEvidenceKinds: Set<String> = [
 
 func taskFailureMessage(_ task: TaskRecord) -> String? {
     guard let error = task.error, !error.isEmpty else { return nil }
-    let internalFailure = error == "runtime_create_rejected" || error == "ao_worker_create_rejected" || task.evidence.contains {
+    let internalFailure = error == "runtime_create_rejected" || task.evidence.contains {
         ["no_effect_terminal", "create_rejected", "effect_unknown"].contains($0.kind)
     }
     if task.status == .failed && internalFailure {

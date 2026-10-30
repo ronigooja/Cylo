@@ -22,18 +22,6 @@ const (
 	runtimeRunLabel     = "io.zoe.run"
 	runtimeAttemptLabel = "io.zoe.attempt"
 	runtimeFenceLabel   = "io.zoe.fence"
-	legacyRuntimeLabel  = "io.zoe.runtime"
-	legacySessionLabel  = "io.zoe.ao.session"
-	legacyManagedLabel  = "io.zoe.managed"
-)
-
-const (
-	legacyAOContainerManagedLabel = legacyManagedLabel
-	legacyAOContainerRuntimeLabel = legacyRuntimeLabel
-	legacyAOContainerSessionLabel = legacySessionLabel
-	aoContainerManagedLabel       = legacyAOContainerManagedLabel
-	aoContainerRuntimeLabel       = legacyAOContainerRuntimeLabel
-	aoContainerSessionLabel       = legacyAOContainerSessionLabel
 )
 
 var runtimePart = regexp.MustCompile(`[^a-zA-Z0-9_.-]+`)

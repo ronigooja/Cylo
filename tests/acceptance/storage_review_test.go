@@ -169,6 +169,7 @@ func TestReviewLateCoreMigrationAfterFeatureHistory(t *testing.T) {
 		`ALTER TABLE tasks DROP COLUMN interaction_expires_at`, `ALTER TABLE tasks DROP COLUMN interaction_expected_version`,
 		`DROP TABLE runtime_harness_quarantine`,
 		`ALTER TABLE runs DROP COLUMN runtime_session_id`, `ALTER TABLE runs DROP COLUMN runtime_container_id`,
+		`ALTER TABLE runs ADD COLUMN ao_session_id TEXT NOT NULL DEFAULT ''`, `ALTER TABLE runs ADD COLUMN ao_container_id TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := s.DB().ExecContext(ctx, stmt); err != nil {
 			t.Fatal(err)
@@ -186,7 +187,7 @@ func TestReviewLateCoreMigrationAfterFeatureHistory(t *testing.T) {
 	if _, err := s.DB().ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=7`); err != nil {
 		t.Fatal(err)
 	}
-	for _, version := range []int{8, 11, 12} {
+	for _, version := range []int{8, 11, 12, 13} {
 		if _, err := s.DB().ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=?`, version); err != nil {
 			t.Fatal(err)
 		}
