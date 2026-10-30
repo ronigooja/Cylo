@@ -98,7 +98,7 @@ The system should not require every event, state update, or background operation
 
 ## 3. Client Requirements
 
-The client interface design is being redone; the behavior boundaries every client must keep are in [Client behavior boundaries](#client-behavior-boundaries).
+The macOS client is an ambient screen defined in [macOS ambient screen](#macos-ambient-screen) and [ADR 0008](architecture/decisions/0008-ambient-screen-client.md). iPhone and iPad have no approved interface design yet. Behavior boundaries every client must keep are in [Client behavior boundaries](#client-behavior-boundaries).
 
 End voice and Stop task are distinct actions. Voice acceptance includes a 30-minute mixed Mandarin–English session on each of a real iPhone and iPad while locked, plus interruption, reconnect, audio-route changes, and durable-task continuity; this is a target, not a completed result. APNs only prompts a durable-inbox refresh; a push is not the notice authority.
 
@@ -215,6 +215,18 @@ Examples include:
 - A background operation failed and could not recover automatically
 
 A notification should identify its event source and link to the relevant project or task.
+
+### macOS ambient screen
+
+Zoe on macOS is an ambient screen, not a chat app: no sidebar, tabs, or persistent composer. The AI decides what the screen shows, so the user should not need to operate it. Wire shapes, component library, and tools are in [the screen-document contract](design/screen-document.md).
+
+- **Voice first.** Continuous voice is on by default after connection and identity initialization, within the truthful-state limits below. After a silence timeout (default 60 seconds, counted only when no voice interaction is in progress) the client ends the voice session itself; the user can wake it later and continue because context stays on the server. Voice on/off and the timeout are AI-mutable settings.
+- **Text fallback.** A subtle button reveals a transient text-input bar; the AI may also show or hide it. Submissions follow the rules in Client behavior boundaries.
+- **Settings stay out of the foreground.** Command-Comma opens Settings, which hold connection and key management, account, memory, capabilities, notifications, data, and advanced options, following [the instance-key decision](architecture/decisions/0004-instance-key-authentication.md).
+- **Generic display.** The server/AI sends a versioned tree of generic layout, content, and interactive components. The AI chooses semantic emphasis and tone, never colors or pixels; unknown component types degrade to text. The client has no hardcoded business concepts: an approval is a screen with buttons, and a button press submits only an opaque intent that the server validates.
+- **AI tools and settings audit.** The client exposes bounded tools to show or clear screen content, read or write settings, start or end voice, show or hide the text bar, and set the silence timeout. Each setting declares type, range, description, and whether the AI may change it. Only the user may change instance key and login credentials, OS microphone permission, and the setting that revokes AI settings access. Every AI settings change shows a subtle notice and is recorded so the user can review and undo it.
+- **Before a server document exists,** the client derives a default screen from authoritative tasks, approvals, and notifications through the same renderer; it does not invent content.
+- **Acceptance coverage.** Mac 840×620 and desktop sizes; empty, loading, and document-update states; transient text fallback; voice lifecycle and silence timeout; AI settings notice, audit, and undo; opaque intent submission; stale, offline, and failed operations; duplicate events and reconnect history; rotated keys, connection clearing, and identity changes; both languages and appearances; VoiceOver, keyboard focus, reduced motion, and Dynamic Type. Command-Comma is the Settings shortcut.
 
 ### Client behavior boundaries
 
