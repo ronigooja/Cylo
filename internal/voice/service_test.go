@@ -155,7 +155,8 @@ func TestVoiceCreatePersistsOnlyAccountHashAndOpaqueLease(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"answer_sdp": "v=0\\r\\n", "voice_session_id": "gateway-session",
-			"account_lease_id": "opaque-lease", "account_lease_generation": 9,
+			"voice_session_generation": 3,
+			"account_lease_id":         "opaque-lease", "account_lease_generation": 9,
 			"account_id": accountID,
 		})
 	}))
@@ -171,7 +172,8 @@ func TestVoiceCreatePersistsOnlyAccountHashAndOpaqueLease(t *testing.T) {
 	}
 	var answer []byte
 	var accountHash []byte
-	if err := store.DB().QueryRow(`SELECT offer_answer,account_id_hash FROM voice_sessions WHERE id=?`, created.SessionID).Scan(&answer, &accountHash); err != nil {
+	var mediaGeneration int64
+	if err := store.DB().QueryRow(`SELECT offer_answer,account_id_hash,gateway_media_generation FROM voice_sessions WHERE id=?`, created.SessionID).Scan(&answer, &accountHash, &mediaGeneration); err != nil {
 		t.Fatal(err)
 	}
 	if string(answer) == "" || bytes.Contains(answer, []byte(accountID)) || bytes.Contains(answer, []byte("account_id")) {
@@ -180,6 +182,47 @@ func TestVoiceCreatePersistsOnlyAccountHashAndOpaqueLease(t *testing.T) {
 	wantHash := sha256.Sum256([]byte(accountID))
 	if !bytes.Equal(accountHash, wantHash[:]) {
 		t.Fatalf("persisted account hash=%x want=%x", accountHash, wantHash)
+	}
+	if mediaGeneration != 3 {
+		t.Fatalf("gateway media generation=%d want 3", mediaGeneration)
+	}
+}
+
+func TestVoiceCreateAbsentGatewayMediaGenerationDefaultsToZero(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"answer_sdp": "v=0\\r\\n", "voice_session_id": "gateway-session"})
+	}))
+	defer server.Close()
+	store, svc := newVoiceTestService(t, Config{GatewayURL: server.URL, GatewayAPIKey: "test-key", HTTPClient: server.Client()})
+	created, err := svc.create(context.Background(), contracts.Principal{WorkspaceID: "default", SubjectID: "user-1", DeviceID: "device-1"}, createRequest{RequestID: "request-no-media-generation", OfferSDP: "v=0\\r\\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generation int64
+	if err := store.DB().QueryRow(`SELECT gateway_media_generation FROM voice_sessions WHERE id=?`, created.SessionID).Scan(&generation); err != nil {
+		t.Fatal(err)
+	}
+	if generation != 0 {
+		t.Fatalf("absent gateway media generation=%d want 0", generation)
+	}
+}
+
+func TestVoiceCreateNegativeGatewayMediaGenerationQuarantines(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"answer_sdp": "v=0\\r\\n", "voice_session_id": "gateway-session", "voice_session_generation": -1})
+	}))
+	defer server.Close()
+	store, svc := newVoiceTestService(t, Config{GatewayURL: server.URL, GatewayAPIKey: "test-key", HTTPClient: server.Client()})
+	_, err := svc.create(context.Background(), contracts.Principal{WorkspaceID: "default", SubjectID: "user-1", DeviceID: "device-1"}, createRequest{RequestID: "request-negative-media-generation", OfferSDP: "v=0\\r\\n"})
+	if err == nil {
+		t.Fatal("negative gateway media generation was accepted")
+	}
+	var state, code string
+	if err := store.DB().QueryRow(`SELECT state,last_error_code FROM voice_sessions`).Scan(&state, &code); err != nil {
+		t.Fatal(err)
+	}
+	if state != "quarantined" || code != "gateway_media_generation_invalid" {
+		t.Fatalf("negative generation state=%q code=%q", state, code)
 	}
 }
 

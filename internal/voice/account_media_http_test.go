@@ -65,3 +65,18 @@ func TestSpaceAccountMediaAdapterRejectsWrongLeaseGeneration(t *testing.T) {
 		t.Fatal("mismatched lease generation was accepted")
 	}
 }
+
+func TestSpaceAccountMediaAdapterReportsUnavailableEvidence(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream WebRTC termination evidence is unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	adapter, err := NewSpaceAccountMediaAdapter(server.URL, "deployment-key", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.ReleaseAccountLease(context.Background(), AccountLeaseReference{LeaseID: "opaque-lease", Generation: 7, SessionID: "space-session", SessionGeneration: 3}, "release-key")
+	if err == nil || err.Error() != "Space account lease release returned HTTP 503: upstream WebRTC termination evidence is unavailable" {
+		t.Fatalf("503 error=%v", err)
+	}
+}

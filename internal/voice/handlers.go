@@ -139,10 +139,11 @@ func (s *Service) handleHangup(w http.ResponseWriter, r *http.Request) {
 	var state, gatewayID, accountLeaseID string
 	var generation int64
 	var accountLeaseGeneration int64
+	var gatewayMediaGeneration int64
 	var accountIDHash []byte
 	var gatewayUnbound int
 	var gatewayUnbindUnknown int
-	if err := s.db.QueryRowContext(r.Context(), `SELECT state,gateway_session_id,generation,account_lease_id,account_lease_generation,account_id_hash,gateway_unbound,gateway_unbind_unknown FROM voice_sessions WHERE workspace_id=? AND owner_id=? AND id=?`, p.WorkspaceID, p.SubjectID, r.PathValue("session_id")).Scan(&state, &gatewayID, &generation, &accountLeaseID, &accountLeaseGeneration, &accountIDHash, &gatewayUnbound, &gatewayUnbindUnknown); errors.Is(err, sql.ErrNoRows) {
+	if err := s.db.QueryRowContext(r.Context(), `SELECT state,gateway_session_id,generation,account_lease_id,account_lease_generation,account_id_hash,gateway_unbound,gateway_unbind_unknown,gateway_media_generation FROM voice_sessions WHERE workspace_id=? AND owner_id=? AND id=?`, p.WorkspaceID, p.SubjectID, r.PathValue("session_id")).Scan(&state, &gatewayID, &generation, &accountLeaseID, &accountLeaseGeneration, &accountIDHash, &gatewayUnbound, &gatewayUnbindUnknown, &gatewayMediaGeneration); errors.Is(err, sql.ErrNoRows) {
 		control.WriteError(w, apiError(http.StatusNotFound, "not_found", "voice session not found", nil))
 		return
 	} else if err != nil {
@@ -241,13 +242,13 @@ func (s *Service) handleHangup(w http.ResponseWriter, r *http.Request) {
 	var observation AccountTerminationObservation
 	if s.accountMedia != nil {
 		capabilities := s.accountMedia.Capabilities()
-		if capabilities.AccountLeaseIdentity && capabilities.AccountScopedTermination && capabilities.TrustedTerminationEvidence && accountLeaseID != "" && accountLeaseGeneration > 0 {
+		if capabilities.AccountLeaseIdentity && capabilities.AccountScopedTermination && capabilities.TrustedTerminationEvidence && accountLeaseID != "" && accountLeaseGeneration > 0 && gatewayMediaGeneration > 0 {
 			var observeErr error
 			leaseHash := sha256.Sum256([]byte(accountLeaseID))
 			idempotencyKey := fmt.Sprintf("voice-release:%s:%d:%x:%d", r.PathValue("session_id"), generation, leaseHash[:], accountLeaseGeneration)
-			observation, observeErr = s.accountMedia.ReleaseAccountLease(r.Context(), AccountLeaseReference{LeaseID: accountLeaseID, Generation: accountLeaseGeneration, SessionID: gatewayID, SessionGeneration: generation}, idempotencyKey)
+			observation, observeErr = s.accountMedia.ReleaseAccountLease(r.Context(), AccountLeaseReference{LeaseID: accountLeaseID, Generation: accountLeaseGeneration, SessionID: gatewayID, SessionGeneration: gatewayMediaGeneration}, idempotencyKey)
 			observedAt := observation.ObservedAt.UTC()
-			if observeErr == nil && observation.SessionID == gatewayID && observation.SessionGeneration == generation && observation.Terminated && observation.AccountID != "" && observation.LeaseID == accountLeaseID && observation.LeaseGeneration == accountLeaseGeneration && observation.EvidenceID != "" && !observedAt.IsZero() && !observedAt.After(time.Now().UTC()) {
+			if observeErr == nil && observation.SessionID == gatewayID && observation.SessionGeneration == gatewayMediaGeneration && observation.Terminated && observation.AccountID != "" && observation.LeaseID == accountLeaseID && observation.LeaseGeneration == accountLeaseGeneration && observation.EvidenceID != "" && !observedAt.IsZero() && !observedAt.After(time.Now().UTC()) {
 				// The gateway deliberately withholds account_id from session
 				// creation. Exact lease/session identity plus authenticated,
 				// idempotent terminal evidence is the release contract.
