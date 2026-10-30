@@ -10,7 +10,8 @@ The upload must not block interaction, change command authority, or change
 receipt/retry semantics.
 
 This is an operator investigation path, not a client-facing error-detail
-channel. Do not ask a user to copy tokens, headers, response bodies, audio,
+channel. Follow the repository's [credential handling rule](../../AGENTS.md),
+and do not ask a user to copy tokens, headers, response bodies, audio,
 transcripts, SDP/ICE, or local exception text.
 
 ## What the endpoint actually accepts
@@ -260,7 +261,5 @@ Record separately:
 
 Do not claim that a diagnostic row proves successful voice, model execution,
 task completion, account isolation, secure media termination, or physical data
-erasure. The existing evidence register records that real-device voice,
-hosted deployment, and end-to-end diagnostic upload remain acceptance
-boundaries; link the [acceptance evidence register](../acceptance/evidence.md)
+erasure; consult the [acceptance evidence register](../acceptance/evidence.md)
 when closing an incident.

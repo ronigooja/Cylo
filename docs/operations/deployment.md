@@ -1,9 +1,8 @@
 # Deployment operations
 
 This runbook describes the local Linux installation and the macOS client on
-`zhuwei@macair`. Deployment evidence and acceptance limits belong in the
-[evidence register](../acceptance/evidence.md). Starting services is not end-to-end product
-acceptance.
+`zhuwei@macair`. For the distinction between documentation and acceptance, see
+the [evidence register](../acceptance/evidence.md).
 
 For client error investigation, authenticated diagnostic uploads, bounded
 SQLite inspection, and voice pool isolation checks, see the
@@ -30,23 +29,10 @@ The external Docker network `zoe` is prepared by
 deployment remains outside Zoe's lifecycle. Preserve the existing runner
 deployment-authority database and capability containers during maintenance.
 
-Voice account-pool behavior belongs to the selected `chatgpt-web-voice`
-gateway. That gateway chooses and persists its sticky pool account for each
-voice session. `ZOE_VOICE_ACCOUNT_MEDIA_ENABLED` is a separate, optional Zoe
-account-lease adapter; it is not required for the gateway account pool and
-must remain `false` unless a gateway release explicitly implements Zoe's
-lease-identity and exact-release contract. With the default `false`, voice
-sessions still use the gateway's normal account pool.
-
-The current voice baseline accepts client-direct WebRTC media: the gateway
-proxies signaling, while the native client owns the media connection to the
-upstream service. This is the root reason account-level termination evidence is
-not available from a gateway session delete. The alternative is a future
-gateway-terminated or relayed media design with two WebRTC legs and a media
-bridge; that is a separate architecture project. Keep
-`ZOE_VOICE_ACCOUNT_MEDIA_ENABLED=true` unsupported for the current baseline:
-it does not change the media topology and can only fail closed when release
-evidence is unavailable.
+Voice account-pool behavior and the fail-closed media boundary are defined in
+[ADR 0005](../architecture/decisions/0005-voice-task-and-lease-boundaries.md).
+Keep `ZOE_VOICE_ACCOUNT_MEDIA_ENABLED` disabled unless a separately reviewed
+gateway release implements the required lease contract.
 
 Check service status without printing environment files or secret values:
 
@@ -134,7 +120,7 @@ model-backed task execution.
 
 ## Server and worker settings
 
-The Linux control server reads deployment settings from its process environment. Keep instance and runner credentials in deployment-managed secret configuration; the server does not print them. Bind to loopback or a private trusted interface and put external TLS termination behind the deployment's authenticated network boundary.
+The Linux control server reads deployment settings from its process environment. Follow the repository's [credential handling rule](../../AGENTS.md) for deployment-managed secrets; the server does not print them. Bind to loopback or a private trusted interface and put external TLS termination behind the deployment's authenticated network boundary.
 
 The supported AO release is built from the pinned, prepatched Zoe fork by the
 [AO workflow](../../.github/workflows/ao-release.yml). The repository does not
@@ -347,7 +333,7 @@ or alter external CLIProxyAPI. Run `zoe status` to inspect deployment metadata
 before setup or provider changes. The release staging and PATH tests use fake
 build tools and temporary paths; Go unit/integration/race checks, actual binary
 builds, Apple builds, and physical-device scanning have separate evidence.
-No new deployment or physical-device acceptance is implied by source changes.
+For deployment and physical-device evidence, use the [acceptance evidence register](../acceptance/evidence.md).
 
 ## Native client installation and connection
 
@@ -380,5 +366,5 @@ On the host, apply the reviewed plan manually. Keep old immutable release
  directories and image tags. Rollback changes only the `current` selector and
 Compose image tags, then repeats `/healthz`, `/readyz`, runner/AO/Qdrant, and
 independent task checks. Record integrity, installation, readiness, connectivity,
-and end-to-end results separately; a candidate check does not establish product
-acceptance or modify the external CLIProxyAPI deployment.
+and end-to-end results separately; see the [acceptance evidence register](../acceptance/evidence.md)
+for the acceptance boundary. This does not modify the external CLIProxyAPI deployment.

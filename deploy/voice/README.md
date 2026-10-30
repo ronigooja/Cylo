@@ -66,7 +66,7 @@ on a trusted private network. To return to loopback-only, redeploy with
 bounded local Docker logs. Persistent gateway data is stored in
 `/var/lib/zoe/voice`.
 
-## Zoe integration boundary
+## Zoe integration configuration
 
 Inside the shared Docker network, the gateway URL is
 `http://voice-gateway:8090`; the downstream API base routes include
@@ -79,11 +79,7 @@ root-readable secret file.
 
 The container listener is plain HTTP; expose it to Zoe only through an
 approved private HTTPS reverse proxy or equivalent trusted transport. The
-current baseline accepts client-direct WebRTC media: this gateway proxies
-signaling and does not own the client's upstream media connection. That
-topology is why Zoe cannot infer account termination from session deletion.
-Keep the optional Zoe account-media feature disabled. Setting it to `true` does
-not create media termination evidence and is unsupported until a future
-gateway-terminated or relayed media design, with its own architecture review
-and end-to-end acceptance, is complete. Deployment alone does not prove voice
-calls or task dispatch work.
+voice topology, termination boundary, and unsupported account-media mode are
+defined in [ADR 0005](../../docs/architecture/decisions/0005-voice-task-and-lease-boundaries.md).
+Deployment alone does not prove voice calls or task dispatch work; see the
+[acceptance evidence register](../../docs/acceptance/evidence.md).
