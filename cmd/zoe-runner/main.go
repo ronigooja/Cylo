@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/ronigooja/Zoe/contracts"
-	"github.com/ronigooja/Zoe/internal/agents/opencode"
 	"github.com/ronigooja/Zoe/internal/runner"
 )
 
@@ -71,12 +70,6 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("configure control API: %w", err)
 	}
-	serverURL := optionalEnv("ZOE_OPENCODE_URL", "http://127.0.0.1:4096")
-	password := requiredEnv("ZOE_OPENCODE_PASSWORD")
-	agent, err := opencode.New(opencode.Config{BaseURL: serverURL, Password: password})
-	if err != nil {
-		return fmt.Errorf("configure OpenCode runtime: %w", err)
-	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	deploymentLock, err := runner.OpenDeploymentHostLock(runner.DeploymentHostLockPath)
@@ -99,7 +92,7 @@ func run(args []string) error {
 	if openCodeImage == "" || opencodeModel == "" || providerSocket == "" || workspaceRoot == "" {
 		return errors.New("ZOE_OPENCODE_IMAGE, ZOE_OPENCODE_MODEL, ZOE_OPENCODE_PROVIDER_SOCKET, and ZOE_OPENCODE_WORKSPACE_ROOT are required")
 	}
-	openCode := runner.OpenCodeRuntime{Client: agent, Supervisor: runner.DockerRuntimeSupervisor{Docker: docker}, Container: runner.RuntimeContainerSpec{Image: openCodeImage, Model: opencodeModel, WorkspaceRoot: workspaceRoot, ProviderSocket: providerSocket, ContainerWorkspace: "/workspace", PidsLimit: 256}}
+	openCode := runner.OpenCodeRuntime{BaseURL: "http://127.0.0.1:4096", Username: "opencode", Docker: docker, Supervisor: runner.DockerRuntimeSupervisor{Docker: docker}, Container: runner.RuntimeContainerSpec{Image: openCodeImage, Model: opencodeModel, WorkspaceRoot: workspaceRoot, ProviderSocket: providerSocket, ContainerWorkspace: "/workspace", PidsLimit: 256}}
 	engine := &runner.Engine{
 		Control:  control,
 		Instance: control,

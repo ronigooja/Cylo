@@ -18,25 +18,25 @@ type runtimeFake struct {
 
 func (f *runtimeFake) Create(context.Context, RuntimeSpec) (RuntimeBinding, error) {
 	f.creates++
-	return RuntimeBinding{"session", "container"}, nil
+	return RuntimeBinding{SessionID: "session", ContainerID: "container", Password: "password"}, nil
 }
-func (f *runtimeFake) Prompt(context.Context, string, string) error { return nil }
-func (f *runtimeFake) Status(context.Context) (map[string]opencode.Status, error) {
+func (f *runtimeFake) Prompt(context.Context, RuntimeBinding, string) error { return nil }
+func (f *runtimeFake) Status(context.Context, RuntimeBinding) (map[string]opencode.Status, error) {
 	if f.done {
 		return map[string]opencode.Status{"session": {Type: "idle"}}, nil
 	}
 	return map[string]opencode.Status{"session": {Type: "busy"}}, nil
 }
-func (f *runtimeFake) Messages(context.Context, string) ([]opencode.Message, error) {
+func (f *runtimeFake) Messages(context.Context, RuntimeBinding) ([]opencode.Message, error) {
 	if f.done {
 		return []opencode.Message{f.result}, nil
 	}
 	return nil, nil
 }
-func (f *runtimeFake) Events(context.Context) (<-chan opencode.Event, <-chan error) {
+func (f *runtimeFake) Events(context.Context, RuntimeBinding) (<-chan opencode.Event, <-chan error) {
 	return f.events, make(chan error)
 }
-func (f *runtimeFake) Abort(context.Context, string) error { f.aborts++; return nil }
+func (f *runtimeFake) Abort(context.Context, RuntimeBinding) error { f.aborts++; return nil }
 func (f *runtimeFake) Terminate(context.Context, RuntimeBinding) (string, error) {
 	f.terminates++
 	return "container", nil

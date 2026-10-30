@@ -79,7 +79,10 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 		return err
 	}
 	if ok && entry.Session != "" {
-		return e.monitor(ctx, claim, RuntimeBinding{SessionID: entry.Session, ContainerID: entry.Container})
+		if entry.Password == "" {
+			return fmt.Errorf("%w: runtime password is unavailable for recovery", ErrOutcomePending)
+		}
+		return e.monitor(ctx, claim, RuntimeBinding{SessionID: entry.Session, ContainerID: entry.Container, Password: entry.Password})
 	}
 	route, exists := e.Routes[claim.ProfileID]
 	if !exists || route.Harness != "opencode" || route.IsolationPolicy != OpenCodeWorkspaceWritePolicy {
@@ -105,11 +108,14 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 	if err = e.Journal.SetSession(ctx, claim.RunID, claim.AttemptID, claim.Fence, binding.SessionID, "bound"); err != nil {
 		return err
 	}
+	if err = e.Journal.SetRuntimePassword(ctx, claim.RunID, claim.AttemptID, claim.Fence, binding.Password); err != nil {
+		return err
+	}
 	if err = e.Journal.SetContainer(ctx, claim.RunID, claim.AttemptID, claim.Fence, binding.ContainerID); err != nil {
 		return err
 	}
 	_ = entry
-	if err = e.Runtime.Prompt(ctx, binding.SessionID, spec.Prompt); err != nil {
+	if err = e.Runtime.Prompt(ctx, binding, spec.Prompt); err != nil {
 		return err
 	}
 	return e.monitor(ctx, claim, binding)
@@ -117,7 +123,7 @@ func (e *Engine) Process(ctx context.Context, claim contracts.JobClaim) error {
 func (e *Engine) monitor(ctx context.Context, claim contracts.JobClaim, b RuntimeBinding) error {
 	steps := int64(0)
 	maxSteps := claim.Budget.MaxToolSteps
-	events, errs := e.Runtime.Events(ctx)
+	events, errs := e.Runtime.Events(ctx, b)
 	stepEvents := make(chan opencode.Event, 16)
 	go func() {
 		defer close(stepEvents)
@@ -152,17 +158,17 @@ func (e *Engine) monitor(ctx context.Context, claim contracts.JobClaim, b Runtim
 			}
 			steps++
 			if maxSteps > 0 && steps > maxSteps {
-				_ = e.Runtime.Abort(ctx, b.SessionID)
+				_ = e.Runtime.Abort(ctx, b)
 				return e.stop(ctx, claim, b, "tool_step_limit")
 			}
 		default:
 		}
-		status, err := e.Runtime.Status(ctx)
+		status, err := e.Runtime.Status(ctx, b)
 		if err != nil {
 			time.Sleep(e.interval())
 			continue
 		}
-		msgs, err := e.Runtime.Messages(ctx, b.SessionID)
+		msgs, err := e.Runtime.Messages(ctx, b)
 		if err != nil {
 			time.Sleep(e.interval())
 			continue
@@ -170,13 +176,13 @@ func (e *Engine) monitor(ctx context.Context, claim contracts.JobClaim, b Runtim
 		m, done, term := opencode.Completion(status[b.SessionID], msgs)
 		if done {
 			if term != nil {
-				_ = e.Runtime.Abort(ctx, b.SessionID)
+				_ = e.Runtime.Abort(ctx, b)
 				return e.stop(ctx, claim, b, "runtime_error")
 			}
 			return e.stopWithResult(ctx, claim, b, "completed", m)
 		}
 		if !claim.Budget.HardDeadline.IsZero() && time.Now().After(claim.Budget.HardDeadline) {
-			_ = e.Runtime.Abort(ctx, b.SessionID)
+			_ = e.Runtime.Abort(ctx, b)
 			return e.stop(ctx, claim, b, "run_deadline_exceeded")
 		}
 		time.Sleep(e.interval())

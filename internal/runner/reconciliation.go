@@ -308,7 +308,7 @@ func (e *Engine) reconciliationDockerSnapshot(ctx context.Context, docker Docker
 		_, selected := retainedIDs[id]
 		_, hasRuntimeLabel := labels[legacyAOContainerRuntimeLabel]
 		_, hasSessionLabel := labels[legacyAOContainerSessionLabel]
-		aoRuntime := hasRuntimeLabel || hasSessionLabel || strings.Contains(legacy, "codex") || strings.Contains(legacy, "opencode") || strings.Contains(legacy, "ao-worker")
+		legacyAORuntime := hasRuntimeLabel || hasSessionLabel || strings.Contains(legacy, "codex") || strings.Contains(legacy, "opencode") || strings.Contains(legacy, "ao-worker")
 		if selected {
 			checkedAt := time.Now().UTC()
 
@@ -320,7 +320,7 @@ func (e *Engine) reconciliationDockerSnapshot(ctx context.Context, docker Docker
 			snapshot.retained = append(snapshot.retained, proof)
 			continue
 		}
-		if aoRuntime {
+		if legacyAORuntime {
 			return snapshot, errors.New("AO or legacy uncorrelated runtime container exists; launched-runtime absence is unproven")
 		}
 		if labels[legacyAOContainerManagedLabel] == "true" {

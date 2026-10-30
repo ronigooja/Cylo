@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/ronigooja/Zoe/internal/agents/opencode"
@@ -17,20 +20,23 @@ type RuntimeSpec struct {
 	ClientRequestID, ProjectID, Harness, DisplayName, ApprovalMode, Effort string
 }
 
-type RuntimeBinding struct{ SessionID, ContainerID string }
+type RuntimeBinding struct{ SessionID, ContainerID, Password string }
 
 type Runtime interface {
 	Create(context.Context, RuntimeSpec) (RuntimeBinding, error)
-	Prompt(context.Context, string, string) error
-	Status(context.Context) (map[string]opencode.Status, error)
-	Messages(context.Context, string) ([]opencode.Message, error)
-	Events(context.Context) (<-chan opencode.Event, <-chan error)
-	Abort(context.Context, string) error
+	Prompt(context.Context, RuntimeBinding, string) error
+	Status(context.Context, RuntimeBinding) (map[string]opencode.Status, error)
+	Messages(context.Context, RuntimeBinding) ([]opencode.Message, error)
+	Events(context.Context, RuntimeBinding) (<-chan opencode.Event, <-chan error)
+	Abort(context.Context, RuntimeBinding) error
 	Terminate(context.Context, RuntimeBinding) (string, error)
 }
 
 type OpenCodeRuntime struct {
+	BaseURL    string
+	Username   string
 	Client     *opencode.Client
+	Docker     DockerCommand
 	Supervisor DockerRuntimeSupervisor
 	Container  RuntimeContainerSpec
 }
@@ -42,7 +48,10 @@ func (r OpenCodeRuntime) Create(ctx context.Context, spec RuntimeSpec) (RuntimeB
 		cfg.Image = spec.Image
 	}
 	if cfg.WorkspaceRoot != "" {
-		cfg.Workspace = cfg.WorkspaceRoot
+		cfg.Workspace = filepath.Join(cfg.WorkspaceRoot, sanitizeRuntimePart(spec.RunID))
+		if err := os.MkdirAll(cfg.Workspace, 0o700); err != nil {
+			return RuntimeBinding{}, err
+		}
 	} else {
 		cfg.Workspace = spec.Workspace
 	}
@@ -51,28 +60,63 @@ func (r OpenCodeRuntime) Create(ctx context.Context, spec RuntimeSpec) (RuntimeB
 	if err != nil {
 		return RuntimeBinding{}, err
 	}
-	session, err := r.Client.CreateSession(ctx, spec.RunID)
+	client, err := opencode.New(opencode.Config{BaseURL: r.BaseURL, Username: r.Username, Password: container.Password, Client: r.clientHTTP(container.ID)})
 	if err != nil {
-		return RuntimeBinding{ContainerID: container.ID}, err
+		return RuntimeBinding{ContainerID: container.ID, Password: container.Password}, err
 	}
-	return RuntimeBinding{SessionID: session.ID, ContainerID: container.ID}, nil
+	session, err := client.CreateSession(ctx, spec.RunID)
+	if err != nil {
+		return RuntimeBinding{ContainerID: container.ID, Password: container.Password}, err
+	}
+	return RuntimeBinding{SessionID: session.ID, ContainerID: container.ID, Password: container.Password}, nil
 }
-func (r OpenCodeRuntime) Prompt(ctx context.Context, id, prompt string) error {
-	return r.Client.PromptAsync(ctx, id, map[string]any{"model": r.Container.Model, "parts": []map[string]string{{"type": "text", "text": prompt}}})
+func (r OpenCodeRuntime) client(binding RuntimeBinding) (*opencode.Client, error) {
+	return opencode.New(opencode.Config{BaseURL: r.BaseURL, Username: r.Username, Password: binding.Password, Client: r.clientHTTP(binding.ContainerID)})
 }
-func (r OpenCodeRuntime) Status(ctx context.Context) (map[string]opencode.Status, error) {
-	return r.Client.Status(ctx)
+func (r OpenCodeRuntime) clientHTTP(containerID string) *http.Client {
+	return &http.Client{Timeout: 20 * time.Second, Transport: DockerExecTransport{Docker: r.Docker, ContainerID: containerID}}
 }
-func (r OpenCodeRuntime) Messages(ctx context.Context, id string) ([]opencode.Message, error) {
-	return r.Client.Messages(ctx, id)
+func (r OpenCodeRuntime) Prompt(ctx context.Context, b RuntimeBinding, prompt string) error {
+	c, err := r.client(b)
+	if err != nil {
+		return err
+	}
+	return c.PromptAsync(ctx, b.SessionID, map[string]any{"model": r.Container.Model, "parts": []map[string]string{{"type": "text", "text": prompt}}})
 }
-func (r OpenCodeRuntime) Events(ctx context.Context) (<-chan opencode.Event, <-chan error) {
-	return r.Client.Events(ctx)
+func (r OpenCodeRuntime) Status(ctx context.Context, b RuntimeBinding) (map[string]opencode.Status, error) {
+	c, err := r.client(b)
+	if err != nil {
+		return nil, err
+	}
+	return c.Status(ctx)
 }
-func (r OpenCodeRuntime) Abort(ctx context.Context, id string) error { return r.Client.Abort(ctx, id) }
+func (r OpenCodeRuntime) Messages(ctx context.Context, b RuntimeBinding) ([]opencode.Message, error) {
+	c, err := r.client(b)
+	if err != nil {
+		return nil, err
+	}
+	return c.Messages(ctx, b.SessionID)
+}
+func (r OpenCodeRuntime) Events(ctx context.Context, b RuntimeBinding) (<-chan opencode.Event, <-chan error) {
+	c, err := r.client(b)
+	if err != nil {
+		e := make(chan error, 1)
+		e <- err
+		close(e)
+		return nil, e
+	}
+	return c.Events(ctx)
+}
+func (r OpenCodeRuntime) Abort(ctx context.Context, b RuntimeBinding) error {
+	c, err := r.client(b)
+	if err != nil {
+		return err
+	}
+	return c.Abort(ctx, b.SessionID)
+}
 func (r OpenCodeRuntime) Terminate(ctx context.Context, b RuntimeBinding) (string, error) {
 	if b.SessionID != "" {
-		_ = r.Abort(ctx, b.SessionID)
+		_ = r.Abort(ctx, b)
 	}
 	if b.ContainerID == "" {
 		return "", errors.New("runtime container identity is required")
@@ -83,7 +127,7 @@ func (r OpenCodeRuntime) Terminate(ctx context.Context, b RuntimeBinding) (strin
 	return b.ContainerID, nil
 }
 
-func waitRuntime(ctx context.Context, r Runtime, session string, interval time.Duration, onStep func() error) (opencode.Message, error) {
+func waitRuntime(ctx context.Context, r Runtime, binding RuntimeBinding, interval time.Duration, onStep func() error) (opencode.Message, error) {
 	if interval <= 0 {
 		interval = time.Second
 	}
@@ -98,15 +142,15 @@ func waitRuntime(ctx context.Context, r Runtime, session string, interval time.D
 				return opencode.Message{}, err
 			}
 		}
-		statuses, err := r.Status(ctx)
+		statuses, err := r.Status(ctx, binding)
 		if err != nil {
 			continue
 		}
-		messages, err := r.Messages(ctx, session)
+		messages, err := r.Messages(ctx, binding)
 		if err != nil {
 			continue
 		}
-		m, done, terminalErr := opencode.Completion(statuses[session], messages)
+		m, done, terminalErr := opencode.Completion(statuses[binding.SessionID], messages)
 		if done {
 			return m, terminalErr
 		}
