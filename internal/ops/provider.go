@@ -20,6 +20,8 @@ import (
 
 const DefaultProviderSecretPath = "/etc/zoe/runner-secrets/cliproxyapi-api-key"
 
+const DefaultMemorySecretPath = "/etc/zoe/secrets/mem0-llm-api-key"
+
 // ProviderConfig is the deployment configuration consumed by the Zoe runner.
 // Secret contains the credential only while configuring; it is never rendered
 // into an environment file or included in ProbeResult.
@@ -31,6 +33,38 @@ type ProviderConfig struct {
 	Image          string
 	ProviderSocket string
 	WorkspaceRoot  string
+}
+
+// MemoryConfig is the credential and endpoint consumed by the memory worker.
+// Secret is held only while staging a configuration and is never rendered into
+// a deployment environment file or a probe result.
+type MemoryConfig struct {
+	BaseURL    string
+	Model      string
+	SecretPath string
+	Secret     string
+}
+
+func (c MemoryConfig) Normalized() (MemoryConfig, error) {
+	c.BaseURL = strings.TrimRight(strings.TrimSpace(c.BaseURL), "/")
+	c.Model = strings.TrimSpace(c.Model)
+	c.SecretPath = strings.TrimSpace(c.SecretPath)
+	if c.SecretPath == "" {
+		c.SecretPath = DefaultMemorySecretPath
+	}
+	if err := ValidateProviderBaseURL(c.BaseURL); err != nil {
+		return MemoryConfig{}, err
+	}
+	if c.Model == "" {
+		return MemoryConfig{}, errors.New("memory model is required")
+	}
+	if !filepath.IsAbs(c.SecretPath) {
+		return MemoryConfig{}, errors.New("memory secret path must be absolute")
+	}
+	if strings.ContainsAny(c.Model, "\r\n") {
+		return MemoryConfig{}, errors.New("memory model contains a newline")
+	}
+	return c, nil
 }
 
 func (c ProviderConfig) Normalized() (ProviderConfig, error) {

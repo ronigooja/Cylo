@@ -48,11 +48,16 @@ type SecretStatus struct {
 	Owner  string
 }
 type ProviderStatus struct{ BaseURL, Model, ConfigSource, LastCheck string }
+type MemoryStatus struct {
+	BaseURL, Model, SecretPath, LastCheck string
+	Secret                                SecretStatus
+}
 type Status struct {
 	Mode     Mode
 	Services []ServiceStatus
 	Provider ProviderStatus
 	Secret   SecretStatus
+	Memory   MemoryStatus
 }
 
 type InspectConfig struct {
@@ -67,6 +72,10 @@ type InspectConfig struct {
 	ProviderModel        string
 	ProviderConfigSource string
 	ProviderLastCheck    string
+	MemorySecretPath     string
+	MemoryBaseURL        string
+	MemoryModel          string
+	MemoryLastCheck      string
 }
 
 func DetectMode() Mode {
@@ -91,11 +100,12 @@ func (m Manager) Inspect(ctx context.Context, cfg InspectConfig) Status {
 	if len(services) == 0 {
 		services = []string{"zoe-compose.service", "zoe-runner.service"}
 	}
-	result := Status{Mode: mode, Provider: ProviderStatus{BaseURL: redactURL(cfg.ProviderBaseURL), Model: safeModel(cfg.ProviderModel), ConfigSource: cfg.ProviderConfigSource, LastCheck: cfg.ProviderLastCheck}}
+	result := Status{Mode: mode, Provider: ProviderStatus{BaseURL: redactURL(cfg.ProviderBaseURL), Model: safeModel(cfg.ProviderModel), ConfigSource: cfg.ProviderConfigSource, LastCheck: cfg.ProviderLastCheck}, Memory: MemoryStatus{BaseURL: redactURL(cfg.MemoryBaseURL), Model: safeModel(cfg.MemoryModel), SecretPath: cfg.MemorySecretPath, LastCheck: cfg.MemoryLastCheck}}
 	for _, name := range services {
 		result.Services = append(result.Services, m.service(ctx, mode, name, cfg))
 	}
 	result.Secret = inspectSecret(cfg.SecretPath)
+	result.Memory.Secret = inspectSecret(cfg.MemorySecretPath)
 	return result
 }
 

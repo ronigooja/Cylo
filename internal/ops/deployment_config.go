@@ -152,15 +152,33 @@ func (d Deployment) ProviderConfig() (ProviderConfig, error) {
 	}
 	return c, nil
 }
+
+func (d Deployment) MemoryConfig() (MemoryConfig, error) {
+	c := MemoryConfig{SecretPath: DefaultMemorySecretPath}
+	v, err := readEnv(d.StackEnv)
+	if os.IsNotExist(err) {
+		return c, nil
+	}
+	if err != nil {
+		return c, err
+	}
+	c.BaseURL = v["ZOE_MEM0_LLM_BASE_URL"]
+	c.Model = v["ZOE_MEM0_LLM_MODEL"]
+	if v["ZOE_MEM0_LLM_API_KEY_FILE"] != "" {
+		c.SecretPath = v["ZOE_MEM0_LLM_API_KEY_FILE"]
+	}
+	return c, nil
+}
 func (d Deployment) InspectConfig() InspectConfig {
 	c, _ := d.ProviderConfig()
+	memory, _ := d.MemoryConfig()
 	services := []string{}
 	if d.Mode == ModeCompose {
 		services = []string{"zoe-server", "zoe-memory-worker", "qdrant"}
 	} else {
 		services = []string{"zoe-compose.service", d.RunnerService}
 	}
-	return InspectConfig{Mode: d.Mode, Services: services, ComposeProject: d.ComposeProject, ComposeFile: d.ComposeFile, ComposeEnv: d.StackEnv, SecretPath: c.SecretPath, ProviderBaseURL: c.BaseURL, ProviderModel: c.Model, ProviderConfigSource: d.RunnerEnv, ProviderLastCheck: LastProviderCheck(d)}
+	return InspectConfig{Mode: d.Mode, Services: services, ComposeProject: d.ComposeProject, ComposeFile: d.ComposeFile, ComposeEnv: d.StackEnv, SecretPath: c.SecretPath, ProviderBaseURL: c.BaseURL, ProviderModel: c.Model, ProviderConfigSource: d.RunnerEnv, ProviderLastCheck: LastProviderCheck(d), MemorySecretPath: memory.SecretPath, MemoryBaseURL: memory.BaseURL, MemoryModel: memory.Model, MemoryLastCheck: LastMemoryCheck(d)}
 }
 
 func lockDeployment(ctx context.Context, d Deployment) (func(), error) {
@@ -391,6 +409,150 @@ func (m Manager) TestProvider(ctx context.Context, d Deployment, c ProviderConfi
 	return r, nil
 }
 
+// WriteMemoryEnvAtomic changes only the three memory-worker credential
+// variables. All unrelated deployment lines are retained verbatim.
+func WriteMemoryEnvAtomic(path string, c MemoryConfig) error {
+	c, err := c.Normalized()
+	if err != nil {
+		return err
+	}
+	old, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	updates := map[string]string{
+		"ZOE_MEM0_LLM_BASE_URL":     c.BaseURL,
+		"ZOE_MEM0_LLM_MODEL":        c.Model,
+		"ZOE_MEM0_LLM_API_KEY_FILE": c.SecretPath,
+	}
+	lines := strings.Split(string(old), "\n")
+	kept := make([]string, 0, len(lines)+3)
+	for _, line := range lines {
+		key, _, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if ok {
+			if _, replace := updates[key]; replace {
+				continue
+			}
+		}
+		kept = append(kept, line)
+	}
+	for len(kept) > 0 && kept[len(kept)-1] == "" {
+		kept = kept[:len(kept)-1]
+	}
+	for _, key := range []string{"ZOE_MEM0_LLM_BASE_URL", "ZOE_MEM0_LLM_MODEL", "ZOE_MEM0_LLM_API_KEY_FILE"} {
+		kept = append(kept, key+"="+strconv.Quote(updates[key]))
+	}
+	return writeFileAtomic(path, []byte(strings.Join(kept, "\n")+"\n"), 0600)
+}
+
+// ConfigureMemory validates a staged memory credential before changing the
+// Compose environment. It restores both files and the prior worker state on
+// every post-write failure.
+func (m Manager) ConfigureMemory(ctx context.Context, d Deployment, c MemoryConfig, providerSecretPath string, client *http.Client) (ProbeResult, error) {
+	if m.Run == nil {
+		m = NewManager(nil)
+	}
+	c, err := c.Normalized()
+	if err != nil {
+		return ProbeResult{}, err
+	}
+	if filepath.Clean(c.SecretPath) == filepath.Clean(providerSecretPath) {
+		return ProbeResult{}, errors.New("memory secret path must be distinct from the task-model secret path")
+	}
+	if filepath.Clean(c.SecretPath) == filepath.Clean(d.StackEnv) {
+		return ProbeResult{}, errors.New("memory secret path must be distinct from the stack environment path")
+	}
+	if !validToken(c.Secret) {
+		return ProbeResult{}, errors.New("memory token is empty or contains whitespace/control characters")
+	}
+	if d.Mode != ModeCompose {
+		return ProbeResult{}, errors.New("memory configuration requires the managed Compose deployment")
+	}
+	result := Probe(ctx, ProviderConfig{BaseURL: c.BaseURL, Model: c.Model, Secret: c.Secret}, client)
+	if !result.OK() {
+		_ = saveMemoryCheck(d, result)
+		return result, fmt.Errorf("memory validation failed: %s", result.ErrorCategory)
+	}
+	unlock, err := lockDeployment(ctx, d)
+	if err != nil {
+		return result, err
+	}
+	defer unlock()
+	saved := make([]fileSnapshot, 0, 3)
+	for _, path := range []string{d.StackEnv, c.SecretPath, filepath.Join(d.Root, "memory-check.json")} {
+		s, e := snapshot(path)
+		if e != nil {
+			return result, e
+		}
+		saved = append(saved, s)
+	}
+	parent := filepath.Dir(c.SecretPath)
+	parentInfo, parentErr := os.Stat(parent)
+	rollback := func(cause error) error {
+		errs := []error{cause}
+		for i := len(saved) - 1; i >= 0; i-- {
+			if e := saved[i].restore(); e != nil {
+				errs = append(errs, fmt.Errorf("restore configuration: %w", e))
+			}
+		}
+		if parentErr == nil {
+			if st, ok := parentInfo.Sys().(*syscall.Stat_t); ok {
+				if e := os.Chown(parent, int(st.Uid), int(st.Gid)); e != nil {
+					errs = append(errs, e)
+				}
+			}
+			if e := os.Chmod(parent, parentInfo.Mode().Perm()); e != nil {
+				errs = append(errs, e)
+			}
+		} else if os.IsNotExist(parentErr) {
+			if e := os.Remove(parent); e != nil && !os.IsNotExist(e) {
+				errs = append(errs, e)
+			}
+		}
+		fresh, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		if e := m.RefreshMemory(fresh, d); e != nil {
+			errs = append(errs, fmt.Errorf("reload restored configuration: %w", e))
+		}
+		return errors.Join(errs...)
+	}
+	if err = WriteSecretAtomic(c.SecretPath, []byte(c.Secret)); err != nil {
+		return result, rollback(err)
+	}
+	if err = WriteMemoryEnvAtomic(d.StackEnv, c); err != nil {
+		return result, rollback(err)
+	}
+	fresh, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	if err = m.RefreshMemory(fresh, d); err != nil {
+		return result, rollback(err)
+	}
+	if err = saveMemoryCheck(d, result); err != nil {
+		return result, rollback(fmt.Errorf("save memory check metadata: %w", err))
+	}
+	return result, nil
+}
+
+func (m Manager) RefreshMemory(ctx context.Context, d Deployment) error {
+	return m.ReloadCompose(ctx, []string{"zoe-memory-worker"}, d.ComposeProject, d.ComposeFile, d.StackEnv)
+}
+
+func (m Manager) TestMemory(ctx context.Context, d Deployment, c MemoryConfig, client *http.Client) (ProbeResult, error) {
+	unlock, err := lockDeployment(ctx, d)
+	if err != nil {
+		return ProbeResult{}, err
+	}
+	defer unlock()
+	r := Probe(ctx, ProviderConfig{BaseURL: c.BaseURL, Model: c.Model, SecretPath: c.SecretPath}, client)
+	if err := saveMemoryCheck(d, r); err != nil {
+		return r, err
+	}
+	if !r.OK() {
+		return r, fmt.Errorf("memory validation failed: %s", r.ErrorCategory)
+	}
+	return r, nil
+}
+
 type checkMetadata struct {
 	CheckedAt string `json:"checked_at"`
 	Outcome   string `json:"outcome"`
@@ -406,6 +568,34 @@ func saveProviderCheck(d Deployment, r ProbeResult) error {
 }
 func LastProviderCheck(d Deployment) string {
 	b, err := os.ReadFile(filepath.Join(d.Root, "provider-check.json"))
+	if err != nil || len(b) > 1024 {
+		return "not checked"
+	}
+	var c checkMetadata
+	if json.Unmarshal(b, &c) != nil {
+		return "unknown"
+	}
+	if _, err = time.Parse(time.RFC3339, c.CheckedAt); err != nil {
+		return "unknown"
+	}
+	switch c.Outcome {
+	case "ok", "invalid_configuration", "credential_unavailable", "request_error", "network_error", "timeout", "authentication_failed", "provider_http_error", "invalid_response", "model_unavailable":
+		return c.CheckedAt + " " + c.Outcome
+	}
+	return "unknown"
+}
+
+func saveMemoryCheck(d Deployment, r ProbeResult) error {
+	outcome := r.ErrorCategory
+	if r.OK() {
+		outcome = "ok"
+	}
+	data, _ := json.Marshal(checkMetadata{time.Now().UTC().Format(time.RFC3339), outcome})
+	return writeFileAtomic(filepath.Join(d.Root, "memory-check.json"), data, 0600)
+}
+
+func LastMemoryCheck(d Deployment) string {
+	b, err := os.ReadFile(filepath.Join(d.Root, "memory-check.json"))
 	if err != nil || len(b) > 1024 {
 		return "not checked"
 	}

@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,14 +21,39 @@ func init() {
 	_ = RegisterOperation("setup", setupOperation)
 	_ = RegisterOperation("provider configure", providerConfigureOperation)
 	_ = RegisterOperation("provider test", providerTestOperation)
+	_ = RegisterOperation("memory configure", memoryConfigureOperation)
+	_ = RegisterOperation("memory test", memoryTestOperation)
 	_ = RegisterOperation("key init", keyInitOperation)
 	_ = RegisterOperation("key rotate", keyRotateOperation)
 	_ = RegisterOperation("status", statusOperation)
 }
 
 func setupOperation(args []string, in io.Reader, out, errOut io.Writer) error {
-	fmt.Fprintln(out, "Setup checks the installed deployment and configures its provider.")
-	return providerConfigureOperation(args, in, out, errOut)
+	fmt.Fprintln(out, "Setup checks the installed deployment and configures its task model.")
+	if err := providerConfigureOperation(args, in, out, errOut); err != nil {
+		return err
+	}
+	root := setupRoot(args)
+	fmt.Fprintln(out, "Now configure the memory model. Press Enter at the URL prompt to skip this step without changing anything.")
+	memoryArgs := []string{"--root", root}
+	for _, arg := range args {
+		if arg == "--non-interactive" {
+			memoryArgs = append(memoryArgs, arg)
+		}
+	}
+	return memoryConfigureOperationWithSkip(memoryArgs, in, out, errOut, true)
+}
+
+func setupRoot(args []string) string {
+	for i, arg := range args {
+		if arg == "--root" && i+1 < len(args) {
+			return args[i+1]
+		}
+		if strings.HasPrefix(arg, "--root=") {
+			return strings.TrimPrefix(arg, "--root=")
+		}
+	}
+	return "/etc/zoe"
 }
 
 // providerFlags are shared by setup, configure, test and status so the same
@@ -150,6 +176,150 @@ func providerTestOperation(args []string, _ io.Reader, out, errOut io.Writer) er
 		return err
 	}
 	result, err := opsManager().TestProvider(ctx, d, cfg, nil)
+	fmt.Fprintf(out, "HTTP status: %d\nModel available: %t\nResult: %s\n", result.HTTPStatus, result.ModelAvailable, safeLabel(result.ErrorCategory))
+	return err
+}
+
+func memoryConfigureOperation(args []string, in io.Reader, out, errOut io.Writer) error {
+	return memoryConfigureOperationWithSkip(args, in, out, errOut, false)
+}
+
+func memoryConfigureOperationWithSkip(args []string, in io.Reader, out, errOut io.Writer, allowSkip bool) error {
+	fs := flag.NewFlagSet("memory configure", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	root := fs.String("root", "/etc/zoe", "deployment configuration root")
+	base := fs.String("url", "", "override memory model gateway URL")
+	model := fs.String("model", "", "override memory model")
+	secretPath := fs.String("secret", ops.DefaultMemorySecretPath, "private memory credential file")
+	secretFileAlias := fs.String("secret-file", "", "compatibility alias for --secret")
+	token := fs.String("token", "", "compatibility token input; shell history and process arguments may retain it (prefer prompt)")
+	tokenFile := fs.String("token-file", "", "read a private memory credential file")
+	nonInteractive := fs.Bool("non-interactive", false, "require all memory values without prompts")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("unexpected arguments")
+	}
+	if *secretFileAlias != "" {
+		if *secretPath != ops.DefaultMemorySecretPath {
+			return errors.New("use only one of --secret and --secret-file")
+		}
+		*secretPath = *secretFileAlias
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	d, err := ops.DiscoverDeployment(ctx, opsManager(), *root)
+	if err != nil {
+		return err
+	}
+	cfg, err := d.MemoryConfig()
+	if err != nil {
+		return err
+	}
+	if *base != "" {
+		cfg.BaseURL = *base
+	}
+	if *model != "" {
+		cfg.Model = *model
+	}
+	cfg.SecretPath = *secretPath
+	provider, err := d.ProviderConfig()
+	if err != nil {
+		return err
+	}
+	in = sharedInput(in)
+	if allowSkip {
+		fmt.Fprint(out, "Memory model gateway URL (press Enter to skip): ")
+		value, readErr := inputLine(in)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.TrimSpace(value) == "" {
+			fmt.Fprintln(out, "Memory model configuration skipped; existing memory settings were not changed.")
+			return nil
+		}
+		cfg.BaseURL = value
+	} else if strings.TrimSpace(cfg.BaseURL) == "" {
+		if *nonInteractive {
+			return errors.New("--url is required")
+		}
+		fmt.Fprint(out, "Memory model gateway URL: ")
+		cfg.BaseURL, err = inputLine(in)
+		if err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(cfg.Model) == "" {
+		if *nonInteractive {
+			return errors.New("--model is required")
+		}
+		fmt.Fprint(out, "Memory model: ")
+		cfg.Model, err = inputLine(in)
+		if err != nil {
+			return err
+		}
+	}
+	if *token != "" && *tokenFile != "" {
+		return errors.New("use only one of --token and --token-file")
+	}
+	if *token != "" {
+		cfg.Secret = strings.TrimSpace(*token)
+	} else if *tokenFile == "" {
+		if *nonInteractive {
+			return errors.New("--token-file or --token is required for non-interactive configure")
+		}
+		secret, readErr := readToken(in, out)
+		if readErr != nil {
+			return readErr
+		}
+		cfg.Secret = strings.TrimSpace(string(secret))
+		for i := range secret {
+			secret[i] = 0
+		}
+	} else {
+		secret, readErr := os.ReadFile(*tokenFile)
+		if readErr != nil {
+			return errors.New("cannot read memory token file")
+		}
+		cfg.Secret = strings.TrimSpace(string(secret))
+		for i := range secret {
+			secret[i] = 0
+		}
+	}
+	if filepath.Clean(cfg.SecretPath) == filepath.Clean(provider.SecretPath) {
+		return errors.New("memory secret path must be distinct from the task-model secret path")
+	}
+	result, err := opsManager().ConfigureMemory(ctx, d, cfg, provider.SecretPath, nil)
+	fmt.Fprintf(out, "HTTP status: %d\nModel available: %t\nResult: %s\n", result.HTTPStatus, result.ModelAvailable, safeLabel(result.ErrorCategory))
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "Memory model configured, checked and memory worker reloaded.")
+	return nil
+}
+
+func memoryTestOperation(args []string, _ io.Reader, out, errOut io.Writer) error {
+	fs := flag.NewFlagSet("memory test", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	root := fs.String("root", "/etc/zoe", "deployment configuration root")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("unexpected arguments")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	d, err := ops.DiscoverDeployment(ctx, opsManager(), *root)
+	if err != nil {
+		return err
+	}
+	cfg, err := d.MemoryConfig()
+	if err != nil {
+		return err
+	}
+	result, err := opsManager().TestMemory(ctx, d, cfg, nil)
 	fmt.Fprintf(out, "HTTP status: %d\nModel available: %t\nResult: %s\n", result.HTTPStatus, result.ModelAvailable, safeLabel(result.ErrorCategory))
 	return err
 }
@@ -469,6 +639,13 @@ func statusOperation(args []string, _ io.Reader, out, errOut io.Writer) error {
 	inspect.SecretPath = cfg.SecretPath
 	inspect.ProviderBaseURL = cfg.BaseURL
 	inspect.ProviderModel = cfg.Model
+	memory, memoryErr := d.MemoryConfig()
+	if memoryErr != nil {
+		return memoryErr
+	}
+	inspect.MemorySecretPath = memory.SecretPath
+	inspect.MemoryBaseURL = memory.BaseURL
+	inspect.MemoryModel = memory.Model
 	status := opsManager().Inspect(ctx, inspect)
 	fmt.Fprintf(out, "Deployment: %s\n", status.Mode)
 	for _, service := range status.Services {
@@ -476,6 +653,11 @@ func statusOperation(args []string, _ io.Reader, out, errOut io.Writer) error {
 	}
 	fmt.Fprintf(out, "Provider: %s model=%s source=%s last-check=%s\n", safeLabel(status.Provider.BaseURL), safeLabel(status.Provider.Model), safeLabel(status.Provider.ConfigSource), safeLabel(ops.LastProviderCheck(d)))
 	fmt.Fprintf(out, "Secret: %s exists=%t mode=%s owner=%s\n", safeLabel(status.Secret.Path), status.Secret.Exists, safeLabel(status.Secret.Mode), safeLabel(status.Secret.Owner))
+	memoryHost := ""
+	if u, parseErr := url.Parse(status.Memory.BaseURL); parseErr == nil {
+		memoryHost = u.Hostname()
+	}
+	fmt.Fprintf(out, "Memory: host=%s model=%s secret-file=%s mode-0600=%t last-check=%s\n", safeLabel(memoryHost), safeLabel(status.Memory.Model), safeLabel(status.Memory.Secret.Path), status.Memory.Secret.Exists && status.Memory.Secret.Mode == "0600", safeLabel(status.Memory.LastCheck))
 	return nil
 }
 
