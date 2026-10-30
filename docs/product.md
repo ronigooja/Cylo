@@ -22,8 +22,6 @@ When describing Zoe's role in product copy or interaction design, use this first
 
 **CY-01-01.** Long-running cross-device system with durable memory, autonomous execution, coordination, and extensible capabilities.
 
-**Zoe is a cross-device, long-running AI system with persistent memory, autonomous execution, task coordination, and mechanisms for expanding its capabilities.**
-
 It interacts with users through natural language and speech, understands requests, performs tasks, manages projects, coordinates different AI agents, and, when necessary, creates and deploys ordinary programs so the system gains new capabilities that can run over time.
 
 Zoe is not a chat tool that works only when the user issues a command.
@@ -73,7 +71,7 @@ For existing specialist software such as Codex, Zoe should make direct use of na
 
 ## 2. Overall System Composition
 
-The six functional responsibilities are client interaction; core request/project/task/state/permission/event management; Super coordination; specialist Workers; ordinary background services; and durable data/memory/retrieval. Their technical ownership is defined in [architecture](architecture.md).
+The six functional responsibilities are listed below; their technical ownership is defined in [architecture](architecture.md).
 
 <a id="cy-02-01"></a>
 
@@ -100,11 +98,9 @@ The system should not require every event, state update, or background operation
 
 ## 3. Client Requirements
 
-macOS, iPhone, and iPad share one backend. The native assistant centers conversation, task progress, results, and decisions. Use clear names, layout, and interaction; omit redundant purpose text and operating tutorials by default. Provide help on demand and disclose material consequences, risks, and limits at the action.
+The detailed native-assistant requirements and acceptance targets are in [Native assistant direction](#native-assistant-direction) and [Native presentation and acceptance targets](#native-presentation-and-acceptance-targets).
 
-When presenting programming work, show goals, progress, outcome summaries, and required decisions. Do not add code browsers, editors, diff viewers, terminals, or test consoles, including hidden variants. The composer has no microphone button. Voice configuration and continuous voice are available in Settings, with accessible status and recovery actions. Routine state does not need persistent explanations, banners, large waveforms, or a separate control strip.
-
-Conversation, Tasks, and Projects are primary entrances; Memory, Capabilities, and Settings are secondary. Every task entrance opens the same workspace. Preserve drafts until durable acceptance; unknown submissions retain the original receipt identity for reconciliation. End voice and Stop task are distinct actions. Voice acceptance includes a 30-minute mixed Mandarin–English session on each of a real iPhone and iPad while locked, plus interruption, reconnect, audio-route changes, and durable-task continuity; this is a target, not a completed result. APNs only prompts a durable-inbox refresh; a push is not the notice authority.
+Conversation, Tasks, and Projects are primary entrances; Memory, Capabilities, and Settings are secondary. End voice and Stop task are distinct actions. Voice acceptance includes a 30-minute mixed Mandarin–English session on each of a real iPhone and iPad while locked, plus interruption, reconnect, audio-route changes, and durable-task continuity; this is a target, not a completed result. APNs only prompts a durable-inbox refresh; a push is not the notice authority.
 
 <a id="cy-03-01"></a>
 
@@ -249,7 +245,7 @@ Native application acceptance must cover Mac 840×620 and desktop sizes, iPad po
 
 ## 4. Server Requirements
 
-The current server and execution host target is Linux. Native Apple clients do not host the control server. Background execution must survive client closure; host sleep, shutdown, and network loss must be reported truthfully. Migration and restore must preserve linked identities and prevent two active copies of the authority.
+The server baseline and migration requirements are defined in [§4.1](#41-independent-background-operation), [§4.2](#42-separation-of-client-and-server), and [§4.3](#43-environment-migration). Native Apple clients do not host the control server. Migration and restore must preserve linked identities and prevent two active copies of the authority.
 
 <a id="cy-04-01"></a>
 
@@ -321,7 +317,7 @@ Native operating-system processes may not migrate directly, but the system shoul
 
 ## 5. Agent and native-tool integration requirements
 
-Codex is one development runtime, not the product authority or the only execution engine. AO owns runtime creation and lifecycle through the Zoe gateway. Basic execution, evidence, artifacts, supported recovery, conflict protection, and real stop remain required. Official Codex desktop-app integration is excluded. Seamless manual takeover and two-way native CLI handoff are optional, must use supported native facilities, and cannot be simulated by exporting a summary. Zoe has no Codex-specific recovery subsystem.
+Codex is one development runtime, not the product authority or the only execution engine. AO owns runtime creation and lifecycle through the Zoe gateway. The detailed required, excluded, and optional integration boundaries are defined in [§§5.1–5.6](#51-zoe-invoking-codex). Official Codex desktop-app integration is excluded. Seamless manual takeover and two-way native CLI handoff are optional, must use supported native facilities, and cannot be simulated by exporting a summary. Zoe has no Codex-specific recovery subsystem.
 
 **First-release Codex integration must support CLI execution, viewing real status and artifacts, stopping, and persistent recovery. Seamless human takeover within the same thread, live switching of input control, and a complete bidirectional handoff entry point are optional future enhancements; they are not hard requirements for first-release selection or delivery.**
 
@@ -454,7 +450,7 @@ Likewise, Zoe should be able to recognize and synchronize changes made by users 
 
 ## 6. Agent System Requirements
 
-Separate the coordination role, runtime implementation, and model/provider route. Deterministic events use code; semantic judgment can invoke a Worker directly; Super handles complex dependencies or escalation. The shared ceiling is four active runs, including Super, Workers, and memory curator. Adapter registration alone does not establish support or acceptance.
+Separate the coordination role, runtime implementation, and model/provider route. The coordination, routing, and collaboration requirements are defined in [§§6.1–6.4](#61-super-agent). The shared ceiling is four active runs, including Super, Workers, and memory curator. Adapter registration alone does not establish support or acceptance.
 
 <a id="cy-06-01"></a>
 
