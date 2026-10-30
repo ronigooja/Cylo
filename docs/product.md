@@ -6,7 +6,7 @@ The complete scope retains all 22 chapters, all 75 stable IDs, scenarios A–E, 
 
 ## 1. Product Positioning
 
-Zoe is a private, self-hosted system that keeps authorized work, projects, memory, and services alive beyond a conversation or client session.
+Zoe is a private, self-hosted system that keeps authorized work, projects, memory, and services alive beyond a conversation or client session. The full product scope comprises all 22 chapters; sequencing delivery does not remove an in-scope requirement.
 
 ### Name and role
 
@@ -99,6 +99,8 @@ The system should not require every event, state update, or background operation
 ## 3. Client Requirements
 
 The detailed native-assistant requirements and acceptance targets are in [Native assistant direction](#native-assistant-direction) and [Native presentation and acceptance targets](#native-presentation-and-acceptance-targets).
+
+Conversation, Tasks, and Projects are primary entrances; Memory, Capabilities, and Settings are secondary. End voice and Stop task are distinct actions. Voice acceptance includes a 30-minute mixed Mandarin–English session on each of a real iPhone and iPad while locked, plus interruption, reconnect, audio-route changes, and durable-task continuity; this is a target, not a completed result. APNs only prompts a durable-inbox refresh; a push is not the notice authority.
 
 <a id="cy-03-01"></a>
 
@@ -243,7 +245,7 @@ Native application acceptance must cover Mac 840×620 and desktop sizes, iPad po
 
 ## 4. Server Requirements
 
-The server baseline and migration requirements are defined in [§4.1](#41-independent-background-operation), [§4.2](#42-separation-of-client-and-server), and [§4.3](#43-environment-migration).
+The server baseline and migration requirements are defined in [§4.1](#41-independent-background-operation), [§4.2](#42-separation-of-client-and-server), and [§4.3](#43-environment-migration). Native Apple clients do not host the control server. Migration and restore must preserve linked identities and prevent two active copies of the authority.
 
 <a id="cy-04-01"></a>
 
@@ -315,7 +317,9 @@ Native operating-system processes may not migrate directly, but the system shoul
 
 ## 5. Agent and native-tool integration requirements
 
-Codex is one development runtime, not the product authority or the only execution engine. AO owns runtime creation and lifecycle through the Zoe gateway. The detailed required, excluded, and optional integration boundaries are defined in [§§5.1–5.6](#51-zoe-invoking-codex).
+Codex is one development runtime, not the product authority or the only execution engine. AO owns runtime creation and lifecycle through the Zoe gateway. The detailed required, excluded, and optional integration boundaries are defined in [§§5.1–5.6](#51-zoe-invoking-codex). Official Codex desktop-app integration is excluded. Seamless manual takeover and two-way native CLI handoff are optional, must use supported native facilities, and cannot be simulated by exporting a summary. Zoe has no Codex-specific recovery subsystem.
+
+**First-release Codex integration must support CLI execution, viewing real status and artifacts, stopping, and persistent recovery. Seamless human takeover within the same thread, live switching of input control, and a complete bidirectional handoff entry point are optional future enhancements; they are not hard requirements for first-release selection or delivery.**
 
 The first release prioritizes automatic Super planning, independent Workers, multiple worktrees, long-running tasks, and ordinary background services while preserving task recovery, artifacts, and cost records.
 
@@ -446,7 +450,7 @@ Likewise, Zoe should be able to recognize and synchronize changes made by users 
 
 ## 6. Agent System Requirements
 
-The coordination, routing, and collaboration requirements are defined in [§§6.1–6.4](#61-super-agent). The shared ceiling is four active runs, including Super, Workers, and memory curator. Adapter registration alone does not establish support or acceptance.
+Separate the coordination role, runtime implementation, and model/provider route. The coordination, routing, and collaboration requirements are defined in [§§6.1–6.4](#61-super-agent). The shared ceiling is four active runs, including Super, Workers, and memory curator. Adapter registration alone does not establish support or acceptance.
 
 <a id="cy-06-01"></a>
 
