@@ -94,11 +94,11 @@ def main(argv):
     try:
         separator = argv.index("--")
     except ValueError:
-        print("OpenCode runtime bridge requires -- followed by the ACP command", file=sys.stderr)
+        print("OpenCode runtime bridge requires -- followed by the OpenCode command", file=sys.stderr)
         return 2
     command = argv[separator + 1 :]
     if not command:
-        print("OpenCode runtime bridge requires an ACP command", file=sys.stderr)
+        print("OpenCode runtime bridge requires an OpenCode command", file=sys.stderr)
         return 2
     server = ThreadingHTTPServer(("127.0.0.1", 47632), Handler)
     server.daemon_threads = True

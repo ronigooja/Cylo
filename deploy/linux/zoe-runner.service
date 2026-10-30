@@ -10,7 +10,7 @@ User=zoe-runner
 Group=zoe-runner
 SupplementaryGroups=docker
 EnvironmentFile=/etc/zoe/zoe-runner.env
-Environment=ZOE_SECRET_FILE_MAP=ZOE_RUNNER_TOKEN=/etc/zoe/runner-secrets/runner-token,ZOE_AO_TOKEN=/etc/zoe/runner-secrets/ao-token
+Environment=ZOE_SECRET_FILE_MAP=ZOE_RUNNER_TOKEN=/etc/zoe/runner-secrets/runner-token
 ExecStart=/opt/zoe/releases/current/bin/zoe-secret-entrypoint /opt/zoe/releases/current/bin/zoe-runner
 Restart=on-failure
 RestartSec=5s

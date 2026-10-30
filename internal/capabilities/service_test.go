@@ -674,11 +674,13 @@ func (r *capabilityIntegrationRuntime) Create(context.Context, runner.RuntimeSpe
 	r.created++
 	return runner.RuntimeBinding{SessionID: "runtime-session", ContainerID: "runtime-container"}, nil
 }
-func (*capabilityIntegrationRuntime) Prompt(context.Context, string, string) error { return nil }
-func (*capabilityIntegrationRuntime) Status(context.Context) (map[string]opencode.Status, error) {
+func (*capabilityIntegrationRuntime) Prompt(context.Context, runner.RuntimeBinding, string) error {
+	return nil
+}
+func (*capabilityIntegrationRuntime) Status(context.Context, runner.RuntimeBinding) (map[string]opencode.Status, error) {
 	return map[string]opencode.Status{"runtime-session": {Type: "idle"}}, nil
 }
-func (*capabilityIntegrationRuntime) Messages(context.Context, string) ([]opencode.Message, error) {
+func (*capabilityIntegrationRuntime) Messages(context.Context, runner.RuntimeBinding) ([]opencode.Message, error) {
 	var message opencode.Message
 	message.Info.ID = "message-1"
 	message.Info.Role = "assistant"
@@ -686,14 +688,14 @@ func (*capabilityIntegrationRuntime) Messages(context.Context, string) ([]openco
 	message.Info.Finish = "stop"
 	return []opencode.Message{message}, nil
 }
-func (*capabilityIntegrationRuntime) Events(context.Context) (<-chan opencode.Event, <-chan error) {
+func (*capabilityIntegrationRuntime) Events(context.Context, runner.RuntimeBinding) (<-chan opencode.Event, <-chan error) {
 	events := make(chan opencode.Event)
 	errs := make(chan error)
 	close(events)
 	close(errs)
 	return events, errs
 }
-func (*capabilityIntegrationRuntime) Abort(context.Context, string) error { return nil }
+func (*capabilityIntegrationRuntime) Abort(context.Context, runner.RuntimeBinding) error { return nil }
 func (r *capabilityIntegrationRuntime) Terminate(context.Context, runner.RuntimeBinding) (string, error) {
 	r.terminated++
 	return "runtime-container", nil

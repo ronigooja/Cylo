@@ -78,7 +78,7 @@ the host being deployed.
    GitHub token that has read-only package access, then set the server and
    worker image variables to the GHCR references from the reviewed server
    manifest. Use `@sha256:<digest>` references for the running Compose
-   configuration. Set `ZOE_OPENCODE_IMAGE` to the reviewed GHCR OpenCode reference and digest. Configure `ZOE_OPENCODE_MODEL` and `ZOE_OPENCODE_PROVIDER_SOCKET`; the runner creates and labels each runtime container.
+   configuration. Set `ZOE_OPENCODE_IMAGE` to the reviewed GHCR OpenCode reference and digest. Configure `ZOE_OPENCODE_MODEL`, `ZOE_OPENCODE_PROVIDER_SOCKET`, and `ZOE_OPENCODE_WORKSPACE_ROOT` (the runner mounts only `<root>/<run-id>`); the runner creates and labels each runtime container.
 4. Install the immutable server/runner release under
    `/opt/zoe/releases/<revision>` and update the `current` selector. Create
    the runner and memory-worker secret files with the documented owner and
