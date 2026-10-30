@@ -70,4 +70,15 @@ final class VoiceLifecycleIndependentTests: XCTestCase {
         XCTAssertFalse(visible.contains("Server error"))
         XCTAssertFalse(visible.contains("quarantined until an operator"))
     }
+
+    func testRedactedDiagnosticKeepsOnlyStatusAndCode() {
+        let http = RedactedDiagnostic(ZoeError.http(status: 409, code: "upstream_termination_unverified", message: "secret detail", details: nil))
+        XCTAssertEqual(http.httpStatus, 409)
+        XCTAssertEqual(http.errorSummary, "upstream_termination_unverified")
+        XCTAssertFalse(http.errorSummary.contains("secret detail"))
+        let local = RedactedDiagnostic(ZoeError.persistence("/Users/someone/private/path"))
+        XCTAssertEqual(local.errorSummary, "persistence")
+        let other = RedactedDiagnostic(NSError(domain: "NSCocoaErrorDomain", code: 4, userInfo: [NSLocalizedDescriptionKey: "file /private/x"]))
+        XCTAssertEqual(other.errorSummary, "NSCocoaErrorDomain#4")
+    }
 }

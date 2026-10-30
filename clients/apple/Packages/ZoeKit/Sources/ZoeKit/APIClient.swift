@@ -367,12 +367,12 @@ public final class APIClient: @unchecked Sendable {
                 return decoded
             }
             catch {
-                recordDiagnostic(phase: phase == "config_request" ? "config_decode" : phase, requestPath: path, clientRequestID: requestID, httpStatus: response.statusCode, responseBytes: Int64(data.count), errorType: "decoding_error", errorSummary: String(describing: error))
+                recordDiagnostic(phase: phase == "config_request" ? "config_decode" : phase, requestPath: path, clientRequestID: requestID, httpStatus: response.statusCode, responseBytes: Int64(data.count), errorType: "decoding_error", errorSummary: RedactedDiagnostic(error).errorSummary)
                 throw ZoeError.invalidResponse
             }
         } catch let error as ZoeError { throw error }
         catch {
-            recordDiagnostic(phase: phase, requestPath: path, clientRequestID: requestID, errorType: "transport_error", errorSummary: String(describing: error))
+            recordDiagnostic(phase: phase, requestPath: path, clientRequestID: requestID, errorType: "transport_error", errorSummary: RedactedDiagnostic(error).errorSummary)
             throw error
         }
     }

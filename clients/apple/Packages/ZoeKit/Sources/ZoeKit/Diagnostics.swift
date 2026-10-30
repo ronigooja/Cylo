@@ -30,6 +30,42 @@ public struct DiagnosticEvent: Codable, Equatable, Sendable {
     }
 }
 
+public struct RedactedDiagnostic: Equatable, Sendable {
+    public let httpStatus: Int
+    public let errorType: String
+    public let errorSummary: String
+
+    public init(_ error: Error) {
+        if let failure = error as? ZoeError {
+            switch failure {
+            case let .http(status, code, _, _):
+                httpStatus = status
+                errorType = "http_error"
+                errorSummary = String(code.prefix(128))
+            case .invalidResponse:
+                httpStatus = 0; errorType = "ZoeError"; errorSummary = "invalid_response"
+            case .persistence:
+                httpStatus = 0; errorType = "ZoeError"; errorSummary = "persistence"
+            case .credentialAccessDenied:
+                httpStatus = 0; errorType = "ZoeError"; errorSummary = "credential_access_denied"
+            case .missingCredential:
+                httpStatus = 0; errorType = "ZoeError"; errorSummary = "missing_credential"
+            case .invalidServerURL:
+                httpStatus = 0; errorType = "ZoeError"; errorSummary = "invalid_server_url"
+            case .exportTooLarge:
+                httpStatus = 0; errorType = "ZoeError"; errorSummary = "export_too_large"
+            case .pendingCommandWorkspaceMismatch:
+                httpStatus = 0; errorType = "ZoeError"; errorSummary = "pending_command_workspace_mismatch"
+            }
+        } else {
+            let nsError = error as NSError
+            httpStatus = 0
+            errorType = String(String(describing: type(of: error)).prefix(64))
+            errorSummary = "\(nsError.domain)#\(nsError.code)"
+        }
+    }
+}
+
 actor EncryptedDiagnosticQueue {
     private let defaults: UserDefaults
     private let storageKey: String

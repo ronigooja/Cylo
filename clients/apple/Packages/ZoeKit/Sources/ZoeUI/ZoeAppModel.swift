@@ -546,6 +546,7 @@ public final class ZoeAppModel: ObservableObject {
                 notice = uiText("Push wakeups are enabled. Notification content remains in the Zoe inbox.")
             }
         } catch {
+            reportClientError(error, code: "notification_permission")
             notice = uiText("System notification permission could not be requested. Try again.")
         }
     }
@@ -845,7 +846,7 @@ public final class ZoeAppModel: ObservableObject {
             #endif
             voiceAudioSession = audio
             audio?.onLifecycleEvent = { [weak self] event in
-                api.recordDiagnostic(phase: "audio_activate", requestPath: "/v1/voice/audio", errorType: "audio_lifecycle", errorSummary: String(describing: event))
+                api.recordDiagnostic(phase: "audio_activate", requestPath: "/v1/voice/audio", errorType: "audio_lifecycle", errorSummary: String(String(describing: event).prefix(64)))
                 Task { @MainActor in
                     await self?.handleVoiceMediaLoss(.audio(event), mediaEpoch: mediaEpoch)
                 }
@@ -897,7 +898,8 @@ public final class ZoeAppModel: ObservableObject {
             voiceStatus = .active(sessionID: created.voiceSessionId, mediaGeneration: created.generation)
             startVoiceHeartbeat(sessionID: created.voiceSessionId, api: api, generation: generation)
         } catch {
-            api.recordDiagnostic(phase: diagnosticPhase, requestPath: "/v1/voice/\(diagnosticPhase)", errorType: String(describing: type(of: error)), errorSummary: String(describing: error))
+            let redacted = RedactedDiagnostic(error)
+            api.recordDiagnostic(phase: diagnosticPhase, requestPath: "/v1/voice/\(diagnosticPhase)", httpStatus: redacted.httpStatus, errorType: redacted.errorType, errorSummary: redacted.errorSummary)
             let attemptWasCurrent = mediaEpoch == voiceMediaEpoch
             await closeVoiceLocalMedia(mediaEpoch: mediaEpoch)
             var remainsQuarantined = false
@@ -1472,7 +1474,10 @@ public final class ZoeAppModel: ObservableObject {
         exportArtifact = nil
         exportArtifactConnectionEpoch = nil
         if saved { exportStatus = uiText("Export saved on this device.") }
-        else if let error, (error as NSError).code != NSUserCancelledError { exportStatus = uiText("The export could not be saved.") }
+        else if let error, (error as NSError).code != NSUserCancelledError {
+            reportClientError(error, code: "export_save")
+            exportStatus = uiText("The export could not be saved.")
+        }
         else { exportStatus = uiText("Saving was canceled. The prepared temporary file was removed.") }
     }
 
@@ -2332,9 +2337,7 @@ public final class ZoeAppModel: ObservableObject {
     }
 
     private func userMessage(_ error: Error) -> String {
-        if let failure = error as? ZoeError, case let .http(status, code, _, _) = failure {
-            api?.recordDiagnostic(phase: "client_error", requestPath: "client", httpStatus: status, errorType: "http_error", errorSummary: String(code.prefix(128)))
-        }
+        if let failure = error as? ZoeError, case .http = failure { reportClientError(error, code: "http") }
         if Self.isAccessDenied(error) { return uiText("The instance key was rejected. Replace it with the current key from your server.") }
         if error is ConnectionInputError { return uiText(error.localizedDescription) }
         if let error = error as? ZoeError,
@@ -2363,7 +2366,8 @@ public final class ZoeAppModel: ObservableObject {
     }
 
     private func reportClientError(_ error: Error, code: String) {
-        api?.recordDiagnostic(phase: "client_error", requestPath: "client", errorType: String(String(describing: type(of: error)).prefix(64)), errorSummary: code)
+        let redacted = RedactedDiagnostic(error)
+        api?.recordDiagnostic(phase: "client_error", requestPath: "client", httpStatus: redacted.httpStatus, errorType: redacted.errorType, errorSummary: "\(code):\(redacted.errorSummary)")
     }
 
     private func voiceUnavailableMessage() -> String {
