@@ -1178,7 +1178,7 @@ When an external service is unavailable, it should not cause unrelated modules t
 
 ## 14. Permission and Security Requirements
 
-Authorization applies to the actual action and resource: reading differs from sending, deleting, or deploying. Super authority does not implicitly transfer to a Worker or service. Users can inspect and revoke grants, stop work, and review audited actions. Preauthorization names resources, actions, connectors, deployment scope, expiry, and limits; expanding it requires the applicable confirmation.
+Authorization applies to the actual action and resource; see [Section 14.2](#142-operation-authorization). Authority delegation, user control, and audit follow [Sections 14.1](#141-separate-permissions), [14.3](#143-user-control), and [14.4](#144-isolation-and-audit).
 
 The current fresh-deployment identity is the fixed owner/workspace using a shared instance key. Runner and memory-worker credentials remain separate. Local client clearing removes local connection data; it does not revoke the shared key or stop server tasks. See the [authentication decision](architecture/decisions/0004-instance-key-authentication.md).
 
@@ -1192,9 +1192,7 @@ Zoe can run programs, modify files, and operate external applications, so it mus
 
 **CY-14-01.** Apply least privilege per agent and service; Super authority does not implicitly transfer to workers.
 
-Different Agents and background services should receive permissions relevant to their work.
-
-A permission held by Super must not automatically give every Worker the same permission.
+Different Agents and background services should receive only permissions relevant to their work; a permission held by Super must not automatically give every Worker the same permission.
 
 <a id="cy-14-02"></a>
 
@@ -1204,15 +1202,7 @@ A permission held by Super must not automatically give every Worker the same per
 
 **CY-14-02.** Authorize read, write, send, delete, generate, and deploy actions separately, with risk-based confirmation; high-impact execution requires scoped explicit conversational confirmation.
 
-Different operations have different levels of risk.
-
-For example, reading email and sending email are different permissions.
-
-Reading a file and deleting a file are different permissions.
-
-Writing a program and deploying it directly are also different permissions.
-
-Installing software, running high-risk system commands, changing sensitive configuration, and performing irreversible external operations must follow the user's authorization rules.
+Authorize each operation according to its risk. Reading versus sending email, reading versus deleting a file, and writing versus deploying a program are separate permissions. Software installation, high-risk system commands, sensitive configuration changes, and irreversible external operations follow the user's authorization rules.
 
 For a high-impact or irreversible action, confirmation is an execution authorization, not acceptance of a result. The server defines the confirmation scope, task/run/action identity, expected version, expiry, and audit record. Ambiguous assent such as “okay,” “fine,” or an equivalent brief affirmative must not execute the action without contextual resolution.
 
@@ -1224,15 +1214,7 @@ For a high-impact or irreversible action, confirmation is an execution authoriza
 
 **CY-14-03.** Let users inspect, change, revoke grants, stop tasks/services, audit actions, and confirm high-risk work.
 
-Users should be able to:
-
-- View existing permissions
-- Adjust the scope of permissions
-- Revoke permissions
-- Stop tasks
-- Stop background services
-- View important operation records
-- Confirm high-risk operations
+Users should be able to view and adjust existing permission scope, revoke permissions, stop tasks and services, view important operation records, and confirm high-risk operations.
 
 A single vague authorization must not give a long-running service unlimited operating permissions.
 
@@ -1244,19 +1226,13 @@ A single vague authorization must not give a long-running service unlimited oper
 
 **CY-14-04.** Isolate project, worker, service data and execution; protect sensitive context and audit important actions.
 
-Different projects, Workers, and background services should have appropriate data and execution boundaries.
-
-Sensitive information must not be exposed casually to unrelated Agents through shared context.
-
-Important operations need traceable execution records.
+Different projects, Workers, and background services should have appropriate data and execution boundaries; sensitive context must not be exposed casually to unrelated Agents, and important operations need traceable execution records.
 
 ## 15. Reliability and Exception Handling
 
-Detect process failure, API/network loss, timeout, denial, resource shortage, and conflict. Retry only when safe. Query and reconcile unknown external effects where possible; otherwise retain uncertainty and escalate. Distinguish receipt, scheduling, execution, agent output, actual operation success, and achieved user goal. Preserve the record while no client is connected.
+The detailed reliability requirements are [exception detection](#151-exception-detection), [fault recovery](#152-fault-recovery), [observable actual state](#153-observable-actual-state), and [background health management](#154-background-health-management). Records remain available while no client is connected.
 
-Zoe is a system that needs to run over long periods.
-
-It must therefore handle more than successful tasks.
+Zoe must handle more than successful tasks during long-term operation.
 
 <a id="cy-15-01"></a>
 
@@ -1266,16 +1242,7 @@ It must therefore handle more than successful tasks.
 
 **CY-15-01.** Detect service exit, agent failure, unavailable APIs, network loss, timeout, denial, resource shortage, and conflicts.
 
-The system needs to detect:
-
-- A background service exiting
-- A Worker execution failing
-- An unavailable external API
-- A network interruption
-- An execution timeout
-- Insufficient permissions
-- Insufficient resources
-- Conflicting data or state
+The system needs to detect a background service exit, Worker failure, unavailable external API, network interruption, execution timeout, insufficient permissions or resources, and conflicting data or state.
 
 <a id="cy-15-02"></a>
 
@@ -1285,11 +1252,7 @@ The system needs to detect:
 
 **CY-15-02.** Retry safely; reconcile external effects when possible and require resolution for unknown irreversible outcomes.
 
-For operations that can be retried safely, the system should support retry or recovery.
-
-For operations that may produce duplicate side effects, it must prevent blind retries.
-
-For example, recovery after an email-send failure must avoid sending the same email again if it was actually sent successfully.
+Operations that can be retried safely should support retry or recovery; operations that may produce duplicate side effects must be reconciled before retry. For example, recovery after an email-send failure must avoid resending an email that may already have been sent.
 
 <a id="cy-15-03"></a>
 
@@ -1299,14 +1262,7 @@ For example, recovery after an email-send failure must avoid sending the same em
 
 **CY-15-03.** Distinguish request receipt, scheduling, execution, agent output, successful operation, and user-goal completion.
 
-Zoe should distinguish between:
-
-- A task has been received
-- Execution has been scheduled
-- Execution is in progress
-- Agent output has been received
-- The actual operation succeeded
-- The result requested by the user has been achieved
+Zoe should distinguish task receipt, scheduling, execution in progress, Agent output, actual operation success, and achievement of the requested result.
 
 These states must not be conflated.
 
@@ -1320,15 +1276,11 @@ When users ask about progress, Zoe should answer from actual records.
 
 **CY-15-04.** Monitor service health, recover within policy, notify users, and retain context when recovery fails.
 
-Long-running services need to report their runtime status.
-
-Where necessary, they can recover automatically or notify the user to take action.
-
-For problems that cannot be recovered, the system should clearly save the reason for failure and relevant context.
+Long-running services need to report runtime status, recover automatically or notify the user where necessary, and save the reason and relevant context when recovery fails.
 
 ## 16. Data Management Requirements
 
-Persist important records beyond model context and process lifetime. Acceptance follows durable commit. Data control includes permission-aware inspection, export, and deletion of authoritative and derived copies, client caches, exports, replicas, service volumes, and backups under a stated retention policy. Preserve sources, versions, effective times, configuration, artifacts, and required volumes for migration/recovery. Protect secrets through deployment references rather than values in source or evidence.
+Persist important records beyond model context and process lifetime; the detailed requirements for migration, recovery, provenance, security, and data control are in [Sections 16.2–16.6](#162-data-migration). Acceptance follows durable commit. Data control includes permission-aware inspection, export, and deletion of authoritative and derived copies, client caches, exports, replicas, service volumes, and backups under a stated retention policy. Migration/recovery preserves sources, versions, effective times, configuration, artifacts, and required volumes; secrets use deployment references rather than values in source or evidence.
 
 <a id="cy-16-01"></a>
 
@@ -1348,9 +1300,7 @@ Important Zoe data must be saved long term and must not exist only in model cont
 
 **CY-16-02.** Migrate projects, history, tasks, memory, and services without binding records to one model provider.
 
-The system should support migration of projects, history, tasks, memories, and service configuration.
-
-Data should not be lost when the AI model changes.
+The system should support migration of projects, history, tasks, memories, and service configuration; records must not be lost when the AI model changes.
 
 <a id="cy-16-03"></a>
 
@@ -1397,7 +1347,7 @@ The system needs to protect:
 
 **CY-16-06.** Support permission-aware inspection, export, and deletion across derived stores and defined backup policy.
 
-Users or authorized administrators should be able to view, export, and delete data as appropriate to its type and permission requirements.
+Users or authorized administrators should be able to view, export, and delete data as appropriate to its type and permission requirements, including applicable derived stores and backup policy.
 
 ## 17. Resource and Cost Management
 
@@ -1491,7 +1441,7 @@ Future multi-user support will need corresponding identity, data isolation, perm
 
 ## 19. Complete Usage Scenarios
 
-These five scenarios combine requirements across components; they are acceptance journeys. Required evidence and gaps belong in [the acceptance matrix](acceptance/requirements.md).
+These five scenarios combine requirements across components; they are acceptance journeys. Repeated constraints link to their authoritative requirements below. Required evidence and gaps belong in [the acceptance matrix](acceptance/requirements.md).
 
 The scenarios below show how the requirements work together in Zoe; they are not development steps.
 
@@ -1507,23 +1457,23 @@ A user says through Zoe on a Mac:
 
 “Develop a new login system for me.”
 
-Zoe understands the request and creates a project task.
+Zoe understands the request and creates a project task ([CY-08-01](#cy-08-01)).
 
-Super plans the work when needed and assigns specific development work to a Codex Worker.
+Super plans the work when needed and assigns specific development work to a Codex Worker ([CY-06-01](#cy-06-01), [CY-05-01](#cy-05-01)).
 
 Codex performs the development.
 
-The task system continuously records the actual state.
+The task system continuously records the actual state ([CY-15-03](#cy-15-03)).
 
-Closing the Zoe client should not interrupt background execution.
+Closing the Zoe client should not interrupt background execution ([CY-04-01](#cy-04-01)).
 
 The user picks up an iPhone and asks about development progress.
 
-Zoe answers from the actual task records.
+Zoe answers from the actual task records ([CY-08-03](#cy-08-03)).
 
 The user then asks to add tests.
 
-The system continues the existing work instead of creating a completely unrelated project.
+The system continues the existing work instead of creating a completely unrelated project ([CY-08-05](#cy-08-05)).
 
 The first release needs to verify persistent task recovery, real stopping, and artifact viewing. The following manual-continuation steps are optional enhancements: the user returns to the Mac, enters the same background execution environment, and opens the official Codex CLI.
 
@@ -1545,25 +1495,15 @@ A user says:
 
 “Monitor important email for me from now on.”
 
-Zoe understands this as a long-term service request.
+Zoe understands this as a long-term service request ([CY-09-01](#cy-09-01)).
 
-Super can coordinate a plan as needed.
+Super can coordinate a plan as needed ([CY-06-01](#cy-06-01)).
 
-A Worker implements or configures the email-monitoring capability.
+A Worker implements or configures the email-monitoring capability ([CY-07-01](#cy-07-01), [CY-06-02](#cy-06-02)).
 
-The background service starts after the user authorizes it.
+The background service starts after the user authorizes it ([CY-07-02](#cy-07-02), [CY-14-02](#cy-14-02)).
 
-Thereafter:
-
-An ordinary program continuously checks email.
-
-Unimportant email is handled according to explicit rules.
-
-Email that requires intelligent judgment is sent to a Worker.
-
-Events involving complex decisions are escalated to Super.
-
-Important results are proactively reported to the user.
+Thereafter, the service applies the routing defined in [Sections 6.3](#63-direct-invocation-of-workers) and [7.3](#73-independent-operation-of-new-capabilities): an ordinary program continuously checks email and applies explicit rules, semantic cases go to a Worker, complex decisions may escalate to Super, and important results are reported through [Section 9.4](#94-proactive-notifications).
 
 **After this capability has been deployed, Super does not need to repeat the entire email-checking process each time.**
 
@@ -1585,11 +1525,11 @@ Several weeks later, the user asks:
 
 “Why did we move away from that approach?”
 
-Zoe should find the relevant discussion and formal decision using long-term memory and historical records.
+Zoe should find the relevant discussion and formal decision using long-term memory and historical records ([CY-10-01](#cy-10-01), [CY-10-04](#cy-10-04)).
 
-Its answer should include not only the approach currently in use, but also the change process, timing, and rationale.
+Its answer should include the current approach, change process, timing, and rationale ([CY-16-04](#cy-16-04)).
 
-If a rationale was not recorded, Zoe should say that it cannot confirm it rather than make one up.
+If a rationale was not recorded, Zoe should say that it cannot confirm it rather than make one up ([CY-10-06](#cy-10-06)).
 
 <a id="cy-19-d"></a>
 
@@ -1605,13 +1545,13 @@ A user says:
 
 Zoe can create the corresponding tasks.
 
-It assigns them to different Workers.
+It assigns them to different Workers ([CY-06-02](#cy-06-02)).
 
-The two Workers do not have to wait for Super to direct each individual step in sequence.
+The two Workers do not have to wait for Super to direct each individual step in sequence ([CY-06-03](#cy-06-03)).
 
-The system preserves their execution status and results.
+The system preserves their execution status and results ([CY-06-04](#cy-06-04)).
 
-Super coordinates if there is a resource conflict, a major dependency, or a complex decision.
+Super coordinates if there is a resource conflict, a major dependency, or a complex decision ([CY-06-01](#cy-06-01)).
 
 The user receives one consolidated result.
 
@@ -1625,13 +1565,13 @@ The user receives one consolidated result.
 
 A long-running background service fails because of a network interruption.
 
-Zoe should detect the exception.
+Zoe should detect the exception ([CY-15-01](#cy-15-01)).
 
-Once the service recovers, it should continue or retry according to the safety requirements of the specific task.
+Once the service recovers, it should continue or retry according to [CY-15-02](#cy-15-02).
 
-If automatic recovery would not be safe, it should notify the user to take action.
+If automatic recovery would not be safe, it should notify the user to take action ([CY-15-04](#cy-15-04)).
 
-Even if the client was closed during the failure, the related event and failure record should be retained.
+Even if the client was closed during the failure, the related event and failure record should be retained ([CY-04-01](#cy-04-01), [CY-16-01](#cy-16-01)).
 
 ## 20. Overall Quality Requirements
 
@@ -1665,7 +1605,7 @@ Human native-session handoff remains optional under chapter 5; required interope
 
 ## 21. Key Boundaries of Zoe
 
-Zoe manages persistent projects, tasks, services, and memory through conversation. Super coordinates complex work; Workers and ordinary programs retain independent roles. Zoe extends execution through authorized capabilities on existing operating systems and specialist tools. The interface remains an assistant, and the architecture retains future ownership boundaries.
+Zoe manages persistent projects, tasks, services, and memory through conversation ([Chapter 1](#1-product-positioning), [Chapter 8](#8-task-management-requirements), [Chapter 10](#10-long-term-memory-requirements)). Super coordinates complex work; Workers and ordinary programs retain independent roles ([Chapter 6](#6-agent-system-requirements), [Chapter 9](#9-long-running-background-services)). Zoe extends execution through authorized capabilities on existing operating systems and specialist tools ([Chapter 7](#7-autonomous-capability-expansion), [Section 1.3](#13-product-boundaries)).
 
 <a id="cy-21-01"></a>
 
@@ -1673,39 +1613,25 @@ Zoe manages persistent projects, tasks, services, and memory through conversatio
 
 **CY-21-01.** Keep Zoe outside the boundaries of chat-only, Super-only, orchestration-only, editor, OS, memory-only, and personal-only products.
 
-Several distinctions need to remain clear to avoid future misunderstandings.
+Several distinctions need to remain clear to avoid future misunderstandings; their authoritative requirements are linked below.
 
-**First, Zoe is not an ordinary chat assistant.**
+**First, Zoe is not an ordinary chat assistant.** Conversation is its interaction method; it manages projects, tasks, memories, and execution capabilities that persist over time ([Chapter 1](#1-product-positioning)).
 
-Conversation is its interaction method. What Zoe actually manages are projects, tasks, memories, and execution capabilities that persist over time.
+**Second, Zoe is not a centralized Agent that requires Super to direct everything.** Super handles complex coordination, Workers execute independently, and ordinary background services keep running ([Chapter 6](#6-agent-system-requirements), [Chapter 9](#9-long-running-background-services)).
 
-**Second, Zoe is not a centralized Agent that requires Super to direct everything.**
+**Third, Zoe is more than an Agent orchestration tool.** It can create, deploy, and manage ordinary programs under authorization ([Chapter 7](#7-autonomous-capability-expansion)).
 
-Super handles complex coordination, Workers can execute independently, and ordinary background services can keep running.
+**Fourth, Zoe is not a new code editor.** It uses native development tools such as Codex and preserves required CLI execution, stopping, viewing, task recovery, and code-artifact access; human takeover and bidirectional handoff remain optional ([Chapter 5](#5-agent-and-native-tool-integration-requirements)).
 
-**Third, Zoe is more than an Agent orchestration tool.**
+**Fifth, Zoe is not an operating system in the traditional sense.** It builds on existing operating systems rather than replacing macOS or Linux ([Section 1.3](#13-product-boundaries)).
 
-In addition to invoking and coordinating Agents, it can create, deploy, and manage ordinary programs under authorization, giving the system new capabilities that keep running.
+**Sixth, Zoe is more than a memory system.** Long-term memory is foundational, but Zoe also acts on memory, real-world state, and user instructions ([Chapter 10](#10-long-term-memory-requirements)).
 
-**Fourth, Zoe is not a new code editor.**
-
-It should use native development tools such as Codex and preserve CLI execution, stopping, viewing, task recovery, and access to code artifacts. Seamless human takeover and bidirectional native-session handoff are optional future enhancements.
-
-**Fifth, Zoe is not an operating system in the traditional sense.**
-
-It does not replace macOS or Linux; it builds an AI system with long-term execution, memory, coordination, and extensibility on top of existing operating systems.
-
-**Sixth, Zoe is more than a memory system.**
-
-Long-term memory is one foundational capability, but Zoe must ultimately be able to act on memory, real-world state, and user instructions.
-
-**Seventh, Zoe is not limited to a personal product.**
-
-The system can serve individuals, but its product definition should not prevent future development for teams or other scenarios.
+**Seventh, Zoe is not limited to a personal product.** It can serve individuals while retaining future boundaries for teams and other scenarios ([Chapter 18](#18-openness-and-scope-for-expansion)).
 
 ## 22. Final Complete Product Definition
 
-The complete product combines natural interaction; complex planning and specialist execution; supported native interoperability; independent ordinary services; authorized capability expansion; source-linked memory; unified state; scoped security; replaceable modules; and durable evolution. The user sets a goal, Super coordinates when needed, Workers execute specialist work, and ordinary programs perform deterministic continuous work. All results enter the unified task/state system and important knowledge enters controlled memory.
+The complete product is summarized by the authoritative requirements in [Chapter 3](#3-client-requirements), [Chapter 5](#5-agent-and-native-tool-integration-requirements), [Chapter 6](#6-agent-system-requirements), [Chapter 7](#7-autonomous-capability-expansion), [Chapter 8](#8-task-management-requirements), [Chapter 9](#9-long-running-background-services), [Chapter 10](#10-long-term-memory-requirements), [Chapter 11](#11-context-management), [Chapter 12](#12-unified-state-and-cross-device-continuity), [Chapter 13](#13-modular-ai-and-services), and [Chapters 14–18](#14-permission-and-security-requirements). The user sets a goal, Super coordinates when needed, Workers execute specialist work, and ordinary programs perform deterministic continuous work; results enter the unified task/state system and important knowledge enters controlled memory.
 
 <a id="cy-22-01"></a>
 
@@ -1713,31 +1639,31 @@ The complete product combines natural interaction; complex planning and speciali
 
 **CY-22-01.** Deliver the complete product behavior across interaction, decisions, execution, interoperability, services, memory, state, security, modularity, and evolution.
 
-**Zoe is an open AI system that can run long term, continuously accumulate knowledge, coordinate intelligent execution units, and gain new capabilities over time under authorization.**
+**Zoe is an open AI system that can run long term, accumulate knowledge, coordinate intelligent execution units, and gain new capabilities under authorization ([CY-01-01](#cy-01-01), [CY-07-01](#cy-07-01)).**
 
-It has the following complete capabilities:
+Its complete capabilities are defined by the linked stable requirements:
 
-**Interaction:** Communicate with users through natural speech and text and support continuity across devices.
+**Interaction:** Communicate with users through natural speech and text and support continuity across devices ([CY-03-01](#cy-03-01), [CY-03-03](#cy-03-03)).
 
-**Understanding and decision-making:** Super handles complex requirements, planning, and coordination; Workers handle specific specialist tasks and local intelligent decisions.
+**Understanding and decision-making:** Super handles complex requirements, planning, and coordination; Workers handle specific specialist tasks and local intelligent decisions ([CY-06-01](#cy-06-01), [CY-06-02](#cy-06-02)).
 
-**Execution:** Invoke tools such as Codex to perform development and other real work, and manage actual task status.
+**Execution:** Invoke tools such as Codex to perform development and other real work, and manage actual task status ([CY-05-01](#cy-05-01), [CY-08-02](#cy-08-02)).
 
 **Native interoperability:** Preserve usable projects/work products and supported runtime session associations. Human continuation in the same official Codex CLI session, reverse native-session discovery, and automatic synchronization of external changes are optional enhancements under chapter 5; they do not gate required-scope acceptance.
 
-**Continuous operation:** Ordinary background programs handle scheduled work, monitoring, event response, and long-running services without requiring AI to repeatedly perform deterministic operations.
+**Continuous operation:** Ordinary background programs handle scheduled work, monitoring, event response, and long-running services without requiring AI to repeatedly perform deterministic operations ([CY-07-03](#cy-07-03), [CY-09-01](#cy-09-01), [CY-17-01](#cy-17-01)).
 
-**Autonomous expansion:** Under user authorization, create, deploy, register, and manage new software services so the system gradually gains new functions that remain available.
+**Autonomous expansion:** Under user authorization, create, deploy, register, and manage new software services so the system gradually gains new functions that remain available ([CY-07-01](#cy-07-01), [CY-07-02](#cy-07-02)).
 
-**Long-term memory:** Store history, project context, formal decisions, task state, and experience, then retrieve and use them reliably and traceably.
+**Long-term memory:** Store history, project context, formal decisions, task state, and experience, then retrieve and use them reliably and traceably ([CY-10-01](#cy-10-01), [CY-10-04](#cy-10-04)).
 
-**State management:** All clients, Agents, tasks, and background services share one consistent and trustworthy state system.
+**State management:** All clients, Agents, tasks, and background services share one consistent and trustworthy state system ([CY-12-01](#cy-12-01)).
 
-**Security controls:** Different execution principals have clear permissions, and important operations are controlled and traceable.
+**Security controls:** Different execution principals have clear permissions, and important operations are controlled and traceable ([CY-14-01](#cy-14-01), [CY-14-04](#cy-14-04)).
 
-**Modularity:** AI models, Agents, voice services, and third-party applications can be added, replaced, and upgraded independently.
+**Modularity:** AI models, Agents, voice services, and third-party applications can be added, replaced, and upgraded independently ([CY-13-01](#cy-13-01), [CY-13-03](#cy-13-03), [CY-13-04](#cy-13-04)).
 
-**Long-term evolution:** Expand to new scenarios while preserving the core architecture and continuity of existing data.
+**Long-term evolution:** Expand to new scenarios while preserving the core architecture and continuity of existing data ([CY-18-01](#cy-18-01)).
 
 ### Zoe's Core Operating Logic
 
