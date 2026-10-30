@@ -599,7 +599,7 @@ func insertCapabilityTerminalTriggerFixture(t *testing.T, store *storage.Store, 
 	if _, err := store.DB().ExecContext(ctx, `INSERT INTO capability_trigger_runs(trigger_run_id,trigger_id,workspace_id,deployment_id,trigger_key,dedupe_key,mode,state,task_id,created_at,updated_at) SELECT ?,trigger_id,workspace_id,deployment_id,trigger_key,?,'worker','uncertain',?,?,? FROM capability_trigger_definitions WHERE deployment_id=? AND mode='worker' LIMIT 1`, triggerRunID, "terminal-dedupe-"+taskID, taskID, at, at, deployment); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.DB().ExecContext(ctx, `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,ao_project_id,started_at) VALUES(?,?,?,?,'dispatching',?,'runner-test','device',?,'terminal trigger fixture','worker-profile','runtime','model','worker','ao-project',?)`, runID, "default", taskID, "attempt-"+runID, fence, "command-"+runID, at); err != nil {
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,harness,started_at) VALUES(?,?,?,?,'dispatching',?,'runner-test','device',?,'terminal trigger fixture','worker-profile','runtime','model','worker','opencode',?)`, runID, "default", taskID, "attempt-"+runID, fence, "command-"+runID, at); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -25,7 +25,7 @@ func TestSnapshotExecutionCapacityRetainsUnknownSlotsAndExplainsQueue(t *testing
 	insertTask("dependency", "owner")
 	insertTask("hidden", "another-owner")
 	for i, status := range []string{"active", "dispatching", "uncertain", "uncertain", "stopped", "verification_pending", "failed", "verified"} {
-		_, err := store.DB().ExecContext(ctx, `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,fence,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,started_at) VALUES(?,'default','hidden',?,?,?,'instance','command','goal','profile','runtime','model','worker',?)`, fmt.Sprint("run", i), fmt.Sprint("attempt", i), status, i+1, at)
+		_, err := store.DB().ExecContext(ctx, `INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,fence,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,harness,started_at) VALUES(?,'default','hidden',?,?,?,'instance','command','goal','profile','runtime','model','worker','opencode',?)`, fmt.Sprint("run", i), fmt.Sprint("attempt", i), status, i+1, at)
 		if err != nil {
 			t.Fatal(err)
 		}

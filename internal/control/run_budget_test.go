@@ -39,7 +39,7 @@ func budgetTestServer(t *testing.T, limits contracts.RunBudgetSnapshot) (*Server
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = store.DB().Exec(`INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,started_at,budget_snapshot_json) VALUES('budget-run','default','budget-task','budget-attempt','active',91,'budget-runner','budget-device','budget-command','budget','worker','runtime','model','worker',?,?)`, now, budgetRaw); err != nil {
+	if _, err = store.DB().Exec(`INSERT INTO runs(id,workspace_id,task_id,attempt_id,status,fence,runner_id,authorized_device_id,command_id,goal,profile_id,runtime_route_id,model_route_id,role,harness,started_at,budget_snapshot_json) VALUES('budget-run','default','budget-task','budget-attempt','active',91,'budget-runner','budget-device','budget-command','budget','worker','runtime','model','worker','opencode',?,?)`, now, budgetRaw); err != nil {
 		t.Fatal(err)
 	}
 	server := &Server{store: store}

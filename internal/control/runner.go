@@ -507,7 +507,7 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 				writeError(w, err)
 				return
 			}
-			if err = tx.QueryRowContext(r.Context(), `SELECT count(*) FROM external_effects WHERE run_id=? AND (kind!='ao_worker_create' OR status!='unknown' OR external_reference!='')`, runID).Scan(&unsafeEffects); err != nil {
+			if err = tx.QueryRowContext(r.Context(), `SELECT count(*) FROM external_effects WHERE run_id=? AND (kind NOT IN ('runtime_create','ao_worker_create') OR status!='unknown' OR external_reference!='')`, runID).Scan(&unsafeEffects); err != nil {
 				writeError(w, err)
 				return
 			}
@@ -520,7 +520,7 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 				writeError(w, marshalErr)
 				return
 			}
-			if _, err = tx.ExecContext(r.Context(), `UPDATE external_effects SET status=?,last_observed_at=?,details=? WHERE run_id=? AND kind='ao_worker_create' AND status='unknown' AND external_reference=''`, reconciliationEffectStatus(evidence), time.Now().UTC().Format(time.RFC3339Nano), details, runID); err != nil {
+			if _, err = tx.ExecContext(r.Context(), `UPDATE external_effects SET status=?,last_observed_at=?,details=? WHERE run_id=? AND kind IN ('runtime_create','ao_worker_create') AND status='unknown' AND external_reference=''`, reconciliationEffectStatus(evidence), time.Now().UTC().Format(time.RFC3339Nano), details, runID); err != nil {
 				writeError(w, err)
 				return
 			}
