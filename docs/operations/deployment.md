@@ -64,11 +64,12 @@ The operator release installation procedure below installs only the maintenance 
 Use this order when installing a complete Zoe instance. Each step applies to
 the host being deployed.
 
-1. Build and review the Linux amd64 server/runner release and the Zoe-owned OpenCode runtime
-   image from the pinned [server workflow](../../.github/workflows/server-release.yml)
-   and the reviewed OpenCode runtime image release process. The release inputs
-   publish the container images directly to GHCR and record their immutable
-   digests in the release manifest (server) or `IMAGE_DIGEST` (OpenCode runtime). Verify the
+1. Build and review the Linux amd64 server/runner release from the pinned
+   [server workflow](../../.github/workflows/server-release.yml) and publish the Zoe-owned
+   OpenCode runtime image with the [OpenCode image workflow](../../.github/workflows/opencode-image.yml).
+   The image tag is `<opencode version>-<hash of build inputs>`, so an unchanged image is
+   reused rather than rebuilt; the workflow prints `ZOE_OPENCODE_IMAGE=<ref>@<digest>`. The
+   server release records its immutable digests in the release manifest. Verify the
    binary `SHA256SUMS` file before transferring the small daemon/CLI binaries;
    do not export or re-upload image tarballs.
 2. Run `prepare-host-layout.sh`. It creates the Docker network, service user,

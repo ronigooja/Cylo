@@ -69,12 +69,24 @@ jobs:
           status=$?
           echo "$status" > "$RUNNER_TEMP/zoe-release/logs/image-build.exit"
           test "$status" -eq 0 || exit "$status"
-          docker buildx build --push --platform linux/amd64 --cache-from "type=gha,scope=memory-${GITHUB_REF_NAME}" --cache-to "type=gha,mode=max,scope=memory-${GITHUB_REF_NAME}" -f deploy/linux/Dockerfile.memory \
-            -t "${memory_image}:${image_tag}" -t "${memory_image}:${GITHUB_SHA}" --metadata-file "$RUNNER_TEMP/zoe-release/memory-metadata.json" . \
-            2>&1 | tee "$RUNNER_TEMP/zoe-release/logs/memory-image-build.log"
-          status=$?
-          echo "$status" > "$RUNNER_TEMP/zoe-release/logs/memory-image-build.exit"
-          test "$status" -eq 0 || exit "$status"
+          # The memory worker changes rarely: tag it by a hash of its inputs and reuse a published image.
+          memory_hash=$(cat deploy/linux/Dockerfile.memory deploy/linux/secret-entrypoint.go | sha256sum | cut -c1-16)
+          memory_hash="$memory_hash-$(find services -type f ! -name '*.pyc' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)"
+          memory_content_tag="content-$memory_hash"
+          if memory_digest=$(docker buildx imagetools inspect "${memory_image}:${memory_content_tag}" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"') && [[ "$memory_digest" == sha256:* ]]; then
+            echo "reusing ${memory_image}:${memory_content_tag}" | tee "$RUNNER_TEMP/zoe-release/logs/memory-image-build.log"
+            printf '{"containerimage.digest":"%s"}\n' "$memory_digest" > "$RUNNER_TEMP/zoe-release/memory-metadata.json"
+            echo 0 > "$RUNNER_TEMP/zoe-release/logs/memory-image-build.exit"
+          else
+            docker buildx build --push --platform linux/amd64 --cache-from "type=gha,scope=memory" --cache-to "type=gha,mode=max,scope=memory" -f deploy/linux/Dockerfile.memory \
+              -t "${memory_image}:${memory_content_tag}" --metadata-file "$RUNNER_TEMP/zoe-release/memory-metadata.json" . \
+              2>&1 | tee "$RUNNER_TEMP/zoe-release/logs/memory-image-build.log"
+            status=$?
+            echo "$status" > "$RUNNER_TEMP/zoe-release/logs/memory-image-build.exit"
+            test "$status" -eq 0 || exit "$status"
+          fi
+          docker buildx imagetools create -t "${memory_image}:${image_tag}" -t "${memory_image}:${GITHUB_SHA}" "${memory_image}@$(python3 -c "import json,os;print(json.load(open(os.environ['RUNNER_TEMP']+'/zoe-release/memory-metadata.json'))['containerimage.digest'])")" \
+            2>&1 | tee -a "$RUNNER_TEMP/zoe-release/logs/memory-image-build.log"
           docker buildx build --push --platform linux/amd64 --cache-from "type=gha,scope=runner-${GITHUB_REF_NAME}" --cache-to "type=gha,mode=max,scope=runner-${GITHUB_REF_NAME}" -f deploy/linux/Dockerfile.runner \
             -t "${runner_image}:${image_tag}" -t "${runner_image}:${GITHUB_SHA}" --metadata-file "$RUNNER_TEMP/zoe-release/runner-metadata.json" . \
             2>&1 | tee "$RUNNER_TEMP/zoe-release/logs/runner-image-build.log"
