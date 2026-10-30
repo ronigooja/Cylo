@@ -98,8 +98,8 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		if !exists {
 			continue
 		}
-		if c.harness == "" {
-			c.harness = "codex"
+		if c.harness == "" || c.harness != "opencode" {
+			continue
 		}
 		if profile.Role != "worker" || profile.IsolationPolicy == "" || profile.Harness != c.harness {
 			continue
@@ -246,8 +246,8 @@ func loadClaim(ctx context.Context, tx *sql.Tx, runID string, cfg Config) (contr
 	if err != nil {
 		return c, err
 	}
-	if c.Harness == "" {
-		c.Harness = "codex"
+	if c.Harness == "" || c.Harness != "opencode" {
+		return c, errors.New("persisted run has unsupported harness")
 	}
 	c.RuntimeSessionID = aoSession
 	c.Fence = fence
@@ -305,8 +305,9 @@ func (s *Server) handleCurrentClaims(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
-		if claim.Harness == "" {
-			claim.Harness = "opencode"
+		if claim.Harness == "" || claim.Harness != "opencode" {
+			writeError(w, apiError(409, "unsupported_harness", "persisted run has unsupported harness", nil))
+			return
 		}
 		if err = json.Unmarshal(authJSON, &claim.Authorization); err != nil {
 			writeError(w, apiError(500, "internal", "persisted run authorization is invalid", nil))
@@ -437,12 +438,9 @@ func (s *Server) handleObservation(w http.ResponseWriter, r *http.Request) {
 		if boundHarness == "" {
 			boundHarness = "opencode"
 		}
-		expectedMethod := ""
-		switch boundHarness {
-		case "codex":
-			expectedMethod = "container_removed"
-		case "opencode":
-			expectedMethod = "container_removed"
+		expectedMethod := "container_removed"
+		if boundHarness != "opencode" {
+			expectedMethod = ""
 		}
 		if expectedMethod == "" || proof == nil || proof.Source != "runner_container_removal" || proof.Method != expectedMethod || proof.RuntimeSessionID != boundSession || !proof.CleanupComplete || proof.VerifiedAt.IsZero() || offset != 0 || proof.VerifiedAt.After(time.Now().UTC().Add(5*time.Minute)) {
 			writeError(w, apiError(409, "termination_unproven", "termination requires trusted AO stop proof for the bound session", nil))

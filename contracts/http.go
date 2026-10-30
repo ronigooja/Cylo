@@ -399,7 +399,7 @@ func ValidFullContainerID(id string) bool {
 }
 
 func (p RetainedNeverStartedContainer) Valid(runtimeStartedAt, verifiedAt time.Time) bool {
-	if !ValidFullContainerID(p.ID) || p.Managed != "true" || (p.Runtime != "ao-codex-chat" && p.Runtime != "ao-opencode-acp") || p.SessionID == "" || len(p.SessionID) > 128 || p.Status != "created" || p.Running == nil || *p.Running || p.Paused == nil || *p.Paused || p.Restarting == nil || *p.Restarting || p.Dead == nil || *p.Dead || p.OOMKilled == nil || *p.OOMKilled || p.ExitCode == nil || *p.ExitCode != 0 || p.Error == nil || *p.Error != "" || p.PID == nil || *p.PID != 0 || p.StartedAt == nil || !p.StartedAt.IsZero() || p.FinishedAt == nil || !p.FinishedAt.IsZero() || p.RestartCount == nil || *p.RestartCount != 0 || p.RestartPolicy != "no" || !ValidFullContainerID(p.SnapshotSHA256) {
+	if !ValidFullContainerID(p.ID) || p.Managed != "true" || (p.Runtime != LegacyAORuntimeCodexChat && p.Runtime != LegacyAORuntimeOpenCodeACP) || p.SessionID == "" || len(p.SessionID) > 128 || p.Status != "created" || p.Running == nil || *p.Running || p.Paused == nil || *p.Paused || p.Restarting == nil || *p.Restarting || p.Dead == nil || *p.Dead || p.OOMKilled == nil || *p.OOMKilled || p.ExitCode == nil || *p.ExitCode != 0 || p.Error == nil || *p.Error != "" || p.PID == nil || *p.PID != 0 || p.StartedAt == nil || !p.StartedAt.IsZero() || p.FinishedAt == nil || !p.FinishedAt.IsZero() || p.RestartCount == nil || *p.RestartCount != 0 || p.RestartPolicy != "no" || !ValidFullContainerID(p.SnapshotSHA256) {
 		return false
 	}
 	for _, r := range p.SessionID {
@@ -415,6 +415,11 @@ func (p RetainedNeverStartedContainer) Valid(runtimeStartedAt, verifiedAt time.T
 	}
 	return !p.CreatedAt.After(p.FirstCheckedAt) && !p.FirstCheckedAt.Before(runtimeStartedAt) && !p.RecheckedAt.Before(p.FirstCheckedAt)
 }
+
+const (
+	LegacyAORuntimeCodexChat   = "ao-codex-chat"
+	LegacyAORuntimeOpenCodeACP = "ao-opencode-acp"
+)
 
 // PreexistingCapabilityContainer is an operator-selected historical exclusion,
 // not a claim of ownership by the current deployment journal.

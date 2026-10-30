@@ -9,14 +9,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ronigooja/Zoe/contracts"
-	"github.com/ronigooja/Zoe/internal/agents/ao"
+	"github.com/ronigooja/Zoe/internal/agents/opencode"
 	"github.com/ronigooja/Zoe/internal/control"
 	"github.com/ronigooja/Zoe/internal/runner"
 	"github.com/ronigooja/Zoe/internal/storage"
@@ -174,8 +173,8 @@ func TestRunnerDeploymentClaimAndFencedObservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	server, err := control.NewServer(store, control.Config{RunnerToken: runnerToken, RunnerID: "runner-test", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"capability:deploy", "runner:observe", "runner:claim", "runner:control:read"}, Profiles: map[string]control.RuntimeProfile{
-		"worker-profile": {ID: "worker-profile", Harness: "codex", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "worker", IsolationPolicy: runner.CodexWorkspaceWritePolicy},
-		"super-profile":  {ID: "super-profile", Harness: "codex", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "super", IsolationPolicy: runner.CodexWorkspaceWritePolicy},
+		"worker-profile": {ID: "worker-profile", Harness: "opencode", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "worker", IsolationPolicy: runner.OpenCodeWorkspaceWritePolicy},
+		"super-profile":  {ID: "super-profile", Harness: "opencode", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "super", IsolationPolicy: runner.OpenCodeWorkspaceWritePolicy},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -636,30 +635,30 @@ func postCapabilityRunTerminalObservation(t *testing.T, handler http.Handler, to
 	bound := base
 	bound.ObservationID = "obs-bound-" + runID
 	bound.Kind = "dispatch_bound"
-	bound.RuntimeRuntimeSessionID = "ao-session-" + runID
+	bound.RuntimeSessionID = "runtime-session-" + runID
 	post(bound)
 	if eventKind == "run.runtime_terminated" {
 		if strings.Contains(runID, "awaiting-user") {
 			result := base
 			result.ObservationID = "obs-result-" + runID
 			result.Kind = "result"
-			result.RuntimeRuntimeSessionID = bound.RuntimeRuntimeSessionID
+			result.RuntimeSessionID = bound.RuntimeSessionID
 			result.Result = json.RawMessage(`{"answer":"ready for review"}`)
 			post(result)
 		}
 		terminal := base
 		terminal.ObservationID = "obs-terminal-" + runID
 		terminal.Kind = "runtime_terminated"
-		terminal.RuntimeRuntimeSessionID = bound.RuntimeRuntimeSessionID
-		terminal.TerminationProof = &contracts.TerminationProof{Source: "ao_chat_stop", Method: "native_process_exit_waited", RuntimeSessionID: bound.RuntimeRuntimeSessionID, VerifiedAt: time.Now().UTC(), CleanupComplete: true}
+		terminal.RuntimeSessionID = bound.RuntimeSessionID
+		terminal.TerminationProof = &contracts.TerminationProof{Source: "runner_container_removal", Method: "container_removed", RuntimeSessionID: bound.RuntimeSessionID, RuntimeContainerID: "runtime-container", VerifiedAt: time.Now().UTC(), CleanupComplete: true}
 		post(terminal)
 		return
 	}
 	terminal := base
 	terminal.ObservationID = "obs-terminal-" + runID
 	terminal.Kind = "stop_confirmed"
-	terminal.RuntimeRuntimeSessionID = bound.RuntimeRuntimeSessionID
-	terminal.TerminationProof = &contracts.TerminationProof{Source: "ao_chat_stop", Method: "native_process_exit_waited", RuntimeSessionID: bound.RuntimeRuntimeSessionID, VerifiedAt: time.Now().UTC(), CleanupComplete: true}
+	terminal.RuntimeSessionID = bound.RuntimeSessionID
+	terminal.TerminationProof = &contracts.TerminationProof{Source: "runner_container_removal", Method: "container_removed", RuntimeSessionID: bound.RuntimeSessionID, RuntimeContainerID: "runtime-container", VerifiedAt: time.Now().UTC(), CleanupComplete: true}
 	post(terminal)
 }
 
@@ -667,7 +666,40 @@ type capabilityIntegrationIsolation struct{}
 
 func (capabilityIntegrationIsolation) Check(context.Context, contracts.JobClaim) error { return nil }
 
-func TestCapabilityTriggerRunnerAOResultChain(t *testing.T) {
+type capabilityIntegrationRuntime struct {
+	created, terminated int
+}
+
+func (r *capabilityIntegrationRuntime) Create(context.Context, runner.RuntimeSpec) (runner.RuntimeBinding, error) {
+	r.created++
+	return runner.RuntimeBinding{SessionID: "runtime-session", ContainerID: "runtime-container"}, nil
+}
+func (*capabilityIntegrationRuntime) Prompt(context.Context, string, string) error { return nil }
+func (*capabilityIntegrationRuntime) Status(context.Context) (map[string]opencode.Status, error) {
+	return map[string]opencode.Status{"runtime-session": {Type: "idle"}}, nil
+}
+func (*capabilityIntegrationRuntime) Messages(context.Context, string) ([]opencode.Message, error) {
+	var message opencode.Message
+	message.Info.ID = "message-1"
+	message.Info.Role = "assistant"
+	message.Info.Time.Completed = time.Now().UnixMilli()
+	message.Info.Finish = "stop"
+	return []opencode.Message{message}, nil
+}
+func (*capabilityIntegrationRuntime) Events(context.Context) (<-chan opencode.Event, <-chan error) {
+	events := make(chan opencode.Event)
+	errs := make(chan error)
+	close(events)
+	close(errs)
+	return events, errs
+}
+func (*capabilityIntegrationRuntime) Abort(context.Context, string) error { return nil }
+func (r *capabilityIntegrationRuntime) Terminate(context.Context, runner.RuntimeBinding) (string, error) {
+	r.terminated++
+	return "runtime-container", nil
+}
+
+func TestCapabilityTriggerRunnerOpenCodeResultChain(t *testing.T) {
 	ctx := context.Background()
 	runnerToken := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
 	store, err := storage.Open(ctx, storage.Config{Path: ":memory:"})
@@ -682,7 +714,7 @@ func TestCapabilityTriggerRunnerAOResultChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	server, err := control.NewServer(store, control.Config{RunnerToken: runnerToken, RunnerID: "runner-chain", RunnerWorkspaceIDs: []string{"default"}, RunnerScopes: []string{"runner:claim", "runner:observe", "runner:control:read", "capability:deploy"}, Profiles: map[string]control.RuntimeProfile{
-		"worker-profile": {ID: "worker-profile", Harness: "codex", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "worker", IsolationPolicy: runner.CodexWorkspaceWritePolicy},
+		"worker-profile": {ID: "worker-profile", Harness: "opencode", RuntimeRouteID: "runtime", ModelRouteID: "model", Role: "worker", IsolationPolicy: runner.OpenCodeWorkspaceWritePolicy},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -772,53 +804,13 @@ func TestCapabilityTriggerRunnerAOResultChain(t *testing.T) {
 		t.Fatalf("concurrency one did not retain second trigger queued: count=%d err=%v", queued, err)
 	}
 
-	aoOutcome := "success"
-	var createCalls, killCalls int
-	sessionStates := map[string]string{}
-	aoHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/sessions":
-			createCalls++
-			if aoOutcome == "reject" {
-				w.WriteHeader(http.StatusBadRequest)
-				_, _ = w.Write([]byte(`{"error":{"code":"INVALID_REQUEST"}}`))
-				return
-			}
-			sessionID := fmt.Sprintf("ao-session-%d", createCalls)
-			sessionStates[sessionID] = "running"
-			_ = json.NewEncoder(w).Encode(map[string]any{"session": map[string]any{"id": sessionID, "projectId": "ao-project", "status": "running"}})
-		case strings.HasPrefix(r.URL.Path, "/api/v1/sessions/") && strings.HasSuffix(r.URL.Path, "/conversation"):
-			sessionID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/"), "/conversation")
-			_ = json.NewEncoder(w).Encode(map[string]any{"sessionId": sessionID, "controller": "idle", "turns": []map[string]any{{"id": "turn-1", "state": "completed", "requestedAt": time.Now().UTC().Format(time.RFC3339Nano)}}, "messages": []map[string]any{{"id": "message-1", "turnId": "turn-1", "sequence": 1, "role": "assistant", "text": "The authorized worker completed its task.", "streaming": false, "createdAt": time.Now().UTC().Format(time.RFC3339Nano)}}, "activities": []map[string]any{{"id": "tool-1", "activityKind": "mcp_tool", "status": "completed", "summary": "Read the authorized mailbox fixture.", "createdAt": time.Now().UTC().Format(time.RFC3339Nano)}}})
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/kill"):
-			killCalls++
-			sessionID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/"), "/kill")
-			sessionStates[sessionID] = "terminated"
-			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "sessionId": sessionID, "freed": true, "cleanupPending": false, "terminationProof": map[string]any{"source": "ao_chat_stop", "method": "native_process_exit_waited", "sessionId": sessionID, "verifiedAt": time.Now().UTC(), "cleanupComplete": true}})
-		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/sessions/"):
-			sessionID := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
-			status := sessionStates[sessionID]
-			if status == "" {
-				http.NotFound(w, r)
-				return
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"session": map[string]any{"id": sessionID, "projectId": "ao-project", "status": status}})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer aoHTTP.Close()
-	aoClient, err := ao.New(ao.Config{BaseURL: aoHTTP.URL, Token: "fixture-token", Client: aoHTTP.Client()})
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtime := &capabilityIntegrationRuntime{}
 	journal, err := runner.OpenJournal(ctx, filepath.Join(t.TempDir(), "runner.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer journal.Close()
-	engine := &runner.Engine{Control: controlClient, AO: aoClient, Journal: journal, Routes: map[string]runner.Route{"worker-profile": {ProfileID: "worker-profile", RuntimeRouteID: "runtime", ModelRouteID: "model", IsolationPolicy: runner.CodexWorkspaceWritePolicy, Harness: "codex", Model: "fixture-model", ApprovalMode: "accept-edits"}}, Isolation: capabilityIntegrationIsolation{}, PollInterval: time.Millisecond}
+	engine := &runner.Engine{Control: controlClient, Runtime: runtime, Journal: journal, Routes: map[string]runner.Route{"worker-profile": {ProfileID: "worker-profile", RuntimeRouteID: "runtime", ModelRouteID: "model", IsolationPolicy: runner.OpenCodeWorkspaceWritePolicy, Harness: "opencode", Model: "fixture-model", ApprovalMode: "accept-edits"}}, Isolation: capabilityIntegrationIsolation{}, PollInterval: time.Millisecond}
 
 	claim, err := controlClient.Claim(ctx)
 	if err != nil || claim == nil || claim.Role != "worker" {
@@ -827,8 +819,8 @@ func TestCapabilityTriggerRunnerAOResultChain(t *testing.T) {
 	if err := engine.Process(ctx, *claim); err != nil {
 		t.Fatalf("runner Engine AO execution: %v", err)
 	}
-	if createCalls != 1 || killCalls != 1 {
-		t.Fatalf("AO HTTP fixture lifecycle create=%d kill=%d, want one each", createCalls, killCalls)
+	if runtime.created != 1 || runtime.terminated != 1 {
+		t.Fatalf("OpenCode runtime lifecycle create=%d terminate=%d, want one each", runtime.created, runtime.terminated)
 	}
 	var runStatus, taskStatus string
 	if err := store.DB().QueryRowContext(ctx, `SELECT r.status,t.status FROM runs r JOIN tasks t ON t.id=r.task_id WHERE r.id=?`, claim.RunID).Scan(&runStatus, &taskStatus); err != nil || runStatus != "verification_pending" || taskStatus != "awaiting_user" {
@@ -874,21 +866,6 @@ func TestCapabilityTriggerRunnerAOResultChain(t *testing.T) {
 		t.Fatalf("authorized acceptance did not free worker slot for second trigger: tasks=%d err=%v", admitted, err)
 	}
 
-	aoOutcome = "reject"
-	rejectedClaim, err := controlClient.Claim(ctx)
-	if err != nil || rejectedClaim == nil || rejectedClaim.TaskID == claim.TaskID || rejectedClaim.ProfileID != "worker-profile" {
-		t.Fatalf("claim worker task admitted after acceptance: claim=%#v err=%v", rejectedClaim, err)
-	}
-	if err := engine.Process(ctx, *rejectedClaim); err != nil {
-		t.Fatalf("runner Engine handling AO create rejection: %v", err)
-	}
-	if createCalls != 2 || killCalls != 1 {
-		t.Fatalf("AO rejection unexpectedly created or stopped a session: create=%d kill=%d", createCalls, killCalls)
-	}
-	postAdmissions()
-	if err = store.DB().QueryRowContext(ctx, `SELECT state FROM capability_trigger_runs WHERE task_id=?`, rejectedClaim.TaskID).Scan(&triggerState); err != nil || triggerState != "failed" {
-		t.Fatalf("authoritative AO rejection did not fail trigger: state=%q err=%v", triggerState, err)
-	}
 }
 
 func begin(t *testing.T, db *sql.DB) *sql.Tx {

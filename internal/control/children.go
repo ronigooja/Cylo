@@ -135,7 +135,7 @@ func (s *Server) handleChildProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	profile, profileExists := s.cfg.Profiles[req.ProfileID]
-	if !profileExists || profile.Role != "worker" || profile.IsolationPolicy == "" || profile.Harness != "opencode" || (profile.IsolationPolicy != "opencode-workspace-write-v1" && profile.IsolationPolicy != "ao-opencode-workspace-write-v1") {
+	if !profileExists || profile.Role != "worker" || profile.IsolationPolicy == "" || profile.Harness != "opencode" || (profile.IsolationPolicy != normalizeIsolationPolicy(profile.IsolationPolicy)) {
 		writeError(w, apiError(http.StatusConflict, "profile_unavailable", "requested child profile is not configured for worker execution", nil))
 		return
 	}

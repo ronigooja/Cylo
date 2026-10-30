@@ -46,6 +46,13 @@ type RuntimeProfile struct {
 // ChildPolicy is a profile's bounded authority to request descendants. A task
 // receives a serialized snapshot at admission, so later config changes cannot
 // enlarge an existing lineage.
+func normalizeIsolationPolicy(policy string) string {
+	if policy == "ao-opencode-workspace-write-v1" {
+		return "opencode-workspace-write-v1"
+	}
+	return policy
+}
+
 type ChildPolicy struct {
 	AllowedProfileIDs []string `json:"allowed_profile_ids"`
 	CapabilityIDs     []string `json:"capability_ids"`
@@ -228,6 +235,7 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 	}
 	profiles := make(map[string]RuntimeProfile, len(cfg.Profiles))
 	for id, profile := range cfg.Profiles {
+		profile.IsolationPolicy = normalizeIsolationPolicy(profile.IsolationPolicy)
 		profile.Harness = strings.TrimSpace(profile.Harness)
 		if profile.Harness == "" {
 			profile.Harness = "opencode"
