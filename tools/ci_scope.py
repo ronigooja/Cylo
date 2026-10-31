@@ -27,6 +27,8 @@ def select(paths, full=False):
     for path in paths:
         if full:
             break
+        if path == ".gitignore":
+            continue
         if path in WORKFLOW_SCOPES:
             for key in WORKFLOW_SCOPES[path]:
                 scope[key] = True

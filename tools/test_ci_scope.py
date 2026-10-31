@@ -54,6 +54,10 @@ class ScopeTests(unittest.TestCase):
         for path in (".github/workflows/opencode-image.yml", ".github/workflows/server-release.yml"):
             self.assertEqual(self.selected([path]), set())
 
+    def test_gitignore_needs_no_checks(self):
+        self.assertEqual(self.selected([".gitignore"]), set())
+        self.assertEqual(self.selected([".gitignore", "README.md"]), {"docs"})
+
     def test_unknown_and_ci_changes_expand(self):
         for path in ("new-component/file", "services/memory/worker.py", ".github/workflows/ci.yml", ".github/dependabot.yml", "tools/ci_scope.py"):
             self.assertEqual(self.selected([path]), set(KEYS))
