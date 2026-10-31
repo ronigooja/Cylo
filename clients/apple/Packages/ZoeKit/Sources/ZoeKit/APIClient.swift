@@ -49,6 +49,8 @@ public final class APIClient: @unchecked Sendable {
     private let diagnosticQueue: EncryptedDiagnosticQueue?
     private let diagnosticsEnabled: Bool
 
+    public var hasCredentials: Bool { credentials != nil }
+
     public static func cleanupAbandonedExportDownloads() {
         BoundedDownloadDelegate.cleanupAbandonedFiles()
     }
@@ -192,13 +194,33 @@ public final class APIClient: @unchecked Sendable {
         try await request(path: ["v1", "voice", "config"], method: "GET", authenticated: true)
     }
 
-    public func recordDiagnostic(phase: String, requestPath: String, clientRequestID: String = UUID().uuidString.lowercased(), httpStatus: Int = 0, responseBytes: Int64 = 0, errorType: String = "", errorSummary: String = "") {
+    public func recordDiagnostic(phase: String, requestPath: String, clientRequestID: String = UUID().uuidString.lowercased(), httpStatus: Int = 0, responseBytes: Int64 = 0, errorType: String = "", errorSummary: String = "", level: DiagnosticLevel = .error) {
         guard diagnosticsEnabled, let queue = diagnosticQueue else { return }
-        let event = DiagnosticEvent(clientRequestID: clientRequestID, phase: phase, requestPath: requestPath, httpStatus: httpStatus, responseBytes: responseBytes, errorType: errorType, errorSummary: errorSummary, installationID: installationID)
-        Task { await queue.append(event); await uploadDiagnosticsIfPossible() }
+        let event = DiagnosticEvent(clientRequestID: clientRequestID, phase: phase, requestPath: requestPath, httpStatus: httpStatus, responseBytes: responseBytes, errorType: errorType, errorSummary: errorSummary, installationID: installationID, level: level)
+        Task { await queue.append(event) }
     }
 
-    private func uploadDiagnosticsIfPossible() async {
+    public func recordDiagnosticAndWait(phase: String, requestPath: String, errorType: String = "", errorSummary: String = "", level: DiagnosticLevel = .error) async {
+        guard diagnosticsEnabled, let queue = diagnosticQueue else { return }
+        let event = DiagnosticEvent(clientRequestID: UUID().uuidString.lowercased(), phase: phase, requestPath: requestPath, errorType: errorType, errorSummary: errorSummary, installationID: installationID, level: level)
+        await queue.append(event)
+    }
+
+    public func applyDiagnosticLevel(_ level: DiagnosticLevel) async {
+        await diagnosticQueue?.setLevel(level)
+    }
+
+    public func fetchClientPolicy() async throws -> ClientPolicy {
+        var request = URLRequest(url: try makeURL(path: ["v1", "client", "policy"]))
+        request.httpMethod = "GET"
+        try authorize(&request)
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw ZoeError.invalidResponse }
+        guard (200..<300).contains(http.statusCode) else { throw decodeFailure(status: http.statusCode, data: data) }
+        return try decoder.decode(ClientPolicy.self, from: data)
+    }
+
+    public func uploadDiagnosticsIfPossible() async {
         guard let credentials, let queue = diagnosticQueue, let token = try? credentials.bearerToken() else { return }
         guard await queue.canAttempt() else { return }
         guard await queue.beginUpload() else { return }
