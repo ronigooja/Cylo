@@ -61,51 +61,22 @@ The operator release installation procedure below installs only the maintenance 
 
 ### Complete Linux deployment order
 
-Use this order when installing a complete Zoe instance. Each step applies to
-the host being deployed.
+Copy the reviewed `zoe-linux-<arch>.tar.gz` package to the host, then run the
+single bootstrap entry point:
 
-1. Build and review the Linux amd64 server/runner release from the pinned
-   [server workflow](../../.github/workflows/server-release.yml) and publish the Zoe-owned
-   OpenCode runtime image with the [OpenCode image workflow](../../.github/workflows/opencode-image.yml).
-   The image tag is `<opencode version>-<hash of build inputs>`, so an unchanged image is
-   reused rather than rebuilt; the workflow prints `ZOE_OPENCODE_IMAGE=<ref>@<digest>`. The
-   server release records its immutable digests in the release manifest. Verify the
-   binary `SHA256SUMS` file before transferring the small daemon/CLI binaries;
-   do not export or re-upload image tarballs.
-2. Authenticate the host to `ghcr.io` with a deployment-managed read-only token,
-   then run the supported lifecycle command from the extracted release:
+```sh
+sudo bash deploy-linux/install-cli.sh /path/to/zoe-linux-<arch>.tar.gz
+sudo zoe install [--start] --release /path/to/release \
+  --opencode-image ghcr.io/OWNER/zoe-opencode:TAG@sha256:DIGEST
+```
 
-   ```sh
-   sudo zoe install --release /path/to/release \
-     --opencode-image ghcr.io/OWNER/zoe-opencode:TAG@sha256:DIGEST
-   ```
-
-   `zoe install` validates the manifest and artifact hashes, calls the host-layout
-   preparation script when supplied by the release, installs the immutable release
-   and systemd units, pins images by digest, pulls them, and creates deployment-owned
-   runner tokens only when absent. It does not create an instance key or a model
-   gateway key, and it does not start services until `/etc/zoe/secrets/mem0-llm-api-key`
-   exists. It prints the next steps (`zoe memory configure`, `zoe provider configure`,
-   `zoe key init`, then start the two services). Provider and memory keys come from
-   the model gateway and are entered through `zoe`; they are never generated here.
-3. Configure the provider, memory model, profiles, and optional voice gateway with
-   the corresponding `zoe` commands. Set `ZOE_OPENCODE_MODEL`, provider socket, and
-   workspace settings through the operator configuration; the runner mounts only
-   the per-run workspace.
-5. With the server stopped and no startup instance-key source configured, the
-   operator runs `zoe key init --database PATH --server HTTPS_URL
-   --output PRIVATE_JSON` (or `zoe key rotate` for an existing instance).
-   The operator keeps the private JSON output for client connection. The
-   server uses the credential hash stored in its database; the installer must
-   not create, inject, or persist a plaintext instance-key startup secret.
-   When root initializes a new database for the Compose service, set ownership
-   of the database and any existing `-wal` and `-shm` sidecars to `65532:65532`
-   before first startup, retaining mode `0600`. Do not recursively change the
-   directory's private JSON exports.
-4. Configure and start `zoe-compose.service`, then start `zoe-runner.service`.
-5. Verify service state and health/readiness endpoints. These checks establish
-   installation and process readiness; model execution, memory processing, and
-   end-to-end task completion require a separate acceptance run.
+The bootstrap verifies `SHA256SUMS`, installs the CLI atomically, and keeps one
+immutable CLI release. `zoe install` validates the release and host before
+writing files, stages the release, preserves existing tokens and environment,
+and installs the systemd units. It leaves services stopped by default; use
+`--start` to restart both units and wait for the health probe. Configure the
+provider, memory model, and instance key afterward with the corresponding
+`zoe` commands.
 
 The complete host installation therefore includes the Zoe-owned OpenCode runtime image,
 Zoe server image, trusted runner, memory worker image, Qdrant service, Docker,

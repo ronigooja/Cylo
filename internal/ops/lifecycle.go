@@ -40,11 +40,11 @@ type ReleaseImage struct {
 	Digest string `json:"digest"`
 }
 type LifecycleOptions struct {
-	Root, OptRoot, DataRoot, Release, OpenCodeImage  string
-	NonInteractive, Yes, PurgeData, PurgeCredentials bool
-	HealthURL                                        string
-	HealthTimeout                                    time.Duration
-	Out                                              io.Writer
+	Root, OptRoot, DataRoot, Release, OpenCodeImage         string
+	NonInteractive, Yes, PurgeData, PurgeCredentials, Start bool
+	HealthURL                                               string
+	HealthTimeout                                           time.Duration
+	Out                                                     io.Writer
 }
 
 type UninstallPlan struct {
@@ -122,6 +122,9 @@ func (m Manager) Install(ctx context.Context, o LifecycleOptions) (ReleaseManife
 	if o.DataRoot == "" {
 		o.DataRoot = "/var/lib/zoe"
 	}
+	if o.HealthTimeout == 0 {
+		o.HealthTimeout = 90 * time.Second
+	}
 	manifest, err := ValidateRelease(o.Release)
 	if err != nil {
 		return manifest, err
@@ -130,6 +133,15 @@ func (m Manager) Install(ctx context.Context, o LifecycleOptions) (ReleaseManife
 		return manifest, err
 	}
 	if err = validateOpenCode(o.OpenCodeImage); err != nil {
+		return manifest, err
+	}
+	if installed, err := installAlreadyComplete(o, manifest); err == nil && installed {
+		if o.Out != nil {
+			fmt.Fprintln(o.Out, "already installed")
+		}
+		return manifest, nil
+	}
+	if err = formatPreflightProblems(m.preflight(ctx, o, manifest)); err != nil {
 		return manifest, err
 	}
 	if err = ensureDirs(o); err != nil {
@@ -150,11 +162,34 @@ func (m Manager) Install(ctx context.Context, o LifecycleOptions) (ReleaseManife
 	if err = m.installUnits(o); err != nil {
 		return manifest, err
 	}
-	if _, err := os.Stat(filepath.Join(o.Root, "secrets", "mem0-llm-api-key")); os.IsNotExist(err) {
+	if !o.Start {
 		printNextSteps(o.Out)
 		return manifest, nil
 	}
-	return manifest, m.start(ctx)
+	if err := m.start(ctx); err != nil {
+		return manifest, err
+	}
+	return manifest, waitHealth(ctx, m, o.HealthURL, o.HealthTimeout)
+}
+
+func installAlreadyComplete(o LifecycleOptions, manifest ReleaseManifest) (bool, error) {
+	current := filepath.Join(o.OptRoot, "releases", "current")
+	selected, err := os.Readlink(current)
+	if err != nil || selected != manifest.SourceRevision {
+		return false, nil
+	}
+	for _, path := range []string{filepath.Join(o.Root, "zoe-stack.env"), filepath.Join(o.Root, "zoe-runner.env")} {
+		if _, err := os.Stat(path); err != nil {
+			return false, nil
+		}
+	}
+	for _, path := range []string{filepath.Join(o.Root, "systemd", "zoe-compose.service"), filepath.Join(o.Root, "systemd", "zoe-runner.service"), "/etc/systemd/system/zoe-compose.service", "/etc/systemd/system/zoe-runner.service"} {
+		if _, err := os.Stat(path); err == nil {
+			continue
+		}
+		return false, nil
+	}
+	return true, nil
 }
 
 func (m Manager) Update(ctx context.Context, o LifecycleOptions) error {
@@ -351,6 +386,9 @@ func writeEnv(path string, values map[string]string, mode os.FileMode) error {
 	var b strings.Builder
 	for _, k := range keys {
 		fmt.Fprintf(&b, "%s=%s\n", k, values[k])
+	}
+	if _, err := os.Stat(path); err == nil {
+		return nil
 	}
 	return os.WriteFile(path, []byte(b.String()), mode)
 }
