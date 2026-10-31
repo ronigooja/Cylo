@@ -179,19 +179,29 @@ func (s *Service) reaper() {
 }
 
 func (s *Service) reapStale(ctx context.Context) {
-	cutoff := s.now().UTC().Add(-s.heartbeatTimeout).Format(time.RFC3339Nano)
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM voice_sessions WHERE state='active' AND COALESCE(heartbeat_at,created_at,updated_at) < ?`, cutoff)
+	cutoff := s.now().UTC().Add(-s.heartbeatTimeout)
+	cutoffValue := cutoff.Format("2006-01-02T15:04:05.000000000Z")
+	// julianday parses RFC3339 fractional seconds numerically; a text comparison
+	// is incorrect because RFC3339Nano trims trailing fractional zeroes.
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM voice_sessions WHERE state='active' AND julianday(COALESCE(heartbeat_at,created_at,updated_at)) < julianday(?)`, cutoffValue)
 	if err != nil {
 		log.Printf("voice reaper query failed: %v", err)
 		return
 	}
-	defer rows.Close()
+	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			continue
 		}
-		claim, err := s.db.ExecContext(ctx, `UPDATE voice_sessions SET state='ending',updated_at=? WHERE id=? AND state='active' AND COALESCE(heartbeat_at,created_at,updated_at) < ?`, s.now().UTC().Format(time.RFC3339Nano), id, cutoff)
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		log.Printf("voice reaper rows close failed: %v", err)
+		return
+	}
+	for _, id := range ids {
+		claim, err := s.db.ExecContext(ctx, `UPDATE voice_sessions SET state='ending',updated_at=? WHERE id=? AND state='active' AND julianday(COALESCE(heartbeat_at,created_at,updated_at)) < julianday(?)`, s.now().UTC().Format(time.RFC3339Nano), id, cutoffValue)
 		if err != nil {
 			log.Printf("voice reaper claim failed: %v", err)
 			continue
