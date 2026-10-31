@@ -25,6 +25,7 @@ jobs:
       race: ${{ steps.scope.outputs.race }}
       scripts: ${{ steps.scope.outputs.scripts }}
       docs: ${{ steps.scope.outputs.docs }}
+      operator: ${{ steps.scope.outputs.operator }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -76,6 +77,7 @@ jobs:
       go: ${{ needs.scope.outputs.go == 'true' }}
       race: ${{ needs.scope.outputs.race == 'true' }}
       scripts: ${{ needs.scope.outputs.scripts == 'true' }}
+      operator: ${{ needs.scope.outputs.operator == 'true' }}
 
   docs:
     needs: scope

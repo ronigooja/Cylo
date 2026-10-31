@@ -12,6 +12,9 @@ on:
       scripts:
         type: boolean
         required: true
+      operator:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       release:
@@ -234,7 +237,7 @@ jobs:
           done
 
   operator-artifacts:
-    if: github.event_name == 'workflow_dispatch' && inputs.release
+    if: (github.event_name == 'workflow_dispatch' && inputs.release) || (github.ref == 'refs/heads/main' && inputs.operator)
     needs: [checks]
     runs-on: ubuntu-latest
     timeout-minutes: 15

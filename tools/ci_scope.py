@@ -4,7 +4,22 @@ import argparse
 import subprocess
 from pathlib import Path
 
-KEYS = ("tests", "macos", "ios", "go", "race", "scripts", "docs")
+KEYS = ("tests", "macos", "ios", "go", "race", "scripts", "docs", "operator")
+
+# Packages in the dependency closure of the race-tested packages in linux.yml.
+RACE_PREFIXES = (
+    "cmd/zoe/", "cmd/zoe-server/", "contracts/", "internal/agents/opencode/",
+    "internal/capabilities/", "internal/control/", "internal/memory/", "internal/ops/",
+    "internal/runner/", "internal/storage/", "internal/voice/",
+)
+OPERATOR_PREFIXES = ("cmd/zoe/", "internal/ops/", "deploy/linux/install-cli.sh")
+WORKFLOW_SCOPES = {
+    ".github/workflows/apple.yml": ("tests", "macos", "ios"),
+    ".github/workflows/linux.yml": ("go", "race", "scripts", "operator"),
+    ".github/workflows/docs.yml": ("docs",),
+    ".github/workflows/opencode-image.yml": (),
+    ".github/workflows/server-release.yml": (),
+}
 
 
 def select(paths, full=False):
@@ -12,6 +27,10 @@ def select(paths, full=False):
     for path in paths:
         if full:
             break
+        if path in WORKFLOW_SCOPES:
+            for key in WORKFLOW_SCOPES[path]:
+                scope[key] = True
+            continue
         if path.startswith(".github/") or path in ("tools/ci_scope.py", "tools/test_ci_scope.py"):
             return dict.fromkeys(KEYS, True)
         if path.endswith(".md") or path.startswith("docs/") or path in (
@@ -26,7 +45,11 @@ def select(paths, full=False):
             for key in ("tests", "macos", "ios"):
                 scope[key] = True
         elif path.endswith(".go") or path in ("go.mod", "go.sum"):
-            scope["go"] = scope["race"] = True
+            scope["go"] = True
+            if path.startswith(RACE_PREFIXES) or path in ("go.mod", "go.sum"):
+                scope["race"] = True
+            if path.startswith(OPERATOR_PREFIXES) or path in ("go.mod", "go.sum"):
+                scope["operator"] = True
             # The API and wire models have native consumers. Dependency changes
             # and integration fixtures may alter that shared contract as well.
             if path.startswith(("contracts/", "internal/control/", "internal/voice/", "internal/memory/", "internal/capabilities/", "tests/")) or path in ("go.mod", "go.sum"):
@@ -34,6 +57,8 @@ def select(paths, full=False):
                     scope[key] = True
         elif path.startswith("deploy/linux/") and path.endswith(".sh"):
             scope["scripts"] = True
+            if path.startswith(OPERATOR_PREFIXES):
+                scope["operator"] = True
         else:
             return dict.fromkeys(KEYS, True)
     return scope
