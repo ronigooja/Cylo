@@ -61,46 +61,40 @@ The operator release installation procedure below installs only the maintenance 
 
 ### Complete Linux deployment order
 
-Use this order when installing a complete Zoe instance. Each step applies to
-the host being deployed.
+Copy the reviewed `zoe-linux-<arch>.tar.gz` package to the host, then run the
+single bootstrap entry point:
 
-1. Build and review the Linux amd64 server/runner release from the pinned
-   [server workflow](../../.github/workflows/server-release.yml) and publish the Zoe-owned
-   OpenCode runtime image with the [OpenCode image workflow](../../.github/workflows/opencode-image.yml).
-   The image tag is `<opencode version>-<hash of build inputs>`, so an unchanged image is
-   reused rather than rebuilt; the workflow prints `ZOE_OPENCODE_IMAGE=<ref>@<digest>`. The
-   server release records its immutable digests in the release manifest. Verify the
-   binary `SHA256SUMS` file before transferring the small daemon/CLI binaries;
-   do not export or re-upload image tarballs.
-2. Authenticate the host to `ghcr.io` with a deployment-managed read-only token,
-   then run the supported lifecycle command from the extracted release:
+```sh
+sudo bash deploy-linux/install-cli.sh /path/to/zoe-linux-<arch>.tar.gz
+sudo zoe install [--start] --release /path/to/release \
+  --opencode-image ghcr.io/OWNER/zoe-opencode:TAG@sha256:DIGEST
+```
 
-   ```sh
-   sudo zoe install --release /path/to/release \
-     --opencode-image ghcr.io/OWNER/zoe-opencode:TAG@sha256:DIGEST
-   ```
-
-   `zoe install` validates the manifest and artifact hashes, calls the host-layout
-   preparation script when supplied by the release, installs the immutable release
-   and systemd units, pins images by digest, pulls them, and creates deployment-owned
-   runner tokens only when absent. It does not create an instance key or a model
-   gateway key. It starts the services and prints the next steps in order:
-   `zoe key init`, `zoe memory configure`, then `zoe provider configure` for
+   The bootstrap verifies `SHA256SUMS`, installs the CLI atomically, and keeps one
+   immutable CLI release. `zoe install` validates the release and host before
+   writing files, stages the release, pins images by digest, pulls them, installs
+   the systemd units, preserves existing tokens and environment, and creates
+   deployment-owned runner tokens only when absent. It does not create an instance
+   key or a model gateway key. It leaves services stopped by default; `--start`
+   starts both units and waits for the health probe. It prints the next steps in
+   order: `zoe key init`, `zoe memory configure`, then `zoe provider configure` for
    systemd/runner deployments. Until key init, `zoe status` shows
    `Instance key: pending (run zoe key init)`. Provider and memory keys come from
    the model gateway and are entered through `zoe`; they are never generated here.
-3. After the stack starts, run `zoe key init --database PATH --server HTTPS_URL
-   --output PRIVATE_JSON` (or `zoe key rotate` for an existing instance).
-   The operator keeps the private JSON output for client connection. The
-   server uses the credential hash stored in its database; the installer must
-   not create, inject, or persist a plaintext instance-key startup secret.
-   When root initializes a new database for the Compose service, set ownership
-   of the database and any existing `-wal` and `-shm` sidecars to `65532:65532`
-   before first startup, retaining mode `0600`. Do not recursively change the
-   directory's private JSON exports.
-4. Configure the memory model with `zoe memory configure`, then configure the
+
+After the stack starts, steps 1 and 2 may be done in either order; step 3 comes last:
+
+1. Run `zoe key init --database PATH --server HTTPS_URL --output PRIVATE_JSON`
+   (or `zoe key rotate` for an existing instance). The operator keeps the private
+   JSON output for client connection. The server uses the credential hash stored
+   in its database; the installer must not create, inject, or persist a plaintext
+   instance-key startup secret. When root creates the database before the Compose
+   service has, set ownership of the database and any existing `-wal` and `-shm`
+   sidecars to `65532:65532`, retaining mode `0600`. Do not recursively change
+   the directory's private JSON exports.
+2. Configure the memory model with `zoe memory configure`, then configure the
    task model with `zoe provider configure` for systemd/runner deployments.
-5. Verify service state, `/healthz`, and `/readyz`. `/healthz` establishes process
+3. Verify service state, `/healthz`, and `/readyz`. `/healthz` establishes process
    liveness; `/readyz` is `200 {"status":"ready"}` only after the instance-auth
    row exists and otherwise remains `503` pending. These checks establish
    installation and process readiness; model execution, memory processing, and

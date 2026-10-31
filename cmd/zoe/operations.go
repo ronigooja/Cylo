@@ -48,6 +48,7 @@ func lifecycleFlags(name string, args []string, errOut io.Writer) (ops.Lifecycle
 	fs.BoolVar(&o.Yes, "non-interactive-with-yes", false, "confirm destructive operation without prompts")
 	fs.BoolVar(&o.PurgeData, "purge-data", false, "remove Zoe data")
 	fs.BoolVar(&o.PurgeCredentials, "purge-credentials", false, "remove protected gateway credentials")
+	fs.BoolVar(&o.Start, "start", false, "start services and wait for health after installation")
 	if err := fs.Parse(args); err != nil {
 		return o, fs, err
 	}
