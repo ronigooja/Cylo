@@ -197,12 +197,16 @@ func (s *Service) releaseSession(ctx context.Context, p contracts.Principal, ses
 	if gatewayUnbound == 0 && gatewayUnbindUnknown == 0 {
 		response, requestID, callErr := s.callGateway(ctx, http.MethodDelete, "/v1/voice/sessions/"+url.PathEscape(gatewayID), nil)
 		if callErr != nil {
-			_ = s.markSession(ctx, sessionID, "quarantined", "gateway_release_unknown", nil, "")
+			if persistErr := s.markSession(ctx, sessionID, "quarantined", "gateway_release_unknown", nil, ""); persistErr != nil {
+				return 0, "", true, persistErr
+			}
 			return http.StatusServiceUnavailable, "", true, apiError(http.StatusServiceUnavailable, "voice_outcome_unknown", "gateway release result is unknown; media lease quarantined", map[string]any{"request_id": requestID})
 		}
 		defer response.Body.Close()
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			_ = s.markSession(ctx, sessionID, "quarantined", "gateway_release_failed", nil, "")
+			if persistErr := s.markSession(ctx, sessionID, "quarantined", "gateway_release_failed", nil, ""); persistErr != nil {
+				return 0, "", true, persistErr
+			}
 			return http.StatusServiceUnavailable, "", true, apiError(http.StatusServiceUnavailable, "voice_outcome_unknown", "gateway did not confirm session unbinding; media lease quarantined", map[string]any{"request_id": requestID})
 		}
 		result, err := s.db.ExecContext(ctx, `UPDATE voice_sessions SET gateway_unbound=1,gateway_unbind_unknown=0,updated_at=? WHERE id=? AND generation=? AND state='ending'`, s.now().UTC().Format(time.RFC3339Nano), sessionID, generation)
