@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ronigooja/Zoe/internal/control"
 	"github.com/ronigooja/Zoe/internal/ops"
 	"github.com/skip2/go-qrcode"
 )
@@ -32,6 +33,70 @@ func init() {
 	_ = RegisterOperation("install", installOperation)
 	_ = RegisterOperation("update", updateOperation)
 	_ = RegisterOperation("uninstall", uninstallOperation)
+	_ = RegisterOperation("client-policy show", clientPolicyShowOperation)
+	_ = RegisterOperation("client-policy set", clientPolicySetOperation)
+}
+
+func clientPolicyMaintenance(args []string, set bool, out, errOut io.Writer) error {
+	fs := flag.NewFlagSet("client-policy", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	root := fs.String("root", "/etc/zoe", "deployment configuration root")
+	db := fs.String("database", os.Getenv("ZOE_DATABASE_PATH"), "control database path")
+	level := fs.String("level", "", "client log level: error, info, or debug")
+	interval := fs.Int("interval", 0, "client poll interval in seconds")
+	offline := fs.Bool("offline", false, "skip managed service pause; require exclusive database lock")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("unexpected arguments")
+	}
+	if set && !validPolicyLevel(*level) {
+		return errors.New("--level must be error, info, or debug")
+	}
+	if *db == "" {
+		d, err := ops.DiscoverDeployment(context.Background(), opsManager(), *root)
+		if err != nil {
+			return err
+		}
+		*db = d.DatabasePath
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var err error
+	resume := func() error { return nil }
+	if !*offline {
+		resume, err = pauseControl(ctx, *root)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if resumeErr := resume(); resumeErr != nil {
+				fmt.Fprintln(errOut, "Service recovery failed; restart the control service manually.")
+			}
+		}()
+	}
+	var policy control.ClientPolicy
+	if set {
+		policy, err = ops.UpdateClientPolicy(ctx, ops.ClientPolicyOptions{DatabasePath: *db}, *level, *interval)
+	} else {
+		policy, err = ops.ReadClientPolicy(ctx, ops.ClientPolicyOptions{DatabasePath: *db})
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Log level: %s\nPoll interval: %d seconds\nRevision: %d\n", safeLabel(policy.LogLevel), policy.PollIntervalSeconds, policy.Revision)
+	return nil
+}
+
+func clientPolicyShowOperation(args []string, _ io.Reader, out, errOut io.Writer) error {
+	return clientPolicyMaintenance(args, false, out, errOut)
+}
+func clientPolicySetOperation(args []string, _ io.Reader, out, errOut io.Writer) error {
+	return clientPolicyMaintenance(args, true, out, errOut)
+}
+func validPolicyLevel(level string) bool {
+	return level == "error" || level == "info" || level == "debug"
 }
 
 func lifecycleFlags(name string, args []string, errOut io.Writer) (ops.LifecycleOptions, *flag.FlagSet, error) {

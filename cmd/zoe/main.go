@@ -28,6 +28,8 @@ var operations = map[string]operation{
 	"voice configure":    unavailable("voice configure"),
 	"voice test":         unavailable("voice test"),
 	"voice status":       unavailable("voice status"),
+	"client-policy show": unavailable("client-policy show"),
+	"client-policy set":  unavailable("client-policy set"),
 	"install":            unavailable("install"),
 	"update":             unavailable("update"),
 	"uninstall":          unavailable("uninstall"),
@@ -99,7 +101,7 @@ func normalizeCommand(value string) string {
 }
 
 func usageError() error {
-	return errors.New("usage: zoe [setup|install|update|uninstall|provider configure|provider test|memory configure|memory test|key init|key rotate|status|voice configure|voice test|voice status]")
+	return errors.New("usage: zoe [setup|install|update|uninstall|provider configure|provider test|memory configure|memory test|key init|key rotate|status|voice configure|voice test|voice status|client-policy show|client-policy set]")
 }
 
 func menu(in io.Reader, out, errOut io.Writer) error {
@@ -126,6 +128,9 @@ func menu(in io.Reader, out, errOut io.Writer) error {
 		fmt.Fprintln(out, "Access:")
 		fmt.Fprintln(out, "  13) Create instance key")
 		fmt.Fprintln(out, "  14) Rotate instance key")
+		fmt.Fprintln(out, "Client policy:")
+		fmt.Fprintln(out, "  15) Show client policy")
+		fmt.Fprintln(out, "  16) Set client policy")
 		fmt.Fprintln(out, "  0) Exit")
 		fmt.Fprint(out, "Select an option: ")
 		line, err := inputLine(in)
@@ -139,9 +144,9 @@ func menu(in io.Reader, out, errOut io.Writer) error {
 		if choice == "0" || strings.EqualFold(choice, "q") || strings.EqualFold(choice, "quit") || strings.EqualFold(choice, "exit") {
 			return nil
 		}
-		name, ok := map[string]string{"1": "status", "2": "setup", "3": "install", "4": "update", "5": "uninstall", "6": "provider configure", "7": "provider test", "8": "memory configure", "9": "memory test", "10": "voice configure", "11": "voice test", "12": "voice status", "13": "key init", "14": "key rotate"}[choice]
+		name, ok := map[string]string{"1": "status", "2": "setup", "3": "install", "4": "update", "5": "uninstall", "6": "provider configure", "7": "provider test", "8": "memory configure", "9": "memory test", "10": "voice configure", "11": "voice test", "12": "voice status", "13": "key init", "14": "key rotate", "15": "client-policy show", "16": "client-policy set"}[choice]
 		if !ok {
-			fmt.Fprintln(errOut, "Please choose a number from 0 to 14.")
+			fmt.Fprintln(errOut, "Please choose a number from 0 to 16.")
 			continue
 		}
 		if err := operations[name](nil, in, out, errOut); err != nil {

@@ -33,6 +33,7 @@ type clientDiagnosticEvent struct {
 	ResponseBytes   int64  `json:"response_bytes"`
 	ErrorType       string `json:"error_type"`
 	ErrorSummary    string `json:"error_summary"`
+	Level           string `json:"level,omitempty"`
 }
 
 func (s *Server) registerDiagnosticsRoute() {
@@ -86,6 +87,12 @@ func (s *Server) handleClientDiagnostics(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	ids := make([]string, 0, len(req.Events))
+	dropped := 0
+	policy, err := s.ReadClientPolicy(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	tx, err := s.store.DB().BeginTx(r.Context(), nil)
 	if err != nil {
 		writeError(w, err)
@@ -98,6 +105,18 @@ func (s *Server) handleClientDiagnostics(w http.ResponseWriter, r *http.Request)
 			writeError(w, apiError(http.StatusBadRequest, "invalid_diagnostic", "diagnostic event is invalid or too large", nil))
 			return
 		}
+		level := strings.ToLower(strings.TrimSpace(event.Level))
+		if level == "" {
+			level = "error"
+		}
+		if !validClientLogLevel(level) {
+			writeError(w, apiError(http.StatusBadRequest, "invalid_diagnostic", "level must be error, info, or debug", nil))
+			return
+		}
+		if diagnosticLevelRank(level) > diagnosticLevelRank(policy.LogLevel) {
+			dropped++
+			continue
+		}
 		id, err := randomID()
 		if err != nil {
 			writeError(w, err)
@@ -108,7 +127,7 @@ func (s *Server) handleClientDiagnostics(w http.ResponseWriter, r *http.Request)
 			writeError(w, apiError(http.StatusBadRequest, "invalid_diagnostic", "occurred_at must be RFC3339", nil))
 			return
 		}
-		if _, err = tx.ExecContext(r.Context(), `INSERT INTO client_diagnostic_events(id,workspace_id,subject_id,device_hash,client_request_id,occurred_at,received_at,app_version,os_version,phase,request_path,http_status,response_bytes,error_type,error_summary) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, p.WorkspaceID, p.SubjectID, deviceHashText, strings.TrimSpace(event.ClientRequestID), occurred, now.Format(time.RFC3339Nano), bounded(event.AppVersion, 128), bounded(event.OSVersion, 128), bounded(event.Phase, 64), bounded(event.RequestPath, 256), event.HTTPStatus, event.ResponseBytes, bounded(event.ErrorType, 64), bounded(event.ErrorSummary, 512)); err != nil {
+		if _, err = tx.ExecContext(r.Context(), `INSERT INTO client_diagnostic_events(id,workspace_id,subject_id,device_hash,client_request_id,occurred_at,received_at,app_version,os_version,phase,request_path,http_status,response_bytes,error_type,error_summary,level) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, p.WorkspaceID, p.SubjectID, deviceHashText, strings.TrimSpace(event.ClientRequestID), occurred, now.Format(time.RFC3339Nano), bounded(event.AppVersion, 128), bounded(event.OSVersion, 128), bounded(event.Phase, 64), bounded(event.RequestPath, 256), event.HTTPStatus, event.ResponseBytes, bounded(event.ErrorType, 64), bounded(event.ErrorSummary, 512), level); err != nil {
 			writeError(w, err)
 			return
 		}
@@ -121,7 +140,7 @@ func (s *Server) handleClientDiagnostics(w http.ResponseWriter, r *http.Request)
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"diagnostic_ids": ids})
+	writeJSON(w, http.StatusAccepted, map[string]any{"diagnostic_ids": ids, "dropped": dropped})
 }
 
 func validDiagnosticEvent(e clientDiagnosticEvent) bool {
