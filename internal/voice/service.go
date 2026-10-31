@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -26,15 +27,21 @@ type Config struct {
 	HTTPClient            *http.Client
 	MaxOfferBytes         int64
 	AccountMediaLifecycle AccountMediaLifecycle
+	HeartbeatTimeout      time.Duration
+	Now                   func() time.Time
 }
 
 type Service struct {
-	db           *sql.DB
-	base         *url.URL
-	key          string
-	client       *http.Client
-	maxSDP       int64
-	accountMedia AccountMediaLifecycle
+	db               *sql.DB
+	base             *url.URL
+	key              string
+	client           *http.Client
+	maxSDP           int64
+	accountMedia     AccountMediaLifecycle
+	heartbeatTimeout time.Duration
+	now              func() time.Time
+	reaperStop       chan struct{}
+	reaperDone       chan struct{}
 }
 
 type gatewayRequestIDContextKey struct{}
@@ -90,6 +97,8 @@ func Register(server *control.Server, store *storage.Store, cfg Config) error {
 		return err
 	}
 	svc := newService(store.DB(), cfg)
+	server.RegisterShutdownHook(svc.Stop)
+	svc.Start()
 	if err := server.RegisterCommand("voice.turn.commit", svc.commandCommitTurn); err != nil {
 		return err
 	}
@@ -127,7 +136,89 @@ func newService(db *sql.DB, cfg Config) *Service {
 	if cfg.MaxOfferBytes <= 0 {
 		cfg.MaxOfferBytes = 1 << 20
 	}
-	return &Service{db: db, base: base, key: cfg.GatewayAPIKey, client: client, maxSDP: cfg.MaxOfferBytes, accountMedia: cfg.AccountMediaLifecycle}
+	timeout := cfg.HeartbeatTimeout
+	if timeout == 0 {
+		timeout = 60 * time.Second
+	}
+	if timeout < 30*time.Second {
+		timeout = 30 * time.Second
+	}
+	if timeout > 600*time.Second {
+		timeout = 600 * time.Second
+	}
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
+	return &Service{db: db, base: base, key: cfg.GatewayAPIKey, client: client, maxSDP: cfg.MaxOfferBytes, accountMedia: cfg.AccountMediaLifecycle, heartbeatTimeout: timeout, now: now, reaperStop: make(chan struct{}), reaperDone: make(chan struct{})}
+}
+
+func (s *Service) Start() { go s.reaper() }
+
+func (s *Service) Stop() {
+	select {
+	case <-s.reaperStop:
+	default:
+		close(s.reaperStop)
+	}
+	<-s.reaperDone
+}
+
+func (s *Service) reaper() {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	defer close(s.reaperDone)
+	for {
+		select {
+		case <-s.reaperStop:
+			return
+		case <-ticker.C:
+			s.reapStale(context.Background())
+		}
+	}
+}
+
+func (s *Service) reapStale(ctx context.Context) {
+	cutoff := s.now().UTC().Add(-s.heartbeatTimeout).Format(time.RFC3339Nano)
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM voice_sessions WHERE state='active' AND COALESCE(heartbeat_at,created_at,updated_at) < ?`, cutoff)
+	if err != nil {
+		log.Printf("voice reaper query failed: %v", err)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		claim, err := s.db.ExecContext(ctx, `UPDATE voice_sessions SET state='ending',updated_at=? WHERE id=? AND state='active' AND COALESCE(heartbeat_at,created_at,updated_at) < ?`, s.now().UTC().Format(time.RFC3339Nano), id, cutoff)
+		if err != nil {
+			log.Printf("voice reaper claim failed: %v", err)
+			continue
+		}
+		changed, _ := claim.RowsAffected()
+		if changed != 1 {
+			continue
+		}
+		var gatewayID, accountLeaseID, workspaceID, ownerID string
+		var generation, accountLeaseGeneration, gatewayMediaGeneration int64
+		var gatewayUnbound, gatewayUnbindUnknown int
+		if err := s.db.QueryRowContext(ctx, `SELECT workspace_id,owner_id,gateway_session_id,generation,account_lease_id,account_lease_generation,gateway_media_generation,gateway_unbound,gateway_unbind_unknown FROM voice_sessions WHERE id=? AND state='ending'`, id).Scan(&workspaceID, &ownerID, &gatewayID, &generation, &accountLeaseID, &accountLeaseGeneration, &gatewayMediaGeneration, &gatewayUnbound, &gatewayUnbindUnknown); err != nil {
+			log.Printf("voice reaper load failed: %v", err)
+			continue
+		}
+		if gatewayID == "" {
+			if err := s.markSession(ctx, id, "quarantined", "gateway_session_unbound", nil, ""); err != nil {
+				log.Printf("voice reaper quarantine failed for session %s: %v", id, err)
+			}
+			continue
+		}
+		// Missing heartbeat implies the client stopped its local media, so media_closed is trusted for this system reclaim.
+		_, _, _, err = s.releaseSession(ctx, contracts.Principal{WorkspaceID: workspaceID, SubjectID: ownerID}, id, generation, gatewayID, accountLeaseID, accountLeaseGeneration, gatewayMediaGeneration, gatewayUnbound, gatewayUnbindUnknown, true)
+		if err != nil {
+			log.Printf("voice reaper release failed for session %s: %v", id, err)
+		}
+	}
 }
 
 func (s *Service) gatewayReady() bool {

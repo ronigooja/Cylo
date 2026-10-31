@@ -36,6 +36,18 @@ func newVoiceTestService(t *testing.T, cfg Config) (*storage.Store, *Service) {
 	return store, newService(store.DB(), cfg)
 }
 
+func TestVoiceHeartbeatTimeoutIsClamped(t *testing.T) {
+	store, svc := newVoiceTestService(t, Config{HeartbeatTimeout: time.Second})
+	if svc.heartbeatTimeout != 30*time.Second {
+		t.Fatalf("short heartbeat timeout=%s, want 30s", svc.heartbeatTimeout)
+	}
+	_ = store
+	_, svc = newVoiceTestService(t, Config{HeartbeatTimeout: 601 * time.Second})
+	if svc.heartbeatTimeout != 600*time.Second {
+		t.Fatalf("long heartbeat timeout=%s, want 600s", svc.heartbeatTimeout)
+	}
+}
+
 func TestVoiceTurnCommitRequiresConfirmationAndDeduplicatesStableRevision(t *testing.T) {
 	ctx := context.Background()
 	store, svc := newVoiceTestService(t, Config{})

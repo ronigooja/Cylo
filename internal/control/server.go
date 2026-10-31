@@ -211,6 +211,25 @@ type Server struct {
 	mu                 sync.RWMutex
 	sealed             bool
 	pushSender         PushSender
+	shutdownHooks      []func()
+}
+
+// RegisterShutdownHook registers a feature-owned background worker stop hook.
+func (s *Server) RegisterShutdownHook(hook func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.shutdownHooks = append(s.shutdownHooks, hook)
+}
+
+// Shutdown stops feature-owned background workers. It is safe to call once.
+func (s *Server) Shutdown() {
+	s.mu.Lock()
+	hooks := append([]func(){}, s.shutdownHooks...)
+	s.shutdownHooks = nil
+	s.mu.Unlock()
+	for _, hook := range hooks {
+		hook()
+	}
 }
 
 func DefaultOwnerScopes() []string {
