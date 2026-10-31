@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,157 @@ import (
 	"github.com/ronigooja/Zoe/internal/control"
 	"github.com/ronigooja/Zoe/internal/storage"
 )
+
+type testAccountMedia struct {
+	verified bool
+	mu       sync.Mutex
+	calls    int
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func (m *testAccountMedia) Capabilities() AccountMediaCapabilities {
+	return AccountMediaCapabilities{AccountLeaseIdentity: true, AccountScopedTermination: true, TrustedTerminationEvidence: true}
+}
+
+func (m *testAccountMedia) ReleaseAccountLease(context.Context, AccountLeaseReference, string) (AccountTerminationObservation, error) {
+	m.mu.Lock()
+	m.calls++
+	m.mu.Unlock()
+	if !m.verified {
+		return AccountTerminationObservation{}, nil
+	}
+	return AccountTerminationObservation{AccountID: "account", LeaseID: "lease", LeaseGeneration: 2, SessionID: "gateway", SessionGeneration: 3, Terminated: true, EvidenceID: "evidence", ObservedAt: time.Date(2026, 10, 31, 10, 0, 0, 0, time.UTC)}, nil
+}
+
+func insertReaperSession(t *testing.T, store *storage.Store, id, heartbeat, created string) {
+	t.Helper()
+	var heartbeatValue any = heartbeat
+	if heartbeat == "" {
+		heartbeatValue = nil
+	}
+	_, err := store.DB().Exec(`INSERT INTO voice_sessions(id,workspace_id,owner_id,device_id,request_id,request_hash,gateway_session_id,generation,state,offer_answer,created_at,updated_at,heartbeat_at,account_lease_id,account_lease_generation,gateway_media_generation) VALUES(?,?,?,?,?,X'01',?,1,'active','',?,?,?, 'lease',2,3)`, id, "default", "user-"+id, "device", id, "gateway", created, created, heartbeatValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.DB().Exec(`UPDATE voice_pool_state SET blocked=1,reason_code='active_session',source_session_id=? WHERE id=1`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func reapWithTimeout(t *testing.T, svc *Service) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { svc.reapStale(context.Background()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reapStale timed out; likely held the sole SQLite connection")
+	}
+}
+
+func TestVoiceReaperReclaimsVerifiedStaleSession(t *testing.T) {
+	now := time.Date(2026, 10, 31, 10, 1, 0, 0, time.UTC)
+	media := &testAccountMedia{verified: true}
+	store, svc := newVoiceTestService(t, Config{HeartbeatTimeout: 30 * time.Second, Now: func() time.Time { return now }, GatewayURL: "https://gateway.test", GatewayAPIKey: "key", AccountMediaLifecycle: media})
+	var deletes int
+	svc.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		deletes++
+		return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody, Header: make(http.Header)}, nil
+	})}
+	insertReaperSession(t, store, "stale", now.Add(-time.Minute).Format(time.RFC3339Nano), now.Add(-time.Minute).Format(time.RFC3339Nano))
+	reapWithTimeout(t, svc)
+	var state string
+	var blocked int
+	if err := store.DB().QueryRow(`SELECT state FROM voice_sessions WHERE id='stale'`).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DB().QueryRow(`SELECT blocked FROM voice_pool_state`).Scan(&blocked); err != nil {
+		t.Fatal(err)
+	}
+	if state != "ended" || blocked != 0 || deletes != 1 {
+		t.Fatalf("state=%s blocked=%d deletes=%d", state, blocked, deletes)
+	}
+}
+
+func TestVoiceReaperQuarantinesUnverifiedAndDoesNotDeleteAgain(t *testing.T) {
+	now := time.Date(2026, 10, 31, 10, 1, 0, 0, time.UTC)
+	store, svc := newVoiceTestService(t, Config{HeartbeatTimeout: 30 * time.Second, Now: func() time.Time { return now }, GatewayURL: "https://gateway.test", GatewayAPIKey: "key"})
+	deletes := 0
+	svc.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		deletes++
+		return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody, Header: make(http.Header)}, nil
+	})}
+	insertReaperSession(t, store, "unverified", now.Add(-time.Minute).Format(time.RFC3339Nano), now.Add(-time.Minute).Format(time.RFC3339Nano))
+	reapWithTimeout(t, svc)
+	reapWithTimeout(t, svc)
+	var state string
+	var blocked int
+	_ = store.DB().QueryRow(`SELECT state FROM voice_sessions WHERE id='unverified'`).Scan(&state)
+	_ = store.DB().QueryRow(`SELECT blocked FROM voice_pool_state`).Scan(&blocked)
+	if state != "quarantined" || blocked != 1 || deletes != 1 {
+		t.Fatalf("state=%s blocked=%d deletes=%d", state, blocked, deletes)
+	}
+}
+
+func TestVoiceReaperHeartbeatFallbackAndTimestampOrdering(t *testing.T) {
+	now := time.Date(2026, 10, 31, 10, 0, 30, 450000000, time.UTC)
+	store, svc := newVoiceTestService(t, Config{HeartbeatTimeout: 30 * time.Second, Now: func() time.Time { return now }, GatewayURL: "https://gateway.test", GatewayAPIKey: "key"})
+	svc.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody, Header: make(http.Header)}, nil
+	})}
+	// .5Z is newer than the .45Z cutoff despite differing fractional widths.
+	insertReaperSession(t, store, "fraction", "2026-10-31T10:00:00.5Z", now.Add(-time.Minute).Format(time.RFC3339Nano))
+	insertReaperSession(t, store, "null-heartbeat", "", now.Add(-time.Minute).Format(time.RFC3339Nano))
+	insertReaperSession(t, store, "fresh", now.Add(-time.Second).Format(time.RFC3339Nano), now.Add(-time.Minute).Format(time.RFC3339Nano))
+	reapWithTimeout(t, svc)
+	var fractionState, nullState, freshState string
+	_ = store.DB().QueryRow(`SELECT state FROM voice_sessions WHERE id='fraction'`).Scan(&fractionState)
+	_ = store.DB().QueryRow(`SELECT state FROM voice_sessions WHERE id='null-heartbeat'`).Scan(&nullState)
+	_ = store.DB().QueryRow(`SELECT state FROM voice_sessions WHERE id='fresh'`).Scan(&freshState)
+	if fractionState != "active" || nullState != "quarantined" || freshState != "active" {
+		t.Fatalf("fraction=%s null=%s fresh=%s", fractionState, nullState, freshState)
+	}
+}
+
+func TestVoiceReaperRaceReleasesOnceAndLateHeartbeatConflicts(t *testing.T) {
+	now := time.Date(2026, 10, 31, 10, 1, 0, 0, time.UTC)
+	store, svc := newVoiceTestService(t, Config{HeartbeatTimeout: 30 * time.Second, Now: func() time.Time { return now }, GatewayURL: "https://gateway.test", GatewayAPIKey: "key"})
+	deletes := 0
+	var mu sync.Mutex
+	svc.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		mu.Lock()
+		deletes++
+		mu.Unlock()
+		return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody, Header: make(http.Header)}, nil
+	})}
+	insertReaperSession(t, store, "race", now.Add(-time.Minute).Format(time.RFC3339Nano), now.Add(-time.Minute).Format(time.RFC3339Nano))
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); reapWithTimeout(t, svc) }()
+	go func() {
+		defer wg.Done()
+		_, _, _, _ = svc.releaseSession(context.Background(), contracts.Principal{WorkspaceID: "default", SubjectID: "user"}, "race", 1, "gateway", "lease", 2, 3, 0, 0, false)
+	}()
+	wg.Wait()
+	mu.Lock()
+	count := deletes
+	mu.Unlock()
+	if count != 1 {
+		t.Fatalf("gateway deletes=%d, want 1", count)
+	}
+	result, err := store.DB().Exec(`UPDATE voice_sessions SET heartbeat_at=? WHERE id='race' AND state='active'`, now.Format(time.RFC3339Nano))
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 0 {
+		t.Fatalf("late heartbeat changed %d rows", changed)
+	}
+}
 
 func newVoiceTestService(t *testing.T, cfg Config) (*storage.Store, *Service) {
 	t.Helper()
