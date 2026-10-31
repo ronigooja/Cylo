@@ -98,9 +98,9 @@ The system should not require every event, state update, or background operation
 
 ## 3. Client Requirements
 
-The detailed native-assistant requirements and acceptance targets are in [Native assistant direction](#native-assistant-direction) and [Native presentation and acceptance targets](#native-presentation-and-acceptance-targets).
+The macOS client is an ambient screen defined in [macOS ambient screen](#macos-ambient-screen) and [ADR 0008](architecture/decisions/0008-ambient-screen-client.md). iPhone and iPad have no approved interface design yet. Behavior boundaries every client must keep are in [Client behavior boundaries](#client-behavior-boundaries).
 
-Conversation, Tasks, and Projects are primary entrances; Memory, Capabilities, and Settings are secondary. End voice and Stop task are distinct actions. Voice acceptance includes a 30-minute mixed Mandarin–English session on each of a real iPhone and iPad while locked, plus interruption, reconnect, audio-route changes, and durable-task continuity; this is a target, not a completed result. APNs only prompts a durable-inbox refresh; a push is not the notice authority.
+End voice and Stop task are distinct actions. Voice acceptance includes a 30-minute mixed Mandarin–English session on each of a real iPhone and iPad while locked, plus interruption, reconnect, audio-route changes, and durable-task continuity; this is a target, not a completed result. APNs only prompts a durable-inbox refresh; a push is not the notice authority.
 
 <a id="cy-03-01"></a>
 
@@ -216,10 +216,18 @@ Examples include:
 
 A notification should identify its event source and link to the relevant project or task.
 
-### Native assistant direction
+### macOS ambient screen
 
-The user approved the [native assistant reference](design/native-assistant-reference.png). Zoe is an automation assistant whose frequent workloads include programming. Its interface centers on natural conversation, durable task progress, results, and decisions. Present programming execution and validation through concise, understandable summaries. The client does not provide source-code browsing or editing, diff viewers, terminals, or test consoles, including optional or hidden variants.
+Zoe on macOS is an ambient screen, not a chat app: no sidebar, tabs, or persistent composer. The AI decides what the screen shows, so the user should not need to operate it. Wire shapes, component library, and tools are in [the screen-document contract](design/screen-document.md).
 
+- **Voice first.** Continuous voice is on by default after connection and identity initialization, within the truthful-state limits below. After a silence timeout (default 60 seconds, counted only when no voice interaction is in progress) the client ends the voice session itself; the user can wake it later and continue because context stays on the server. Voice on/off and the timeout are AI-mutable settings.
+- **Text fallback.** A subtle button reveals a transient text-input bar; the AI may also show or hide it. Submissions follow the rules in Client behavior boundaries.
+- **Settings stay out of the foreground.** Command-Comma opens Settings, which hold connection and key management, account, memory, capabilities, notifications, data, and advanced options, following [the instance-key decision](architecture/decisions/0004-instance-key-authentication.md).
+- **AI-controlled surfaces.** The AI opens, updates, and closes its own surfaces (windows, panels, menu-bar item, popover, Dock badge) and sets their size, position, display, level, opacity, click-through, focus, fullscreen, and Dock visibility. There are no fixed regions; the AI composes any layout.
+- **Generic display.** Each surface shows a versioned tree of layout and content primitives, data-bound nodes, and standard components named by information shape (metric, timeline, decision, collection, and others in the contract). The AI picks components from a client-supplied catalog and chooses semantic emphasis and tone; the client owns colors and motion. Unknown types degrade to their fallback. The client has no hardcoded business concepts: an approval is a `decision`, and a press submits only an opaque intent that the server validates.
+- **AI tools and settings audit.** The client exposes tools for surfaces, the component catalog, settings, voice, the text bar, and the silence timeout. Each setting declares type, range, description, and whether the AI may change it. Only the user may change instance key and login credentials, OS microphone permission, and the setting that revokes AI settings access. Every AI settings change shows a subtle notice and is recorded so the user can review and undo it. The menu-bar item always exists, and it shows when the microphone is in use.
+- **Before a server document exists,** the client shows a plain chronological list of authoritative tasks, approvals, and notifications through the same renderer, without ranking or invented content.
+- **Acceptance coverage.** Hidden app recoverable from the menu bar; microphone state visible while hidden; AI window changes (size, position, display, click-through, focus, Dock visibility) and user-action precedence; multiple surfaces; every standard component and its fallback; size-adaptive rendering; data-binding updates; Mac 840×620 and desktop sizes; empty, loading, and document-update states; transient text fallback; voice lifecycle and silence timeout; AI settings notice, audit, and undo; opaque intent submission; stale, offline, and failed operations; duplicate events and reconnect history; rotated keys, connection clearing, and identity changes; both languages and appearances; VoiceOver, keyboard focus, reduced motion, and Dynamic Type. Command-Comma is the Settings shortcut.
 - **Simple appearance, useful density.** Use native typography, restrained semantic colors, compact rows, and clear grouping. Keep more useful conversation and task information visible by reducing oversized headings, excessive whitespace, decorative cards, and repeated metadata. Preserve readability, keyboard access, Dynamic Type, and platform touch targets; density does not mean uniformly smaller text or controls.
 - **Conversation leads.** Keep projects and recent conversations/tasks in a compact sidebar. Show task receipts and concise progress/results in context. A compact, collapsible task rail may surface ongoing work, pending decisions, and recent completion on wide windows; collapse secondary surfaces before constraining the conversation in narrow windows. Avoid statistics dashboards and compulsory workflow panels.
 - **Voice is Settings-controlled.** Do not place a microphone button in the composer. Continuous voice is off
@@ -256,46 +264,17 @@ recover, but must not expose credentials, headers, response bodies, transcripts,
 secret-bearing details.
 The authenticated client synchronizes its server-controlled diagnostic policy and queued events every 60 seconds by default.
 
-### Native presentation and acceptance targets
+### Client behavior boundaries
 
-Runtime startup failures, unresolved diagnostics, execution-slot accounting, and reconciliation instructions belong to operator interfaces and audit records. Conversation and task views show the actual task status without infrastructure queue reasons or capacity banners. Preserve actionable submission errors and pending-confirmation feedback; this presentation rule does not authorize client retries or change task authority.
+- **Truthful state.** Voice reports connecting, active, interrupted, reconnecting, unavailable, permission-denied, and stopped states only when they are true; permission or policy failures need a recovery path, temporary failures may reconnect, and text input remains usable whenever voice is unavailable. Normal connected state has no banner; offline, stale, and failed operations stay visible with an action.
+- **No silent business action.** Voice transports audio and spoken output only. Transcript submission and business-command authorization remain explicit; voice never silently submits or confirms business work. High-impact or irreversible actions require scoped, explicit confirmation tied to the task/run/action, expected version, and expiry; ambiguous words authorize nothing.
+- **Server-authored content.** Clients render persisted server data and never fabricate messages, progress, assistant answers, or inactive actions. Ordinary results are server-authored content with no client Accept/Reject workflow; follow-ups are interpreted by the server in task context. Contracts: [HTTP contract](../contracts/http.go) and [task-entry handlers](../internal/control/task_entries.go).
+- **Submissions.** A submission is accepted, failed, or unknown. Drafts clear only after durable acceptance; unknown submissions reconcile the original journaled receipt instead of issuing a new command, and the draft stays visible with confirmation pending. Drafts are cleared when the server or identity changes.
+- **Concise errors, automatic diagnostics.** Every client error surface shows only a short state and an actionable recovery or retry instruction, never detailed server, infrastructure, runtime, queue-reason, capacity, transport, account, or local exception text, credentials, headers, response bodies, transcripts, audio, or SDP/ICE. Redacted detail is encrypted, queued, and sent best effort to the authenticated diagnostic endpoint without blocking the user or changing command authority or receipt/retry semantics.
+- **Outcomes, not developer tools.** Programming work is summarized by goal, stage, outcome, validation summary, and decisions needed. Clients provide no source-code browsing or editing, diff viewer, terminal, or test console, including optional or hidden variants.
+- **Platform conventions.** English and Simplified Chinese; system appearance; dates and counts use the system region; server-authored content keeps its original language; accessibility support on each platform. Authority and diagnostics boundaries: [architecture](architecture.md#identity-clients-and-notices).
 
-The Apple redesign uses system typography, SF Symbols, semantic colors, system appearance, and English/Simplified Chinese localization. Spacing follows 4/8/12/16/24/32 pt steps; conversation text is limited to 760 pt. Blue emphasizes primary actions. Task outcomes and actionable exceptional states have concise text labels; routine voice state follows the compact icon treatment above. Normal connected state has no banner. Offline, stale, and failed operations remain visible with an action at the affected surface.
-
-macOS uses a resizable sidebar (240 pt default) and workspace. iPad uses the same split structure in regular
-width and collapses in narrow windows; iPhone has Conversation, Tasks, and Projects tabs, hidden in the task
-workspace. Notifications are a toolbar entrance with an unread count. Account menus expose Settings, Memory,
-and Capabilities. Home contains a composer and recent work, without statistics or tutorial cards. Coverage
-includes home, empty, loading, send failure, and task states with language, appearance, and text-size
-variants; design examples are not application acceptance evidence.
-
-Every task entrance leads to the same workspace. The workspace shows persisted messages, actual task status,
-approvals, and recorded results/evidence; runtime identifiers and cursors belong in Technical details. No
-simulated assistant answers, historical progress, or inactive download actions fill missing server
-capabilities. Tasks support search, status filters, and update ordering. Projects offer a contextual new
-conversation. Settings group current connection/key management, notifications, data, and advanced options,
-following [the instance-key decision](architecture/decisions/0004-instance-key-authentication.md).
-
-Submission has accepted, failed, and unknown outcomes. Drafts clear only after durable acceptance. Unknown
-submissions reconcile the original journaled receipt rather than issuing a new command; the interface must
-retain the draft and show confirmation pending. Task drafts and selection survive navigation within the
-connected context and are cleared when the server or identity changes. There is no generic result-decision
-section or Accept result/Reject result control in ordinary task views. Ordinary results are displayed as
-server-authored content; follow-up messages are interpreted by the server in task context. A high-impact
-action may show a scoped conversational confirmation request, but confirmation authorizes execution and is not
- result acceptance. macOS keyboard targets are Command-Return to send, Command-N for a new conversation, and
-Command-F for task search.
-
-Authoritative task-history paging and reconnect contracts are defined in [the HTTP contract](../contracts/http.go) and [task-entry handlers](../internal/control/task_entries.go); clients must not fabricate messages or maintain a competing conversation authority. Dates and counts use the system region; server-authored content remains in its original language.
-
-Native application acceptance must cover Mac 840×620 and desktop sizes, iPad portrait/landscape/narrow
-windows, and small/large iPhones; both languages and appearances; long titles and Dynamic Type; keyboard
-avoidance; VoiceOver, keyboard focus, reduced motion, and 44×44 pt mobile targets. Core flows must verify
-one-tap continuation, contextual approvals/results, linked notifications, retained failed drafts, unknown
-receipts, duplicate events, reconnect history, terminal tasks, rejected/rotated instance keys, connection
-clearing, and identity changes. Record Go tests, Swift state/contract tests, Xcode app builds, simulator UI
-runs, real-device runs, and real-service checks separately. Linux source review and design references cannot
-establish Apple compilation, screenshots, interaction, or end-to-end acceptance.
+Real-device, simulator, build, and service evidence stays separate in [the evidence register](acceptance/evidence.md); design references cannot establish Apple compilation, screenshots, interaction, or end-to-end acceptance.
 
 ## 4. Server Requirements
 

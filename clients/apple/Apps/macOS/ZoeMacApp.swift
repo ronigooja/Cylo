@@ -1,22 +1,39 @@
 import ZoeUI
+import ZoeKit
 import SwiftUI
 
 @main
 struct ZoeMacApp: App {
-    @StateObject private var model = ZoeAppModel()
+    @StateObject private var model: ZoeAppModel
+    @StateObject private var coordinator: ScreenCoordinator
     @NSApplicationDelegateAdaptor(ZoePushNotificationAppDelegate.self) private var pushDelegate
+
+    init() {
+        let model = ZoeAppModel()
+        _model = StateObject(wrappedValue: model)
+        _coordinator = StateObject(wrappedValue: ScreenCoordinator(model: model))
+    }
 
     var body: some Scene {
         WindowGroup {
-            ZoeRootView(model: model)
+            MacSurfaceRoot(model: model, coordinator: coordinator)
                 .onOpenURL { model.receiveInstallationLink($0) }
-                .frame(minWidth: 840, minHeight: 620)
+                .task { await model.start() }
         }
-        .defaultSize(width: 1280, height: 820)
-
-        Settings {
-            ZoeSettingsView(model: model)
-                .frame(width: 640, height: 680)
+        .windowResizability(.contentSize)
+        .defaultSize(width: 460, height: 380)
+        .commands {
+#if DEBUG
+            CommandMenu("Demo") {
+                Button("All components (one window)") { coordinator.surfaces.open(SurfaceSpec(id: "demo.gallery", kind: .window, document: DemoDocuments.gallery)) }
+                Divider()
+                Button("All components (one window)") { coordinator.surfaces.open(SurfaceSpec(id: "demo.gallery", kind: .window, document: DemoDocuments.gallery)) }
+                Divider()
+                Button("Canvas / Layer") { coordinator.surfaces.open(SurfaceSpec(id: "demo.canvas", kind: .window, document: DemoDocuments.canvas)) }
+                ForEach(ComponentCatalog.descriptors, id: \.type) { descriptor in Button(descriptor.type) { coordinator.surfaces.open(SurfaceSpec(id: "demo.\(descriptor.type)", kind: .window, document: DemoDocuments.standard(descriptor.type))) } }
+            }
+#endif
         }
+        Settings { MacSettingsView(model: model, coordinator: coordinator) }
     }
 }

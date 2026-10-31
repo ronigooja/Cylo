@@ -2353,12 +2353,6 @@ public final class ZoeAppModel: ObservableObject {
         reportClientError(error, code: "client_error")
         if Self.isAccessDenied(error) { return uiText("The instance key was rejected. Replace it with the current key from your server.") }
         if error is ConnectionInputError { return uiText(error.localizedDescription) }
-        if let error = error as? ZoeError,
-           case let .http(status, code, _, details) = error,
-           status == 409, code == "version_conflict" {
-            _ = details
-            return uiText("This item changed on another device. The latest server state is being loaded.")
-        }
         if let failure = error as? ZoeError, case .missingCredential = failure {
             return uiText("Enter your server address and instance key to connect.")
         }

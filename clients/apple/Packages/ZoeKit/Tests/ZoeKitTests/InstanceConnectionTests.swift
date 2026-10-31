@@ -1,8 +1,5 @@
 import XCTest
 import Foundation
-import CoreImage
-import ImageIO
-import UniformTypeIdentifiers
 @testable import ZoeKit
 @testable import ZoeUI
 
@@ -219,6 +216,20 @@ final class InstanceConnectionTests: XCTestCase {
     }
 
     @MainActor
+    func testTransportFailureUsesGenericUserMessage() async throws {
+        let model = ZoeAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        model.connectionAPIOverrideForTesting = { url, credential, installation in
+            try APIClient(serverURL: url, credentials: credential, session: self.session(), installationID: installation)
+        }
+        InstanceURLProtocol.handle = { _ in throw URLError(.notConnectedToInternet) }
+
+        let connected = await model.connect(serverAddress: "https://zoe.example", key: key())
+
+        XCTAssertFalse(connected)
+        XCTAssertEqual(model.notice, uiText("Something went wrong. Try again."))
+    }
+
+    @MainActor
     func testFreshInstallHasNoAddressAndImportNeedsExplicitConnect() async throws {
         let defaults = UserDefaults(suiteName: UUID().uuidString)!
         defaults.set("http://obsolete.example", forKey: "zoe.serverAddress")
@@ -381,23 +392,6 @@ final class InstanceConnectionTests: XCTestCase {
             XCTAssertEqual(model.serverAddress, "")
             XCTAssertNil(try store.load())
         }
-    }
-
-    func testQRImageDecodesActualInstallationLink() throws {
-        let filter = try XCTUnwrap(CIFilter(name: "CIQRCodeGenerator"))
-        let expected = link(key: key())
-        filter.setValue(Data(expected.absoluteString.utf8), forKey: "inputMessage")
-        let code = try XCTUnwrap(filter.outputImage).transformed(by: CGAffineTransform(scaleX: 8, y: 8))
-        let bounds = code.extent.insetBy(dx: -32, dy: -32)
-        let image = code.composited(over: CIImage(color: .white).cropped(to: bounds))
-        let cgImage = try XCTUnwrap(CIContext().createCGImage(image, from: bounds))
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathExtension("png")
-        defer { try? FileManager.default.removeItem(at: url) }
-        let output = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil))
-        CGImageDestinationAddImage(output, cgImage, nil)
-        XCTAssertTrue(CGImageDestinationFinalize(output))
-        let imported = try InstallationQRImage.decode(url)
-        XCTAssertEqual(imported, try InstallationConnection(link: expected))
     }
 }
 

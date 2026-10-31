@@ -12,7 +12,7 @@ Choose a starting point:
 - [Deployment operations](docs/operations/deployment.md): installation, configuration, maintenance, and Zoe OpenCode runtime uncertainty reconciliation.
 - [Data lifecycle](docs/operations/data-lifecycle.md): export, backup, restore, migration, and deletion.
 - [Acceptance matrix](docs/acceptance/requirements.md) and [evidence](docs/acceptance/evidence.md): coverage, verification boundaries, and remaining gaps.
-- [Approved native assistant reference](docs/design/native-assistant-reference.png): current visual direction.
+- [Screen-document contract](docs/design/screen-document.md): draft contract for the macOS ambient screen and client tools.
 - [CI verification](docs/development/verification.md): change scope, hosted checks, and manual artifact generation.
 
 ## Where to write what
