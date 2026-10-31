@@ -502,6 +502,19 @@ func (s *Server) Handler() http.Handler {
 	root.Handle("/healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}))
+	root.Handle("/readyz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var present int
+		err := s.store.DB().QueryRowContext(r.Context(), `SELECT count(*) FROM instance_auth WHERE singleton=1`).Scan(&present)
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "pending", "reason": "instance_key_not_initialized"})
+			return
+		}
+		if present != 1 {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "pending", "reason": "instance_key_not_initialized"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+	}))
 	root.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiError(http.StatusNotFound, "not_found", "route not found", nil))
 	}))

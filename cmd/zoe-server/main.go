@@ -93,8 +93,15 @@ func run() error {
 	if err = store.Migrate(ctx); err != nil {
 		return err
 	}
-	if _, _, err = control.InitializeInstanceAuth(ctx, store, instanceKey); err != nil {
+	if _, _, err = control.InitializeInstanceAuthPending(ctx, store, instanceKey); err != nil {
 		return err
+	}
+	var instanceKeyRows int
+	if err = store.DB().QueryRowContext(ctx, `SELECT count(*) FROM instance_auth WHERE singleton=1`).Scan(&instanceKeyRows); err != nil {
+		return err
+	}
+	if instanceKeyRows == 0 {
+		log.Printf("instance key is pending; waiting for zoe key init")
 	}
 	if runnerToken != "" {
 		if err = control.RegisterRunnerCredentialIfMissing(ctx, store, runnerToken, env("ZOE_RUNNER_ID", "configured-runner"), splitEnv("ZOE_RUNNER_WORKSPACES", "default"), splitEnv("ZOE_RUNNER_SCOPES", "runner:claim,runner:observe,runner:control:read")); err != nil {

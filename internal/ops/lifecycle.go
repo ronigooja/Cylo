@@ -150,11 +150,11 @@ func (m Manager) Install(ctx context.Context, o LifecycleOptions) (ReleaseManife
 	if err = m.installUnits(o); err != nil {
 		return manifest, err
 	}
-	if _, err := os.Stat(filepath.Join(o.Root, "secrets", "mem0-llm-api-key")); os.IsNotExist(err) {
-		printNextSteps(o.Out)
-		return manifest, nil
+	if err := m.start(ctx); err != nil {
+		return manifest, err
 	}
-	return manifest, m.start(ctx)
+	printNextSteps(o.Out)
+	return manifest, nil
 }
 
 func (m Manager) Update(ctx context.Context, o LifecycleOptions) error {
@@ -437,11 +437,11 @@ func printNextSteps(w io.Writer) {
 	if w == nil {
 		return
 	}
-	fmt.Fprintln(w, "Host installed but not started. Next steps:")
-	fmt.Fprintln(w, "  zoe memory configure")
-	fmt.Fprintln(w, "  zoe provider configure")
+	fmt.Fprintln(w, "Services started. Next steps:")
 	fmt.Fprintln(w, "  zoe key init")
-	fmt.Fprintln(w, "  systemctl start zoe-compose zoe-runner")
+	fmt.Fprintln(w, "  zoe status  # shows Instance key: pending until key init")
+	fmt.Fprintln(w, "  zoe memory configure")
+	fmt.Fprintln(w, "  zoe provider configure  # systemd/runner deployments only")
 }
 
 func (m Manager) UninstallPlan(ctx context.Context, o LifecycleOptions) (UninstallPlan, error) {
