@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -78,7 +79,7 @@ func installOperation(args []string, in io.Reader, out, errOut io.Writer) error 
 	if e = releasePrompt(&o, in, out); e != nil {
 		return e
 	}
-	fmt.Fprintln(out, "Installing the reviewed Zoe host release; services start only after the memory key exists.")
+	fmt.Fprintln(out, "Installing the reviewed Zoe host release; services start before key and model configuration.")
 	_, e = opsManager().Install(context.Background(), o)
 	return e
 }
@@ -759,6 +760,18 @@ func statusOperation(args []string, _ io.Reader, out, errOut io.Writer) error {
 	inspect.MemoryModel = memory.Model
 	status := opsManager().Inspect(ctx, inspect)
 	fmt.Fprintf(out, "Deployment: %s\n", status.Mode)
+	keyState := "pending (run zoe key init)"
+	probeCtx, probeCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer probeCancel()
+	if req, requestErr := http.NewRequestWithContext(probeCtx, http.MethodGet, "http://127.0.0.1:8787/readyz", nil); requestErr == nil {
+		if response, requestErr := (&http.Client{Timeout: 2 * time.Second}).Do(req); requestErr == nil {
+			response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				keyState = "configured"
+			}
+		}
+	}
+	fmt.Fprintf(out, "Instance key: %s\n", keyState)
 	for _, service := range status.Services {
 		fmt.Fprintf(out, "%s: %s (%s)\n", safeLabel(service.Name), safeLabel(service.State), safeLabel(service.Source))
 	}

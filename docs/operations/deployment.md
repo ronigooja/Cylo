@@ -84,16 +84,12 @@ the host being deployed.
    preparation script when supplied by the release, installs the immutable release
    and systemd units, pins images by digest, pulls them, and creates deployment-owned
    runner tokens only when absent. It does not create an instance key or a model
-   gateway key, and it does not start services until `/etc/zoe/secrets/mem0-llm-api-key`
-   exists. It prints the next steps (`zoe memory configure`, `zoe provider configure`,
-   `zoe key init`, then start the two services). Provider and memory keys come from
+   gateway key. It starts the services and prints the next steps in order:
+   `zoe key init`, `zoe memory configure`, then `zoe provider configure` for
+   systemd/runner deployments. Until key init, `zoe status` shows
+   `Instance key: pending (run zoe key init)`. Provider and memory keys come from
    the model gateway and are entered through `zoe`; they are never generated here.
-3. Configure the provider, memory model, profiles, and optional voice gateway with
-   the corresponding `zoe` commands. Set `ZOE_OPENCODE_MODEL`, provider socket, and
-   workspace settings through the operator configuration; the runner mounts only
-   the per-run workspace.
-5. With the server stopped and no startup instance-key source configured, the
-   operator runs `zoe key init --database PATH --server HTTPS_URL
+3. After the stack starts, run `zoe key init --database PATH --server HTTPS_URL
    --output PRIVATE_JSON` (or `zoe key rotate` for an existing instance).
    The operator keeps the private JSON output for client connection. The
    server uses the credential hash stored in its database; the installer must
@@ -102,8 +98,11 @@ the host being deployed.
    of the database and any existing `-wal` and `-shm` sidecars to `65532:65532`
    before first startup, retaining mode `0600`. Do not recursively change the
    directory's private JSON exports.
-4. Configure and start `zoe-compose.service`, then start `zoe-runner.service`.
-5. Verify service state and health/readiness endpoints. These checks establish
+4. Configure the memory model with `zoe memory configure`, then configure the
+   task model with `zoe provider configure` for systemd/runner deployments.
+5. Verify service state, `/healthz`, and `/readyz`. `/healthz` establishes process
+   liveness; `/readyz` is `200 {"status":"ready"}` only after the instance-auth
+   row exists and otherwise remains `503` pending. These checks establish
    installation and process readiness; model execution, memory processing, and
    end-to-end task completion require a separate acceptance run.
 
