@@ -23,10 +23,8 @@ deployment. Systemd supervises the Compose process; it does not select the
 OpenCode runtime path. Keep `provider-deployment.json` consistent with
 this layout or let the operator rediscover the mode from `zoe-stack.env`.
 
-The external Docker network `zoe` is prepared by
-`deploy/linux/prepare-host-layout.sh`. The existing remote CLIProxyAPI
-deployment remains outside Zoe's lifecycle. Preserve the existing runner
-deployment-authority database and capability containers during maintenance.
+The installer creates the external Docker network `zoe` when it is missing. The
+existing remote CLIProxyAPI deployment remains outside Zoe's lifecycle.
 
 Voice account-pool behavior and the fail-closed media boundary are defined in
 [ADR 0005](../architecture/decisions/0005-voice-task-and-lease-boundaries.md).
@@ -55,7 +53,7 @@ OpenCode runs only in runner-created containers. The provider bridge/socket is t
 
 ## Installation and configuration
 
-Use the [Linux deployment templates](../../deploy/linux/) and [release workflow](../../.github/workflows/server-release.yml) for the server/runner release. Prepare the host layout with [prepare-host-layout.sh](../../deploy/linux/prepare-host-layout.sh) before selecting a reviewed immutable release. Do not compile on the control host.
+Use the [Linux deployment templates](../../deploy/linux/) and [release workflow](../../.github/workflows/server-release.yml) for the server/runner release. The reviewed release must contain `bin/zoe-secret-entrypoint` and `deploy-linux/` with the Compose and systemd files. Do not compile on the control host.
 
 The operator release installation procedure below installs only the maintenance CLI. It does not install server images or configure a complete deployment. Run `zoe status` before `zoe setup`, `zoe provider configure`, `zoe provider test`, `zoe memory configure`, or `zoe memory test`; these operations are also available from the grouped interactive menu. The memory model key is a separate credential issued by the model gateway and entered through `zoe`; Zoe never creates it. For an already deployed external voice gateway, use `zoe voice configure --url HTTPS_URL --token-file PRIVATE_KEY_FILE`, then `zoe voice test` and `zoe voice status`. This writes only the Zoe-side endpoint and secret reference; it does not deploy or modify the gateway. Follow [the CLI implementation](../../cmd/zoe/) for current flags and [deployment configuration](../../internal/ops/deployment_config.go) for detection and rollback behavior.
 
@@ -73,7 +71,7 @@ sudo zoe install [--start] --release /path/to/release \
    The bootstrap verifies `SHA256SUMS`, installs the CLI atomically, and keeps one
    immutable CLI release. `zoe install` validates the release and host before
    writing files, stages the release, pins images by digest, pulls them, installs
-   the systemd units, preserves existing tokens and environment, and creates
+   the systemd units, preserves existing tokens and operator environment keys, and creates
    deployment-owned runner tokens only when absent. It does not create an instance
    key or a model gateway key. It leaves services stopped by default; `--start`
    starts both units and waits for the health probe. It prints the next steps in
@@ -112,8 +110,11 @@ model-backed task execution.
 
 Use `zoe update --release /path/to/release --opencode-image ...` to stage and pull
 the new release, switch `current`, restart Compose and the runner, and verify
-health. A failed update restores the prior selector and image settings and
-reports the failing command's bounded output; data and secrets are not touched.
+health. Update refreshes release-owned environment keys, including image
+references and paths derived from the configured roots, while preserving
+operator-owned keys and unknown lines. A failed update restores the prior
+selector and environment files byte-for-byte and reports the failing command's
+bounded output; data and secrets are not touched.
 Use `zoe uninstall` for reviewed removal. It
 first prints the exact Compose-project containers, `io.zoe.managed=true` runtime
 containers, and local IDs for the four Zoe image repositories. It removes the
@@ -123,6 +124,11 @@ requires typing `yes` unless `--yes` is supplied; non-interactive use must suppl
 `--yes`. By default it keeps `/var/lib/zoe` and all `/etc/zoe`. Add `--purge-data`
 to remove data and Zoe-generated configuration/tokens while explicitly keeping
 the three gateway credentials; add `--purge-credentials` to remove those too.
+It removes `/opt/zoe`, including the installed CLI and all releases, only after
+service, container, image, network, and systemd cleanup. If a step fails it
+reports completed work and leaves the release root for recovery; rerun
+`zoe uninstall` after fixing the failed step. A later install then needs a fresh
+operator package.
 
 ## Server and worker settings
 

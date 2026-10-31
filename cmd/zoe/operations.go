@@ -179,6 +179,7 @@ func uninstallOperation(args []string, in io.Reader, out, errOut io.Writer) erro
 	fmt.Fprintf(out, "  OpenCode containers: %s\n", strings.Join(plan.RuntimeContainers, ", "))
 	fmt.Fprintf(out, "  Zoe image IDs: %s\n", strings.Join(plan.ImageIDs, ", "))
 	fmt.Fprintf(out, "  network: %s\n  release root: %s\n", plan.Network, plan.OptRoot)
+	fmt.Fprintln(out, "  removes /opt/zoe including the installed CLI and all releases; a later zoe install needs a fresh operator package")
 	if o.PurgeData {
 		fmt.Fprintf(out, "  purge data: %s\n  purge non-credential /etc/zoe files\n", plan.DataRoot)
 		fmt.Fprintf(out, "  keep credentials: %s\n", strings.Join(plan.KeepFiles, ", "))

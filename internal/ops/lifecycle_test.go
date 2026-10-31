@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,88 @@ func TestWriteEnvPreservesExistingValues(t *testing.T) {
 	}
 	if string(data) != "TOKEN=operator-value\n" {
 		t.Fatalf("existing env was rewritten: %q", data)
+	}
+}
+
+func TestWriteEnvMergesReleaseValuesAndPreservesOperatorLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "zoe.env")
+	original := "# operator comment\nZOE_SERVER_IMAGE=old\nZOE_VOICE_LANGUAGE=en\nUNKNOWN=value\n"
+	if err := os.WriteFile(path, []byte(original), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeEnv(path, map[string]string{"ZOE_SERVER_IMAGE": "new", "ZOE_COMPOSE_FILE": "/new/compose.yml"}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "# operator comment\nZOE_SERVER_IMAGE=new\nZOE_VOICE_LANGUAGE=en\nUNKNOWN=value\nZOE_COMPOSE_FILE=/new/compose.yml\n"
+	if string(data) != want {
+		t.Fatalf("merged env = %q, want %q", data, want)
+	}
+	if mode := dataMode(t, path); mode != 0600 {
+		t.Fatalf("mode = %04o, want 0600", mode)
+	}
+}
+
+func dataMode(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Mode().Perm()
+}
+
+func TestEnsureNetworkCreatesOnlyWhenMissing(t *testing.T) {
+	created := false
+	m := NewManager(func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "docker" && args[0] == "network" && args[1] == "inspect" {
+			return nil, errors.New("missing")
+		}
+		if name == "docker" && args[0] == "network" && args[1] == "create" {
+			created = true
+		}
+		return nil, nil
+	})
+	if err := m.ensureNetwork(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("network was not created")
+	}
+}
+
+func TestUninstallMidwayFailureLeavesReleaseRootForRetry(t *testing.T) {
+	root, opt := t.TempDir(), filepath.Join(t.TempDir(), "opt")
+	if err := os.MkdirAll(filepath.Join(opt, "releases", "current"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	var failNetworkRemoval = true
+	m := NewManager(func(_ context.Context, name string, args ...string) ([]byte, error) {
+		switch {
+		case name == "docker" && len(args) >= 2 && args[0] == "ps":
+			return nil, nil
+		case name == "docker" && len(args) >= 3 && args[0] == "network" && args[1] == "rm" && failNetworkRemoval:
+			failNetworkRemoval = false
+			return []byte("temporary failure"), errors.New("failed")
+		default:
+			return nil, nil
+		}
+	})
+	o := LifecycleOptions{Root: root, OptRoot: opt, Out: io.Discard}
+	if err := m.Uninstall(context.Background(), o); err == nil {
+		t.Fatal("expected first uninstall to fail")
+	}
+	if _, err := os.Stat(opt); err != nil {
+		t.Fatalf("release root removed after failure: %v", err)
+	}
+	if err := m.Uninstall(context.Background(), o); err != nil {
+		t.Fatalf("retry uninstall: %v", err)
+	}
+	if _, err := os.Stat(opt); !os.IsNotExist(err) {
+		t.Fatalf("release root still exists: %v", err)
 	}
 }
 
@@ -98,5 +181,11 @@ func TestUpdateRollbackReportsFailingStepAndCommandOutput(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "compose file missing") {
 		t.Fatalf("operator output = %q", out.String())
+	}
+	for _, name := range []string{"zoe-stack.env", "zoe-runner.env"} {
+		data, readErr := os.ReadFile(filepath.Join(root, name))
+		if readErr != nil || string(data) != "VALUE=old\n" {
+			t.Fatalf("rollback did not restore %s byte-for-byte: %q, %v", name, data, readErr)
+		}
 	}
 }
