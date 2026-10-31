@@ -118,6 +118,14 @@ func TestRejectedStagedCredentialDoesNotOverwrite(t *testing.T) {
 }
 
 func TestMemoryTransactionChangesOnlyMemorySettingsAndReloadsWorker(t *testing.T) {
+	oldChown, oldUID := chownFile, effectiveUID
+	var owners [][3]int
+	chownFile = func(path string, uid, gid int) error {
+		owners = append(owners, [3]int{uid, gid, 1})
+		return nil
+	}
+	effectiveUID = func() int { return 0 }
+	t.Cleanup(func() { chownFile, effectiveUID = oldChown, oldUID })
 	root := t.TempDir()
 	d := Deployment{Root: root, Mode: ModeCompose, StackEnv: filepath.Join(root, "zoe-stack.env"), ComposeProject: "zoe", ComposeFile: filepath.Join(root, "compose.yml")}
 	secret := filepath.Join(root, "memory-token")
@@ -160,8 +168,67 @@ func TestMemoryTransactionChangesOnlyMemorySettingsAndReloadsWorker(t *testing.T
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Fatalf("memory secret mode = %v (%v)", info, err)
 	}
+	if len(owners) != 1 || owners[0][0] != memoryWorkerUID || owners[0][1] != memoryWorkerGID {
+		t.Fatalf("memory secret owners = %v", owners)
+	}
 	if len(commands) != 1 || !strings.Contains(commands[0], "zoe-memory-worker") || strings.Contains(commands[0], "zoe-server") {
 		t.Fatalf("reload targeted unexpected services: %v", commands)
+	}
+}
+
+func TestMemoryTransactionReconfigureKeepsWorkerOwnership(t *testing.T) {
+	oldChown, oldUID := chownFile, effectiveUID
+	var owners [][2]int
+	chownFile = func(path string, uid, gid int) error {
+		owners = append(owners, [2]int{uid, gid})
+		return nil
+	}
+	effectiveUID = func() int { return 0 }
+	t.Cleanup(func() { chownFile, effectiveUID = oldChown, oldUID })
+	root := t.TempDir()
+	d := Deployment{Root: root, Mode: ModeCompose, StackEnv: filepath.Join(root, "zoe-stack.env"), ComposeProject: "zoe", ComposeFile: filepath.Join(root, "compose.yml")}
+	secret := filepath.Join(root, "memory-token")
+	server := modelServer(t)
+	m := NewManager(func(context.Context, string, ...string) ([]byte, error) { return nil, nil })
+	for _, token := range []string{"next", "next"} {
+		result, err := m.ConfigureMemory(context.Background(), d, MemoryConfig{BaseURL: server.URL, Model: "test-model", SecretPath: secret, Secret: token}, filepath.Join(root, "task-token"), server.Client())
+		if err != nil || !result.OK() {
+			t.Fatalf("configure memory: %v %+v", err, result)
+		}
+	}
+	if len(owners) < 2 {
+		t.Fatalf("chown calls = %v", owners)
+	}
+	for _, owner := range owners {
+		if owner != [2]int{memoryWorkerUID, memoryWorkerGID} {
+			t.Fatalf("owner = %v", owner)
+		}
+	}
+	if info, err := os.Stat(secret); err != nil || info.Mode().Perm() > 0600 {
+		t.Fatalf("memory secret mode = %v (%v)", info, err)
+	}
+}
+
+func TestMemoryTransactionRollbackLeavesNewFilesAbsent(t *testing.T) {
+	root := t.TempDir()
+	d := Deployment{Root: root, Mode: ModeCompose, StackEnv: filepath.Join(root, "zoe-stack.env"), ComposeProject: "zoe", ComposeFile: filepath.Join(root, "compose.yml")}
+	secret := filepath.Join(root, "memory-token")
+	server := modelServer(t)
+	m := NewManager(func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name == "docker" && strings.Contains(strings.Join(args, " "), "up -d") {
+			return nil, errors.New("reload failed")
+		}
+		return nil, nil
+	})
+	_, err := m.ConfigureMemory(context.Background(), d, MemoryConfig{BaseURL: server.URL, Model: "test-model", SecretPath: secret, Secret: "next"}, filepath.Join(root, "task-token"), server.Client())
+	if err == nil {
+		t.Fatal("configuration unexpectedly succeeded")
+	}
+	if _, err := os.Stat(secret); !os.IsNotExist(err) {
+		t.Fatalf("rolled-back secret exists: %v", err)
+	}
+	if _, err := os.Stat(d.StackEnv); !os.IsNotExist(err) {
+		t.Fatalf("rolled-back environment exists: %v", err)
 	}
 }
 

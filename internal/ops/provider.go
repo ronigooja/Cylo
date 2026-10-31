@@ -22,6 +22,14 @@ const DefaultProviderSecretPath = "/etc/zoe/runner-secrets/cliproxyapi-api-key"
 
 const DefaultMemorySecretPath = "/etc/zoe/secrets/mem0-llm-api-key"
 
+const memoryWorkerUID = 65532
+const memoryWorkerGID = 65532
+
+var (
+	chownFile    = os.Chown
+	effectiveUID = os.Geteuid
+)
+
 // ProviderConfig is the deployment configuration consumed by the Zoe runner.
 // Secret contains the credential only while configuring; it is never rendered
 // into an environment file or included in ProbeResult.
@@ -113,6 +121,10 @@ func WriteSecretAtomic(path string, secret []byte) error {
 	return writeFileAtomic(path, secret, 0o600)
 }
 
+func writeMemorySecretAtomic(path string, secret []byte) error {
+	return writeFileAtomicOwned(path, secret, 0o600, memoryWorkerUID, memoryWorkerGID)
+}
+
 // WriteRunnerEnvAtomic renders runner provider/runtime variables. The token
 // itself stays in SecretPath and is never written to this file.
 func WriteRunnerEnvAtomic(path string, c ProviderConfig) error {
@@ -178,7 +190,7 @@ func writeFileAtomicOwned(path string, data []byte, mode os.FileMode, uid, gid i
 				return statErr
 			}
 			if !currentOK || currentOwner.Uid != st.Uid || currentOwner.Gid != st.Gid {
-				if err = tmp.Chown(int(st.Uid), int(st.Gid)); err != nil {
+				if err = chownFile(tmpName, int(st.Uid), int(st.Gid)); err != nil {
 					tmp.Close()
 					return err
 				}
@@ -193,8 +205,8 @@ func writeFileAtomicOwned(path string, data []byte, mode os.FileMode, uid, gid i
 		}
 		currentOwner, currentOK := current.Sys().(*syscall.Stat_t)
 		needsChown := !currentOK || int(currentOwner.Uid) != uid || int(currentOwner.Gid) != gid
-		if needsChown && os.Geteuid() == 0 {
-			if err = tmp.Chown(uid, gid); err != nil {
+		if needsChown && effectiveUID() == 0 {
+			if err = chownFile(tmpName, uid, gid); err != nil {
 				tmp.Close()
 				return err
 			}

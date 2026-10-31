@@ -516,7 +516,7 @@ func (m Manager) ConfigureMemory(ctx context.Context, d Deployment, c MemoryConf
 		}
 		return errors.Join(errs...)
 	}
-	if err = WriteSecretAtomic(c.SecretPath, []byte(c.Secret)); err != nil {
+	if err = writeMemorySecretAtomic(c.SecretPath, []byte(c.Secret)); err != nil {
 		return result, rollback(err)
 	}
 	if err = WriteMemoryEnvAtomic(d.StackEnv, c); err != nil {
