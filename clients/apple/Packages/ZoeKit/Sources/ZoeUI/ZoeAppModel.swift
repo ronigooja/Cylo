@@ -3,6 +3,9 @@ import CryptoKit
 import ZoeKit
 import Foundation
 import WebRTC
+#if os(macOS)
+import AppKit
+#endif
 
 public enum TaskSubmissionResult: Equatable, Sendable {
     case accepted(CommandReceipt)
@@ -58,6 +61,7 @@ public final class ZoeAppModel: ObservableObject {
 
     private let defaults: UserDefaults
     private let continuousVoiceKey = "zoe.voice.continuous"
+    private let pendingVoiceHangupKey = "zoe.voice.pendingHangup"
     private var api: APIClient?
     private var identity: (any InstanceKeyStoring)?
     private var journal: CommandJournal?
@@ -180,6 +184,12 @@ public final class ZoeAppModel: ObservableObject {
     func handleVoiceHeartbeatFailureForTesting(sessionID: String, api: APIClient, mediaEpoch: UInt64, generation: UInt64, message: String) async {
         await handleVoiceHeartbeatFailure(sessionID: sessionID, api: api, mediaEpoch: mediaEpoch, generation: generation, message: message)
     }
+
+    var hasPendingVoiceHangupForTesting: Bool { pendingVoiceHangup() != nil }
+
+    func retryPendingVoiceHangupForTesting(api: APIClient) async {
+        await retryPendingVoiceHangup(api: api)
+    }
 #endif
     private var configuredServerURL: URL?
     private var voiceTransport: LibWebRTCTransport?
@@ -193,6 +203,10 @@ public final class ZoeAppModel: ObservableObject {
     private var voiceStartInProgress = false
     private var voiceHangupInFlightSessionID: String?
     private var voiceAPI: APIClient?
+    private var voiceHangupRetryTask: Task<Void, Never>?
+    #if os(macOS)
+    private var terminationObserver: NSObjectProtocol?
+    #endif
     private var voiceTurnID: String?
     private var voiceProviderMessageID: String?
     private let voiceHeartbeat = VoiceHeartbeatLease()
@@ -225,9 +239,21 @@ public final class ZoeAppModel: ObservableObject {
         RemotePushBridge.shared.onFailure = { [weak self] in
             Task { @MainActor [weak self] in self?.notice = uiText("Remote notifications are unavailable on this installation. The Zoe inbox remains available.") }
         }
+#if os(macOS)
+        terminationObserver = NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in await self?.terminateVoiceForAppExit() }
+        }
+#endif
     }
 
-    deinit { eventTask?.cancel(); if let syncLoop { Task { await syncLoop.cancel() } } }
+    deinit {
+        eventTask?.cancel()
+        voiceHangupRetryTask?.cancel()
+        #if os(macOS)
+        if let terminationObserver { NotificationCenter.default.removeObserver(terminationObserver) }
+        #endif
+        if let syncLoop { Task { await syncLoop.cancel() } }
+    }
 
     public var projects: [Project] { snapshot?.projects ?? [] }
     public var tasks: [TaskRecord] {
@@ -495,9 +521,10 @@ public final class ZoeAppModel: ObservableObject {
         voiceAPI = nil
         voiceStatus = .stopped
         try? oldAudio?.deactivate()
-        Task {
+        Task { [weak self] in
             await oldTransport?.close()
-            if let oldSession, let oldAPI { _ = try? await oldAPI.hangupVoiceSession(oldSession) }
+            guard let self, let oldSession, let oldAPI else { return }
+            await self.releaseVoiceSession(oldSession, api: oldAPI, phase: "workspace_lock")
         }
     }
 
@@ -850,7 +877,10 @@ public final class ZoeAppModel: ObservableObject {
             guard generation == connectionGeneration.value, mediaEpoch == voiceMediaEpoch else { throw CancellationError() }
             voiceConfig = config
             voicePoolStatus = pool
-            guard !pool.blocked else { throw ZoeError.http(status: 409, code: pool.reasonCode, message: "voice_pool_quarantined", details: nil) }
+            await retryPendingVoiceHangup(api: api)
+            let refreshedPool = try await api.voicePoolStatus()
+            voicePoolStatus = refreshedPool
+            guard !refreshedPool.blocked else { throw ZoeError.http(status: 409, code: refreshedPool.reasonCode, message: "voice_pool_quarantined", details: nil) }
 
             #if os(iOS)
             audio = AppleMobileAudioSessionAdapter()
@@ -917,7 +947,7 @@ public final class ZoeAppModel: ObservableObject {
             await closeVoiceLocalMedia(mediaEpoch: mediaEpoch)
             var remainsQuarantined = false
             if let allocatedSession {
-                let release = try? await api.hangupVoiceSession(allocatedSession)
+                let release = await releaseVoiceSession(allocatedSession, api: api, phase: "setup_release")
                 remainsQuarantined = release == nil || release?.poolBlocked == true
                 if remainsQuarantined {
                     let latestPool = try? await api.voicePoolStatus()
@@ -980,6 +1010,7 @@ public final class ZoeAppModel: ObservableObject {
             voiceSessionMediaClosed = true
         }
         voiceHangupInFlightSessionID = session.voiceSessionId
+        savePendingVoiceHangup(session, api: api)
         defer {
             if voiceHangupInFlightSessionID == session.voiceSessionId {
                 voiceHangupInFlightSessionID = nil
@@ -996,6 +1027,11 @@ public final class ZoeAppModel: ObservableObject {
             #else
             result = try await api.hangupVoiceSession(session)
             #endif
+            if result.poolBlocked != true { defaults.removeObject(forKey: pendingVoiceHangupKey) }
+            else {
+                api.recordDiagnostic(phase: "voice_hangup", requestPath: "/v1/voice/sessions/hangup", errorType: "pool_blocked", errorSummary: "release_unconfirmed")
+                scheduleVoiceHangupRetry(session, api: api, phase: "hangup")
+            }
             guard voiceSession?.voiceSessionId == session.voiceSessionId, voiceSessionMediaEpoch == mediaEpoch else { return }
             let latestPool = result.poolBlocked == true ? try? await api.voicePoolStatus() : nil
             guard voiceSession?.voiceSessionId == session.voiceSessionId, voiceSessionMediaEpoch == mediaEpoch else { return }
@@ -1018,9 +1054,88 @@ public final class ZoeAppModel: ObservableObject {
             }
         } catch {
             guard voiceSession?.voiceSessionId == session.voiceSessionId, voiceSessionMediaEpoch == mediaEpoch else { return }
+            savePendingVoiceHangup(session, api: api)
+            let redacted = RedactedDiagnostic(error)
+            api.recordDiagnostic(phase: "voice_hangup", requestPath: "/v1/voice/sessions/hangup", httpStatus: redacted.httpStatus, errorType: redacted.errorType, errorSummary: redacted.errorSummary)
+            scheduleVoiceHangupRetry(session, api: api, phase: "hangup")
             voiceStatus = .interrupted(reason: uiFormat("Local media is closed, but server hangup is unconfirmed; the session remains fenced. %@%@", lossReason.map { $0 + " " } ?? "", ""))
         }
     }
+
+    private struct PendingVoiceHangup: Codable {
+        let serverURL: String
+        let session: VoiceSessionResponse
+    }
+
+    private func savePendingVoiceHangup(_ session: VoiceSessionResponse, api: APIClient) {
+        let pending = PendingVoiceHangup(serverURL: api.serverURL.absoluteString, session: session)
+        if let data = try? JSONEncoder().encode(pending) { defaults.set(data, forKey: pendingVoiceHangupKey) }
+    }
+
+    private func pendingVoiceHangup() -> PendingVoiceHangup? {
+        guard let data = defaults.data(forKey: pendingVoiceHangupKey) else { return nil }
+        return try? JSONDecoder().decode(PendingVoiceHangup.self, from: data)
+    }
+
+    private func releaseVoiceSession(_ session: VoiceSessionResponse, api: APIClient, phase: String) async -> VoiceOperationResponse? {
+        savePendingVoiceHangup(session, api: api)
+        do {
+            let result = try await api.hangupVoiceSession(session)
+            if result.poolBlocked != true { defaults.removeObject(forKey: pendingVoiceHangupKey) }
+            else {
+                api.recordDiagnostic(phase: "voice_\(phase)", requestPath: "/v1/voice/sessions/hangup", errorType: "pool_blocked", errorSummary: "release_unconfirmed")
+                scheduleVoiceHangupRetry(session, api: api, phase: phase)
+            }
+            return result
+        } catch {
+            let redacted = RedactedDiagnostic(error)
+            api.recordDiagnostic(phase: "voice_\(phase)", requestPath: "/v1/voice/sessions/hangup", httpStatus: redacted.httpStatus, errorType: redacted.errorType, errorSummary: redacted.errorSummary)
+            scheduleVoiceHangupRetry(session, api: api, phase: phase)
+            return nil
+        }
+    }
+
+    private func scheduleVoiceHangupRetry(_ session: VoiceSessionResponse, api: APIClient, phase: String) {
+        guard voiceHangupRetryTask == nil else { return }
+        voiceHangupRetryTask = Task { [weak self] in
+            for delay in [1, 2, 4] {
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled else { return }
+                do {
+                    let result = try await api.hangupVoiceSession(session)
+                    if result.poolBlocked != true {
+                        self?.defaults.removeObject(forKey: self?.pendingVoiceHangupKey ?? "")
+                        self?.voiceHangupRetryTask = nil
+                        return
+                    }
+                } catch {
+                    let redacted = RedactedDiagnostic(error)
+                    api.recordDiagnostic(phase: "voice_\(phase)_retry", requestPath: "/v1/voice/sessions/hangup", httpStatus: redacted.httpStatus, errorType: redacted.errorType, errorSummary: redacted.errorSummary)
+                }
+            }
+            await MainActor.run { self?.voiceHangupRetryTask = nil }
+        }
+    }
+
+    private func retryPendingVoiceHangup(api: APIClient) async {
+        guard let pending = pendingVoiceHangup(), pending.serverURL == api.serverURL.absoluteString else { return }
+        _ = await releaseVoiceSession(pending.session, api: api, phase: "pending_release")
+    }
+
+    #if os(macOS)
+    private func terminateVoiceForAppExit() async {
+        guard let session = voiceSession, let api = voiceAPI, let epoch = voiceSessionMediaEpoch else { return }
+        await closeVoiceLocalMedia(mediaEpoch: epoch)
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { _ = await self.releaseVoiceSession(session, api: api, phase: "app_terminate") }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(2))
+            }
+            await group.next()
+            group.cancelAll()
+        }
+    }
+    #endif
 
     private func closeVoiceLocalMedia(mediaEpoch: UInt64) async {
         guard voiceMediaFence.stop(mediaEpoch) else { return }
@@ -2040,6 +2155,11 @@ public final class ZoeAppModel: ObservableObject {
             event = inner
         }
         let type = (event["type"] as? String) ?? ""
+        if type == "voice.end" || type == "voice_end" ||
+            ((type == "function_call" || type == "tool_call") && ((event["name"] as? String) == "voice.end" || (event["name"] as? String) == "voice_end")) {
+            Task { @MainActor [weak self] in await self?.endVoiceSession() }
+            return
+        }
         var messageID: String?
         var transcript: String?
         if type == "chat_message_delta" {

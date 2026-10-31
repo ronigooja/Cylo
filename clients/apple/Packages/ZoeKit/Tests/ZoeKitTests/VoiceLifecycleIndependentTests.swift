@@ -63,6 +63,22 @@ final class VoiceLifecycleIndependentTests: XCTestCase {
     }
 
     @MainActor
+    func testFailedHangupIsPersistedForTheNextLaunch() async throws {
+        let suite = UserDefaults(suiteName: UUID().uuidString)!
+        let first = ZoeAppModel(defaults: suite)
+        let api = try APIClient(serverURL: URL(string: "https://zoe.example")!, credentials: IndependentVoiceCredential())
+        let session = VoiceSessionResponse(voiceSessionId: "pending-session", generation: 4, state: "active", answerSdp: "", accountLeaseId: "lease", accountLeaseGeneration: 7)
+        _ = first.installVoiceSessionForTesting(session, api: api)
+        first.voiceHangupOverrideForTesting = { _ in throw ZoeError.http(status: 503, code: "unavailable", message: "temporary", details: nil) }
+
+        await first.endVoiceSession()
+
+        XCTAssertTrue(first.hasPendingVoiceHangupForTesting)
+        let second = ZoeAppModel(defaults: suite)
+        XCTAssertTrue(second.hasPendingVoiceHangupForTesting, "the unresolved release survives relaunch")
+    }
+
+    @MainActor
     func testClientErrorPresentationHidesServerDetails() async {
         let model = ZoeAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
         await model.refreshVoiceReadiness()
