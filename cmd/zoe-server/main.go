@@ -83,7 +83,7 @@ func run() error {
 		Profiles:           profiles,
 		PushSender:         pushSender,
 	}
-	server, err := composeControlServer(store, cfg, voice.Config{GatewayURL: os.Getenv("ZOE_VOICE_GATEWAY_URL"), GatewayAPIKey: os.Getenv("ZOE_VOICE_GATEWAY_API_KEY")}, capabilities.Config{
+	server, err := composeControlServer(store, cfg, voice.Config{GatewayURL: os.Getenv("ZOE_VOICE_GATEWAY_URL"), GatewayAPIKey: os.Getenv("ZOE_VOICE_GATEWAY_API_KEY"), HeartbeatTimeout: voiceHeartbeatTimeout()}, capabilities.Config{
 		AvailableCapabilityIDs: splitEnv("ZOE_AVAILABLE_CAPABILITY_IDS", ""),
 		RuntimeBackend:         strings.TrimSpace(os.Getenv("ZOE_CAPABILITY_RUNTIME_BACKEND")),
 	}, memory.DerivedConfig{BackupDeleteManifestPath: strings.TrimSpace(os.Getenv("ZOE_BACKUP_DELETE_MANIFEST_PATH"))})
@@ -140,12 +140,14 @@ func run() error {
 	defer signal.Stop(signals)
 	select {
 	case err = <-serveErr:
+		server.Shutdown()
 		close(pushStop)
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 		return err
 	case <-signals:
+		server.Shutdown()
 		close(pushStop)
 	}
 	shutdown, stop := context.WithTimeout(context.Background(), 20*time.Second)
@@ -158,6 +160,20 @@ func run() error {
 		return err
 	}
 	return nil
+}
+
+// ZOE_VOICE_HEARTBEAT_TIMEOUT_SECONDS controls stale-session reclaim; values
+// are clamped by the voice service to 30..600 seconds (default 60).
+func voiceHeartbeatTimeout() time.Duration {
+	value := strings.TrimSpace(os.Getenv("ZOE_VOICE_HEARTBEAT_TIMEOUT_SECONDS"))
+	if value == "" {
+		return 60 * time.Second
+	}
+	seconds, err := time.ParseDuration(value + "s")
+	if err != nil {
+		return 60 * time.Second
+	}
+	return seconds
 }
 
 func configuredPushSender() (control.PushSender, error) {

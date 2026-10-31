@@ -31,6 +31,11 @@ Voice account-pool behavior and the fail-closed media boundary are defined in
 Keep `ZOE_VOICE_ACCOUNT_MEDIA_ENABLED` disabled unless a separately reviewed
 gateway release implements the required lease contract.
 
+`ZOE_VOICE_HEARTBEAT_TIMEOUT_SECONDS` (default 60, clamped to 30–600) controls
+server-side voice reaping: active sessions with no recent heartbeat are reclaimed
+through the normal release flow; unverified termination remains quarantined and
+keeps the voice pool blocked.
+
 Check service status without printing environment files or secret values:
 
 ```bash
