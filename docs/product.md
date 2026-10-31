@@ -251,9 +251,10 @@ client must not display detailed server, infrastructure, runtime, transport, acc
  It shows only a short state and an actionable recovery or retry instruction; detailed context is redacted,
 encrypted, queued, and automatically returned to the authenticated diagnostic endpoint when available.
 Diagnostic upload is best effort and must not block the user, alter command authority, or change receipt/retry
- semantics. Authentication failures and user-input validation may show the minimum information needed to
+semantics. Authentication failures and user-input validation may show the minimum information needed to
 recover, but must not expose credentials, headers, response bodies, transcripts, audio, SDP/ICE, or
 secret-bearing details.
+The authenticated client synchronizes its server-controlled diagnostic policy and queued events every 60 seconds by default.
 
 ### Native presentation and acceptance targets
 

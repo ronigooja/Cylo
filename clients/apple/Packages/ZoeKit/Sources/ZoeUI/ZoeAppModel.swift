@@ -63,6 +63,7 @@ public final class ZoeAppModel: ObservableObject {
     private var journal: CommandJournal?
     private var coordinator: CommandCoordinator?
     private var eventTask: Task<Void, Never>?
+    private var syncLoop: ClientSyncLoop?
     private var snapshotCache: SnapshotCache?
     private var streamBackoff: UInt64 = 1
     private var connectionGeneration = ConnectionGeneration()
@@ -226,7 +227,7 @@ public final class ZoeAppModel: ObservableObject {
         }
     }
 
-    deinit { eventTask?.cancel() }
+    deinit { eventTask?.cancel(); if let syncLoop { Task { await syncLoop.cancel() } } }
 
     public var projects: [Project] { snapshot?.projects ?? [] }
     public var tasks: [TaskRecord] {
@@ -261,11 +262,21 @@ public final class ZoeAppModel: ObservableObject {
         notice = nil
         if !authentication.isConnected { authentication = .checking }
         do {
+            if syncLoop == nil {
+                let unauthenticatedAPI = try APIClient(serverURL: try ServerAddress.normalize(serverAddress), installationID: installationID)
+                let loop = ClientSyncLoop(api: unauthenticatedAPI)
+                syncLoop = loop
+                await loop.start()
+            }
             let configuredAPI = try configure()
             let generation = connectionGeneration.value
             try await refreshSnapshot()
             guard generation == connectionGeneration.value else { return }
             authentication = .connected
+            if let syncLoop { await syncLoop.cancel() }
+            let syncLoop = ClientSyncLoop(api: configuredAPI)
+            self.syncLoop = syncLoop
+            await syncLoop.start()
             #if DEBUG
             if suppressConnectionFollowupsForTesting { return }
             #endif
@@ -444,6 +455,8 @@ public final class ZoeAppModel: ObservableObject {
         connectionEpoch = connectionGeneration.value
         eventTask?.cancel()
         eventTask = nil
+        if let syncLoop { Task { await syncLoop.cancel() } }
+        syncLoop = nil
         cancelExport(status: nil)
         clearVisibleMemory()
         snapshot = nil
@@ -2337,7 +2350,7 @@ public final class ZoeAppModel: ObservableObject {
     }
 
     private func userMessage(_ error: Error) -> String {
-        if let failure = error as? ZoeError, case .http = failure { reportClientError(error, code: "http") }
+        reportClientError(error, code: "client_error")
         if Self.isAccessDenied(error) { return uiText("The instance key was rejected. Replace it with the current key from your server.") }
         if error is ConnectionInputError { return uiText(error.localizedDescription) }
         if let error = error as? ZoeError,
@@ -2346,22 +2359,9 @@ public final class ZoeAppModel: ObservableObject {
             _ = details
             return uiText("This item changed on another device. The latest server state is being loaded.")
         }
-        if let failure = error as? ZoeError {
-            switch failure {
-            case .missingCredential:
-                return uiText("Enter your server address and instance key to connect.")
-            case .http:
-                return uiText("The server could not complete this request. Try again later.")
-            case .credentialAccessDenied(let storage):
-                return uiFormat("Allow Zoe to access %@, then try again.", uiText(storage))
-            case .persistence:
-                reportClientError(error, code: "local_storage")
-                return uiText("Zoe could not save data on this device. Try again.")
-            default:
-                return uiText(failure.localizedDescription)
-            }
+        if let failure = error as? ZoeError, case .missingCredential = failure {
+            return uiText("Enter your server address and instance key to connect.")
         }
-        reportClientError(error, code: "unclassified")
         return uiText("Something went wrong. Try again.")
     }
 

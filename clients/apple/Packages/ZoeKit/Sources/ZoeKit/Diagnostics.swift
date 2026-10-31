@@ -1,6 +1,18 @@
 import Foundation
 import CryptoKit
 
+public enum DiagnosticLevel: String, Codable, CaseIterable, Sendable {
+    case error, info, debug
+
+    public static func parse(_ value: String?) -> DiagnosticLevel {
+        guard let value, let level = DiagnosticLevel(rawValue: value.lowercased()) else { return .error }
+        return level
+    }
+
+    fileprivate var rank: Int { self == .error ? 0 : (self == .info ? 1 : 2) }
+    fileprivate func isAllowed(by policy: DiagnosticLevel) -> Bool { rank <= policy.rank }
+}
+
 public struct DiagnosticEvent: Codable, Equatable, Sendable {
     public let clientRequestID: String
     public let occurredAt: String
@@ -13,8 +25,27 @@ public struct DiagnosticEvent: Codable, Equatable, Sendable {
     public let responseBytes: Int64
     public let errorType: String
     public let errorSummary: String
+    public let level: String
 
-    public init(clientRequestID: String, phase: String, requestPath: String, httpStatus: Int = 0, responseBytes: Int64 = 0, errorType: String = "", errorSummary: String = "", installationID: String?, appVersion: String? = nil, osVersion: String? = nil) {
+    enum CodingKeys: String, CodingKey { case clientRequestID, occurredAt, appVersion, osVersion, deviceIDHash, phase, requestPath, httpStatus, responseBytes, errorType, errorSummary, level }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        clientRequestID = try values.decode(String.self, forKey: .clientRequestID)
+        occurredAt = try values.decode(String.self, forKey: .occurredAt)
+        appVersion = try values.decode(String.self, forKey: .appVersion)
+        osVersion = try values.decode(String.self, forKey: .osVersion)
+        deviceIDHash = try values.decode(String.self, forKey: .deviceIDHash)
+        phase = try values.decode(String.self, forKey: .phase)
+        requestPath = try values.decode(String.self, forKey: .requestPath)
+        httpStatus = try values.decode(Int.self, forKey: .httpStatus)
+        responseBytes = try values.decode(Int64.self, forKey: .responseBytes)
+        errorType = try values.decode(String.self, forKey: .errorType)
+        errorSummary = try values.decode(String.self, forKey: .errorSummary)
+        level = try values.decodeIfPresent(String.self, forKey: .level) ?? DiagnosticLevel.error.rawValue
+    }
+
+    public init(clientRequestID: String, phase: String, requestPath: String, httpStatus: Int = 0, responseBytes: Int64 = 0, errorType: String = "", errorSummary: String = "", installationID: String?, appVersion: String? = nil, osVersion: String? = nil, level: DiagnosticLevel = .error) {
         self.clientRequestID = clientRequestID
         self.occurredAt = ISO8601DateFormatter().string(from: Date())
         self.appVersion = appVersion ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
@@ -27,6 +58,7 @@ public struct DiagnosticEvent: Codable, Equatable, Sendable {
         self.responseBytes = max(0, responseBytes)
         self.errorType = String(errorType.prefix(64))
         self.errorSummary = String(errorSummary.prefix(512)).filter { $0.isASCII && $0 != "\n" && $0 != "\r" }
+        self.level = level.rawValue
     }
 }
 
@@ -76,11 +108,14 @@ actor EncryptedDiagnosticQueue {
     private var retryAt = Date.distantPast
     private var retryDelay: TimeInterval = 1
     private var uploadInFlight = false
+    private var level: DiagnosticLevel
 
     init?(serverURL: URL, installationID: String?) {
         guard let installationID, !installationID.isEmpty else { return nil }
         defaults = UserDefaults.standard
         storageKey = "zoe.diagnostics." + SHA256.hash(data: Data(serverURL.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined()
+        let levelKey = storageKey + ".level"
+        level = DiagnosticLevel.parse(defaults.string(forKey: levelKey))
         key = SymmetricKey(data: SHA256.hash(data: Data((installationID + "|zoe-diagnostics-v1").utf8)))
         if let blob = defaults.data(forKey: storageKey), let sealed = try? AES.GCM.SealedBox(combined: blob), let data = try? AES.GCM.open(sealed, using: key), let decoded = try? decoder.decode([DiagnosticEvent].self, from: data) {
             events = Array(decoded.suffix(100))
@@ -88,10 +123,18 @@ actor EncryptedDiagnosticQueue {
     }
 
     func append(_ event: DiagnosticEvent) {
+        guard DiagnosticLevel.parse(event.level).isAllowed(by: level) else { return }
         events.append(event)
         if events.count > 100 { events.removeFirst(events.count - 100) }
         persist()
     }
+
+    func setLevel(_ newLevel: DiagnosticLevel) {
+        level = newLevel
+        defaults.set(newLevel.rawValue, forKey: storageKey + ".level")
+    }
+
+    func currentLevel() -> DiagnosticLevel { level }
 
     func take(limit: Int) -> [DiagnosticEvent] { Array(events.prefix(limit)) }
 
