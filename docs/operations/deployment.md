@@ -112,8 +112,9 @@ model-backed task execution.
 
 Use `zoe update --release /path/to/release --opencode-image ...` to stage and pull
 the new release, switch `current`, restart Compose and the runner, and verify
-health. A failed health check restores the prior selector and image settings;
-data and secrets are not touched. Use `zoe uninstall` for reviewed removal. It
+health. A failed update restores the prior selector and image settings and
+reports the failing command's bounded output; data and secrets are not touched.
+Use `zoe uninstall` for reviewed removal. It
 first prints the exact Compose-project containers, `io.zoe.managed=true` runtime
 containers, and local IDs for the four Zoe image repositories. It removes the
 Compose project with `docker compose down --remove-orphans`, removes only those

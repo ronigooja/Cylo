@@ -273,9 +273,19 @@ func restoreUpdate(ctx context.Context, m Manager, o LifecycleOptions, selector,
 		rollbackErrs = append(rollbackErrs, fmt.Errorf("restart previous release: %w", err))
 	}
 	if len(rollbackErrs) > 0 {
-		return errors.Join(fmt.Errorf("update failed: %w", cause), fmt.Errorf("rollback failed: %w", errors.Join(rollbackErrs...)))
+		result := errors.Join(fmt.Errorf("update failed: %w", cause), fmt.Errorf("rollback failed: %w", errors.Join(rollbackErrs...)))
+		printUpdateError(o.Out, result)
+		return result
 	}
-	return fmt.Errorf("update rolled back: %w", cause)
+	result := fmt.Errorf("update rolled back: %w", cause)
+	printUpdateError(o.Out, result)
+	return result
+}
+
+func printUpdateError(out io.Writer, err error) {
+	if out != nil {
+		fmt.Fprintln(out, "zoe:", err)
+	}
 }
 
 func validateArch(m ReleaseManifest) error {
@@ -345,6 +355,9 @@ func (m Manager) stageRelease(o LifecycleOptions, manifest ReleaseManifest) erro
 	return nil
 }
 func copyDeployFiles(src, dst string) error {
+	if err := os.MkdirAll(filepath.Join(dst, "deploy-linux"), 0755); err != nil {
+		return err
+	}
 	for _, name := range []string{"docker-compose.yml", "zoe-compose.service", "zoe-runner.service", "zoe-runner-tmpfiles.conf"} {
 		p := filepath.Join(src, "deploy-linux", name)
 		b, e := os.ReadFile(p)
@@ -354,7 +367,7 @@ func copyDeployFiles(src, dst string) error {
 		if e != nil {
 			return e
 		}
-		if e = os.WriteFile(filepath.Join(dst, name), b, 0644); e != nil {
+		if e = os.WriteFile(filepath.Join(dst, "deploy-linux", name), b, 0644); e != nil {
 			return e
 		}
 	}
@@ -417,7 +430,7 @@ func (m Manager) installUnits(o LifecycleOptions) error {
 		return err
 	}
 	for _, n := range []string{"zoe-compose.service", "zoe-runner.service"} {
-		b, e := os.ReadFile(filepath.Join(o.OptRoot, "releases", "current", n))
+		b, e := os.ReadFile(filepath.Join(o.OptRoot, "releases", "current", "deploy-linux", n))
 		if e != nil {
 			continue
 		}
@@ -435,10 +448,13 @@ func bytesReplacePaths(b []byte, o LifecycleOptions) []byte {
 func (m Manager) start(ctx context.Context) error {
 	_, e := m.Run(ctx, "systemctl", "restart", "zoe-compose.service")
 	if e != nil {
-		return e
+		return fmt.Errorf("start zoe-compose.service: %w", e)
 	}
 	_, e = m.Run(ctx, "systemctl", "restart", "zoe-runner.service")
-	return e
+	if e != nil {
+		return fmt.Errorf("start zoe-runner.service: %w", e)
+	}
+	return nil
 }
 func waitHealth(ctx context.Context, m Manager, url string, timeout time.Duration) error {
 	if url == "" {
