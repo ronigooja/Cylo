@@ -87,6 +87,35 @@ class ScopeTests(unittest.TestCase):
             finally:
                 os.chdir(old_cwd)
 
+    def test_first_push_of_a_branch_compares_with_main(self):
+        with tempfile.TemporaryDirectory() as directory:
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(directory)
+                def git(*args):
+                    return subprocess.check_output(["git", *args], stderr=subprocess.STDOUT)
+                git("init", "-q", "-b", "main")
+                git("config", "user.name", "CI fixture")
+                git("config", "user.email", "ci@example.invalid")
+                Path("README.md").write_text("base\n")
+                git("add", ".")
+                git("commit", "-qm", "base")
+                git("checkout", "-qb", "feature")
+                Path("docs").mkdir()
+                Path("docs/a.md").write_text("doc\n")
+                git("add", ".")
+                git("commit", "-qm", "docs only")
+                output = Path(directory) / "scope-out"
+                subprocess.run([sys.executable, str(Path(__file__).with_name("ci_scope.py")),
+                                "--base", "0" * 40, "--head", "HEAD", "--output", str(output)],
+                               check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                lines = set(output.read_text().splitlines())
+                self.assertIn("docs=true", lines)
+                self.assertIn("go=false", lines)
+                self.assertIn("macos=false", lines)
+            finally:
+                os.chdir(old_cwd)
+
     def test_missing_history_selects_everything(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "scope"

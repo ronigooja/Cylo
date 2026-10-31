@@ -72,6 +72,15 @@ def changed_paths(base, head):
     return [p.decode("utf-8", "surrogateescape") for p in raw.split(b"\0") if p]
 
 
+def branch_point(head):
+    for ref in ("origin/main", "main"):
+        try:
+            return subprocess.check_output(["git", "merge-base", ref, head], stderr=subprocess.DEVNULL).decode().strip()
+        except subprocess.CalledProcessError:
+            continue
+    return ""
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", default="")
@@ -80,10 +89,14 @@ def main():
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     try:
-        if args.full or not args.base or set(args.base) == {"0"}:
+        base = args.base
+        if base and set(base) == {"0"}:
+            # First push of a branch has no previous commit; compare with main.
+            base = branch_point(args.head)
+        if args.full or not base:
             scope = select([], full=True)
         else:
-            scope = select(changed_paths(args.base, args.head))
+            scope = select(changed_paths(base, args.head))
     except subprocess.CalledProcessError:
         # Missing/rewritten history must never silently skip verification.
         scope = select([], full=True)
