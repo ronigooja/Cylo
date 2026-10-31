@@ -37,7 +37,21 @@ func NewManager(run CommandRunner) Manager {
 	if run == nil {
 		run = defaultRunner
 	}
-	return Manager{Run: run}
+	return Manager{Run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		out, err := run(ctx, name, args...)
+		if err == nil {
+			return out, nil
+		}
+		cmd := strings.TrimSpace(strings.Join(append([]string{name}, args...), " "))
+		detail := strings.TrimSpace(string(out))
+		if detail == "" {
+			detail = err.Error()
+		}
+		if len(detail) > 300 {
+			detail = detail[len(detail)-300:]
+		}
+		return out, fmt.Errorf("%s failed: %w: %s", cmd, err, detail)
+	}}
 }
 
 type ServiceStatus struct{ Name, State, Source string }
