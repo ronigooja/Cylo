@@ -21,6 +21,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/runner"
 )
 
 type ReleaseManifest struct {
@@ -406,12 +409,73 @@ func (m Manager) writeDeploymentFiles(o LifecycleOptions, mfest ReleaseManifest)
 	if err := os.MkdirAll(o.Root, 0750); err != nil {
 		return err
 	}
-	stack := map[string]string{"ZOE_SERVER_IMAGE": image(mfest, "zoe-server"), "ZOE_MEMORY_WORKER_IMAGE": image(mfest, "zoe-memory-worker"), "ZOE_SERVER_DATA_ROOT": filepath.Join(o.DataRoot, "server"), "ZOE_MEMORY_DATA_ROOT": filepath.Join(o.DataRoot, "memory"), "ZOE_RUNNER_TOKEN_FILE": filepath.Join(o.Root, "secrets", "runner-token"), "ZOE_MEMORY_RUNNER_TOKEN_FILE": filepath.Join(o.Root, "secrets", "memory-runner-token"), "ZOE_MEM0_LLM_API_KEY_FILE": filepath.Join(o.Root, "secrets", "mem0-llm-api-key"), "ZOE_RUNTIME_PROFILES": "{}", "ZOE_DEFAULT_PROFILE_ID": "worker", "ZOE_COMPOSE_FILE": filepath.Join(o.OptRoot, "releases", "current", "deploy-linux", "docker-compose.yml")}
-	runner := map[string]string{"ZOE_OPENCODE_IMAGE": o.OpenCodeImage, "ZOE_CONTROL_URL": "http://127.0.0.1:8787", "ZOE_RUNNER_JOURNAL_PATH": filepath.Join(o.DataRoot, "runner", "journal.sqlite"), "ZOE_RUNNER_ROUTES": "{}"}
+	model := readEnvValue(filepath.Join(o.Root, "zoe-runner.env"), "ZOE_OPENCODE_MODEL")
+	if strings.TrimSpace(model) == "" {
+		model = "provider/model"
+	}
+	profiles, routes, err := defaultProfileValues(model)
+	if err != nil {
+		return err
+	}
+	stack := map[string]string{"ZOE_SERVER_IMAGE": image(mfest, "zoe-server"), "ZOE_MEMORY_WORKER_IMAGE": image(mfest, "zoe-memory-worker"), "ZOE_SERVER_DATA_ROOT": filepath.Join(o.DataRoot, "server"), "ZOE_MEMORY_DATA_ROOT": filepath.Join(o.DataRoot, "memory"), "ZOE_RUNNER_TOKEN_FILE": filepath.Join(o.Root, "secrets", "runner-token"), "ZOE_MEMORY_RUNNER_TOKEN_FILE": filepath.Join(o.Root, "secrets", "memory-runner-token"), "ZOE_MEM0_LLM_API_KEY_FILE": filepath.Join(o.Root, "secrets", "mem0-llm-api-key"), "ZOE_RUNTIME_PROFILES": profiles, "ZOE_DEFAULT_PROFILE_ID": "worker", "ZOE_COMPOSE_FILE": filepath.Join(o.OptRoot, "releases", "current", "deploy-linux", "docker-compose.yml")}
+	runnerEnv := map[string]string{"ZOE_OPENCODE_IMAGE": o.OpenCodeImage, "ZOE_CONTROL_URL": "http://127.0.0.1:8787", "ZOE_RUNNER_JOURNAL_PATH": filepath.Join(o.DataRoot, "runner", "journal.sqlite"), "ZOE_RUNNER_ROUTES": routes}
 	if err := writeEnv(filepath.Join(o.Root, "zoe-stack.env"), stack, 0600); err != nil {
 		return err
 	}
-	return writeEnv(filepath.Join(o.Root, "zoe-runner.env"), runner, 0600)
+	return writeEnv(filepath.Join(o.Root, "zoe-runner.env"), runnerEnv, 0600)
+}
+
+const defaultOpenCodeModel = "provider/model"
+
+func readEnvValue(path, wanted string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(strings.TrimPrefix(line, "export ")), "=")
+		if ok && strings.TrimSpace(key) == wanted {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func defaultProfileValues(model string) (string, string, error) {
+	profiles := map[string]control.RuntimeProfile{
+		"worker": {ID: "worker", Harness: "opencode", RuntimeRouteID: "opencode", ModelRouteID: "default", Role: "worker", IsolationPolicy: "opencode-workspace-write-v1", CapabilityIDs: []string{}, Scopes: []string{}},
+	}
+	routes := map[string]runner.Route{
+		"worker": {ProfileID: "worker", RuntimeRouteID: "opencode", ModelRouteID: "default", IsolationPolicy: "opencode-workspace-write-v1", Harness: "opencode", Model: model, ApprovalMode: "accept-edits"},
+	}
+	if err := validateDefaultValues(profiles, routes); err != nil {
+		return "", "", err
+	}
+	profileJSON, err := json.Marshal(profiles)
+	if err != nil {
+		return "", "", err
+	}
+	routeJSON, err := json.Marshal(routes)
+	if err != nil {
+		return "", "", err
+	}
+	return string(profileJSON), string(routeJSON), nil
+}
+
+func validateDefaultValues(profiles map[string]control.RuntimeProfile, routes map[string]runner.Route) error {
+	if len(profiles) == 0 || len(routes) == 0 || len(profiles) != len(routes) {
+		return errors.New("default profile and route maps must be non-empty and have the same keys")
+	}
+	for id, profile := range profiles {
+		if id == "" || profile.ID != id || profile.Harness != "opencode" || profile.IsolationPolicy != "opencode-workspace-write-v1" || profile.RuntimeRouteID == "" || profile.ModelRouteID == "" || profile.Role == "" {
+			return fmt.Errorf("default profile %q is incomplete or invalid", id)
+		}
+		route, ok := routes[id]
+		if !ok || route.ProfileID != id || route.RuntimeRouteID == "" || route.ModelRouteID == "" || route.IsolationPolicy != "opencode-workspace-write-v1" || route.Harness == "" || route.Model == "" {
+			return fmt.Errorf("default route %q is incomplete or invalid", id)
+		}
+	}
+	return nil
 }
 func image(m ReleaseManifest, name string) string { i := m.Images[name]; return i.Ref + "@" + i.Digest }
 func writeEnv(path string, values map[string]string, mode os.FileMode) error {
@@ -444,15 +508,18 @@ func writeEnv(path string, values map[string]string, mode os.FileMode) error {
 			ok = false
 		}
 		if ok {
-			if value, releaseOwned := values[key]; releaseOwned && isReleaseOwnedEnvKey(key) {
-				lines[i] = key + "=" + value + ending
+			if value, generated := values[key]; generated {
+				_, existingValue, _ := strings.Cut(content, "=")
+				if isReleaseOwnedEnvKey(key) || (isOperatorOwnedEnvKey(key) && !validOperatorEnvValue(key, strings.TrimSpace(existingValue))) {
+					lines[i] = key + "=" + value + ending
+				}
 				seen[key] = true
 			}
 		}
 	}
 	keys := make([]string, 0, len(values))
 	for k := range values {
-		if !seen[k] && isReleaseOwnedEnvKey(k) {
+		if !seen[k] && (isReleaseOwnedEnvKey(k) || isOperatorOwnedEnvKey(k)) {
 			keys = append(keys, k)
 		}
 	}
@@ -473,9 +540,51 @@ func isReleaseOwnedEnvKey(key string) bool {
 	switch key {
 	case "ZOE_SERVER_IMAGE", "ZOE_MEMORY_WORKER_IMAGE", "ZOE_OPENCODE_IMAGE",
 		"ZOE_SERVER_DATA_ROOT", "ZOE_MEMORY_DATA_ROOT", "ZOE_RUNNER_TOKEN_FILE",
-		"ZOE_MEMORY_RUNNER_TOKEN_FILE", "ZOE_MEM0_LLM_API_KEY_FILE", "ZOE_RUNTIME_PROFILES",
-		"ZOE_DEFAULT_PROFILE_ID", "ZOE_COMPOSE_FILE", "ZOE_CONTROL_URL", "ZOE_RUNNER_JOURNAL_PATH",
-		"ZOE_RUNNER_ROUTES":
+		"ZOE_MEMORY_RUNNER_TOKEN_FILE", "ZOE_MEM0_LLM_API_KEY_FILE", "ZOE_COMPOSE_FILE",
+		"ZOE_CONTROL_URL", "ZOE_RUNNER_JOURNAL_PATH":
+		return true
+	default:
+		return false
+	}
+}
+
+func isOperatorOwnedEnvKey(key string) bool {
+	switch key {
+	case "ZOE_RUNTIME_PROFILES", "ZOE_DEFAULT_PROFILE_ID", "ZOE_RUNNER_ROUTES":
+		return true
+	default:
+		return false
+	}
+}
+
+func validOperatorEnvValue(key, value string) bool {
+	if value == "" || value == "{}" {
+		return false
+	}
+	switch key {
+	case "ZOE_DEFAULT_PROFILE_ID":
+		return true
+	case "ZOE_RUNTIME_PROFILES":
+		profiles := map[string]control.RuntimeProfile{}
+		if json.Unmarshal([]byte(value), &profiles) != nil || len(profiles) == 0 {
+			return false
+		}
+		for id, profile := range profiles {
+			if id == "" || profile.ID != id || (profile.Harness != "" && profile.Harness != "opencode") || profile.RuntimeRouteID == "" || profile.ModelRouteID == "" || profile.Role == "" || profile.IsolationPolicy != "opencode-workspace-write-v1" {
+				return false
+			}
+		}
+		return true
+	case "ZOE_RUNNER_ROUTES":
+		routes := map[string]runner.Route{}
+		if json.Unmarshal([]byte(value), &routes) != nil || len(routes) == 0 {
+			return false
+		}
+		for id, route := range routes {
+			if id == "" || route.ProfileID != id || route.RuntimeRouteID == "" || route.ModelRouteID == "" || route.IsolationPolicy == "" || route.Harness == "" || route.Model == "" {
+				return false
+			}
+		}
 		return true
 	default:
 		return false

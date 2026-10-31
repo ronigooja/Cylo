@@ -2,6 +2,7 @@ package ops
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ronigooja/Zoe/internal/control"
+	"github.com/ronigooja/Zoe/internal/runner"
 )
 
 func TestWriteEnvPreservesExistingValues(t *testing.T) {
@@ -47,6 +51,98 @@ func TestWriteEnvMergesReleaseValuesAndPreservesOperatorLines(t *testing.T) {
 	}
 	if mode := dataMode(t, path); mode != 0600 {
 		t.Fatalf("mode = %04o, want 0600", mode)
+	}
+}
+
+func TestDefaultProfileValuesRoundTripAndShareKeys(t *testing.T) {
+	profilesJSON, routesJSON, err := defaultProfileValues(defaultOpenCodeModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := map[string]control.RuntimeProfile{}
+	routes := map[string]runner.Route{}
+	if err := json.Unmarshal([]byte(profilesJSON), &profiles); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(routesJSON), &routes); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateDefaultValues(profiles, routes); err != nil {
+		t.Fatal(err)
+	}
+	if profiles["worker"].ID != "worker" || routes["worker"].ProfileID != "worker" {
+		t.Fatalf("defaults do not select worker: profiles=%v routes=%v", profiles, routes)
+	}
+	if len(profiles) != len(routes) {
+		t.Fatalf("profile and route key counts differ: %d/%d", len(profiles), len(routes))
+	}
+	for id := range profiles {
+		if _, ok := routes[id]; !ok {
+			t.Fatalf("route key set does not contain profile %q", id)
+		}
+	}
+}
+
+func TestWriteEnvSelfHealsProfileValuesButPreservesValidCustomValues(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "zoe.env")
+	profiles, routes, err := defaultProfileValues("provider/model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	customProfiles := `{"custom":{"id":"custom","harness":"opencode","runtime_route_id":"custom-runtime","model_route_id":"custom-model","role":"worker","isolation_policy":"opencode-workspace-write-v1","capability_ids":[],"scopes":[]}}`
+	customRoutes := `{"custom":{"profile_id":"custom","runtime_route_id":"custom-runtime","model_route_id":"custom-model","isolation_policy":"opencode-workspace-write-v1","harness":"opencode","model":"custom/model","approval_mode":"accept-edits"}}`
+	values := map[string]string{"ZOE_RUNTIME_PROFILES": profiles, "ZOE_DEFAULT_PROFILE_ID": "worker", "ZOE_RUNNER_ROUTES": routes}
+	if err := os.WriteFile(path, []byte("# keep\nZOE_RUNTIME_PROFILES="+customProfiles+"\nZOE_DEFAULT_PROFILE_ID=custom\nZOE_RUNNER_ROUTES="+customRoutes+"\nUNKNOWN=kept\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeEnv(path, values, 0600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "ZOE_RUNTIME_PROFILES="+customProfiles) || !strings.Contains(string(data), "ZOE_RUNNER_ROUTES="+customRoutes) || !strings.Contains(string(data), "ZOE_DEFAULT_PROFILE_ID=custom") || !strings.Contains(string(data), "UNKNOWN=kept") {
+		t.Fatalf("valid operator values were not preserved: %q", data)
+	}
+
+	if err := os.WriteFile(path, []byte("ZOE_RUNTIME_PROFILES={}\nZOE_DEFAULT_PROFILE_ID=\nZOE_RUNNER_ROUTES={}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeEnv(path, values, 0600); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "ZOE_RUNTIME_PROFILES="+profiles) || !strings.Contains(string(data), "ZOE_RUNNER_ROUTES="+routes) || !strings.Contains(string(data), "ZOE_DEFAULT_PROFILE_ID=worker") {
+		t.Fatalf("empty operator values did not self-heal: %q", data)
+	}
+	if mode := dataMode(t, path); mode != 0600 {
+		t.Fatalf("mode = %04o, want 0600", mode)
+	}
+}
+
+func TestWriteEnvFreshFileGetsWorkingProfileDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "zoe.env")
+	profiles, routes, err := defaultProfileValues(defaultOpenCodeModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeEnv(path, map[string]string{
+		"ZOE_RUNTIME_PROFILES":   profiles,
+		"ZOE_DEFAULT_PROFILE_ID": "worker",
+		"ZOE_RUNNER_ROUTES":      routes,
+	}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "ZOE_RUNTIME_PROFILES="+profiles) || !strings.Contains(string(data), "ZOE_DEFAULT_PROFILE_ID=worker") || !strings.Contains(string(data), "ZOE_RUNNER_ROUTES="+routes) {
+		t.Fatalf("fresh env did not receive defaults: %q", data)
 	}
 }
 
