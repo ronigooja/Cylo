@@ -226,6 +226,28 @@ func TestStageReleaseKeepsDeploymentFilesUnderDeployLinux(t *testing.T) {
 	}
 }
 
+func TestPruneReleasesKeepsInstalledCLI(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"current", "previous", "current-rev", "old-release", "zoe-cli-aaaaaaaaaaaa"} {
+		if err := os.Mkdir(filepath.Join(dir, name), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := pruneReleases(dir, filepath.Join(dir, "previous"), "current-rev"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"current", "previous", "current-rev", "zoe-cli-aaaaaaaaaaaa"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("%s was removed: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "old-release")); !os.IsNotExist(err) {
+		t.Errorf("old release still exists or returned an unexpected error: %v", err)
+	}
+}
+
 func TestUpdateRollbackReportsFailingStepAndCommandOutput(t *testing.T) {
 	root := t.TempDir()
 	opt := filepath.Join(t.TempDir(), "opt")

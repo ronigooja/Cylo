@@ -675,7 +675,7 @@ func pruneReleases(dir, previous, current string) error {
 		return e
 	}
 	for _, x := range entries {
-		if x.IsDir() && x.Name() != "current" && x.Name() != filepath.Base(previous) && x.Name() != current {
+		if x.IsDir() && !strings.HasPrefix(x.Name(), "zoe-cli-") && x.Name() != "current" && x.Name() != filepath.Base(previous) && x.Name() != current {
 			_ = os.RemoveAll(filepath.Join(dir, x.Name()))
 		}
 	}
