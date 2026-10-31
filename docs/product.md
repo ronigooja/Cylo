@@ -228,6 +228,41 @@ Zoe on macOS is an ambient screen, not a chat app: no sidebar, tabs, or persiste
 - **AI tools and settings audit.** The client exposes tools for surfaces, the component catalog, settings, voice, the text bar, and the silence timeout. Each setting declares type, range, description, and whether the AI may change it. Only the user may change instance key and login credentials, OS microphone permission, and the setting that revokes AI settings access. Every AI settings change shows a subtle notice and is recorded so the user can review and undo it. The menu-bar item always exists, and it shows when the microphone is in use.
 - **Before a server document exists,** the client shows a plain chronological list of authoritative tasks, approvals, and notifications through the same renderer, without ranking or invented content.
 - **Acceptance coverage.** Hidden app recoverable from the menu bar; microphone state visible while hidden; AI window changes (size, position, display, click-through, focus, Dock visibility) and user-action precedence; multiple surfaces; every standard component and its fallback; size-adaptive rendering; data-binding updates; Mac 840×620 and desktop sizes; empty, loading, and document-update states; transient text fallback; voice lifecycle and silence timeout; AI settings notice, audit, and undo; opaque intent submission; stale, offline, and failed operations; duplicate events and reconnect history; rotated keys, connection clearing, and identity changes; both languages and appearances; VoiceOver, keyboard focus, reduced motion, and Dynamic Type. Command-Comma is the Settings shortcut.
+- **Simple appearance, useful density.** Use native typography, restrained semantic colors, compact rows, and clear grouping. Keep more useful conversation and task information visible by reducing oversized headings, excessive whitespace, decorative cards, and repeated metadata. Preserve readability, keyboard access, Dynamic Type, and platform touch targets; density does not mean uniformly smaller text or controls.
+- **Conversation leads.** Keep projects and recent conversations/tasks in a compact sidebar. Show task receipts and concise progress/results in context. A compact, collapsible task rail may surface ongoing work, pending decisions, and recent completion on wide windows; collapse secondary surfaces before constraining the conversation in narrow windows. Avoid statistics dashboards and compulsory workflow panels.
+- **Voice is Settings-controlled.** Do not place a microphone button in the composer. Continuous voice is off
+until the user opts in through Settings. When enabled, the client automatically attempts to establish and
+maintain an authorized voice session after connection and identity initialization, subject to OS microphone
+permission, audio-session policy, app lifecycle/background limits, network, account-pool capacity, and server
+availability. The client must report connecting, active, interrupted, reconnecting, unavailable,
+permission-denied, and stopped states truthfully; it must not claim active voice when any required system,
+device, network, account, or server condition is unavailable. Automatic reconnect is appropriate for temporary
+ failures; permission or policy failures require a Settings/system-settings recovery path. Text chat remains
+usable whenever voice is unavailable. Continuous voice transports audio and spoken output only; transcript
+review/submission and business-command authorization remain explicit, and voice never silently submits or
+confirms business work. Do not add persistent labels, large waveforms, timers, voice cards, or separate
+persistent control strips. Settings controls and status messages need accessible names/state values, keyboard
+access, and help on demand; color alone must not carry state. Detailed voice, transport, account, and server
+errors are not a client presentation responsibility: the client shows only a concise actionable state and
+automatically submits the redacted diagnostic through the authenticated diagnostic channel when available.
+- **Automation reduces required interaction.** After the user expresses and authorizes the intent, work
+proceeds within its granted scope. Keep ordinary progress concise; emphasize decisions that require the user,
+actionable failures, and recorded results. Ordinary assistant replies and ordinary task results are
+server-authored content, not client-side Accept/Reject workflows. Users continue through chat by asking for
+changes, continuation, or missing information; ambiguous words do not authorize a business decision.
+High-impact or irreversible actions require scoped, explicit conversational confirmation tied to the
+task/run/action, expected version, and expiry. Continuous voice does not alter these boundaries.
+- **Focus on outcomes.** Summarize programming work using its goal, current stage, outcome, validation summary, and decisions that require the user. Users should be able to understand what was accomplished and what remains unresolved through these summaries, without reviewing source code. The same conversation and task surfaces must support research and other authorized work.
+- **Client errors are concise; diagnostics are automatic.** This applies to every native-client error surface,
+ including connection, voice, task, notification, export, capability, storage, and transport failures. The
+client must not display detailed server, infrastructure, runtime, transport, account, or local exception text.
+ It shows only a short state and an actionable recovery or retry instruction; detailed context is redacted,
+encrypted, queued, and automatically returned to the authenticated diagnostic endpoint when available.
+Diagnostic upload is best effort and must not block the user, alter command authority, or change receipt/retry
+semantics. Authentication failures and user-input validation may show the minimum information needed to
+recover, but must not expose credentials, headers, response bodies, transcripts, audio, SDP/ICE, or
+secret-bearing details.
+The authenticated client synchronizes its server-controlled diagnostic policy and queued events every 60 seconds by default.
 
 ### Client behavior boundaries
 

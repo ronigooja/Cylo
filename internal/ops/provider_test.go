@@ -83,6 +83,30 @@ func TestProbeCategoriesAndModel(t *testing.T) {
 	}
 }
 
+func TestProbeMatchesOpenCodeProviderPrefix(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-6.1-sol"},{"id":"org/model"}]}`))
+	}))
+	defer server.Close()
+	for _, model := range []string{"cliproxyapi/gpt-6.1-sol", "gpt-6.1-sol", "org/model"} {
+		result := Probe(context.Background(), ProviderConfig{BaseURL: server.URL, Model: model, Secret: "secret"}, server.Client())
+		if !result.ModelAvailable || result.ErrorCategory != "" {
+			t.Fatalf("model %q result=%+v", model, result)
+		}
+	}
+	wrong := Probe(context.Background(), ProviderConfig{BaseURL: server.URL, Model: "cliproxyapi/other", Secret: "secret"}, server.Client())
+	if wrong.ModelAvailable || wrong.ErrorCategory != "model_unavailable" {
+		t.Fatalf("wrong model result=%+v", wrong)
+	}
+}
+
+func TestProbeInvalidConfigurationIncludesSafeReason(t *testing.T) {
+	result := Probe(context.Background(), ProviderConfig{BaseURL: "https://gateway.example/v1?secret=do-not-leak", Model: "gpt-test", Secret: "secret"}, nil)
+	if result.ErrorCategory != "invalid_configuration" || !strings.Contains(result.ErrorReason, "without credentials") || strings.Contains(result.ErrorReason, "do-not-leak") {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
 func TestReadSecretDoesNotEchoValue(t *testing.T) {
 	var prompt strings.Builder
 	secret, err := ReadSecret(&prompt, func() ([]byte, error) { return []byte(" hidden-token \n"), nil })

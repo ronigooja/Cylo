@@ -216,6 +216,20 @@ final class InstanceConnectionTests: XCTestCase {
     }
 
     @MainActor
+    func testTransportFailureUsesGenericUserMessage() async throws {
+        let model = ZoeAppModel(defaults: UserDefaults(suiteName: UUID().uuidString)!)
+        model.connectionAPIOverrideForTesting = { url, credential, installation in
+            try APIClient(serverURL: url, credentials: credential, session: self.session(), installationID: installation)
+        }
+        InstanceURLProtocol.handle = { _ in throw URLError(.notConnectedToInternet) }
+
+        let connected = await model.connect(serverAddress: "https://zoe.example", key: key())
+
+        XCTAssertFalse(connected)
+        XCTAssertEqual(model.notice, uiText("Something went wrong. Try again."))
+    }
+
+    @MainActor
     func testFreshInstallHasNoAddressAndImportNeedsExplicitConnect() async throws {
         let defaults = UserDefaults(suiteName: UUID().uuidString)!
         defaults.set("http://obsolete.example", forKey: "zoe.serverAddress")

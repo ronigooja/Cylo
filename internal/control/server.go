@@ -310,6 +310,7 @@ func NewServer(store *storage.Store, cfg Config) (*Server, error) {
 	s := &Server{store: store, cfg: cfg, commands: make(map[string]CommandHandler), taskSources: make(map[string]TaskSourceAdmissionHandler), taskDispatchGuards: make(map[string]TaskDispatchGuard), public: http.NewServeMux(), device: http.NewServeMux(), runner: http.NewServeMux(), pushSender: cfg.PushSender}
 	s.registerCoreRoutes()
 	s.registerDiagnosticsRoute()
+	s.registerClientPolicyRoutes()
 	return s, nil
 }
 
@@ -501,6 +502,19 @@ func (s *Server) Handler() http.Handler {
 	root.Handle("/runner/v1/", s.runnerAuth(s.restoreDeletionGate(s.runner)))
 	root.Handle("/healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}))
+	root.Handle("/readyz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var present int
+		err := s.store.DB().QueryRowContext(r.Context(), `SELECT count(*) FROM instance_auth WHERE singleton=1`).Scan(&present)
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "pending", "reason": "instance_key_not_initialized"})
+			return
+		}
+		if present != 1 {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "pending", "reason": "instance_key_not_initialized"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	}))
 	root.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apiError(http.StatusNotFound, "not_found", "route not found", nil))

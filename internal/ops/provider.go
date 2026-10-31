@@ -20,6 +20,16 @@ import (
 
 const DefaultProviderSecretPath = "/etc/zoe/runner-secrets/cliproxyapi-api-key"
 
+const DefaultMemorySecretPath = "/etc/zoe/secrets/mem0-llm-api-key"
+
+const memoryWorkerUID = 65532
+const memoryWorkerGID = 65532
+
+var (
+	chownFile    = os.Chown
+	effectiveUID = os.Geteuid
+)
+
 // ProviderConfig is the deployment configuration consumed by the Zoe runner.
 // Secret contains the credential only while configuring; it is never rendered
 // into an environment file or included in ProbeResult.
@@ -31,6 +41,38 @@ type ProviderConfig struct {
 	Image          string
 	ProviderSocket string
 	WorkspaceRoot  string
+}
+
+// MemoryConfig is the credential and endpoint consumed by the memory worker.
+// Secret is held only while staging a configuration and is never rendered into
+// a deployment environment file or a probe result.
+type MemoryConfig struct {
+	BaseURL    string
+	Model      string
+	SecretPath string
+	Secret     string
+}
+
+func (c MemoryConfig) Normalized() (MemoryConfig, error) {
+	c.BaseURL = strings.TrimRight(strings.TrimSpace(c.BaseURL), "/")
+	c.Model = strings.TrimSpace(c.Model)
+	c.SecretPath = strings.TrimSpace(c.SecretPath)
+	if c.SecretPath == "" {
+		c.SecretPath = DefaultMemorySecretPath
+	}
+	if err := ValidateProviderBaseURL(c.BaseURL); err != nil {
+		return MemoryConfig{}, err
+	}
+	if c.Model == "" {
+		return MemoryConfig{}, errors.New("memory model is required")
+	}
+	if !filepath.IsAbs(c.SecretPath) {
+		return MemoryConfig{}, errors.New("memory secret path must be absolute")
+	}
+	if strings.ContainsAny(c.Model, "\r\n") {
+		return MemoryConfig{}, errors.New("memory model contains a newline")
+	}
+	return c, nil
 }
 
 func (c ProviderConfig) Normalized() (ProviderConfig, error) {
@@ -77,6 +119,10 @@ func WriteSecretAtomic(path string, secret []byte) error {
 		return errors.New("provider token is empty")
 	}
 	return writeFileAtomic(path, secret, 0o600)
+}
+
+func writeMemorySecretAtomic(path string, secret []byte) error {
+	return writeFileAtomicOwned(path, secret, 0o600, memoryWorkerUID, memoryWorkerGID)
 }
 
 // WriteRunnerEnvAtomic renders runner provider/runtime variables. The token
@@ -144,7 +190,7 @@ func writeFileAtomicOwned(path string, data []byte, mode os.FileMode, uid, gid i
 				return statErr
 			}
 			if !currentOK || currentOwner.Uid != st.Uid || currentOwner.Gid != st.Gid {
-				if err = tmp.Chown(int(st.Uid), int(st.Gid)); err != nil {
+				if err = chownFile(tmpName, int(st.Uid), int(st.Gid)); err != nil {
 					tmp.Close()
 					return err
 				}
@@ -159,8 +205,8 @@ func writeFileAtomicOwned(path string, data []byte, mode os.FileMode, uid, gid i
 		}
 		currentOwner, currentOK := current.Sys().(*syscall.Stat_t)
 		needsChown := !currentOK || int(currentOwner.Uid) != uid || int(currentOwner.Gid) != gid
-		if needsChown && os.Geteuid() == 0 {
-			if err = tmp.Chown(uid, gid); err != nil {
+		if needsChown && effectiveUID() == 0 {
+			if err = chownFile(tmpName, uid, gid); err != nil {
 				tmp.Close()
 				return err
 			}
@@ -203,13 +249,14 @@ type ProbeResult struct {
 	Model          string
 	ModelAvailable bool
 	ErrorCategory  string
+	ErrorReason    string
 }
 
 // Probe checks the provider's models endpoint and reports coarse outcomes.
 func Probe(ctx context.Context, c ProviderConfig, client *http.Client) ProbeResult {
 	normalized, err := c.Normalized()
 	if err != nil {
-		return ProbeResult{Model: c.Model, ErrorCategory: "invalid_configuration"}
+		return ProbeResult{Model: c.Model, ErrorCategory: "invalid_configuration", ErrorReason: err.Error()}
 	}
 	secret := []byte(normalized.Secret)
 	if len(secret) == 0 {
@@ -262,13 +309,23 @@ func Probe(ctx context.Context, c ProviderConfig, client *http.Client) ProbeResu
 		return result
 	}
 	for _, model := range catalog.Data {
-		if subtle.ConstantTimeCompare([]byte(model.ID), []byte(normalized.Model)) == 1 {
+		if modelIDMatches(model.ID, normalized.Model) {
 			result.ModelAvailable = true
 			return result
 		}
 	}
 	result.ErrorCategory = "model_unavailable"
 	return result
+}
+
+func modelIDMatches(id, configured string) bool {
+	if subtle.ConstantTimeCompare([]byte(id), []byte(configured)) == 1 {
+		return true
+	}
+	if slash := strings.IndexByte(configured, '/'); slash >= 0 {
+		return subtle.ConstantTimeCompare([]byte(id), []byte(configured[slash+1:])) == 1
+	}
+	return false
 }
 
 func (r ProbeResult) OK() bool {

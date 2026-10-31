@@ -94,6 +94,58 @@ func TestInstanceKeyProtectsEveryBusinessRouteAndRemovesOwnerEndpoints(t *testin
 		t.Fatalf("synthetic actors=%d %v", count, err)
 	}
 }
+
+func TestPendingInstanceAuthProtectsBusinessRoutesAndBecomesReadyAfterInit(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.Open(ctx, storage.Config{Path: ":memory:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err = storage.RegisterCoreMigrations(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = RegisterInstanceMaintenanceMigration(store); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = InitializeInstanceAuthPending(ctx, store, ""); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(store, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := server.Handler()
+	pending := instanceRequest(handler, http.MethodGet, "/readyz", "", "")
+	if pending.Code != http.StatusServiceUnavailable || pending.Body.String() != `{"reason":"instance_key_not_initialized","status":"pending"}
+` {
+		t.Fatalf("pending readiness=%d body=%q", pending.Code, pending.Body.String())
+	}
+	if got := instanceRequest(handler, http.MethodGet, "/v1/snapshot", "", "").Code; got != http.StatusUnauthorized {
+		t.Fatalf("pending snapshot=%d", got)
+	}
+	if got := instanceRequest(handler, http.MethodPost, "/v1/commands", "", `{}`).Code; got != http.StatusUnauthorized {
+		t.Fatalf("pending command=%d", got)
+	}
+	key, err := GenerateInstanceKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = InitializeInstanceAuth(ctx, store, key); err != nil {
+		t.Fatal(err)
+	}
+	ready := instanceRequest(handler, http.MethodGet, "/readyz", "", "")
+	if ready.Code != http.StatusOK || ready.Body.String() != `{"status":"ready"}
+` {
+		t.Fatalf("ready readiness=%d body=%q", ready.Code, ready.Body.String())
+	}
+	if got := instanceRequest(handler, http.MethodGet, "/v1/snapshot", key, "").Code; got != http.StatusOK {
+		t.Fatalf("initialized snapshot=%d", got)
+	}
+}
 func TestRotationFencesInflightMutationsAndPersistsAcrossInitialization(t *testing.T) {
 	store, server, key := instanceAuthFixture(t)
 	next, _ := GenerateInstanceKey()

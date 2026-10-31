@@ -163,6 +163,7 @@ func TestReviewLateCoreMigrationAfterFeatureHistory(t *testing.T) {
 		// Later core migrations (8, 11, 12) must also be undone: the scenario is a
 		// database whose core history stopped at version 3.
 		`DROP INDEX client_diagnostic_events_device_time`, `DROP INDEX client_diagnostic_events_request`, `DROP TABLE client_diagnostic_events`,
+		`DROP TABLE client_policy`,
 		`DROP INDEX task_confirmations_task`, `DROP TABLE task_confirmations`,
 		`ALTER TABLE tasks DROP COLUMN interaction_state`, `ALTER TABLE tasks DROP COLUMN interaction_scope`,
 		`ALTER TABLE tasks DROP COLUMN interaction_run_id`, `ALTER TABLE tasks DROP COLUMN interaction_action_digest`,
@@ -187,7 +188,7 @@ func TestReviewLateCoreMigrationAfterFeatureHistory(t *testing.T) {
 	if _, err := s.DB().ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=7`); err != nil {
 		t.Fatal(err)
 	}
-	for _, version := range []int{8, 11, 12, 13} {
+	for _, version := range []int{8, 11, 12, 13, 14} {
 		if _, err := s.DB().ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=?`, version); err != nil {
 			t.Fatal(err)
 		}

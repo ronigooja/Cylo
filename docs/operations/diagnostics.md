@@ -16,6 +16,14 @@ transcripts, SDP/ICE, or local exception text.
 
 ## What the endpoint actually accepts
 
+Clients read policy from authenticated `GET /v1/client/policy`, which returns
+the current `log_level`, `poll_interval_seconds`, and monotonic `revision` with
+`Cache-Control: no-store`. Operators use `zoe client-policy show` or `zoe
+client-policy set --level error|info|debug [--interval SECONDS]`. These CLI
+operations pause the managed server, take the normal SQLite storage lock, read
+or update the policy, and resume the server; `--offline` is available when the
+operator has stopped it manually.
+
 The endpoint is registered on the authenticated device route:
 
 ```text
@@ -36,12 +44,13 @@ event has these persisted fields:
 | `request_path` | Bounded request path, not a response body. |
 | `http_status`, `response_bytes` | Status and response size only. |
 | `error_type`, `error_summary` | Bounded, redacted classification and summary. |
+| `level` | Optional `error`, `info`, or `debug`; omitted means `error`. More verbose events are accepted but dropped under the current policy. |
 
 The server rejects sensitive keys and sensitive markers, including
 authorization/token/secret/API-key/header/body/SDP/ICE/audio/transcript or
 credential fields. It also rejects an event larger than 16 KiB and a request
 body larger than 1 MiB. A batch is accepted with HTTP `202` and returns
-generated `diagnostic_ids`; malformed, unauthenticated, forbidden, sensitive,
+generated `diagnostic_ids` and a `dropped` count; malformed, unauthenticated, forbidden, sensitive,
 oversized, or rate-limited submissions are not evidence that an event was
 stored.
 

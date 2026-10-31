@@ -20,6 +20,12 @@ When clearing/replacing a connection, discard its local durable queue, cached sn
 
 Every holder of the shared key has owner access; local clearing is not server-side revocation. Operator key rotation blocks future old-key access and requires redistribution. Losing the key needs operator replacement rather than password recovery. Rejected credentials close workspace access; ordinary transport errors preserve validated state with stale feedback. Import validation, Keychain denial, rotated keys, concurrent installations, protected transport, and native device interaction require separate acceptance evidence.
 
+A fresh server starts in a pending state when the instance-auth row does not yet
+exist. It serves health checks, but every `/v1` request returns `401` until the
+operator runs `zoe key init`. `GET /readyz` reports `503` with
+`instance_key_not_initialized` while pending and `200` with
+`{"status":"ready"}` after initialization; it reads the database on each request.
+
 ## Sources
 
 [Product chapter 14](../../product.md#14-permission-and-security-requirements); [architecture identity boundary](../../architecture.md#identity-clients-and-notices). The decision was selected on 2026-10-25; rollout and acceptance remain separate in [the master plan](../../master-plan.md).

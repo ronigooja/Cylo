@@ -57,48 +57,46 @@ OpenCode runs only in runner-created containers. The provider bridge/socket is t
 
 Use the [Linux deployment templates](../../deploy/linux/) and [release workflow](../../.github/workflows/server-release.yml) for the server/runner release. Prepare the host layout with [prepare-host-layout.sh](../../deploy/linux/prepare-host-layout.sh) before selecting a reviewed immutable release. Do not compile on the control host.
 
-The operator release installation procedure below installs only the maintenance CLI. It does not install server images or configure a complete deployment. Run `zoe status` before `zoe setup`, `zoe provider configure`, or `zoe provider test`; these operations are also available from the interactive menu. For an already deployed external voice gateway, use `zoe voice configure --url HTTPS_URL --token-file PRIVATE_KEY_FILE`, then `zoe voice test` and `zoe voice status`. This writes only the Zoe-side endpoint and secret reference; it does not deploy or modify the gateway. Follow [the CLI implementation](../../cmd/zoe/) for current flags and [deployment configuration](../../internal/ops/deployment_config.go) for detection and rollback behavior.
+The operator release installation procedure below installs only the maintenance CLI. It does not install server images or configure a complete deployment. Run `zoe status` before `zoe setup`, `zoe provider configure`, `zoe provider test`, `zoe memory configure`, or `zoe memory test`; these operations are also available from the grouped interactive menu. The memory model key is a separate credential issued by the model gateway and entered through `zoe`; Zoe never creates it. For an already deployed external voice gateway, use `zoe voice configure --url HTTPS_URL --token-file PRIVATE_KEY_FILE`, then `zoe voice test` and `zoe voice status`. This writes only the Zoe-side endpoint and secret reference; it does not deploy or modify the gateway. Follow [the CLI implementation](../../cmd/zoe/) for current flags and [deployment configuration](../../internal/ops/deployment_config.go) for detection and rollback behavior.
 
 ### Complete Linux deployment order
 
-Use this order when installing a complete Zoe instance. Each step applies to
-the host being deployed.
+Copy the reviewed `zoe-linux-<arch>.tar.gz` package to the host, then run the
+single bootstrap entry point:
 
-1. Build and review the Linux amd64 server/runner release from the pinned
-   [server workflow](../../.github/workflows/server-release.yml) and publish the Zoe-owned
-   OpenCode runtime image with the [OpenCode image workflow](../../.github/workflows/opencode-image.yml).
-   The image tag is `<opencode version>-<hash of build inputs>`, so an unchanged image is
-   reused rather than rebuilt; the workflow prints `ZOE_OPENCODE_IMAGE=<ref>@<digest>`. The
-   server release records its immutable digests in the release manifest. Verify the
-   binary `SHA256SUMS` file before transferring the small daemon/CLI binaries;
-   do not export or re-upload image tarballs.
-2. Run `prepare-host-layout.sh`. It creates the Docker network, service user,
-   persistent roots, and protected secret directories. It does not create
-   runtime state beyond the configured runner roots.
-3. Authenticate the deployment host to `ghcr.io` with a deployment-managed
-   GitHub token that has read-only package access, then set the server and
-   worker image variables to the GHCR references from the reviewed server
-   manifest. Use `@sha256:<digest>` references for the running Compose
-   configuration. Set `ZOE_OPENCODE_IMAGE` to the reviewed GHCR OpenCode reference and digest. Configure `ZOE_OPENCODE_MODEL`, `ZOE_OPENCODE_PROVIDER_SOCKET`, and `ZOE_OPENCODE_WORKSPACE_ROOT` (the runner mounts only `<root>/<run-id>`); the runner creates and labels each runtime container.
-4. Install the immutable server/runner release under
-   `/opt/zoe/releases/<revision>` and update the `current` selector. Create
-   the runner and memory-worker secret files with the documented owner and
-   mode. Do not generate or inject an instance key during installation.
-5. With the server stopped and no startup instance-key source configured, the
-   operator runs `zoe key init --database PATH --server HTTPS_URL
-   --output PRIVATE_JSON` (or `zoe key rotate` for an existing instance).
-   The operator keeps the private JSON output for client connection. The
-   server uses the credential hash stored in its database; the installer must
-   not create, inject, or persist a plaintext instance-key startup secret.
-   When root initializes a new database for the Compose service, set ownership
-   of the database and any existing `-wal` and `-shm` sidecars to `65532:65532`
-   before first startup, retaining mode `0600`. Do not recursively change the
-   directory's private JSON exports.
-6. Configure and start `zoe-compose.service`, then start `zoe-runner.service`.
-   Run `docker compose pull` from the reviewed Compose directory so Docker
-   fetches the pinned GHCR images directly, then start the runner so
-   the runner can reach the configured control-plane URL.
-7. Verify service state and health/readiness endpoints. These checks establish
+```sh
+sudo bash deploy-linux/install-cli.sh /path/to/zoe-linux-<arch>.tar.gz
+sudo zoe install [--start] --release /path/to/release \
+  --opencode-image ghcr.io/OWNER/zoe-opencode:TAG@sha256:DIGEST
+```
+
+   The bootstrap verifies `SHA256SUMS`, installs the CLI atomically, and keeps one
+   immutable CLI release. `zoe install` validates the release and host before
+   writing files, stages the release, pins images by digest, pulls them, installs
+   the systemd units, preserves existing tokens and environment, and creates
+   deployment-owned runner tokens only when absent. It does not create an instance
+   key or a model gateway key. It leaves services stopped by default; `--start`
+   starts both units and waits for the health probe. It prints the next steps in
+   order: `zoe key init`, `zoe memory configure`, then `zoe provider configure` for
+   systemd/runner deployments. Until key init, `zoe status` shows
+   `Instance key: pending (run zoe key init)`. Provider and memory keys come from
+   the model gateway and are entered through `zoe`; they are never generated here.
+
+After the stack starts, steps 1 and 2 may be done in either order; step 3 comes last:
+
+1. Run `zoe key init --database PATH --server HTTPS_URL --output PRIVATE_JSON`
+   (or `zoe key rotate` for an existing instance). The operator keeps the private
+   JSON output for client connection. The server uses the credential hash stored
+   in its database; the installer must not create, inject, or persist a plaintext
+   instance-key startup secret. When root creates the database before the Compose
+   service has, set ownership of the database and any existing `-wal` and `-shm`
+   sidecars to `65532:65532`, retaining mode `0600`. Do not recursively change
+   the directory's private JSON exports.
+2. Configure the memory model with `zoe memory configure`, then configure the
+   task model with `zoe provider configure` for systemd/runner deployments.
+3. Verify service state, `/healthz`, and `/readyz`. `/healthz` establishes process
+   liveness; `/readyz` is `200 {"status":"ready"}` only after the instance-auth
+   row exists and otherwise remains `503` pending. These checks establish
    installation and process readiness; model execution, memory processing, and
    end-to-end task completion require a separate acceptance run.
 
@@ -109,6 +107,22 @@ by this procedure. Its URL, selected model, and API-key file are deployment
 configuration applied to the OpenCode runtime and memory worker after the host components
 are installed; leaving them unset keeps the daemons available but prevents
 model-backed task execution.
+
+### Upgrade and removal
+
+Use `zoe update --release /path/to/release --opencode-image ...` to stage and pull
+the new release, switch `current`, restart Compose and the runner, and verify
+health. A failed update restores the prior selector and image settings and
+reports the failing command's bounded output; data and secrets are not touched.
+Use `zoe uninstall` for reviewed removal. It
+first prints the exact Compose-project containers, `io.zoe.managed=true` runtime
+containers, and local IDs for the four Zoe image repositories. It removes the
+Compose project with `docker compose down --remove-orphans`, removes only those
+queried IDs, keeps the shared Qdrant image, and never runs Docker prune. It
+requires typing `yes` unless `--yes` is supplied; non-interactive use must supply
+`--yes`. By default it keeps `/var/lib/zoe` and all `/etc/zoe`. Add `--purge-data`
+to remove data and Zoe-generated configuration/tokens while explicitly keeping
+the three gateway credentials; add `--purge-credentials` to remove those too.
 
 ## Server and worker settings
 
@@ -138,7 +152,7 @@ Optional settings:
 - `ZOE_RUNTIME_PROFILES`: JSON object keyed by profile ID. Each profile sets `id`, `runtime_route_id`, `model_route_id`, `role`, `isolation_policy`, `capability_ids`, and `scopes`. Client requests cannot override these execution routes or grants.
 - `ZOE_RUNNER_TOKEN`: deployment-provisioned 32-byte base64url runner credential. When set, `ZOE_RUNNER_ID`, `ZOE_RUNNER_WORKSPACES`, and `ZOE_RUNNER_SCOPES` default to `configured-runner`, `default`, and `runner:claim,runner:observe,runner:control:read`.
 - `ZOE_MEMORY_RUNNER_TOKEN_FILE`: optional path to a deployment-managed file containing a distinct 32-byte base64url memory worker credential. When enabled, `ZOE_MEMORY_RUNNER_WORKSPACES` must list exact workspace IDs; `ZOE_MEMORY_RUNNER_ID` defaults to `memory-worker`; and `ZOE_MEMORY_RUNNER_SCOPES` may only contain exactly `memory:jobs:claim,memory:jobs:complete,memory:propose`. The server stores only the credential hash and never logs the token. This credential exposes the durable derived-job API; it does not enable a Mem0 or Qdrant runtime.
-- Memory-worker deployment also requires `ZOE_CONTROL_URL`, the scoped worker credential injected as `ZOE_RUNNER_TOKEN` (provisioned for the server through `ZOE_MEMORY_RUNNER_TOKEN_FILE`), `ZOE_MEM0_LLM_MODEL`, `ZOE_MEM0_LLM_BASE_URL`, and `ZOE_MEM0_LLM_API_KEY` from deployment-managed secret references. `ZOE_MEM0_LLM_PROVIDER` must use the accounted `openai` path; `ollama` is rejected until it supports the same accounting boundary; `ZOE_MEM0_HISTORY_DB` and the model cache belong on the private persistent memory volume. Qdrant URL, optional API-key reference, collection/codec, and worker batch/poll settings are deployment configuration. The pinned multilingual embedding revision and dimensions are defined in [worker configuration](../../services/memory/config.py); changing them requires a separate collection and rebuild.
+- Memory-worker deployment also requires `ZOE_CONTROL_URL`, the scoped worker credential injected as `ZOE_RUNNER_TOKEN` (provisioned for the server through `ZOE_MEMORY_RUNNER_TOKEN_FILE`), `ZOE_MEM0_LLM_MODEL`, `ZOE_MEM0_LLM_BASE_URL`, and `ZOE_MEM0_LLM_API_KEY` from deployment-managed secret references. Configure the three Mem0 values with `zoe memory configure`; its secret path must remain distinct from the task-model credential. The memory model key is a separate credential issued by the model gateway and entered through `zoe`, never created by Zoe. `ZOE_MEM0_LLM_PROVIDER` must use the accounted `openai` path; `ollama` is rejected until it supports the same accounting boundary; `ZOE_MEM0_HISTORY_DB` and the model cache belong on the private persistent memory volume. Qdrant URL, optional API-key reference, collection/codec, and worker batch/poll settings are deployment configuration. The pinned multilingual embedding revision and dimensions are defined in [worker configuration](../../services/memory/config.py); changing them requires a separate collection and rebuild.
 - For local execution, start the worker from the repository root with `python -m services.memory.worker`, or deploy reviewed CI-built worker images with the settings above. The Compose Qdrant service is loopback-bound and disposable; it is not a production persistence configuration. These commands describe source setup and do not establish production installation or recovery.
 - `ZOE_INSTANCE_SCOPES`: comma-separated fixed-owner grants. An explicit value replaces the defaults exactly; it never adds a wildcard or restores omitted grants. Device approval/revocation scopes are not part of the client model. Project/task memory scopes must name their exact scope IDs.
 
@@ -194,7 +208,7 @@ provider endpoint and model, the source of provider configuration, the last
 provider check category, and the secret file mode. Token contents, instance
 keys, and complete installation links are never included in status output.
 
-The canonical OpenCode provider variables are `ZOE_OPENCODE_PROVIDER_BASE_URL`, `ZOE_OPENCODE_PROVIDER_KEY_FILE`, and `ZOE_OPENCODE_MODEL`; the runtime image and bridge use `ZOE_OPENCODE_IMAGE` and `ZOE_OPENCODE_PROVIDER_SOCKET`. The default key file is `/etc/zoe/runner-secrets/cliproxyapi-api-key` with mode `0600`. Provider credentials never enter the OpenCode container environment.
+The canonical OpenCode provider variables are `ZOE_OPENCODE_PROVIDER_BASE_URL`, `ZOE_OPENCODE_PROVIDER_KEY_FILE`, and `ZOE_OPENCODE_MODEL`; the runtime image and bridge use `ZOE_OPENCODE_IMAGE` and `ZOE_OPENCODE_PROVIDER_SOCKET`. The default key file is `/etc/zoe/runner-secrets/cliproxyapi-api-key` with mode `0600`. Provider credentials never enter the OpenCode container environment. The memory model key file `/etc/zoe/secrets/mem0-llm-api-key` is owned by `65532:65532`, like the other Compose secrets.
 
 
 Service reloads are performed by the CLI through the detected deployment

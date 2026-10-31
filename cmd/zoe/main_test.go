@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 )
@@ -27,7 +29,7 @@ func TestMenuDispatchesSelectedOperationAndExits(t *testing.T) {
 		return nil
 	}
 	var out, errOut bytes.Buffer
-	if err := menu(strings.NewReader("6\n0\n"), &out, &errOut); err != nil {
+	if err := menu(strings.NewReader("1\n0\n"), &out, &errOut); err != nil {
 		t.Fatal(err)
 	}
 	if !called || !strings.Contains(out.String(), "ok") || errOut.Len() != 0 {
@@ -59,7 +61,7 @@ func TestMenuSharesInputAcrossPromptsAndActions(t *testing.T) {
 		return nil
 	}
 	var out, errOut bytes.Buffer
-	if err := menu(strings.NewReader("2\nhttps://provider/v1\nmodel\nprivate\n2\nhttps://provider/v1\nmodel\nprivate\n0\n"), &out, &errOut); err != nil {
+	if err := menu(strings.NewReader("6\nhttps://provider/v1\nmodel\nprivate\n6\nhttps://provider/v1\nmodel\nprivate\n0\n"), &out, &errOut); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 2 || errOut.Len() != 0 {
@@ -70,5 +72,73 @@ func TestMenuSharesInputAcrossPromptsAndActions(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "API token: ") {
 		t.Fatalf("token prompt missing: %q", out.String())
+	}
+}
+
+func TestMenuUsesGroupedTwoDigitLabels(t *testing.T) {
+	old := operations["key rotate"]
+	t.Cleanup(func() { operations["key rotate"] = old })
+	called := false
+	operations["key rotate"] = func(_ []string, _ io.Reader, _ io.Writer, _ io.Writer) error {
+		called = true
+		return nil
+	}
+	var out, errOut bytes.Buffer
+	if err := menu(strings.NewReader("14\n0\n"), &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	for _, label := range []string{"Overview:", "1) Show status", "First-time setup", "System:", "3) Install host", "4) Update host", "5) Uninstall host", "Models:", "8) Configure memory model", "Voice:", "Access:", "13) Create instance key", "14) Rotate instance key", "15) Show client policy", "16) Set client policy"} {
+		if !strings.Contains(out.String(), label) {
+			t.Fatalf("menu missing %q: %s", label, out.String())
+		}
+	}
+	if !called || errOut.Len() != 0 {
+		t.Fatalf("two-digit dispatch failed: called=%v err=%q", called, errOut.String())
+	}
+}
+
+func TestReadTokenHidesTerminalEchoAndRestoresIt(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "tty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("secret-value\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	var hidden, restored int
+	old := terminalEcho
+	terminalEcho = func(*os.File) (func(), bool, error) {
+		hidden++
+		return func() { restored++ }, true, nil
+	}
+	t.Cleanup(func() { terminalEcho = old })
+	var out bytes.Buffer
+	token, err := readToken(file, &out)
+	if err != nil || string(token) != "secret-value" {
+		t.Fatalf("token=%q err=%v", token, err)
+	}
+	if hidden != 1 || restored != 1 {
+		t.Fatalf("echo hidden=%d restored=%d", hidden, restored)
+	}
+	if strings.Contains(out.String(), "secret-value") {
+		t.Fatal("token was echoed")
+	}
+}
+
+func TestReadTokenRefusesWhenEchoCannotBeDisabled(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "tty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	old := terminalEcho
+	terminalEcho = func(*os.File) (func(), bool, error) { return nil, true, errors.New("no tty") }
+	t.Cleanup(func() { terminalEcho = old })
+	if _, err := readToken(file, io.Discard); err == nil {
+		t.Fatal("readToken must fail instead of echoing the token")
 	}
 }

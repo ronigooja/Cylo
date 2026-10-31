@@ -369,6 +369,21 @@ CREATE INDEX client_diagnostic_events_request ON client_diagnostic_events(client
 	}}); err != nil {
 		return err
 	}
+	if err := s.RegisterMigration(Migration{Namespace: "core", Version: 14, Name: "client_policy_and_diagnostic_level", Up: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+ALTER TABLE client_diagnostic_events ADD COLUMN level TEXT NOT NULL DEFAULT 'error';
+CREATE TABLE client_policy (
+  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+  log_level TEXT NOT NULL CHECK(log_level IN ('error','info','debug')),
+  poll_interval_seconds INTEGER NOT NULL,
+  revision INTEGER NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`)
+		return err
+	}}); err != nil {
+		return err
+	}
 	if err := s.RegisterMigration(Migration{Namespace: "core", Version: 11, Name: "server_owned_task_interaction", Up: func(ctx context.Context, tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
 ALTER TABLE tasks ADD COLUMN interaction_state TEXT NOT NULL DEFAULT 'none' CHECK(interaction_state IN ('none','awaiting_message','explicit_confirmation','approval_required'));

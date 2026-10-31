@@ -55,6 +55,16 @@ func instanceKeyHash(key string) ([]byte, error) {
 // InitializeInstanceAuth provisions or verifies a deployment-provided key.
 // Key generation and secret export are reserved for explicit operator commands.
 func InitializeInstanceAuth(ctx context.Context, store *storage.Store, configured string) (string, bool, error) {
+	return initializeInstanceAuth(ctx, store, configured, false)
+}
+
+// InitializeInstanceAuthPending provisions or verifies a deployment-provided
+// key, while allowing a fresh deployment to start before explicit key init.
+func InitializeInstanceAuthPending(ctx context.Context, store *storage.Store, configured string) (string, bool, error) {
+	return initializeInstanceAuth(ctx, store, configured, true)
+}
+
+func initializeInstanceAuth(ctx context.Context, store *storage.Store, configured string, allowPending bool) (string, bool, error) {
 	if store == nil || store.DB() == nil {
 		return "", false, errors.New("open control store is required")
 	}
@@ -75,6 +85,9 @@ func InitializeInstanceAuth(ctx context.Context, store *storage.Store, configure
 		key := configured
 		generated := false
 		if key == "" {
+			if allowPending {
+				return "", false, tx.Commit()
+			}
 			return "", false, errors.New("instance key is not initialized; run zoe key init with an explicit secure output destination")
 		}
 		digest, e := instanceKeyHash(key)

@@ -80,6 +80,45 @@ func TestProviderConfigureTestStatusUsePersistedDeployment(t *testing.T) {
 	}
 }
 
+func TestMemoryConfigureConsumesCRLFAnswersFromSingleChunk(t *testing.T) {
+	root := t.TempDir()
+	compose := filepath.Join(root, "compose.yml")
+	if err := os.WriteFile(compose, []byte("services: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "zoe-stack.env"), []byte("ZOE_COMPOSE_FILE="+compose+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	oldMode := os.Getenv("ZOE_DEPLOYMENT_MODE")
+	_ = os.Setenv("ZOE_DEPLOYMENT_MODE", "compose")
+	t.Cleanup(func() { _ = os.Setenv("ZOE_DEPLOYMENT_MODE", oldMode) })
+	old := opsManager
+	opsManager = func() ops.Manager {
+		return ops.NewManager(func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "systemctl" && strings.Contains(strings.Join(args, " "), "show") {
+				return []byte("LoadState=not-found\n"), errors.New("not found")
+			}
+			return nil, nil
+		})
+	}
+	t.Cleanup(func() { opsManager = old })
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" || r.Header.Get("Authorization") != "Bearer memory-token" {
+			t.Error("memory probe did not receive the prompted credential")
+		}
+		_, _ = io.WriteString(w, `{"data":[{"id":"gpt-6.1-sol"}]}`)
+	}))
+	defer gateway.Close()
+	var out, errOut bytes.Buffer
+	answers := gateway.URL + "\r\ngpt-6.1-sol\r\nmemory-token\r\n"
+	if err := memoryConfigureOperation([]string{"--root", root, "--secret", filepath.Join(root, "secrets", "mem0-llm-api-key")}, strings.NewReader(answers), &out, &errOut); err != nil {
+		t.Fatalf("configure failed: %v; stderr=%s", err, errOut.String())
+	}
+	if strings.Contains(out.String()+errOut.String(), "invalid_configuration") {
+		t.Fatalf("CRLF prompt input was misparsed: out=%s err=%s", out.String(), errOut.String())
+	}
+}
+
 func TestVoiceConfigureAndStatus(t *testing.T) {
 	root := t.TempDir()
 	_ = os.WriteFile(filepath.Join(root, "zoe-stack.env"), []byte("ZOE_COMPOSE_FILE=/tmp/zoe-compose.yaml\nCOMPOSE_PROJECT_NAME=zoe\n"), 0600)

@@ -7,11 +7,16 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/ronigooja/Zoe/internal/control"
 	"github.com/ronigooja/Zoe/internal/ops"
 	"github.com/skip2/go-qrcode"
 )
@@ -20,14 +25,204 @@ func init() {
 	_ = RegisterOperation("setup", setupOperation)
 	_ = RegisterOperation("provider configure", providerConfigureOperation)
 	_ = RegisterOperation("provider test", providerTestOperation)
+	_ = RegisterOperation("memory configure", memoryConfigureOperation)
+	_ = RegisterOperation("memory test", memoryTestOperation)
 	_ = RegisterOperation("key init", keyInitOperation)
 	_ = RegisterOperation("key rotate", keyRotateOperation)
 	_ = RegisterOperation("status", statusOperation)
+	_ = RegisterOperation("install", installOperation)
+	_ = RegisterOperation("update", updateOperation)
+	_ = RegisterOperation("uninstall", uninstallOperation)
+	_ = RegisterOperation("client-policy show", clientPolicyShowOperation)
+	_ = RegisterOperation("client-policy set", clientPolicySetOperation)
+}
+
+func clientPolicyMaintenance(args []string, set bool, out, errOut io.Writer) error {
+	fs := flag.NewFlagSet("client-policy", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	root := fs.String("root", "/etc/zoe", "deployment configuration root")
+	db := fs.String("database", os.Getenv("ZOE_DATABASE_PATH"), "control database path")
+	level := fs.String("level", "", "client log level: error, info, or debug")
+	interval := fs.Int("interval", 0, "client poll interval in seconds")
+	offline := fs.Bool("offline", false, "skip managed service pause; require exclusive database lock")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("unexpected arguments")
+	}
+	if set && !validPolicyLevel(*level) {
+		return errors.New("--level must be error, info, or debug")
+	}
+	if *db == "" {
+		d, err := ops.DiscoverDeployment(context.Background(), opsManager(), *root)
+		if err != nil {
+			return err
+		}
+		*db = d.DatabasePath
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var err error
+	resume := func() error { return nil }
+	if !*offline {
+		resume, err = pauseControl(ctx, *root)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if resumeErr := resume(); resumeErr != nil {
+				fmt.Fprintln(errOut, "Service recovery failed; restart the control service manually.")
+			}
+		}()
+	}
+	var policy control.ClientPolicy
+	if set {
+		policy, err = ops.UpdateClientPolicy(ctx, ops.ClientPolicyOptions{DatabasePath: *db}, *level, *interval)
+	} else {
+		policy, err = ops.ReadClientPolicy(ctx, ops.ClientPolicyOptions{DatabasePath: *db})
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Log level: %s\nPoll interval: %d seconds\nRevision: %d\n", safeLabel(policy.LogLevel), policy.PollIntervalSeconds, policy.Revision)
+	return nil
+}
+
+func clientPolicyShowOperation(args []string, _ io.Reader, out, errOut io.Writer) error {
+	return clientPolicyMaintenance(args, false, out, errOut)
+}
+func clientPolicySetOperation(args []string, _ io.Reader, out, errOut io.Writer) error {
+	return clientPolicyMaintenance(args, true, out, errOut)
+}
+func validPolicyLevel(level string) bool {
+	return level == "error" || level == "info" || level == "debug"
+}
+
+func lifecycleFlags(name string, args []string, errOut io.Writer) (ops.LifecycleOptions, *flag.FlagSet, error) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	o := ops.LifecycleOptions{Out: errOut}
+	fs.StringVar(&o.Release, "release", "", "absolute extracted release directory")
+	fs.StringVar(&o.Root, "root", "/etc/zoe", "deployment configuration root")
+	fs.StringVar(&o.OptRoot, "opt-root", "/opt/zoe", "release installation root")
+	fs.StringVar(&o.DataRoot, "data-root", "/var/lib/zoe", "persistent data root")
+	fs.StringVar(&o.OpenCodeImage, "opencode-image", "", "pinned GHCR OpenCode image")
+	fs.BoolVar(&o.NonInteractive, "non-interactive", false, "do not prompt")
+	fs.BoolVar(&o.Yes, "yes", false, "confirm destructive operation")
+	fs.BoolVar(&o.Yes, "non-interactive-with-yes", false, "confirm destructive operation without prompts")
+	fs.BoolVar(&o.PurgeData, "purge-data", false, "remove Zoe data")
+	fs.BoolVar(&o.PurgeCredentials, "purge-credentials", false, "remove protected gateway credentials")
+	fs.BoolVar(&o.Start, "start", false, "start services and wait for health after installation")
+	if err := fs.Parse(args); err != nil {
+		return o, fs, err
+	}
+	if fs.NArg() != 0 {
+		return o, fs, errors.New("unexpected arguments")
+	}
+	return o, fs, nil
+}
+func releasePrompt(o *ops.LifecycleOptions, in io.Reader, out io.Writer) error {
+	if o.Release != "" {
+		return nil
+	}
+	if o.NonInteractive {
+		return errors.New("--release is required")
+	}
+	fmt.Fprint(out, "Release directory: ")
+	v, e := inputLine(in)
+	if e != nil {
+		return e
+	}
+	o.Release = strings.TrimSpace(v)
+	return nil
+}
+func installOperation(args []string, in io.Reader, out, errOut io.Writer) error {
+	o, _, e := lifecycleFlags("install", args, errOut)
+	if e != nil {
+		return e
+	}
+	if e = releasePrompt(&o, in, out); e != nil {
+		return e
+	}
+	fmt.Fprintln(out, "Installing the reviewed Zoe host release; services start before key and model configuration.")
+	_, e = opsManager().Install(context.Background(), o)
+	return e
+}
+func updateOperation(args []string, in io.Reader, out, errOut io.Writer) error {
+	o, _, e := lifecycleFlags("update", args, errOut)
+	if e != nil {
+		return e
+	}
+	if e = releasePrompt(&o, in, out); e != nil {
+		return e
+	}
+	fmt.Fprintln(out, "Updating Zoe atomically; the previous release is retained until health checks pass.")
+	return opsManager().Update(context.Background(), o)
+}
+func uninstallOperation(args []string, in io.Reader, out, errOut io.Writer) error {
+	o, _, e := lifecycleFlags("uninstall", args, errOut)
+	if e != nil {
+		return e
+	}
+	if o.NonInteractive && !o.Yes {
+		return errors.New("uninstall requires --yes in non-interactive mode")
+	}
+	plan, err := opsManager().UninstallPlan(context.Background(), o)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "Uninstall plan:")
+	fmt.Fprintf(out, "  units: %s\n", strings.Join(plan.Units, ", "))
+	fmt.Fprintf(out, "  Compose file: %s\n", safeLabel(plan.ComposeFile))
+	fmt.Fprintf(out, "  Compose containers: %s\n", strings.Join(plan.ComposeContainers, ", "))
+	fmt.Fprintf(out, "  OpenCode containers: %s\n", strings.Join(plan.RuntimeContainers, ", "))
+	fmt.Fprintf(out, "  Zoe image IDs: %s\n", strings.Join(plan.ImageIDs, ", "))
+	fmt.Fprintf(out, "  network: %s\n  release root: %s\n", plan.Network, plan.OptRoot)
+	if o.PurgeData {
+		fmt.Fprintf(out, "  purge data: %s\n  purge non-credential /etc/zoe files\n", plan.DataRoot)
+		fmt.Fprintf(out, "  keep credentials: %s\n", strings.Join(plan.KeepFiles, ", "))
+	}
+	if !o.Yes {
+		fmt.Fprint(out, "Type yes to continue: ")
+		v, x := inputLine(in)
+		if x != nil {
+			return x
+		}
+		if strings.TrimSpace(v) != "yes" {
+			return errors.New("confirmation required")
+		}
+	}
+	fmt.Fprintln(out, "Removing the listed Zoe host resources.")
+	return opsManager().Uninstall(context.Background(), o)
 }
 
 func setupOperation(args []string, in io.Reader, out, errOut io.Writer) error {
-	fmt.Fprintln(out, "Setup checks the installed deployment and configures its provider.")
-	return providerConfigureOperation(args, in, out, errOut)
+	fmt.Fprintln(out, "Setup checks the installed deployment and configures its task model.")
+	if err := providerConfigureOperation(args, in, out, errOut); err != nil {
+		return err
+	}
+	root := setupRoot(args)
+	fmt.Fprintln(out, "Now configure the memory model. Press Enter at the URL prompt to skip this step without changing anything.")
+	memoryArgs := []string{"--root", root}
+	for _, arg := range args {
+		if arg == "--non-interactive" {
+			memoryArgs = append(memoryArgs, arg)
+		}
+	}
+	return memoryConfigureOperationWithSkip(memoryArgs, in, out, errOut, true)
+}
+
+func setupRoot(args []string) string {
+	for i, arg := range args {
+		if arg == "--root" && i+1 < len(args) {
+			return args[i+1]
+		}
+		if strings.HasPrefix(arg, "--root=") {
+			return strings.TrimPrefix(arg, "--root=")
+		}
+	}
+	return "/etc/zoe"
 }
 
 // providerFlags are shared by setup, configure, test and status so the same
@@ -128,6 +323,7 @@ func providerConfigureOperation(args []string, in io.Reader, out, errOut io.Writ
 	}
 	cfg.Secret = strings.TrimSpace(string(secret))
 	if _, err := opsManager().ConfigureProvider(ctx, d, cfg, nil); err != nil {
+		fmt.Fprintf(errOut, "Provider configuration failed: %s\n", safeLabel(err.Error()))
 		return err
 	}
 	fmt.Fprintln(out, "Provider configured, checked and services reloaded.")
@@ -151,6 +347,157 @@ func providerTestOperation(args []string, _ io.Reader, out, errOut io.Writer) er
 	}
 	result, err := opsManager().TestProvider(ctx, d, cfg, nil)
 	fmt.Fprintf(out, "HTTP status: %d\nModel available: %t\nResult: %s\n", result.HTTPStatus, result.ModelAvailable, safeLabel(result.ErrorCategory))
+	if err != nil {
+		fmt.Fprintf(errOut, "Provider test failed: %s\n", safeLabel(err.Error()))
+	}
+	return err
+}
+
+func memoryConfigureOperation(args []string, in io.Reader, out, errOut io.Writer) error {
+	return memoryConfigureOperationWithSkip(args, in, out, errOut, false)
+}
+
+func memoryConfigureOperationWithSkip(args []string, in io.Reader, out, errOut io.Writer, allowSkip bool) error {
+	fs := flag.NewFlagSet("memory configure", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	root := fs.String("root", "/etc/zoe", "deployment configuration root")
+	base := fs.String("url", "", "override memory model gateway URL")
+	model := fs.String("model", "", "override memory model")
+	secretPath := fs.String("secret", ops.DefaultMemorySecretPath, "private memory credential file")
+	secretFileAlias := fs.String("secret-file", "", "compatibility alias for --secret")
+	token := fs.String("token", "", "compatibility token input; shell history and process arguments may retain it (prefer prompt)")
+	tokenFile := fs.String("token-file", "", "read a private memory credential file")
+	nonInteractive := fs.Bool("non-interactive", false, "require all memory values without prompts")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("unexpected arguments")
+	}
+	if *secretFileAlias != "" {
+		if *secretPath != ops.DefaultMemorySecretPath {
+			return errors.New("use only one of --secret and --secret-file")
+		}
+		*secretPath = *secretFileAlias
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	d, err := ops.DiscoverDeployment(ctx, opsManager(), *root)
+	if err != nil {
+		return err
+	}
+	cfg, err := d.MemoryConfig()
+	if err != nil {
+		return err
+	}
+	if *base != "" {
+		cfg.BaseURL = *base
+	}
+	if *model != "" {
+		cfg.Model = *model
+	}
+	cfg.SecretPath = *secretPath
+	provider, err := d.ProviderConfig()
+	if err != nil {
+		return err
+	}
+	in = sharedInput(in)
+	if allowSkip {
+		fmt.Fprint(out, "Memory model gateway URL (press Enter to skip): ")
+		value, readErr := inputLine(in)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.TrimSpace(value) == "" {
+			fmt.Fprintln(out, "Memory model configuration skipped; existing memory settings were not changed.")
+			return nil
+		}
+		cfg.BaseURL = value
+	} else if strings.TrimSpace(cfg.BaseURL) == "" {
+		if *nonInteractive {
+			return errors.New("--url is required")
+		}
+		fmt.Fprint(out, "Memory model gateway URL: ")
+		cfg.BaseURL, err = inputLine(in)
+		if err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(cfg.Model) == "" {
+		if *nonInteractive {
+			return errors.New("--model is required")
+		}
+		fmt.Fprint(out, "Memory model: ")
+		cfg.Model, err = inputLine(in)
+		if err != nil {
+			return err
+		}
+	}
+	if *token != "" && *tokenFile != "" {
+		return errors.New("use only one of --token and --token-file")
+	}
+	if *token != "" {
+		cfg.Secret = strings.TrimSpace(*token)
+	} else if *tokenFile == "" {
+		if *nonInteractive {
+			return errors.New("--token-file or --token is required for non-interactive configure")
+		}
+		secret, readErr := readToken(in, out)
+		if readErr != nil {
+			return readErr
+		}
+		cfg.Secret = strings.TrimSpace(string(secret))
+		for i := range secret {
+			secret[i] = 0
+		}
+	} else {
+		secret, readErr := os.ReadFile(*tokenFile)
+		if readErr != nil {
+			return errors.New("cannot read memory token file")
+		}
+		cfg.Secret = strings.TrimSpace(string(secret))
+		for i := range secret {
+			secret[i] = 0
+		}
+	}
+	if filepath.Clean(cfg.SecretPath) == filepath.Clean(provider.SecretPath) {
+		return errors.New("memory secret path must be distinct from the task-model secret path")
+	}
+	result, err := opsManager().ConfigureMemory(ctx, d, cfg, provider.SecretPath, nil)
+	fmt.Fprintf(out, "HTTP status: %d\nModel available: %t\nResult: %s\n", result.HTTPStatus, result.ModelAvailable, safeLabel(result.ErrorCategory))
+	if err != nil {
+		fmt.Fprintf(errOut, "Memory configuration failed: %s\n", safeLabel(err.Error()))
+		return err
+	}
+	fmt.Fprintln(out, "Memory model configured, checked and memory worker reloaded.")
+	return nil
+}
+
+func memoryTestOperation(args []string, _ io.Reader, out, errOut io.Writer) error {
+	fs := flag.NewFlagSet("memory test", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	root := fs.String("root", "/etc/zoe", "deployment configuration root")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("unexpected arguments")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	d, err := ops.DiscoverDeployment(ctx, opsManager(), *root)
+	if err != nil {
+		return err
+	}
+	cfg, err := d.MemoryConfig()
+	if err != nil {
+		return err
+	}
+	result, err := opsManager().TestMemory(ctx, d, cfg, nil)
+	fmt.Fprintf(out, "HTTP status: %d\nModel available: %t\nResult: %s\n", result.HTTPStatus, result.ModelAvailable, safeLabel(result.ErrorCategory))
+	if err != nil {
+		fmt.Fprintf(errOut, "Memory test failed: %s\n", safeLabel(err.Error()))
+	}
 	return err
 }
 
@@ -453,6 +800,7 @@ func statusOperation(args []string, _ io.Reader, out, errOut io.Writer) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	f := addProviderFlags(fs, false)
+	optRoot := fs.String("opt-root", "/opt/zoe", "release installation root")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -469,13 +817,48 @@ func statusOperation(args []string, _ io.Reader, out, errOut io.Writer) error {
 	inspect.SecretPath = cfg.SecretPath
 	inspect.ProviderBaseURL = cfg.BaseURL
 	inspect.ProviderModel = cfg.Model
+	memory, memoryErr := d.MemoryConfig()
+	if memoryErr != nil {
+		return memoryErr
+	}
+	inspect.MemorySecretPath = memory.SecretPath
+	inspect.MemoryBaseURL = memory.BaseURL
+	inspect.MemoryModel = memory.Model
 	status := opsManager().Inspect(ctx, inspect)
 	fmt.Fprintf(out, "Deployment: %s\n", status.Mode)
+	keyState := "pending (run zoe key init)"
+	probeCtx, probeCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer probeCancel()
+	if req, requestErr := http.NewRequestWithContext(probeCtx, http.MethodGet, "http://127.0.0.1:8787/readyz", nil); requestErr == nil {
+		if response, requestErr := (&http.Client{Timeout: 2 * time.Second}).Do(req); requestErr == nil {
+			response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				keyState = "configured"
+			}
+		}
+	}
+	fmt.Fprintf(out, "Instance key: %s\n", keyState)
 	for _, service := range status.Services {
 		fmt.Fprintf(out, "%s: %s (%s)\n", safeLabel(service.Name), safeLabel(service.State), safeLabel(service.Source))
 	}
 	fmt.Fprintf(out, "Provider: %s model=%s source=%s last-check=%s\n", safeLabel(status.Provider.BaseURL), safeLabel(status.Provider.Model), safeLabel(status.Provider.ConfigSource), safeLabel(ops.LastProviderCheck(d)))
 	fmt.Fprintf(out, "Secret: %s exists=%t mode=%s owner=%s\n", safeLabel(status.Secret.Path), status.Secret.Exists, safeLabel(status.Secret.Mode), safeLabel(status.Secret.Owner))
+	memoryHost := ""
+	if u, parseErr := url.Parse(status.Memory.BaseURL); parseErr == nil {
+		memoryHost = u.Hostname()
+	}
+	fmt.Fprintf(out, "Memory: host=%s model=%s secret-file=%s mode-0600=%t last-check=%s\n", safeLabel(memoryHost), safeLabel(status.Memory.Model), safeLabel(status.Memory.Secret.Path), status.Memory.Secret.Exists && status.Memory.Secret.Mode == "0600", safeLabel(status.Memory.LastCheck))
+	current := filepath.Join(*optRoot, "releases", "current")
+	if revision, readErr := os.ReadFile(filepath.Join(current, "SOURCE_REVISION")); readErr == nil {
+		fmt.Fprintf(out, "Release: source-revision=%s\n", safeLabel(strings.TrimSpace(string(revision))))
+	}
+	if stack, readErr := os.ReadFile(filepath.Join(d.Root, "zoe-stack.env")); readErr == nil {
+		for _, line := range strings.Split(string(stack), "\n") {
+			if strings.HasPrefix(line, "ZOE_SERVER_IMAGE=") || strings.HasPrefix(line, "ZOE_MEMORY_WORKER_IMAGE=") {
+				fmt.Fprintf(out, "Image: %s\n", safeLabel(line))
+			}
+		}
+	}
 	return nil
 }
 
@@ -492,9 +875,37 @@ func safeLabel(value string) string {
 	return value
 }
 
+// terminalEcho is replaced in tests; production uses the platform terminal control.
+var terminalEcho = disableTerminalEcho
+
 func readToken(in io.Reader, out io.Writer) ([]byte, error) {
 	in = sharedInput(in)
 	fmt.Fprint(out, "API token: ")
+	if file := terminalFile(in); file != nil {
+		restore, isTerminal, err := terminalEcho(file)
+		if err != nil {
+			return nil, errors.New("cannot hide terminal input; use --token-file")
+		}
+		if isTerminal {
+			stop := make(chan struct{})
+			signals := make(chan os.Signal, 1)
+			signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+			go func() {
+				select {
+				case <-signals:
+					restore()
+					os.Exit(130)
+				case <-stop:
+				}
+			}()
+			defer func() {
+				signal.Stop(signals)
+				close(stop)
+				restore()
+				fmt.Fprintln(out)
+			}()
+		}
+	}
 	value, err := inputLine(in)
 	if err != nil {
 		return nil, err
